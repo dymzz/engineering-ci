@@ -802,7 +802,9 @@ class EngineeringCi:
             stdout,
             await result.stderr(),
             native_raw=stdout
-            if policy["tool"] != "actionlint" or stdout.lstrip().startswith("[")
+            if policy["tool"] != "actionlint"
+            or policy.get("json_format")
+            or stdout.lstrip().startswith("[")
             else "",
         )
         report["target_sources"] = observed["targets"]

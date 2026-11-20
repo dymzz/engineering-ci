@@ -1287,6 +1287,34 @@ def test_forwarding_v1_result_cannot_satisfy_restored_v2_definition():
     reconciliation.validate_receipt(receipt)
 
 
+@pytest.mark.parametrize(
+    ("name", "access_id"),
+    [
+        ("actionlint", "actionlint/check"),
+        ("workflow_shellcheck", "actionlint/shellcheck-inline"),
+    ],
+)
+def test_legacy_actionlint_output_contract_cannot_satisfy_v2(name, access_id):
+    current = check_contract.definition_for(name)
+    legacy = check_contract.definition_for(name, 1)
+    assert current.definition_version == 2
+    result = native(name, definition=legacy, tool_access=access_id, rule=RULE_TACH)
+    assert check_contract.validate_result(result) is result
+    entry = make_entry(name)
+    receipt = reconcile(
+        make_projection([entry]),
+        routing=[make_routing(entry)],
+        resolutions=[make_resolution(entry, rule=RULE_TACH)],
+        observations=[make_observation("job-1", [result])],
+    )
+    observed = receipt["entries"][0]
+    assert observed["binding_status"] == "insufficient"
+    assert observed["reason"] == "definition_version_mismatch"
+    assert observed["observed_result_ids"] == [result["result_id"]]
+    assert observed["selected_result_ids"] == []
+    reconciliation.validate_receipt(receipt)
+
+
 def test_two_required_tools_missing_one_is_insufficient():
     entry = make_entry("docs")
     projection = make_projection([entry])

@@ -496,9 +496,10 @@ _CURRENT_DEFINITION_VERSION = {
     "weaver_registry": 1,
     "weaver_live": 1,
     "weaver_terminal": 1,
-    "actionlint": 1,
+    # Both checks depend on Actionlint's structured-output verdict.
+    "actionlint": 2,
     "shellcheck": 1,
-    "workflow_shellcheck": 1,
+    "workflow_shellcheck": 2,
     "zizmor": 1,
 }
 

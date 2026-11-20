@@ -232,6 +232,55 @@ class ActionlintSemanticsTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertEqual(self.report(code)["outcome"], "failure")
 
+    def test_json_mode_requires_a_complete_json_array(self):
+        policy = script.actionlint_policy(json_format=True)
+        for output in (
+            "",
+            " \n",
+            "unexpected output\n",
+            actionlint_output(),
+            "{}",
+            "null",
+            "[",
+            "[42]",
+            "[] trailing",
+        ):
+            with self.subTest(output=output):
+                report = script.script_report(
+                    policy, 0, stdout=output, stderr="native stderr"
+                )
+                self.assertEqual(report["outcome"], "failure")
+                self.assertTrue(report["limitations"])
+                self.assertEqual(report["exit_code"], 0)
+                self.assertEqual(report["stdout"], output)
+                self.assertEqual(report["stderr"], "native stderr")
+                self.assertFalse(report["native_json_available"])
+        valid = script.script_report(policy, 0, stdout="[]\n")
+        self.assertEqual(valid["outcome"], "clean")
+        self.assertEqual(
+            valid["native_json"], {"format": "actionlint-json", "items": []}
+        )
+
+    def test_json_mode_limits_unprovided_raw_stdout(self):
+        output = "x" * (script.MAX_NATIVE_BYTES + 1)
+        report = script.script_report(
+            script.actionlint_policy(json_format=True), 0, output
+        )
+        self.assertEqual(report["outcome"], "failure")
+        self.assertTrue(report["native_truncated"])
+        self.assertTrue(any("1 MiB" in item for item in report["limitations"]))
+        self.assertEqual(report["stdout"], output[-script.MAX_STREAM_CHARS :])
+
+    def test_text_mode_rejects_unrecognized_nonempty_output(self):
+        report = self.report(0, "unexpected output\n")
+        self.assertEqual(report["outcome"], "failure")
+        self.assertTrue(report["limitations"])
+        raw_only = script.script_report(
+            script.actionlint_policy(), 0, native_raw="unexpected output\n"
+        )
+        self.assertEqual(raw_only["outcome"], "failure")
+        self.assertTrue(raw_only["limitations"])
+
     def test_json_diagnostics_attribute_shellcheck_separately(self):
         raw = json.dumps(
             [

@@ -16,29 +16,29 @@ There is deliberately no second PowerShell execution path. A Dagger-only
 implementation would report Windows requirements it cannot honour, which is
 worse than saying so.
 
-## NOT VERIFIED
+## Evidence limits
 
-Nothing in this issue has been executed against the real tools yet. The
-following are recorded as open, and none of them may be described as verified
-until a real run says so:
+The pinned Actionlint 1.7.12 was run against the committed clean and broken
+Workflow fixtures: JSON mode returned `[]` with exit 0 for the clean fixture
+and a diagnostic array with exit 1 for the broken fixture. Text mode returned
+empty output and exit 0 for the clean fixture, and diagnostic lines with exit
+1 for the broken fixture. The repository also retains a
+[real Dagger clean-run bundle](../../verification/workflow-security/dagger-clean/README.md).
+These observations do not prove that malformed output occurs in production.
 
-1. **actionlint's exit-code semantics and output format are assumed.** This
-   assumes `0` means clean, `1` means reported problems, and that a diagnostic
-   line reads `<path>:<line>[:<column>]: <message> [<rule>]`. actionlint may
-   also expose no structured output at all, in which case
-   `native_json_available` is legitimately always false for it.
-2. **No PSScriptAnalyzer run has been observed.** The committed fixtures assume
+The following PowerShell assumptions remain open:
+
+1. **No PSScriptAnalyzer run has been observed.** The committed fixtures assume
    that `PSAvoidUsingCmdletAliases`, `PSAvoidUsingWriteHost` and
    `PSUseDeclaredVarsMoreThanAssignments` fire on `violations.ps1`. Which
    default rules actually fire is a property of the analyzer.
-3. **The Windows runner job has never executed.** The runner label, the pinned
+2. **The Windows runner job has never executed.** The runner label, the pinned
    uv invocation, moving the helper checkout out of the workspace and the
    `PYTHONPATH` wiring are all unexercised.
 
-Every classifier in both implementations fails closed: an unreadable envelope,
-an empty script set, a missing module or a failed process produces a non-zero
-exit and a failure bundle, never a clean result. A wrong assumption therefore
-surfaces as a red check that prints the observed value, not as a silent pass.
+An unreadable envelope, an empty script set, a missing module or a failed
+process cannot produce a clean check. The original process exit and bounded
+output remain available in the report.
 
 ## Workflow analysis
 
@@ -100,6 +100,46 @@ See [#86](https://github.com/dymzz/engineering-ci/issues/86) and
 
 Actionlint's inline ShellCheck integration is opt-in. The actionlint command
 sets the configured ShellCheck behavior explicitly and disables pyflakes.
+When JSON mode is requested, an empty, malformed, non-array or over-limit
+response is an invalid result rather than a text-format fallback. In text mode,
+nonempty output without recognizable diagnostics is also invalid. If the
+process exits 0 but the response cannot establish a verdict, its Native Result
+is `unknown` with the
+original exit and output, and Execution blocks the check. The inline ShellCheck
+check cannot use that response as a clean verdict. Actionlint and inline
+ShellCheck definition version 2 require these rules; version 1 results remain
+readable but cannot satisfy the version 2 Checks.
+
+### NEW-049 acceptance — Actionlint verdict provenance
+
+[PR #140](https://github.com/dymzz/engineering-ci/pull/140) repairs the
+[Issue #58 NEW-049](https://github.com/dymzz/engineering-ci/issues/58)
+path where a JSON-requesting Actionlint run with exit 0 could fall back to
+unrecognized text and be misreported as clean.
+
+- **Producer:** Host and Dagger retain the native exit and bounded stdout /
+  stderr. In JSON mode only a complete Actionlint array can establish a
+  structured verdict; over-limit output remains invalid. Text mode accepts
+  valid native diagnostics and truly empty clean output, not arbitrary text.
+- **Validator:** exit 0 with parsed findings is inconsistent. Invalid output
+  cannot become a valid clean verdict, even when the tool process succeeds.
+- **Consumer:** Host Execution retains the actual native exit with a
+  non-passing `unknown` Result, blocks the Report, and exposes
+  `limitations`/`native_truncated`. Shared inline ShellCheck must not
+  inherit an invented clean verdict. #66-C does not select the Result as a
+  passing witness; current `actionlint` and `workflow_shellcheck`
+  Check Definitions are version 2, while version 1 evidence remains readable
+  but cannot satisfy those new definitions.
+
+**Evidence and limits:** Actionlint 1.7.12 was exercised on real clean and
+broken Workflow fixtures, and the unrecognized-output failure was reproduced
+with a controlled anomalous Runner through Native Result → Source Resolution →
+Expected/Reconciliation. [PR CI run #44686859634](https://github.com/dymzz/engineering-ci/actions/runs/44686859634)
+completed successfully (four jobs). This supports the contract fix, **not**
+a claim that the pinned native Actionlint produced such malformed output in
+production. The Dagger API returns a Report and its caller must gate on
+`outcome`; a successful Dagger function invocation is not itself a passed
+Check. This fix does not complete unrelated Issue #58 integrations.
 
 ## PowerShell analysis on Windows
 
