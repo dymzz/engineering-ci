@@ -294,6 +294,9 @@ def test_published_evidence_keeps_original_attempt_after_run_retry(
         ("wrong_artifact", "unverified", "release_post_stage_trigger_mismatch"),
         ("wrong_candidate", "unverified", "release_post_stage_candidate_mismatch"),
         ("wrong_time", "unverified", "release_post_stage_trigger_mismatch"),
+        ("observed_before", "rejected", "post_trigger_observed_before_occurrence"),
+        ("delayed_receipt", "verified", None),
+        ("forged_receipt", "unverified", "post_trigger_authority_rejected"),
         ("future_evaluation", "rejected", "post_trigger_observed_in_future"),
         ("unauthorized", "unverified", "post_trigger_authority_rejected"),
         ("bare_claim", "unverified", "post_trigger_authority_rejected"),
@@ -341,6 +344,8 @@ def test_cli_consumes_release_post_stage_without_rewriting_publication(
                 "late_approved": "2026-11-17T19:00:00+00:00",
                 "late_unapproved": "2026-11-17T19:00:00+00:00",
                 "future_evaluation": "2026-11-17T11:59:00+00:00",
+                "delayed_receipt": "2026-11-17T12:04:00+00:00",
+                "forged_receipt": "2026-11-17T12:04:00+00:00",
             }.get(case, "2026-11-17T12:01:00+00:00")
             return cls.fromisoformat(instant).astimezone(tz)
 
@@ -359,7 +364,11 @@ def test_cli_consumes_release_post_stage_without_rewriting_publication(
         if case == "wrong_attempt":
             event["run_attempt"] = 2
         if case == "wrong_time":
+            event["occurred_at"] = "2026-11-17T11:50:00+00:00"
+        if case == "observed_before":
             event["observed_at"] = "2026-11-17T11:50:00+00:00"
+        if case in {"delayed_receipt", "forged_receipt"}:
+            event["observed_at"] = "2026-11-17T12:03:00+00:00"
         due = (
             window(earliest_at="2026-11-17T13:00:00+00:00")
             if case == "not_due"
@@ -371,7 +380,10 @@ def test_cli_consumes_release_post_stage_without_rewriting_publication(
             assert proof["artifact_id"] == row["id"]
             if case == "bare_claim":
                 return True
-            return False if case == "unauthorized" else accept(proof)
+            assert proof["trigger_event"]["occurred_at"] == EVALUATED_AT
+            return (
+                False if case in {"unauthorized", "forged_receipt"} else accept(proof)
+            )
 
         return {
             "prior_assessment": prior_passed(candidate_commit=HEAD),
@@ -410,6 +422,11 @@ def test_cli_consumes_release_post_stage_without_rewriting_publication(
     if expected == "verified":
         assert observation["post_stage_ref"].startswith("sha256:")
         assert observation["lifecycle_all_phases_passed"] is False
+    if case == "delayed_receipt":
+        assert (
+            observation["trigger_event"]["observed_at"] == "2026-11-17T12:03:00+00:00"
+        )
+        assert observation["trigger_event"]["occurred_at"] == EVALUATED_AT
     if case == "missing_authority":
         plain = [argument for argument in verify_args() if argument != "--json"]
         assert cli.main(plain) == 0

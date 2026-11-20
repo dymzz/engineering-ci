@@ -350,7 +350,10 @@ def _publication_post_stage(api, release, value, authority):
             or type(trigger["run_attempt"]) is not int
             or trigger["run_attempt"] != attempt
             or trigger.get("run_completed") is not True
-            or datetime.fromisoformat(trigger["observed_at"]) != published_at
+            or (
+                "occurred_at" in trigger
+                and datetime.fromisoformat(trigger["occurred_at"]) != published_at
+            )
             or artifact_mismatch
         ):
             return unavailable("release_post_stage_trigger_mismatch")
@@ -371,7 +374,7 @@ def _publication_post_stage(api, release, value, authority):
         pair = r5.reconcile_post_stage(
             prior,
             post,
-            trigger_event=trigger,
+            trigger_event={**trigger, "occurred_at": source["published_at"]},
             due_window=inputs["due_window"],
             phase_order=inputs["phase_order"],
             evaluated_at=datetime.now(UTC).isoformat(),
