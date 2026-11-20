@@ -215,8 +215,12 @@ authority evidence.
 | --- | --- | --- | --- | --- |
 | [#75](https://github.com/dymzz/engineering-ci/issues/75) / [#74](https://github.com/dymzz/engineering-ci/issues/74), reuse #83/#84 | `cicd-telemetry-post-run.yml` and `cicd_telemetry`, Runs `44767235384/1` → `44766709012/1`, Artifact `14646306762` and the digests above | Four completed Jobs, four Task Spans, Root withheld, producer exit 0 and no observed Receiver ACK | Bytes and Task trace identity verified. Pinned Registry, applicable Native Live/Terminal result and required delivery await independent verification | #74 Native Checker into #52 Report. Real no-Root input confirmed. Need a genuine Task-only Native positive and a Terminal positive with an authorized Root and valid time quality |
 | [#52 D4](https://github.com/dymzz/engineering-ci/issues/52), [#66-C](https://github.com/dymzz/engineering-ci/issues/66) and [#63](https://github.com/dymzz/engineering-ci/issues/63), reuse #124 | Authorized #66-B2 Check Expected plus completed Run/Attempt and #74 Native Result | `scope_id`, `expected_check_ref`, current Profile/Phase, Rule/Source, Candidate and original capture inputs | Terminal Plan validation, #66-C Receipt and #63 Admission. [#145](https://github.com/dymzz/engineering-ci/pull/145) at `b72e620` fixes the Native Correlation handoff and passed its contract review | R1 per-check Coverage, Native FAIL and Remaining Work. The examined archives supply real no-Root inputs. A qualified native positive and authenticated handoff still need evidence |
-| [#61 R4](https://github.com/dymzz/engineering-ci/issues/61), E065/E066/E067/E072, reuse #121/#136 | Current non-sample R1 and authorized Profile/Policy/Handoff plus Release `verified` Job and native Provider | Repository/Tag/HEAD, action/target/ref/phase, approved validity, exact Manifest bytes, Run/Attempt/Job/upload Step and Artifact ID/digest | [Draft #147](https://github.com/dymzz/engineering-ci/pull/147) at `10721fc` uses the original Provider. A recording API proved zero writes for the covered refusals | `workflow_actions release publish` → `publish_release`. The Draft enforces current R4 before mutation. Live Workflow authority binding and authorized production receipt remain unverified |
-| [#61 R5](https://github.com/dymzz/engineering-ci/issues/61), E068, reuse #123/#134 | Independently authenticated Run/Release/Artifact event, ordered Phase/Due authorities and two same-Candidate R1 assessments | Trigger type/time, Run/Attempt, target/ref, Artifact digest when applicable, evaluation time and authorized due window | [Draft #148](https://github.com/dymzz/engineering-ci/pull/148) at `344c0c8` binds native publication metadata and the original Attempt before R5. Controlled tests cover refusal, due and late outcomes | The Draft consumes the pair in Release inspection and retains the historical publication. Governed live R1/Trigger inputs and any Policy-selected Promotion/Disposition receipt remain unverified |
+| [#61 R4](https://github.com/dymzz/engineering-ci/issues/61), E065/E066/E067/E072, reuse #121/#136 | Current non-sample R1 and authorized Profile/Policy/Handoff plus Release `verified` Job and native Provider | Repository/Tag/HEAD, action/target/ref/phase, approved validity, exact Manifest bytes, Run/Attempt/Job/upload Step and Artifact ID/digest | [Draft #147](https://github.com/dymzz/engineering-ci/pull/147) at `72408d6` checks the request and any different retained Manifest under current authority. Controlled tests cover cross-Attempt recovery, future R1, required Check mappings and zero-write refusals | `workflow_actions release publish` → `publish_release`. The code enforces R4 before mutation and records both reconciliation identities when recovering. The default Workflow lacks a protected `release_authority`. Authorized production writes and receipts remain unverified |
+| [#61 R5](https://github.com/dymzz/engineering-ci/issues/61), E068, reuse #123/#134 | Independently authenticated Run/Release/Artifact event, ordered Phase/Due authorities and two same-Candidate R1 assessments | Trigger occurrence and receipt, Run/Attempt, target/ref, Artifact digest when applicable, evaluation time and authorized due window | [Draft #148](https://github.com/dymzz/engineering-ci/pull/148) at `1904aa0` binds native publication as the occurrence and verifies receipt separately. Controlled tests cover delayed and forged receipt, refusal, due and late outcomes | The Draft consumes the pair in Release inspection and retains the historical publication. Governed live R1/Trigger inputs and any Policy-selected Promotion/Disposition receipt remain unverified |
+
+On base `a99efd5`, the two code patches applied together and passed
+237 targeted tests and 25 subtests. These tests use a recording API and
+controlled authorities.
 
 ### Terminal Source and Expected handoff
 
@@ -268,7 +272,10 @@ authority evidence.
    `status=verified`, `release_authorized is True` and
    `contract_sample is False` with the native and independent evidence
    above. Draft recovery requires current authorization and validation
-   of the saved Manifest against its original Run and Attempt. Continue
+   of the saved Manifest against its original Run and Attempt. Before
+   promoting a Draft that will retain a different Manifest, require
+   fresh R4 for that original identity and explicit authority linking
+   it to the current write request. Continue
    to verify historical final Release identity and the saved Manifest
    on the read side. Policy expiry or revocation changes eligibility for
    future writes or promotion and preserves the recorded publication
@@ -290,7 +297,9 @@ authority evidence.
 1. Bind the Trigger to the original completed Run, publication or Artifact
    event and its independent authority. Verify event type, repository,
    Run/Attempt, candidate SHA, target/ref, applicable Artifact ID and
-   digest, and observation time. A post-run Workflow's own HEAD must
+   digest, and observation time. Preserve native publication time as
+   the occurrence and authenticate any delayed receipt separately.
+   A post-run Workflow's own HEAD must
    remain separate from the source HEAD.
 2. Use the exact Prior and Post R1 Assessments of the same Candidate and
    governing Profile/Phase Order. Reconcile via `reconcile_post_stage`
