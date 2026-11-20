@@ -142,6 +142,94 @@ report them as unavailable; these provenance notes do not substitute for
 the missing records.
 
 
+## PR #141 Producer Artifact Handoff and Independent Source Resolution (#86 → #66)
+
+Real Dagger Engine `v1.0.0-beta.16` (`image://registry.dagger.io/engine:v1.0.0-beta.16`)
+integration verification for [PR #141](https://github.com/dymzz/engineering-ci/pull/141)
+([#86](https://github.com/dymzz/engineering-ci/issues/86) →
+[#66](https://github.com/dymzz/engineering-ci/issues/66)):
+
+- **Execution command**:
+  `dagger call -m . plan-execution --plan=plan.json --source=repo --run-ref=dagger-engine-run-141 --attempt-ref=1 artifacts export --path=exported_artifacts`
+- **Adapter repairs validated by the native Engine run**:
+  - When `report["source_tree_verified"] == "verified"`, Dagger `_execute_dag`
+    preserves the verified Git snapshot identity on workflow/script checks and
+    supplies the runtime `tree_materialization` authority bound to
+    `(plan_ref, event, execution_tree, source_tree_id)`.
+  - `_plan_with_repo_relative_configs` and `_rebased_consumer_plan` normalize
+    cross-platform `repo_root` paths (`PureWindowsPath` / `PurePosixPath`) when
+    a host-generated `plan.json` executes inside a Linux Dagger container.
+  - `selection._git` and `selection._git_bytes` return exit `127` when the
+    `git` binary is absent inside the `python:3.14-slim` Dagger module container
+    instead of raising an unhandled `FileNotFoundError`.
+  - `build_source_resolution()` binds `effective_execution_context` to a
+    verified `dagger_export` Producer Artifact Handoff and authorizes
+    `tree_materialization` from `producer_artifact_authority_from_execution()`
+    when `source_tree_verified == "verified"`.
+- **Plan v2 Data Edge and retained bundle hashes**:
+  - Candidate Git identity: `snapshot = "commit"`,
+    `head_commit = "be2d41255d1503973e29f718d0b98fd95046128f"`,
+    `execution_tree = "c142af57e0832f384e2bf0089a1c3ea7a65a06c6"`,
+    `source_tree_id = "d7fe23d9227e11055a55a31c545af89545f5ef047a1a61f353972673f3c5e32a"`.
+  - Producer prerequisite `generate`: `type = "dagger_command"`,
+    `image = "python:3.14-slim@sha256:486b8092bfb12997e10d4920897213a06563449c951c5506c2a2cfaf591c599f"`,
+    `cache = "source"`, `status = "passed"`, `exit_code = 0`,
+    `result_origin = "dagger"`,
+    `prerequisite_result_sha256 = "sha256:6f1bc23b50b584f58e68b95b876195ab153bd2dfd41ec153234d8750739b5baf"`,
+    `artifact_ref.digest = "sha256:ad01c4b5e3374c33205c601484aa638e7c20aaf152aef11e3c0b5fa8b4d93a19"`,
+    `artifact_ref.directory_id = "EhMI5fsREg0KCURpcmVjdG9yeRgB"`.
+  - Exported bundle artifacts under `produced/prerequisite_action/generate/`:
+    - `File` `scripts/generated.sh`:
+      `sha256 = "f7108d770fea1fd3b5fee4f27eb865a3cb6dc667ff4ae30ca518c5c73e717702"`.
+    - `Directory` `scripts/generated_dir`:
+      `artifact_directory_id = "662afa81e7d94f860bc22a30003369f990ec2664a6c71d74373978ddeb30843e"`,
+      containing `sub/helper.sh`
+      (`sha256 = "a5becfbf9d9e3f21706bc26bd720cdfc2798758f1f2a69c22f55c36ac623472c"`)
+      and empty subdirectory `empty_subdir/`.
+  - `plan.json` SHA-256:
+    `4d7c53c29f8d5d010522834d719a310eae0e90f2a02587e41a04b46da0071afa`
+    (`plan_ref = "sha256:4e5b8cdb3d8b994263f1d35e2f5c6ddb6eb1a2238cd07a7e422505bfaa711a6c"`).
+  - `report.json` SHA-256:
+    `feb3a9354dd18f4abecbb18291bc92fb5f275f67820ca558dc8a4941e1185e6f`.
+  - `producer_artifact_handoff.handoff_digest`:
+    `sha256:d5c649f10ae6fe416263f59b0a7614d1b6617d0bfa1ea91a36ae30ded90c5852`.
+  - Consumer `shellcheck` Native Result:
+    `result_id = "sha256:7b59f0c4282fbe05eb7725112b6a251a4c50a7c381fbe2457ac9b5d4982697b7"`,
+    `content_id = "sha256:9821d8bb724a3cea05aff0e3b7372cf97d03fe1414acaa290c56889be1dc6d5b"`,
+    `status = "passed"`, `native_exit_code = 0`.
+- **Positive independent consumer resolution and `#66-C` reconciliation**:
+  - `producer_artifact_authority_from_execution()` →
+    `build_source_resolution()` / `source_resolution_receipt()`
+    (`source_receipt_ref.sha256 = "a993cdbd6c4a0abc9cc612a3cbb38882daee45017cb241749e534df6344c67d4"`) →
+    `reconcile_expected_results()`:
+    - `source_ref`: `snapshot = "commit"`,
+      `actual_execution_source = "dagger_directory_with_generated_inputs"`,
+      `binding_status = "content_digest"`,
+      `scope_kind = "check_input_closure"`,
+      `content_digest = "3c533bd5e84df177e4131aa74765b99b008d88b53533994cd7a86dd2601f2a74"`,
+      `materialization_ref = "sha256:d7fe23d9227e11055a55a31c545af89545f5ef047a1a61f353972673f3c5e32a"`.
+    - Reconciled entry: `binding_status = "matched"`, `native_status = "passed"`,
+      `native_satisfaction.status = "satisfied"`, `run_ref = "dagger-engine-run-141"`,
+      `attempt_ref = "1"`.
+- **Targeted negative verifications on the same native-produced bundle**
+  (all preserving `native_status = "passed"` without rewriting the original Native Result):
+  - Truncated `Directory` (removed `empty_subdir/` from exported bundle):
+    `evaluate_source_resolution()` → `resolution_status = "contradicted"`,
+    `reason = "producer_directory_truncated"`;
+    `reconcile_expected_results()` → `binding_status = "insufficient"`,
+    `reason = "producer_directory_truncated"`.
+  - Missing `File` (removed `scripts/generated.sh` from exported bundle):
+    `evaluate_source_resolution()` → `resolution_status = "unverified"`,
+    `reason = "producer_artifact_missing"`;
+    `reconcile_expected_results()` → `binding_status = "unknown"`,
+    `reason = "producer_artifact_missing"`.
+  - Omitted expected `Run/Attempt` on bound handoff:
+    `evaluate_source_resolution()` → `resolution_status = "unverified"`,
+    `reason = "producer_handoff_attempt_unverified"`;
+    `reconcile_expected_results()` → `binding_status = "unknown"`,
+    `reason = "producer_handoff_attempt_unverified"`.
+
+
 ## Remaining work
 
 - **#66**: authenticated Source/Prerequisite receipts and config/baseline proof

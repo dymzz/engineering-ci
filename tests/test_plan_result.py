@@ -2460,12 +2460,14 @@ def test_dag_generated_refs_are_bound_before_native_result_identity(
             asyncio.run(saved.enforce())
 
 
+@pytest.mark.parametrize("snapshot", ["worktree", "commit"])
 def test_dagger_plan_execution_producer_artifact_handoff_reaches_resolution(
-    modules, tmp_path
+    modules, tmp_path, snapshot
 ):
     from test_execution import run
+    from test_reconciliation import make_observation, make_routing
 
-    from engineering_ci import execution, hygiene, selection
+    from engineering_ci import execution, hygiene, reconciliation, selection
 
     _result, collector = modules
     gen_file = "scripts/generated.sh"
@@ -2502,6 +2504,7 @@ root = Path(os.environ["ENGINEERING_CI_ARTIFACT_DIR"])
     (repo / "tach.toml").write_text(
         'source_roots = ["src"]\n[[modules]]\npath = "src"\ndepends_on = []\n',
         encoding="utf-8",
+        newline="\n",
     )
     (repo / "ci-selection.toml").write_text(
         f"""\
@@ -2532,18 +2535,21 @@ requires_pass = true
 output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}" }}
 """,
         encoding="utf-8",
+        newline="\n",
     )
     (repo / "ci-hygiene.toml").write_text(
         'schema_version = 1\nchecks = ["forwarding"]\n',
         encoding="utf-8",
+        newline="\n",
     )
     (repo / "scripts/check.sh").write_text(
         "#!/bin/sh\necho repo-script\n", encoding="utf-8", newline="\n"
     )
-    (repo / "src/mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "src/mod.py").write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
     run(repo, "init", "-q", "-b", "main")
     run(repo, "config", "user.email", "dagger86@example.invalid")
     run(repo, "config", "user.name", "Dagger 86 Test")
+    run(repo, "config", "core.autocrlf", "false")
     run(repo, "add", "-A")
     run(repo, "commit", "-q", "-m", "init")
     head = run(repo, "rev-parse", "HEAD").strip()
@@ -2560,7 +2566,7 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
         paths=("scripts/check.sh",),
         worktree_dirty=False,
         complete=True,
-        snapshot="worktree",
+        snapshot=snapshot,
     )
     sel = selection.select(cs, cfg, root=repo)
     plan_doc = selection.plan(
@@ -2642,6 +2648,46 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
         ("generated_input", "file", gen_file),
         ("generated_input", "directory", gen_dir),
     }
+    native = next(
+        row["native_result"] for row in report["checks"] if row["name"] == "shellcheck"
+    )
+    assert resolution["source_ref"] == native["source_ref"]
+    expected = plan_doc["expected_checks"]
+    exp_entry = next(
+        item for item in expected["checks"] if item["name"] == "shellcheck"
+    )
+    rec = reconciliation.reconcile_expected_results(
+        expected,
+        routing=[
+            make_routing(
+                exp_entry,
+                run_ref="dag-run",
+                attempt_ref="3",
+                runner_ref=native["runner_ref"],
+            )
+        ],
+        resolutions=[resolution],
+        observations=[
+            make_observation(
+                "job-1",
+                [native],
+                run_ref="dag-run",
+                attempt_ref="3",
+                runner_ref=native["runner_ref"],
+            )
+        ],
+    )
+    rec_entry = next(item for item in rec["entries"] if item["name"] == "shellcheck")
+    if snapshot == "commit":
+        assert resolution["source_ref"]["scope_kind"] == "check_input_closure"
+        assert resolution["source_ref"]["binding_status"] == "content_digest"
+        assert rec_entry["binding_status"] == "matched"
+        assert rec_entry["native_status"] == "passed"
+        assert rec_entry["native_satisfaction"]["status"] == "satisfied"
+    else:
+        assert resolution["source_ref"]["scope_kind"] == "changed_paths"
+        assert rec_entry["binding_status"] == "unknown"
+        assert rec_entry["reason"] == "expected_source_scope_insufficient"
 
     omitted_attempt = execution.evaluate_source_resolution(
         plan_doc,
@@ -2669,3 +2715,30 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
     )
     assert truncated["resolution_status"] == "contradicted"
     assert truncated["reason"] == "producer_directory_truncated"
+    rec_trunc = reconciliation.reconcile_expected_results(
+        expected,
+        routing=[
+            make_routing(
+                exp_entry,
+                run_ref="dag-run",
+                attempt_ref="3",
+                runner_ref=native["runner_ref"],
+            )
+        ],
+        resolutions=[truncated],
+        observations=[
+            make_observation(
+                "job-1",
+                [native],
+                run_ref="dag-run",
+                attempt_ref="3",
+                runner_ref=native["runner_ref"],
+            )
+        ],
+    )
+    trunc_entry = next(
+        item for item in rec_trunc["entries"] if item["name"] == "shellcheck"
+    )
+    assert trunc_entry["binding_status"] == "insufficient"
+    assert trunc_entry["reason"] == "producer_directory_truncated"
+    assert trunc_entry["native_status"] == "passed"

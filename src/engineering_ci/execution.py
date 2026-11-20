@@ -111,10 +111,13 @@ def _config_path(plan, root, override, *, key, default_name):
 
 def _rebased_consumer_plan(plan, source_root):
     """Rebase repo-local absolute config paths to repo-relative for consumer views."""
+    from pathlib import PurePosixPath, PureWindowsPath
+
     inputs = plan.get("inputs")
     if not isinstance(inputs, dict):
         return plan
     resolved_src = Path(source_root).resolve()
+    declared_root = (plan.get("git") or {}).get("repo_root")
     new_inputs = None
     for key in ("config", "hygiene", "hygiene_config", "sources", "sources_config"):
         entry = inputs.get(key)
@@ -123,19 +126,32 @@ def _rebased_consumer_plan(plan, source_root):
         raw_path = entry.get("path")
         if not isinstance(raw_path, str) or not raw_path:
             continue
+        rel_path = None
         cand = Path(raw_path)
-        if not cand.is_absolute():
-            continue
-        try:
-            resolved = cand.resolve()
-        except OSError:
-            continue
-        if resolved.is_relative_to(resolved_src):
+        if cand.is_absolute():
+            try:
+                resolved = cand.resolve()
+            except OSError:
+                resolved = None
+            if resolved is not None and resolved.is_relative_to(resolved_src):
+                rel_path = resolved.relative_to(resolved_src).as_posix()
+        if rel_path is None and isinstance(declared_root, str) and declared_root:
+            for pure_cls in (PureWindowsPath, PurePosixPath):
+                p_root = pure_cls(declared_root)
+                p_cand = pure_cls(raw_path)
+                if (
+                    p_root.is_absolute()
+                    and p_cand.is_absolute()
+                    and p_cand.is_relative_to(p_root)
+                ):
+                    rel_path = p_cand.relative_to(p_root).as_posix()
+                    break
+        if rel_path is not None:
             if new_inputs is None:
                 new_inputs = dict(inputs)
             new_inputs[key] = {
                 **entry,
-                "path": resolved.relative_to(resolved_src).as_posix(),
+                "path": rel_path,
             }
     if new_inputs is None:
         return plan
@@ -2224,10 +2240,23 @@ def producer_artifact_authority_from_execution(
     )
     trusted_exec_ident = (report or {}).get("execution_identity")
     trusted_exec_context = (report or {}).get("execution_context")
+    plan_git = (plan or {}).get("git") or {}
+    expected_tree = (
+        plan_git.get("execution_tree")
+        or plan_git.get("tree")
+        or plan_git.get("index_tree")
+        or plan_git.get("merge_tree")
+    )
+    expected_tree_id = plan_git.get("source_tree_id")
+    tree_materialization_verified = (
+        (report or {}).get("source_tree_verified") == "verified"
+        and (report or {}).get("tree_verified") is True
+        and bool(expected_tree)
+        and bool(expected_tree_id)
+        and (report or {}).get("source_tree_id") == expected_tree_id
+    )
 
     def authorize(request):
-        if request.get("kind") != "producer_artifact":
-            return False
         if (
             request.get("plan_ref") != plan_ref
             or request.get("event") != expected_event
@@ -2237,6 +2266,13 @@ def producer_artifact_authority_from_execution(
             return False
         src = request.get("source")
         if not isinstance(src, dict):
+            return False
+        if request.get("kind") == "tree_materialization":
+            return tree_materialization_verified and src == {
+                "tree": expected_tree,
+                "source_tree_id": expected_tree_id,
+            }
+        if request.get("kind") != "producer_artifact":
             return False
         if not trusted_handoff_id or src.get("handoff_id") != trusted_handoff_id:
             return False
@@ -3245,7 +3281,9 @@ def _prepare_source_snapshots(
                         )
                         for name in sorted(workflow_checks)
                     }
-                elif execution_context == "host" and _is_git_oid(tree):
+                elif (
+                    execution_context == "host" or git_root is not None
+                ) and _is_git_oid(tree):
                     content_id = selection.tree_content_id(base_path, tree)
                     if (
                         content_id
@@ -4797,12 +4835,17 @@ def build_source_resolution(
         raise ExecutionError("source_resolution_expected_mismatch")
 
     workflow_check = check_name in _WORKFLOW_SCRIPT_CHECKS
-    authority = _workflow_source_authorizer(plan, workflow_source_authority)
     artifact_auth = _workflow_source_authorizer(
         plan,
         producer_artifact_authority
         if producer_artifact_authority is not None
         else workflow_source_authority,
+    )
+    authority = _workflow_source_authorizer(
+        plan,
+        workflow_source_authority
+        if workflow_source_authority is not None
+        else producer_artifact_authority,
     )
     handoff_verified = verify_producer_artifact_handoff(
         plan,
@@ -4813,6 +4856,16 @@ def build_source_resolution(
         expected_run_ref=expected_run_ref,
         expected_attempt_ref=expected_attempt_ref,
         execution_context_identity=execution_context_identity,
+    )
+    effective_execution_context = (
+        "dagger_export"
+        if (
+            handoff_verified is not None
+            and execution_context == "host"
+            and isinstance(producer_artifact_handoff, dict)
+            and producer_artifact_handoff.get("execution_context") == "dagger_export"
+        )
+        else execution_context
     )
     gen_refs = (
         list(handoff_verified["generated_input_refs"])
@@ -4868,7 +4921,7 @@ def build_source_resolution(
             eval_plan,
             [scope_item],
             root=work_root,
-            execution_context=execution_context,
+            execution_context=effective_execution_context,
             hygiene_config=view_hyg,
             sources_config=view_src,
             artifact_paths=art_paths,
@@ -4891,7 +4944,7 @@ def build_source_resolution(
             bound, reason, _ = _verify_execution_binding(
                 eval_plan,
                 resolved_root if art_tuples else work_root,
-                execution_context=execution_context,
+                execution_context=effective_execution_context,
             )
             if not bound:
                 raise ExecutionError(reason or "workflow_target_source_unverified")
@@ -4966,7 +5019,7 @@ def build_source_resolution(
             check_name,
             scope_item,
             root=work_root,
-            execution_context=execution_context,
+            execution_context=effective_execution_context,
             source_snapshots=snapshots,
             hygiene_config=view_hyg,
             sources_config=view_src,
@@ -4974,7 +5027,7 @@ def build_source_resolution(
             base_root=resolved_root if art_tuples else None,
         )
         if source_ref is None:
-            source_ref = _source_reference(eval_plan, execution_context)
+            source_ref = _source_reference(eval_plan, effective_execution_context)
         if workflow_check:
             source_ref = _workflow_result_source(scope_item, source_ref)
         receipt_payload = {
@@ -5008,7 +5061,7 @@ def build_source_resolution(
         resolved_profile = _profile_reference(
             eval_plan,
             root=resolved_root,
-            execution_context=execution_context,
+            execution_context=effective_execution_context,
         )
         if matched_expected.get("profile_ref") is not None and resolved_profile is None:
             raise ExecutionError("source_resolution_profile_unverified")
