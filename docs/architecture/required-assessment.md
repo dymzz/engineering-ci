@@ -36,12 +36,58 @@ fact. A missing Receipt or T2 reuse yields `null` for that fact. R1 judges
 Required coverage per instance.
 
 `assess_required_obligations()` accepts an original T1-a or T2 object with
-`admission_source_authority` and `admission_current_authorization`. It
-invokes the #63 issuer using the validated evaluation context. The new
-projection's verification fields are accepted through that call. Existing
-direct Gate inputs keep the legacy trust boundary. The integration tests
-invoke the #63 producer APIs with controlled authority decisions. Production
-issuer and current authorization verification remain integration work.
+`admission_source_authority` and `admission_current_authorization` (plus
+optional `admission_adjudications`, which must be attested by
+`admission_source_authority` via `adjudications_ref`). It invokes the #63
+issuer using the validated evaluation context. Check-level and Report-level
+observation independence is preserved in T1-a and Gate Projection: an unrelated
+failed diagnostic observation in an independent Report and independent Job
+Receipt for the same execution attempt remains in `observed_diagnostics` /
+`nonselected_origins` without contaminating an independently verified selected
+witness, and different Checks in the same Job/Attempt (`tach` PASS + `vulture`
+FAIL) are evaluated independently per `(scope_id, expected_check_ref)`.
+Conversely, a verified `failed` Native Result blocks T1-a admission and enters
+`remaining_work` and `authenticated_failures_by_instance` whenever it is the
+terminal failure of that Check (`not admitted`), shares the same Report or Job
+Receipt (`shared_report_authenticated_failure`) with the selected witness, or
+fails a consumed typed `check_result` prerequisite — where the selected
+Expected entry is verified by `#66-C` Resolution + `resolution_authority` and
+attached external prerequisite results are independently verified via `#63` Job
+Receipt, Issuer, Implementation, `(run_ref, attempt_ref)`, repository Source
+identity (preserving non-overlapping Check closures while verifying shared
+`materialization_ref` or digest-checked `source_content_binding` per-path hashes
+across overlapping non-overlaid inputs and member-verified `generated_input`
+overlays — `file` overlays by exact path digest and `directory` overlays strictly
+by `artifact_closure` (`verified=True`, matching consumer/producer identity,
+directory `sha256`, `materialized_files`, and per-member
+`materialized_file_digests` matching consumer `source_content_binding`), never
+waiving unmaterialized sibling paths under a directory prefix — plus identical snapshot/tree/commit invariants), Profile/Receipt scope,
+sibling Expected applicability/resolution checks, and scope-filtered receipt
+selection (permitting `#66-C`-compatible redundant `job_ref` observations of one
+Report/Issuer/Attempt/Attribution with preserved `observed_job_receipt_refs`,
+while blocking incompatible attribution/Report/job-attempt identities as
+`prerequisite_result_conflict`), plus shared-Report/Receipt `blocked_by` edges
+without global Check-name cross-contamination (`prerequisite_result_failed`); and a verified failure for the same
+`(scope_id, expected_check_ref)` from a different attempt/run is projected into
+`authenticated_failures_by_instance` so R1 blocks the instance as `unmet` until
+covered by an authenticated retry adjudication. T2 candidate selection uses a
+deterministic total order over scope, expected check ref, result IDs and
+candidate digest. T1-b `verify_local_handoff()` (and formal event receivers via
+`build_event_consumer_scope()` / `verify_event_local_handoff()`) validates
+producer `check_ids` as a strict non-empty string sequence before
+normalization, enforces timezone-aware ISO timestamps (aligned with R4), enforces
+Context×Action×Target subject binding (`event_ref`, `scope_id`,
+`expected_set_ref` for legitimate non-release `event_head` scopes without
+fabricating `candidate_digest`, and mandatory `candidate_digest` for
+`candidate`/`artifact` targets and all Release actions/contexts without
+allowing `event_head` exemption) via Producer Grant, native `job_receipts`, or
+structured `authorization_authority` (`bound_subjects`, rejecting bare `True`
+for unbound required subjects and marking unscoped generic calls
+`formal_event_context_bound=False`), and retains every consumer check in
+`remaining_work` whenever provenance is unauthenticated or rejected. Existing
+direct Gate inputs keep the legacy trust boundary. The integration tests invoke the #66-B2 / #63 / #61
+producer APIs with controlled authority decisions; production issuer trust roots
+and server-side Required Rulesets remain deployment/integration work.
 
 
 ## Position
@@ -181,19 +227,38 @@ declares them). The fact is consumed, not issued, by R1.
 Expected v2 for a phase-bearing authorized Profile carries `phase` (equal to
 the Profile phase) and `phase_status`. R1 consumes that status:
 
-- The current #66-B2 producer marks a phase-bearing projection
-  `phase_status="unverified"` because the actual CI/Release lifecycle Phase is
-  not yet independently proven; the parent cannot be `complete`. R1's Check
+- Without an independent Phase Issuer, `#66-B2` emits
+  `phase_status="unverified"` and the parent cannot be `complete`; R1's Check
   Domain fact blocks with `expected_phase_unverified`.
 - A multi-Ref child may keep a local `status="complete"`, but that is local
   Check-structure completeness only. When the parent `phase_status` is
   `unverified`, R1 blocks the staged Check Domain authorization while retaining
   every already-proven child Check row.
-- No trusted lifecycle Phase Producer contract exists in this repository yet.
-  While `"verified"` is retained as a schema evolution shape on `phase_status`,
-  R1 never trusts a bare self-reported `phase_status="verified"` string without
-  an authenticated #66-B2 / lifecycle Phase Producer proof contract, and fails
-  the Check Domain closed with `expected_phase_proof_unverified`.
+- `#66-B2` provides `expected_checks.authenticate_phase_projection(projection,
+  phase_authority=...)` to attach an immutable `phase_proof` (promoting
+  `status` to `complete` only when phase verification was the sole gap; domain,
+  authority, rule and conflict gaps are never cleared). R1 still refuses a bare
+  self-reported `phase_status="verified"` string without `phase_proof` and an
+  independent `phase_authority` verifier (`expected_phase_proof_unverified`).
+  When `phase_authority` returns a structured verified decision matching the
+  exact scope, expected set, phase, profile SHA-256, universe ref and proof ref,
+  R1 accepts the Check Domain and records `inputs.phase_verification`. For
+  non-sample Required evaluations (`contract_sample=False`), R1 also requires an
+  independent `universe_authority` (validated via
+  `required_assessment.authenticate_obligations_universe()` /
+  `assess_required_obligations(..., universe_authority=...)`) binding the exact
+  `universe_ref`, `profile_ref`, `profile_revision`, `approval_source`,
+  `profile_sha256`, `approval_digest`, `authority_source_ref`,
+  `governance_domain.closure_ref`, `scope_id` and `expected_set_ref` onto
+  `inputs.universe_source_verification`; without a verified
+  `universe_source_verification` (or when governance/delegation closure,
+  authority window, revocation or profile binding fails), non-sample
+  `verification.authority` and `verification.obligations_universe` fail closed
+  as `unverified` (`universe_issuer_authority_missing` /
+  `universe_source_unverified`) and `validate_assessment()` rejects any
+  non-sample `passed` or `verified` claim lacking
+  `inputs.universe_source_verification` alongside authority temporal causality
+  (`approved_at`, `effective_at`, `evaluated_at`, `valid_from`, `valid_until`).
 - A no-Phase Profile uses `phase_status="not_applicable"` (or omits the field);
   its complete Check Domain remains legal.
 

@@ -680,3 +680,58 @@ def test_malformed_reuse_policy_raises():
             authorization_authority=accept_all,
         )
     assert error.value.code == "reuse_policy_invalid"
+
+
+def test_new017_shared_historical_scope_and_expected_ref_selection_is_order_invariant():
+    projection, proof, candidate_a, _, historical_entry, _ = setup_equivalent()
+    result_b = check_contract.native_result(
+        check_contract.definition_for("tach"),
+        source=STRONG_SOURCE,
+        status="passed",
+        result_origin="host",
+        result_instance="historical-run-2",
+        native_exit_code=0,
+        evidence={"stdout": "alt"},
+        rule_ref=copy.deepcopy(RULE_TACH),
+        runner_ref="execution:host",
+        profile_ref=copy.deepcopy(PROFILE_REF),
+        tool=check_contract.tool_ref("tach/check"),
+    )
+    candidate_b = historical_candidate(historical_entry, result_b)
+    assert candidate_a["historical_scope_id"] == candidate_b["historical_scope_id"]
+    assert (
+        candidate_a["historical_expected_check_ref"]
+        == candidate_b["historical_expected_check_ref"]
+    )
+    assert (
+        candidate_a["results"][0]["result_id"] != candidate_b["results"][0]["result_id"]
+    )
+
+    first = admission.admit_historical_reuse(
+        projection,
+        pre_execution_proofs=[proof],
+        historical_candidates=[candidate_a, candidate_b],
+        reuse_policy=reuse_policy(),
+        current_authorization=AUTH,
+        historical_origin_authority=accept_all,
+        pre_execution_authority=accept_all,
+        authorization_authority=accept_all,
+    )
+    second = admission.admit_historical_reuse(
+        projection,
+        pre_execution_proofs=[proof],
+        historical_candidates=[candidate_b, candidate_a],
+        reuse_policy=reuse_policy(),
+        current_authorization=AUTH,
+        historical_origin_authority=accept_all,
+        pre_execution_authority=accept_all,
+        authorization_authority=accept_all,
+    )
+
+    assert first["status"] == "admitted"
+    assert second["status"] == "admitted"
+    assert first["entries"] == second["entries"]
+    assert (
+        first["accepted_coverage_by_instance"]
+        == second["accepted_coverage_by_instance"]
+    )

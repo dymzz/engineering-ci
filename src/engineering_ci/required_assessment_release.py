@@ -89,9 +89,12 @@ def _datetime(value, code):
     try:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
     except ValueError as error:
         raise RequiredAssessmentReleaseError(code) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise RequiredAssessmentReleaseError(code)
+    return parsed
 
 
 def _optional_datetime(value, code):

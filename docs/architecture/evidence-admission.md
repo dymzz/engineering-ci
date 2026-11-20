@@ -71,6 +71,30 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
 - 未选中（unrelated）的坏 observation 只进入 diagnostics；只有共享同一具体
   Report/Job Receipt（或其他实际共同依赖）的坏事实才污染 selected witness；仅共享
   Job/Run/Attempt 标签不构成污染。
+- **Typed `check_result` 前置依赖传递闭包（NEW-014）**：本次 Expected 条目通过
+  `#66-C` Resolution 与 `resolution_authority` 验证自身 Expected/Receipt 与输入绑定；
+  `input_refs` 引用的附带外部上游 `check_result`（及其传递前置结果）不得信任 raw
+  Report 自报 `status="passed"`，必须独立通过 `#63` 来源与实现认证（`JobReceipt`、
+  受信任 Issuer、已批准实现）、当前 `(run_ref, attempt_ref)` / 仓库 Source 标识
+  （`snapshot`、`declared_target_tree`、`head_commit`、`index_tree`；同 Check 要求
+  `source_ref` 全等；跨 Check 允许各 Check 的非重叠闭包路径与经 `generated_input`
+  按具体成员路径证明的 consumer-view 路径不同（其中 `file` 覆盖按目标路径与
+  `sha256` 校验，而 `directory` 覆盖**绝不凭目录前缀豁免整棵目录**，必须由
+  `report["artifact_closure"]` 中 `verified=True`、消费者与生产者标识及目录
+  `sha256` 一致的闭包给出逐成员 `materialized_files` 与
+  `materialized_file_digests` 并与消费侧 `source_content_binding` 路径摘要逐一
+  比对；未被实际物化覆盖的同前缀文件仍留在 `uncovered_overlap`），**对重叠的
+  非覆盖路径则须经同源 `materialization_ref` 或核对 `source_ref["content_digest"]`
+  的 `source_content_binding` 逐路径摘要证明字节一致，未证明即 fail-closed 拒绝**）/ `profile_ref` / Receipt
+  作用域一致性，且拦截兄弟 Expected `rejected`、`not_applicable` 或
+  `resolution_status!=verified` 结果。多候选 Receipt 先全量认证并按当前消费作用域
+  过滤后再选中；当同一不可变 Report/Issuer/Attempt/Runner/Attribution 仅由不同
+  `job_ref` 按 `#66-C` 重复观察合同冗余交付时允许独立覆盖并保留
+  `observed_job_receipt_refs`/`observed_job_refs` 来源追踪，若出现不同 Report、
+  Issuer、Runner、归属/作用域差异或同 `(job_ref, run_ref, attempt_ref)` 多回执
+  矛盾，则保留 `prerequisite_result_conflict` 歧义而非按字典序猜测。Report `blocked_by`
+  亦仅在共享已观测 Report/Job Receipt 或匹配前置 `result_id` 上传播，不做跨全量 Reports
+  的同名 Check 匹配。
 - 合法空 Expected 不会被自动升级为完整/受信 PASS。
 
 ## 信任边界

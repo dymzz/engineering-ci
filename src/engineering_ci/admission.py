@@ -480,10 +480,812 @@ def _same_observed_scope(left, right):
     return bool(left_receipt and left_receipt == right.get("job_receipt_ref"))
 
 
+def _authenticate_prerequisite(
+    prereq_id,
+    *,
+    reports,
+    job_receipts,
+    policy,
+    authority,
+    dependent_fact=None,
+    dependent_raw=None,
+    scope_id=None,
+    expected_set_ref=None,
+    expected_entry=None,
+):
+    """Authenticate one consumed prerequisite Result that was not observed.
+
+    All candidate ``(Report, JobReceipt)`` bindings carrying ``prereq_id`` go
+    through full ``_authenticate_evidence`` provenance verification BEFORE
+    selecting against consumer scope compatibility:
+
+    - A single authenticated in-scope candidate is selected deterministically
+      regardless of caller input order or unrelated out-of-scope receipts.
+    - Multiple distinct authenticated in-scope candidates are accepted **only**
+      when they represent a #66-C-compatible duplicate observation of the
+      single execution fact (same Report SHA256, Issuer, Run, Attempt, Runner,
+      VerificationStatus, and attribution/scope fields across distinct
+      ``job_ref`` observers), preserving full observed origin tracing;
+      incompatible attribution/report/job-attempt identities are rejected as
+      ``prerequisite_result_conflict`` rather than guessed lexicographically.
+    - Only out-of-scope authenticated candidates produce
+      ``prerequisite_result_scope_mismatch``.
+    """
+    matching_reports = [
+        (report_key, report)
+        for report_key, report in reports.items()
+        if _contains_result(report, prereq_id)
+    ]
+    if not matching_reports:
+        return None, "prerequisite_result_missing"
+    candidates = []
+    for report_key, _report in matching_reports:
+        sha = report_key.split(":", 1)[1]
+        for receipt_key, receipt in job_receipts.items():
+            receipt_report = receipt.get("report_ref")
+            if (
+                not isinstance(receipt_report, dict)
+                or receipt_report.get("sha256") != sha
+            ):
+                continue
+            candidates.append((report_key, receipt_key, receipt, receipt_report))
+    if not candidates:
+        return None, "prerequisite_job_receipt_missing"
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    in_scope = []
+    out_of_scope = []
+    failures = []
+    dep_run = (dependent_fact or {}).get("run_ref")
+    dep_attempt = (dependent_fact or {}).get("attempt_ref")
+    for report_key, receipt_key, receipt, receipt_report in candidates:
+        evidence = {
+            "result_id": prereq_id,
+            "report_ref": copy.deepcopy(receipt_report),
+            "job_ref": receipt.get("job_ref"),
+            "run_ref": receipt.get("run_ref"),
+            "attempt_ref": receipt.get("attempt_ref"),
+            "runner_ref": receipt.get("runner_ref"),
+            "job_receipt_ref": receipt_key,
+        }
+        try:
+            fact = _authenticate_evidence(
+                evidence,
+                reports=reports,
+                job_receipts=job_receipts,
+                policy=policy,
+                authority=authority,
+            )
+        except _EvidenceFailure as failure:
+            scope_rank = (
+                0
+                if (
+                    dependent_fact is None
+                    or (receipt.get("run_ref"), receipt.get("attempt_ref"))
+                    == (dep_run, dep_attempt)
+                )
+                and (scope_id is None or receipt.get("scope_id") in (None, scope_id))
+                else 1
+            )
+            rejected_rank = 0 if failure.origin_status == "rejected" else 1
+            failures.append(
+                (scope_rank, rejected_rank, report_key, receipt_key, failure.reason)
+            )
+            continue
+        raw = fact.pop("_raw_result", None)
+        fact["selected"] = False
+        if _prerequisite_scope_mismatch(
+            fact,
+            raw,
+            dependent_fact,
+            dependent_raw,
+            scope_id=scope_id,
+            expected_set_ref=expected_set_ref,
+            expected_entry=expected_entry,
+            job_receipts=job_receipts,
+            reports=reports,
+        ):
+            out_of_scope.append((fact, raw))
+        else:
+            in_scope.append((fact, raw, report_key, receipt_key, receipt))
+    if len(in_scope) == 1:
+        return (in_scope[0][0], in_scope[0][1]), None
+    if len(in_scope) > 1:
+        report_keys = {item[2] for item in in_scope}
+        receipt_attributions = {
+            json.dumps(
+                {
+                    "issuer_ref": item[4].get("issuer_ref"),
+                    "run_ref": item[4].get("run_ref"),
+                    "attempt_ref": item[4].get("attempt_ref"),
+                    "runner_ref": item[4].get("runner_ref"),
+                    "verification_status": item[4].get("verification_status"),
+                    "invocation_ref": item[4].get("invocation_ref"),
+                    "event_ref": item[4].get("event_ref"),
+                    "scope_id": item[4].get("scope_id"),
+                    "expected_set_ref": item[4].get("expected_set_ref"),
+                },
+                sort_keys=True,
+            )
+            for item in in_scope
+        }
+        job_attempt_keys = {
+            (
+                item[4].get("job_ref"),
+                item[4].get("run_ref"),
+                item[4].get("attempt_ref"),
+            )
+            for item in in_scope
+        }
+        if (
+            len(report_keys) == 1
+            and len(receipt_attributions) == 1
+            and len(job_attempt_keys) == len(in_scope)
+        ):
+            primary_fact = copy.deepcopy(in_scope[0][0])
+            primary_fact["duplicate_observation"] = True
+            primary_fact["observed_job_receipt_refs"] = sorted(
+                item[3] for item in in_scope
+            )
+            primary_fact["observed_job_refs"] = sorted(
+                item[4]["job_ref"] for item in in_scope
+            )
+            return (primary_fact, in_scope[0][1]), None
+        return None, "prerequisite_result_conflict"
+    if out_of_scope:
+        return None, "prerequisite_result_scope_mismatch"
+    failures.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    return (
+        None,
+        f"prerequisite_{failures[0][4]}"
+        if failures
+        else "prerequisite_result_unverified",
+    )
+
+
+def _normalize_sha256_hex(value):
+    if not isinstance(value, str):
+        return None
+    text = value.removeprefix("sha256:").lower()
+    return text if _SHA256_RE.fullmatch(text) else None
+
+
+def _normalize_rel_path(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    norm = value.replace("\\", "/").strip("/")
+    if not norm or any(part in {".", "..", ""} for part in norm.split("/")):
+        return None
+    return norm
+
+
+def _generated_overlays(raw_result):
+    overlays = []
+    for ref in raw_result.get("input_refs") or ():
+        if not isinstance(ref, dict) or ref.get("kind") != "generated_input":
+            continue
+        norm = _normalize_rel_path(ref.get("path"))
+        sha_hex = _normalize_sha256_hex(ref.get("sha256"))
+        kind = ref.get("input_kind") or "file"
+        producer_ref = ref.get("producer_ref")
+        if (
+            norm is None
+            or sha_hex is None
+            or kind not in {"file", "directory"}
+            or (producer_ref is not None and not isinstance(producer_ref, dict))
+        ):
+            return None
+        overlays.append(
+            {
+                "path": norm,
+                "input_kind": kind,
+                "sha256": sha_hex,
+                "producer_ref": producer_ref,
+            }
+        )
+    return overlays
+
+
+def _dependent_consumer_refs(dependent_raw, dep_report):
+    owners = []
+    dep_id = dependent_raw.get("result_id") if isinstance(dependent_raw, dict) else None
+    if isinstance(dep_report, dict) and dep_id:
+        for item in dep_report.get("checks") or ():
+            if not isinstance(item, dict):
+                continue
+            candidates = []
+            if isinstance(item.get("native_result"), dict):
+                candidates.append(item["native_result"])
+            candidates.extend(
+                res
+                for res in (item.get("native_results") or ())
+                if isinstance(res, dict)
+            )
+            if any(res.get("result_id") == dep_id for res in candidates):
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    ref = {"kind": "check", "name": name}
+                    if ref not in owners:
+                        owners.append(ref)
+        tests_entry = dep_report.get("tests")
+        if isinstance(tests_entry, dict):
+            candidates = []
+            if isinstance(tests_entry.get("native_result"), dict):
+                candidates.append(tests_entry["native_result"])
+            candidates.extend(
+                res
+                for res in (tests_entry.get("native_results") or ())
+                if isinstance(res, dict)
+            )
+            if any(res.get("result_id") == dep_id for res in candidates):
+                ref = {"kind": "tests"}
+                if ref not in owners:
+                    owners.append(ref)
+    if owners:
+        return owners
+    check_id = (
+        (dependent_raw.get("check") or {}).get("check_id")
+        if isinstance(dependent_raw, dict)
+        else None
+    )
+    if isinstance(check_id, str) and check_id:
+        return [{"kind": "check", "name": check_id}]
+    return []
+
+
+def _validate_directory_closure_entry(closure, overlay, dep_paths):
+    if closure.get("verified") is not True:
+        return None
+    output_ref = closure.get("output_ref") or {}
+    if _normalize_sha256_hex(closure.get("sha256")) != overlay["sha256"]:
+        return None
+    out_sha = output_ref.get("sha256")
+    if out_sha is not None and _normalize_sha256_hex(out_sha) != overlay["sha256"]:
+        return None
+    raw_files = closure.get("materialized_files")
+    raw_digests = closure.get("materialized_file_digests")
+    if not isinstance(raw_files, (list, tuple)) or not isinstance(raw_digests, dict):
+        return None
+    prefix = overlay["path"] + "/"
+    norm_files = []
+    for item in raw_files:
+        norm = _normalize_rel_path(item)
+        if norm is None or not norm.startswith(prefix):
+            return None
+        norm_files.append(norm)
+    member_map = {}
+    for raw_key, raw_digest in raw_digests.items():
+        norm = _normalize_rel_path(raw_key)
+        sha_hex = _normalize_sha256_hex(raw_digest)
+        if norm is None or sha_hex is None or not norm.startswith(prefix):
+            return None
+        if norm in member_map and member_map[norm] != sha_hex:
+            return None
+        member_map[norm] = sha_hex
+    if set(norm_files) != set(member_map.keys()):
+        return None
+    for path, sha_hex in member_map.items():
+        if path in dep_paths and dep_paths[path] != sha_hex:
+            return None
+    return member_map
+
+
+def _directory_overlay_members(overlays, dependent_raw, dep_report, dep_paths):
+    dir_overlays = [ov for ov in overlays if ov["input_kind"] == "directory"]
+    if not dir_overlays:
+        return True, {}
+    if dep_paths is None or not isinstance(dep_report, dict):
+        return False, {}
+    closures = dep_report.get("artifact_closure")
+    if not isinstance(closures, (list, tuple)) or not closures:
+        return False, {}
+    consumer_refs = _dependent_consumer_refs(dependent_raw, dep_report)
+    if not consumer_refs:
+        return False, {}
+    member_digests = {}
+    for ov in dir_overlays:
+        matches = []
+        for closure in closures:
+            if not isinstance(closure, dict):
+                continue
+            output_ref = closure.get("output_ref")
+            if (
+                not isinstance(output_ref, dict)
+                or output_ref.get("kind") != "directory"
+                or _normalize_rel_path(output_ref.get("path")) != ov["path"]
+            ):
+                continue
+            if closure.get("consumer_ref") not in consumer_refs:
+                continue
+            if (
+                ov["producer_ref"] is not None
+                and closure.get("producer_ref") != ov["producer_ref"]
+            ):
+                continue
+            matches.append(closure)
+        if not matches:
+            return False, {}
+        for closure in matches:
+            member_map = _validate_directory_closure_entry(closure, ov, dep_paths)
+            if member_map is None:
+                return False, {}
+            for path, sha_hex in member_map.items():
+                member_digests.setdefault(path, set()).add(sha_hex)
+    return True, member_digests
+
+
+def _covered_overlay_digests(rel_path, overlays, dir_member_digests):
+    norm = _normalize_rel_path(rel_path)
+    if norm is None:
+        return set(), False
+    digests = set()
+    covered = False
+    for item in overlays:
+        if item["input_kind"] == "file" and item["path"] == norm:
+            digests.add(item["sha256"])
+            covered = True
+    if norm in dir_member_digests:
+        digests.update(dir_member_digests[norm])
+        covered = True
+    return digests, covered
+
+
+def _verified_path_digests(raw_result, report=None):
+    """Extract and digest-verify per-path SHA256 map when supplied.
+
+    Returns ``("none", None)`` when no per-path binding exists,
+    ``("ok", {path: sha256})`` when every path in ``verified_input_scope``
+    hashes identically to ``source_ref["content_digest"]``, or
+    ``("invalid", None)`` if a supplied binding fails integrity verification.
+    """
+    source = raw_result.get("source_ref") or {}
+    evidence = raw_result.get("evidence")
+    binding = (
+        evidence.get("source_content_binding") if isinstance(evidence, dict) else None
+    )
+    if binding is None and isinstance(report, dict) and raw_result.get("result_id"):
+        parent = _parent_check(report, raw_result["result_id"])
+        if isinstance(parent, dict):
+            binding = parent.get("source_content_binding")
+    if binding is None:
+        return "none", None
+    scope = sorted(source.get("verified_input_scope") or ())
+    if (
+        not isinstance(binding, dict)
+        or binding.get("algorithm") != "sha256-paths"
+        or not isinstance(binding.get("paths"), dict)
+        or not scope
+        or not source.get("content_digest")
+    ):
+        return "invalid", None
+    paths = binding["paths"]
+    subset = {}
+    for item in scope:
+        norm = str(item).replace("\\", "/")
+        sha = _normalize_sha256_hex(paths.get(item, paths.get(norm)))
+        if sha is None:
+            return "invalid", None
+        subset[norm] = sha
+    recomputed = hashlib.sha256(
+        json.dumps(subset, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if recomputed != _normalize_sha256_hex(source.get("content_digest")):
+        return "invalid", None
+    if binding.get("digest") is not None and (
+        _normalize_sha256_hex(binding.get("digest")) != recomputed
+    ):
+        return "invalid", None
+    return "ok", subset
+
+
+def _prerequisite_source_mismatch(
+    prereq_raw,
+    dependent_raw,
+    *,
+    prereq_report=None,
+    dep_report=None,
+):
+    """Compare prerequisite vs dependent source identity and overlapping byte proofs.
+
+    Same-Check results must share identical ``source_ref`` objects (matching
+    ``check_contract._validate_coherent_results``). Across distinct Checks:
+    1. Repository base identity (``snapshot``, ``declared_target_tree``,
+       ``head_commit``, ``index_tree``) and non-``unknown`` source strength
+       must hold.
+    2. Paths covered by validated ``generated_input`` entries in
+       ``dependent_raw["input_refs"]`` are excluded from equal-byte requirement
+       ONLY for the specific covered file members: exact ``file`` overlays
+       must agree with verified consumer path digests when present (or re-hash
+       to ``dep_src["content_digest"]`` when closing the full consumer scope);
+       ``directory`` overlays NEVER waive arbitrary paths by directory prefix
+       and instead exempt ONLY exact members proven via an authenticated
+       verified ``artifact_closure`` entry (``verified is True``, matching
+       directory ``sha256``, consumer/producer identity, ``materialized_files``,
+       and ``materialized_file_digests`` agreeing with verified consumer
+       ``source_content_binding`` digests). Unproven directory overlays or
+       paths under a directory prefix omitted from ``materialized_files``
+       fail closed or stay in ``uncovered_overlap``.
+    3. Overlapping paths not covered by a valid ``generated_input`` overlay
+       (``uncovered_overlap``) MUST agree on bytes: identical closures via
+       ``content_digest``, full closures via matching ``content_digest`` and
+       ``materialization_ref``, or differing/overlaid closures via shared
+       immutable ``materialization_ref`` or cryptographically verified per-path
+       content bindings matching each Check's ``source_ref["content_digest"]``.
+       Unproven overlap fails closed.
+    """
+    prereq_src = prereq_raw.get("source_ref")
+    dep_src = dependent_raw.get("source_ref")
+    if not isinstance(prereq_src, dict) or not isinstance(dep_src, dict):
+        return True
+    prereq_check = prereq_raw.get("check") or {}
+    dep_check = dependent_raw.get("check") or {}
+    same_check_instance = (
+        prereq_check.get("check_id") == dep_check.get("check_id")
+        and prereq_check.get("definition_version")
+        == dep_check.get("definition_version")
+        and prereq_check.get("rule_ref") == dep_check.get("rule_ref")
+        and prereq_check.get("profile_ref") == dep_check.get("profile_ref")
+    )
+    if same_check_instance and prereq_src != dep_src:
+        return True
+    for key in ("snapshot", "declared_target_tree", "head_commit", "index_tree"):
+        if prereq_src.get(key) != dep_src.get(key):
+            return True
+    if (
+        dep_src.get("binding_status") != "unknown"
+        and prereq_src.get("binding_status") == "unknown"
+    ):
+        return True
+
+    overlays = _generated_overlays(dependent_raw)
+    if overlays is None:
+        return True
+    prereq_state, prereq_paths = _verified_path_digests(prereq_raw, prereq_report)
+    dep_state, dep_paths = _verified_path_digests(dependent_raw, dep_report)
+    if prereq_state == "invalid" or dep_state == "invalid":
+        return True
+    dir_ok, dir_member_digests = _directory_overlay_members(
+        overlays, dependent_raw, dep_report, dep_paths
+    )
+    if not dir_ok:
+        return True
+
+    prereq_scope = sorted(
+        {
+            str(p).replace("\\", "/")
+            for p in (prereq_src.get("verified_input_scope") or ())
+        }
+    )
+    dep_scope = sorted(
+        {str(p).replace("\\", "/") for p in (dep_src.get("verified_input_scope") or ())}
+    )
+    overlap = sorted(set(prereq_scope) & set(dep_scope))
+    overlaid_overlap = [
+        p
+        for p in overlap
+        if _covered_overlay_digests(p, overlays, dir_member_digests)[1]
+    ]
+    uncovered_overlap = [
+        p
+        for p in overlap
+        if not _covered_overlay_digests(p, overlays, dir_member_digests)[1]
+    ]
+
+    for path in overlaid_overlap:
+        digests, _ = _covered_overlay_digests(path, overlays, dir_member_digests)
+        if len(digests) != 1:
+            return True
+        expected_sha = next(iter(digests))
+        if dep_paths is not None:
+            if dep_paths.get(path) != expected_sha:
+                return True
+        elif not dir_member_digests and all(
+            len(_covered_overlay_digests(item, overlays, dir_member_digests)[0]) == 1
+            for item in dep_scope
+        ):
+            entries = {
+                item: next(
+                    iter(
+                        _covered_overlay_digests(item, overlays, dir_member_digests)[0]
+                    )
+                )
+                for item in dep_scope
+            }
+            expected_digest = hashlib.sha256(
+                json.dumps(entries, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if expected_digest != _normalize_sha256_hex(dep_src.get("content_digest")):
+                return True
+        else:
+            return True
+
+    if prereq_scope == dep_scope and not overlaid_overlap:
+        if prereq_src.get("content_digest") != dep_src.get("content_digest"):
+            return True
+        return bool(
+            prereq_src.get("scope_kind") == "full_input_closure"
+            and dep_src.get("scope_kind") == "full_input_closure"
+            and prereq_src.get("actual_execution_source")
+            == dep_src.get("actual_execution_source")
+            and prereq_src.get("materialization_ref")
+            != dep_src.get("materialization_ref")
+        )
+
+    if (
+        prereq_src.get("scope_kind") == "full_input_closure"
+        and dep_src.get("scope_kind") == "full_input_closure"
+        and not overlays
+    ):
+        return prereq_src.get("content_digest") != dep_src.get(
+            "content_digest"
+        ) or prereq_src.get("materialization_ref") != dep_src.get("materialization_ref")
+
+    if uncovered_overlap:
+        if prereq_paths is not None and dep_paths is not None:
+            for path in uncovered_overlap:
+                if prereq_paths.get(path) != dep_paths.get(path):
+                    return True
+            return False
+        shared_tree = bool(
+            not overlays
+            and prereq_src.get("materialization_ref") is not None
+            and prereq_src.get("materialization_ref")
+            == dep_src.get("materialization_ref")
+            and (
+                prereq_src.get("binding_status") == "byte_tree"
+                or dep_src.get("binding_status") == "byte_tree"
+                or prereq_src.get("scope_kind") == "full_input_closure"
+                or dep_src.get("scope_kind") == "full_input_closure"
+            )
+        )
+        return not shared_tree
+
+    return False
+
+
+def _prerequisite_scope_mismatch(
+    fact,
+    prereq_raw,
+    dependent_fact,
+    dependent_raw,
+    *,
+    scope_id,
+    expected_set_ref,
+    expected_entry,
+    job_receipts,
+    reports=None,
+):
+    if dependent_fact is None or prereq_raw is None:
+        return True
+    if (fact.get("run_ref"), fact.get("attempt_ref")) != (
+        dependent_fact.get("run_ref"),
+        dependent_fact.get("attempt_ref"),
+    ):
+        return True
+    prereq_report = None
+    dep_report = None
+    if isinstance(reports, dict):
+        p_sha = (fact.get("report_ref") or {}).get("sha256")
+        d_sha = (dependent_fact.get("report_ref") or {}).get("sha256")
+        prereq_report = reports.get("sha256:" + p_sha) if p_sha else None
+        dep_report = reports.get("sha256:" + d_sha) if d_sha else None
+    if _prerequisite_source_mismatch(
+        prereq_raw,
+        dependent_raw,
+        prereq_report=prereq_report,
+        dep_report=dep_report,
+    ):
+        return True
+    prereq_receipt = job_receipts.get(fact.get("job_receipt_ref")) or {}
+    if (
+        scope_id is not None
+        and prereq_receipt.get("scope_id") is not None
+        and prereq_receipt["scope_id"] != scope_id
+    ):
+        return True
+    if (
+        expected_set_ref is not None
+        and prereq_receipt.get("expected_set_ref") is not None
+        and prereq_receipt["expected_set_ref"] != expected_set_ref
+    ):
+        return True
+    dep_receipt = job_receipts.get(dependent_fact.get("job_receipt_ref")) or {}
+    for key in ("invocation_ref", "event_ref"):
+        if (
+            dep_receipt.get(key) is not None
+            and prereq_receipt.get(key) is not None
+            and prereq_receipt[key] != dep_receipt[key]
+        ):
+            return True
+    expected_profile = (expected_entry or {}).get("profile_ref")
+    prereq_profile = (prereq_raw.get("check") or {}).get("profile_ref")
+    return bool(
+        expected_profile is not None
+        and prereq_profile is not None
+        and prereq_profile != expected_profile
+    )
+
+
+def _prerequisite_closure(
+    selected_facts,
+    selected_raw,
+    facts_by_id,
+    raw_by_id,
+    *,
+    scope_id,
+    expected_set_ref,
+    expected_entry,
+    reports,
+    job_receipts,
+    policy,
+    authority,
+    rejected_result_ids=(),
+    inapplicable_result_ids=(),
+    inapplicable_check_identities=(),
+    unresolved_sibling_selected_ids=(),
+):
+    """Resolve the full transitive dependency DAG consumed by selected witnesses.
+
+    Dependency identity is the typed ``check_result`` input ref carried by
+    ``input_refs`` (never Check names or a Report's ``blocked_by``). Each
+    consumed prerequisite is authenticated via ``_authenticate_evidence`` and
+    checked for current Run/Attempt/Source/Scope compatibility before it can
+    satisfy the consumed edge.
+    """
+    selected_ids = {fact["result_id"] for fact in selected_facts}
+    fact_by_selected = {fact["result_id"]: fact for fact in selected_facts}
+    derived = []
+    derived_seen = set()
+    derived_by_scope = {}
+    failed = False
+    unverified = []
+    visited = set(selected_ids)
+    queue = [
+        (raw, fact_by_selected.get(raw.get("result_id")))
+        for raw in selected_raw
+        if isinstance(raw, dict)
+    ]
+    while queue:
+        cur_raw, cur_fact = queue.pop(0)
+        for prereq_id in sorted(
+            item
+            for item in check_contract._consumed_result_ids(cur_raw)
+            if isinstance(item, str) and item
+        ):
+            if prereq_id == cur_raw.get("result_id"):
+                unverified.append("prerequisite_result_cycle")
+                continue
+            if prereq_id in selected_ids:
+                continue
+            if prereq_id in rejected_result_ids:
+                unverified.append("prerequisite_result_rejected")
+                continue
+            if prereq_id in inapplicable_result_ids:
+                unverified.append("prerequisite_result_not_applicable")
+                continue
+            if prereq_id in unresolved_sibling_selected_ids:
+                unverified.append("prerequisite_resolution_unverified")
+                continue
+            edge_key = (prereq_id, (cur_fact or {}).get("job_receipt_ref"))
+            fact = facts_by_id.get(prereq_id)
+            prereq_raw = raw_by_id.get(prereq_id) if fact is not None else None
+            if fact is None and edge_key in derived_by_scope:
+                fact, prereq_raw = derived_by_scope[edge_key]
+            if fact is None:
+                resolved, reason = _authenticate_prerequisite(
+                    prereq_id,
+                    reports=reports,
+                    job_receipts=job_receipts,
+                    policy=policy,
+                    authority=authority,
+                    dependent_fact=cur_fact,
+                    dependent_raw=cur_raw,
+                    scope_id=scope_id,
+                    expected_set_ref=expected_set_ref,
+                    expected_entry=expected_entry,
+                )
+                if resolved is None:
+                    unverified.append(reason)
+                    continue
+                fact, prereq_raw = resolved
+                derived_by_scope[edge_key] = (fact, prereq_raw)
+                derived_id = (
+                    fact["result_id"],
+                    fact.get("job_receipt_ref"),
+                    (fact.get("report_ref") or {}).get("sha256"),
+                )
+                if derived_id not in derived_seen:
+                    derived_seen.add(derived_id)
+                    derived.append(fact)
+            if prereq_raw is not None:
+                prereq_check = prereq_raw.get("check") or {}
+                prereq_key = (
+                    prereq_check.get("check_id"),
+                    prereq_check.get("definition_version"),
+                    json.dumps(prereq_check.get("rule_ref"), sort_keys=True),
+                )
+                if prereq_key in inapplicable_check_identities:
+                    unverified.append("prerequisite_result_not_applicable")
+                    continue
+            if _prerequisite_scope_mismatch(
+                fact,
+                prereq_raw,
+                cur_fact,
+                cur_raw,
+                scope_id=scope_id,
+                expected_set_ref=expected_set_ref,
+                expected_entry=expected_entry,
+                job_receipts=job_receipts,
+                reports=reports,
+            ):
+                unverified.append("prerequisite_result_scope_mismatch")
+                continue
+            if fact.get("status") in {"failed", "not_executed"}:
+                if fact.get("integrity_status") == "verified" and (
+                    fact.get("issuer_status") == "verified"
+                ):
+                    failed = True
+                else:
+                    unverified.append("prerequisite_result_unverified")
+                continue
+            if fact.get("implementation_status") == "unapproved":
+                unverified.append("prerequisite_implementation_unapproved")
+                continue
+            if (
+                fact.get("integrity_status") != "verified"
+                or fact.get("issuer_status") != "verified"
+                or fact.get("origin_status") != "verified"
+                or fact.get("status") != "passed"
+            ):
+                unverified.append("prerequisite_result_unverified")
+                continue
+            if prereq_id not in visited:
+                visited.add(prereq_id)
+                queue.append((prereq_raw, fact))
+    return derived, failed, list(dict.fromkeys(unverified))
+
+
+def _resolve_entry_status(
+    entry,
+    *,
+    scope_id,
+    expected_entry,
+    resolution,
+    resolution_authority,
+):
+    if entry.get("binding_status") == "not_applicable":
+        return "not_applicable", None
+    if resolution is None:
+        return "unverified", "resolution_missing"
+    if resolution_authority is None:
+        return "unverified", "resolution_authority_verifier_missing"
+    context = {
+        "scope_id": scope_id,
+        "expected_check_ref": entry["expected_check_ref"],
+        "resolution": copy.deepcopy(resolution),
+    }
+    try:
+        authorized = resolution_authority(context)
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return "rejected", "resolution_authority_verifier_error"
+    if authorized is not True:
+        return "unverified", "resolution_authority_unverified"
+    recomputed, status, reason, _evidence = reconciliation._resolve_expected(
+        expected_entry, resolution
+    )
+    if recomputed is None or status != "matched":
+        return "unverified", reason or "resolution_unresolved"
+    if _digest(recomputed) != entry.get("resolved_expected_ref"):
+        return "rejected", "resolved_expected_derivation_mismatch"
+    return "verified", None
+
+
 def _entry_admission_v2(
     entry,
     *,
     scope_id,
+    expected_set_ref=None,
     expected_entry,
     reports,
     job_receipts,
@@ -491,6 +1293,11 @@ def _entry_admission_v2(
     authority,
     resolution,
     resolution_authority,
+    resolution_override=None,
+    rejected_result_ids=(),
+    inapplicable_result_ids=(),
+    inapplicable_check_identities=(),
+    unresolved_sibling_selected_ids=(),
 ):
     if entry.get("binding_status") == "not_applicable":
         return {
@@ -508,39 +1315,16 @@ def _entry_admission_v2(
             "facts": [],
             "reasons": [],
         }
-    resolution_status = "verified"
-    resolution_reason = None
-    if resolution is None:
-        resolution_status = "unverified"
-        resolution_reason = "resolution_missing"
-    elif resolution_authority is None:
-        resolution_status = "unverified"
-        resolution_reason = "resolution_authority_verifier_missing"
+    if resolution_override is not None:
+        resolution_status, resolution_reason = resolution_override
     else:
-        context = {
-            "scope_id": scope_id,
-            "expected_check_ref": entry["expected_check_ref"],
-            "resolution": copy.deepcopy(resolution),
-        }
-        try:
-            authorized = resolution_authority(context)
-        except (KeyError, RuntimeError, TypeError, ValueError):
-            resolution_status = "rejected"
-            resolution_reason = "resolution_authority_verifier_error"
-        if resolution_status != "rejected":
-            if authorized is not True:
-                resolution_status = "unverified"
-                resolution_reason = "resolution_authority_unverified"
-            else:
-                recomputed, status, reason, _evidence = (
-                    reconciliation._resolve_expected(expected_entry, resolution)
-                )
-                if recomputed is None or status != "matched":
-                    resolution_status = "unverified"
-                    resolution_reason = reason or "resolution_unresolved"
-                elif _digest(recomputed) != entry.get("resolved_expected_ref"):
-                    resolution_status = "rejected"
-                    resolution_reason = "resolved_expected_derivation_mismatch"
+        resolution_status, resolution_reason = _resolve_entry_status(
+            entry,
+            scope_id=scope_id,
+            expected_entry=expected_entry,
+            resolution=resolution,
+            resolution_authority=resolution_authority,
+        )
     selected_ids = list(entry.get("selected_result_ids") or ())
     observed_ids = list(entry.get("observed_result_ids") or ())
     evidence_by_id = {}
@@ -605,6 +1389,35 @@ def _entry_admission_v2(
         facts.append(fact)
 
     selected_facts = [fact for fact in facts if fact["selected"]]
+    selected_raw = [raw_by_id[item] for item in selected_ids if raw_by_id.get(item)]
+    facts_by_id = {
+        fact["result_id"]: fact
+        for fact in facts
+        if isinstance(fact.get("result_id"), str)
+    }
+    sibling_unresolved = set(unresolved_sibling_selected_ids) - set(selected_ids)
+    prerequisite_facts, prerequisite_failed, prerequisite_unverified = (
+        _prerequisite_closure(
+            selected_facts,
+            selected_raw,
+            facts_by_id,
+            raw_by_id,
+            scope_id=scope_id,
+            expected_set_ref=expected_set_ref,
+            expected_entry=expected_entry,
+            reports=reports,
+            job_receipts=job_receipts,
+            policy=policy,
+            authority=authority,
+            rejected_result_ids=set(rejected_result_ids),
+            inapplicable_result_ids=set(inapplicable_result_ids),
+            inapplicable_check_identities=set(inapplicable_check_identities),
+            unresolved_sibling_selected_ids=sibling_unresolved,
+        )
+        if selected_facts
+        else ([], False, [])
+    )
+    facts.extend(prerequisite_facts)
     bad_facts = [fact for fact in facts if fact["origin_status"] != "verified"]
     contaminated = any(
         _same_observed_scope(selected, bad)
@@ -612,7 +1425,19 @@ def _entry_admission_v2(
         for bad in bad_facts
         if bad is not selected
     )
-    selected_raw = [raw_by_id[item] for item in selected_ids if raw_by_id.get(item)]
+    authenticated_failed = [
+        fact
+        for fact in facts
+        if fact.get("integrity_status") == "verified"
+        and fact.get("issuer_status") == "verified"
+        and fact.get("status") == "failed"
+    ]
+    shared_scope_failed = any(
+        _same_observed_scope(selected, failed)
+        for selected in selected_facts
+        for failed in authenticated_failed
+        if failed is not selected
+    )
     decision = None
     decision_reason = None
     if selected_ids and len(selected_raw) == len(selected_ids):
@@ -643,6 +1468,9 @@ def _entry_admission_v2(
         and bool(selected_ids)
         and selected_clean
         and not contaminated
+        and not shared_scope_failed
+        and not prerequisite_failed
+        and not prerequisite_unverified
         and decision_ok
         and all(fact.get("status") == "passed" for fact in selected_facts)
     )
@@ -675,6 +1503,8 @@ def _entry_admission_v2(
             and fact.get("status") == "failed"
             for fact in facts
         )
+        or shared_scope_failed
+        or prerequisite_failed
         or any(
             fact.get("implementation_status") == "unapproved" for fact in selected_facts
         )
@@ -697,6 +1527,11 @@ def _entry_admission_v2(
         reasons.append(f"receipt_status_{entry.get('binding_status')}")
     if not selected_ids:
         reasons.append("selected_witness_missing")
+    if shared_scope_failed:
+        reasons.append("shared_report_authenticated_failure")
+    if prerequisite_failed:
+        reasons.append("prerequisite_result_failed")
+    reasons.extend(prerequisite_unverified)
     if any(
         fact.get("integrity_status") == "verified" and fact.get("status") == "failed"
         for fact in facts
@@ -834,21 +1669,66 @@ def admit_evidence(
         raise AdmissionError("admission_receipt_invalid")
     if {item.get("expected_check_ref") for item in raw_entries} != set(expected_by_ref):
         raise AdmissionError("admission_receipt_entries_mismatch")
-    entries = []
+    rejected_result_ids = set()
+    inapplicable_result_ids = set()
+    inapplicable_check_identities = set()
+    resolved_by_ref = {}
+    unresolved_selected_ids = set()
     for raw_entry in raw_entries:
         expected_entry = expected_by_ref.get(raw_entry.get("expected_check_ref"))
         if expected_entry is None:
             raise AdmissionError("admission_expected_entry_missing")
+        for rej in raw_entry.get("rejected_results") or ():
+            if isinstance(rej, dict) and isinstance(rej.get("result_id"), str):
+                rejected_result_ids.add(rej["result_id"])
+        if raw_entry.get("binding_status") == "not_applicable":
+            for rid in list(raw_entry.get("observed_result_ids") or ()) + list(
+                raw_entry.get("selected_result_ids") or ()
+            ):
+                if isinstance(rid, str) and rid:
+                    inapplicable_result_ids.add(rid)
+            inapplicable_check_identities.add(
+                (
+                    expected_entry.get("check_id"),
+                    expected_entry.get("definition_version"),
+                    json.dumps(expected_entry.get("rule_ref"), sort_keys=True),
+                )
+            )
+        res_pair = _resolve_entry_status(
+            raw_entry,
+            scope_id=scope.get("scope_id"),
+            expected_entry=expected_entry,
+            resolution=resolutions_by_ref.get(raw_entry.get("expected_check_ref")),
+            resolution_authority=resolution_authority,
+        )
+        resolved_by_ref[raw_entry["expected_check_ref"]] = res_pair
+        if res_pair[0] != "verified" and res_pair[0] != "not_applicable":
+            unresolved_selected_ids.update(
+                rid
+                for rid in (raw_entry.get("selected_result_ids") or ())
+                if isinstance(rid, str) and rid
+            )
+
+    entries = []
+    for raw_entry in raw_entries:
+        ref = raw_entry["expected_check_ref"]
+        expected_entry = expected_by_ref[ref]
         entry = _entry_admission_v2(
             raw_entry,
             scope_id=scope.get("scope_id"),
+            expected_set_ref=scope.get("expected_set_ref"),
             expected_entry=expected_entry,
             reports=reports,
             job_receipts=job_receipts,
             policy=policy,
             authority=authority,
-            resolution=resolutions_by_ref.get(raw_entry.get("expected_check_ref")),
+            resolution=resolutions_by_ref.get(ref),
             resolution_authority=resolution_authority,
+            resolution_override=resolved_by_ref[ref],
+            rejected_result_ids=rejected_result_ids,
+            inapplicable_result_ids=inapplicable_result_ids,
+            inapplicable_check_identities=inapplicable_check_identities,
+            unresolved_sibling_selected_ids=unresolved_selected_ids,
         )
         entry["scope_id"] = scope.get("scope_id")
         entry["resolved_expected_check_id"] = (
@@ -1525,6 +2405,24 @@ def _reuse_coverage_entry(entry):
     }
 
 
+def _historical_candidate_sort_key(candidate, decision):
+    selected_ids = tuple(
+        sorted(
+            (decision.get("equivalence_basis") or {}).get("selected_result_ids") or ()
+        )
+    )
+    result_ids = tuple(
+        sorted(result["result_id"] for result in candidate.get("results") or ())
+    )
+    return (
+        candidate["historical_scope_id"],
+        candidate["historical_expected_check_ref"],
+        selected_ids,
+        result_ids,
+        _digest(candidate),
+    )
+
+
 def admit_historical_reuse(
     expected,
     *,
@@ -1710,10 +2608,7 @@ def admit_historical_reuse(
         ]
         if admitted:
             admitted.sort(
-                key=lambda item: (
-                    item[0]["historical_scope_id"],
-                    item[0]["historical_expected_check_ref"],
-                )
+                key=lambda item: _historical_candidate_sort_key(item[0], item[1])
             )
             candidate, decision = admitted[0]
             entries.append(
@@ -1751,8 +2646,7 @@ def admit_historical_reuse(
                 else 1
                 if item[1]["status"] == "rejected"
                 else 2,
-                item[0]["historical_scope_id"],
-                item[0]["historical_expected_check_ref"],
+                *_historical_candidate_sort_key(item[0], item[1]),
             ),
         )
         candidate, decision = ranked[0]
@@ -1889,6 +2783,14 @@ def _gate_origin(value, code):
         if type(exit_code) is not int:
             raise AdmissionError(code)
         origin["native_exit_code"] = exit_code
+    if value.get("duplicate_observation") is True:
+        origin["duplicate_observation"] = True
+        if isinstance(value.get("observed_job_receipt_refs"), list):
+            origin["observed_job_receipt_refs"] = list(
+                value["observed_job_receipt_refs"]
+            )
+        if isinstance(value.get("observed_job_refs"), list):
+            origin["observed_job_refs"] = list(value["observed_job_refs"])
     return origin
 
 
@@ -1926,13 +2828,17 @@ def bind_projection_authorization(current_authorization, evaluation):
     return authorization, ref
 
 
-def _gate_source_verification(source, authorization, evaluation, verify):
+def _gate_source_verification(
+    source, authorization, evaluation, verify, *, adjudications=None
+):
     if not callable(verify):
         raise AdmissionError("admission_source_authority_missing")
     source_ref = _digest(source)
     authorization_ref = _digest(
         {"authorization": authorization, "evaluation": evaluation}
     )
+    adjudications_list = list(adjudications or ())
+    adjudications_ref = _digest(adjudications_list) if adjudications_list else None
     context = {
         "source_admission": copy.deepcopy(source),
         "source_admission_ref": source_ref,
@@ -1942,6 +2848,9 @@ def _gate_source_verification(source, authorization, evaluation, verify):
         "scope_id": source["scope_id"],
         "expected_set_ref": source["expected_set_ref"],
     }
+    if adjudications_list:
+        context["adjudications"] = copy.deepcopy(adjudications_list)
+        context["adjudications_ref"] = adjudications_ref
     try:
         decision = verify(context)
     except (KeyError, TypeError, ValueError, RuntimeError):
@@ -1950,10 +2859,14 @@ def _gate_source_verification(source, authorization, evaluation, verify):
         decision.get("status") != "verified"
         or decision.get("source_admission_ref") != source_ref
         or decision.get("current_authorization_ref") != authorization_ref
+        or (
+            adjudications_ref is not None
+            and decision.get("adjudications_ref") != adjudications_ref
+        )
     ):
         raise AdmissionError("admission_source_authority_unverified")
     code = "admission_source_authority_unverified"
-    return {
+    record = {
         "status": "verified",
         "source_kind": source["kind"],
         "source_admission_ref": source_ref,
@@ -1967,6 +2880,9 @@ def _gate_source_verification(source, authorization, evaluation, verify):
             _evidence_ref(decision.get("verification_ref"), code)
         ),
     }
+    if adjudications_ref is not None:
+        record["adjudications_ref"] = adjudications_ref
+    return record
 
 
 def project_t1_t2_gate_admission(
@@ -1977,6 +2893,7 @@ def project_t1_t2_gate_admission(
     current_authorization,
     source_authority,
     receipt=None,
+    adjudications=(),
     contract_sample=False,
     ref_scope_id=None,
 ):
@@ -2049,8 +2966,18 @@ def project_t1_t2_gate_admission(
         receipt_entries = {row["expected_check_ref"]: row for row in receipt["entries"]}
         observations_reconciled = receipt["all_observations_reconciled"]
 
+    if not isinstance(adjudications, (list, tuple)) or any(
+        not isinstance(item, dict) for item in adjudications
+    ):
+        raise AdmissionError("admission_projection_adjudications_invalid")
+    normalized_adjudications = copy.deepcopy(list(adjudications))
+
     verification = _gate_source_verification(
-        source, authorization, evaluation, source_authority
+        source,
+        authorization,
+        evaluation,
+        source_authority,
+        adjudications=normalized_adjudications,
     )
 
     source_entries = source.get("entries")
@@ -2192,18 +3119,22 @@ def project_t1_t2_gate_admission(
             if not isinstance(facts, list):
                 raise AdmissionError("admission_projection_result_invalid")
             selected = {}
+            parsed_facts = []
             for fact in facts:
                 if not isinstance(fact, dict):
                     raise AdmissionError("admission_projection_result_invalid")
                 result_id = _projection_ref(
                     fact.get("result_id"), "admission_projection_result_invalid"
                 )
+                parsed_facts.append((result_id, fact))
                 if fact.get("selected") is True:
                     if result_id in selected:
                         raise AdmissionError("admission_projection_result_invalid")
                     selected[result_id] = fact
-                elif (
-                    fact.get("integrity_status") == "verified"
+            for result_id, fact in parsed_facts:
+                if (
+                    fact.get("selected") is not True
+                    and fact.get("integrity_status") == "verified"
                     and fact.get("issuer_status") == "verified"
                 ):
                     nonselected_origins[result_id] = _gate_origin(
@@ -2211,23 +3142,40 @@ def project_t1_t2_gate_admission(
                     )
                 if (
                     fact.get("status") == "failed"
-                    and fact.get("selected") is True
                     and fact.get("integrity_status") == "verified"
                     and fact.get("issuer_status") == "verified"
                 ):
-                    failures.setdefault(key, []).append(
-                        {
-                            "result_id": result_id,
-                            "failure_kind": "native_failure",
-                            "native_status": "failed",
-                            "origin_trace": _gate_origin(
-                                fact, "admission_projection_origin_invalid"
-                            ),
-                            "applicable_to": copy.deepcopy(applicable_to),
-                            "issued_at": None,
-                            "reason": "authenticated_native_failure",
-                        }
+                    shared_scope = fact.get("selected") is not True and any(
+                        _same_observed_scope(sel, fact) for sel in selected.values()
                     )
+                    cross_attempt = fact.get("selected") is not True and any(
+                        (sel.get("run_ref"), sel.get("attempt_ref"))
+                        != (fact.get("run_ref"), fact.get("attempt_ref"))
+                        for sel in selected.values()
+                    )
+                    if (
+                        fact.get("selected") is True
+                        or not admitted
+                        or shared_scope
+                        or cross_attempt
+                    ):
+                        failures.setdefault(key, []).append(
+                            {
+                                "result_id": result_id,
+                                "failure_kind": "native_failure",
+                                "native_status": "failed",
+                                "origin_trace": _gate_origin(
+                                    fact, "admission_projection_origin_invalid"
+                                ),
+                                "applicable_to": copy.deepcopy(applicable_to),
+                                "issued_at": None,
+                                "reason": (
+                                    "shared_report_authenticated_failure"
+                                    if shared_scope
+                                    else "authenticated_native_failure"
+                                ),
+                            }
+                        )
             if admitted:
                 if (
                     not ids
@@ -2325,7 +3273,7 @@ def project_t1_t2_gate_admission(
         "all_observations_reconciled": observations_reconciled,
         "accepted_coverage_by_instance": coverage,
         "authenticated_failures_by_instance": failures,
-        "adjudications": [],
+        "adjudications": normalized_adjudications,
         "remaining_work": remaining,
         "required_gate_ready": False,
         "required_gate_block_reason": "required_assessment_not_evaluated",

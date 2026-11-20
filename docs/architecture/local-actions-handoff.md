@@ -52,8 +52,25 @@ Hook/CLI 原生证据 → Actions/ECI 受控交接输入/输出形状。它要�
 2. **执行边界受控** — `controlled=true`、`self_reported=false`；execution
    authority 返回认证 `executed_at`（须与包内 `produced_at` 一致；`produced_at`
    单独不作授权证明）。
-3. **生产者授权覆盖当前 consumer** — Action/Target/Phase 与独立
-   `consumer_scope` 一致，且 grant 覆盖全部 consumer `check_ids`。
+3. **生产者授权覆盖当前 consumer 与 Context×Action×Target 主体绑定** —
+   Action/Target/Phase 与独立 `consumer_scope` 一致，grant 覆盖全部 consumer
+   `check_ids`；生产/正式 PR、main 与 Release 事件接收方应使用
+   `build_event_consumer_scope()` + `verify_event_local_handoff()`（或
+   `verify_local_handoff(..., require_formal_consumer_scope=True)`）确保完整
+   `context` 与 `target` 存在（缺失一半即拒；无上下文泛用调用显式标出
+   `formal_event_context_bound=false` 与 `unscoped_consumer_context_not_formal_event`
+   限制，不得当作正式事件证明）。组合规则与必需主体必须由 Producer Grant、
+   native `job_receipts` 或结构化 `authorization_authority` 回执（回显匹配
+   `handoff_ref`、`consumer_scope_ref` 与 `bound_subjects`）绑定：
+   - **合法无 Candidate 事件范围**：非 Release 场景（`context` 为 `pull_request` /
+     `push` / `merge_group` / `actions_gate` / `ci` 且 `action!="release"`，`target`
+     为 `event_head` / `branch` / `tag` / `ref`）绑定 `event_ref`、`scope_id`、
+     `expected_set_ref`（及显式声明的主体），不强制伪造 `candidate_digest`；
+   - **Candidate / Release 范围**：`target` 为 `candidate` / `artifact`，或任何
+     `context=="release"` / `action=="release"`，必须绑定 `candidate_digest` 及上述
+     全部主体；禁止把 Release Context 或 `release` Action 配对 `event_head` 等
+     Ref 目标以豁免 Candidate 绑定（`handoff_release_requires_candidate_target`）。
+   `authorization_authority` 仅返回裸布尔 `True` 不得补齐缺失的必需主体。
 4. **时间双检** — 授权在 `executed_at` **与** `evaluated_at` 均有效。
 5. **载荷摘要一致** — `payload_digest` / `handoff_ref` 可独立重算。
 
