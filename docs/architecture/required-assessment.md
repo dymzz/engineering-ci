@@ -50,22 +50,33 @@ Conversely, a verified `failed` Native Result blocks T1-a admission and enters
 `remaining_work` and `authenticated_failures_by_instance` whenever it is the
 terminal failure of that Check (`not admitted`), shares the same Report or Job
 Receipt (`shared_report_authenticated_failure`) with the selected witness, or
-fails a consumed typed `check_result` prerequisite (verified transitively via
-full `#63` Job Receipt, Issuer, Implementation, Resolution and Run/Attempt/Source/
-Scope checks, or shared-Report/Receipt `blocked_by` edges without global
-Check-name cross-contamination) (`prerequisite_result_failed`); and a verified failure for the same
+fails a consumed typed `check_result` prerequisite — where the selected
+Expected entry is verified by `#66-C` Resolution + `resolution_authority` and
+attached external prerequisite results are independently verified via `#63` Job
+Receipt, Issuer, Implementation, `(run_ref, attempt_ref)`, repository Source
+identity (preserving per-Check `verified_input_scope` / `generated_input`
+consumer-view closures across distinct Checks while enforcing identical
+snapshot/tree/commit and non-drift invariants), Profile/Receipt scope, sibling
+Expected applicability/resolution checks, and scope-filtered receipt selection
+with explicit conflict preservation (`prerequisite_result_conflict`), plus
+shared-Report/Receipt `blocked_by` edges without global Check-name
+cross-contamination (`prerequisite_result_failed`); and a verified failure for the same
 `(scope_id, expected_check_ref)` from a different attempt/run is projected into
 `authenticated_failures_by_instance` so R1 blocks the instance as `unmet` until
 covered by an authenticated retry adjudication. T2 candidate selection uses a
 deterministic total order over scope, expected check ref, result IDs and
-candidate digest. T1-b `verify_local_handoff()` validates producer `check_ids`
-as a strict non-empty string sequence before normalization, enforces
-timezone-aware ISO timestamps (aligned with R4), enforces Context×Action×Target
-subject binding (`event_ref`, `scope_id`, `expected_set_ref`, and
-`candidate_digest` when Target/Action involves a Candidate rather than a
-no-Candidate `event_head` scope) via Producer Grant, native `job_receipts`, or
+candidate digest. T1-b `verify_local_handoff()` (and formal event receivers via
+`build_event_consumer_scope()` / `verify_event_local_handoff()`) validates
+producer `check_ids` as a strict non-empty string sequence before
+normalization, enforces timezone-aware ISO timestamps (aligned with R4), enforces
+Context×Action×Target subject binding (`event_ref`, `scope_id`,
+`expected_set_ref` for legitimate non-release `event_head` scopes without
+fabricating `candidate_digest`, and mandatory `candidate_digest` for
+`candidate`/`artifact` targets and all Release actions/contexts without
+allowing `event_head` exemption) via Producer Grant, native `job_receipts`, or
 structured `authorization_authority` (`bound_subjects`, rejecting bare `True`
-for unbound required subjects), and retains every consumer check in
+for unbound required subjects and marking unscoped generic calls
+`formal_event_context_bound=False`), and retains every consumer check in
 `remaining_work` whenever provenance is unauthenticated or rejected. Existing
 direct Gate inputs keep the legacy trust boundary. The integration tests invoke the #66-B2 / #63 / #61
 producer APIs with controlled authority decisions; production issuer trust roots

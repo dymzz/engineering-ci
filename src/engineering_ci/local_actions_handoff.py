@@ -41,6 +41,12 @@ _CONSUMER_SCOPE_OPTIONAL = frozenset(
     {"candidate_digest", "scope_id", "event_ref", "expected_set_ref"}
 )
 _CONSUMER_SCOPE_META = frozenset({"context", "target", "required_subjects"})
+FORMAL_EVENT_CONTEXTS = frozenset(
+    {"pull_request", "push", "merge_group", "release", "actions_gate", "ci"}
+)
+CANDIDATE_CONSUMER_TARGETS = frozenset({"candidate", "artifact"})
+EVENT_HEAD_CONSUMER_TARGETS = frozenset({"event_head", "branch", "tag", "ref"})
+FORMAL_CONSUMER_TARGETS = CANDIDATE_CONSUMER_TARGETS | EVENT_HEAD_CONSUMER_TARGETS
 
 
 class LocalActionsHandoffError(ValueError):
@@ -433,9 +439,10 @@ def _normalize_consumer_scope(value):
 
     This is never taken from the producer-claimed grant. Empty ``check_ids``
     is invalid: unrestricted materials must not be released without a concrete
-    consumer Check set. Optional ``context``, ``target``, and
-    ``required_subjects`` declare which Event/Expected/Candidate identities are
-    mandatory for this invocation.
+    consumer Check set. Generic contract callers may omit both ``context`` and
+    ``target`` (yielding ``formal_event_context_bound=False``); supplying one
+    without the other, an unknown context/target, or pairing a Release
+    Context/Action with an ``event_head`` target is rejected.
     """
     if not isinstance(value, dict):
         raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
@@ -463,6 +470,19 @@ def _normalize_consumer_scope(value):
     for key in _CONSUMER_SCOPE_OPTIONAL | {"context", "target"}:
         if value.get(key) is not None:
             record[key] = _text(value.get(key), "handoff_consumer_scope_invalid")
+    has_context = "context" in record
+    has_target = "target" in record
+    if has_context != has_target:
+        raise LocalActionsHandoffError("handoff_consumer_context_incomplete")
+    if has_context:
+        if record["context"] not in FORMAL_EVENT_CONTEXTS:
+            raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
+        if record["target"] not in FORMAL_CONSUMER_TARGETS:
+            raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
+        if (record["context"] == "release" or record["action"] == "release") and record[
+            "target"
+        ] in EVENT_HEAD_CONSUMER_TARGETS:
+            raise LocalActionsHandoffError("handoff_release_requires_candidate_target")
     raw_required = value.get("required_subjects")
     if raw_required is not None:
         if not isinstance(raw_required, (list, tuple)):
@@ -478,6 +498,52 @@ def _normalize_consumer_scope(value):
     return record
 
 
+def build_event_consumer_scope(
+    *,
+    context,
+    action,
+    target,
+    target_ref,
+    phase,
+    check_ids,
+    event_ref,
+    scope_id,
+    expected_set_ref,
+    candidate_digest=None,
+    required_subjects=None,
+):
+    """Build a receiver-established formal Event/Release consumer scope.
+
+    Formal Actions PR/main/merge_group/Release receivers use this builder so
+    ``context``, ``target``, Event, Scope, and Expected identities (plus
+    ``candidate_digest`` for Candidate/Release targets) cannot be omitted.
+    """
+    scope = {
+        "context": context,
+        "action": action,
+        "target": target,
+        "target_ref": target_ref,
+        "phase": phase,
+        "check_ids": list(check_ids)
+        if isinstance(check_ids, (list, tuple))
+        else check_ids,
+        "event_ref": event_ref,
+        "scope_id": scope_id,
+        "expected_set_ref": expected_set_ref,
+    }
+    if candidate_digest is not None:
+        scope["candidate_digest"] = candidate_digest
+    if required_subjects is not None:
+        scope["required_subjects"] = list(required_subjects)
+    if scope.get("context") is None or scope.get("target") is None:
+        raise LocalActionsHandoffError("handoff_formal_consumer_context_required")
+    normalized = _normalize_consumer_scope(scope)
+    for field in sorted(_required_consumer_subjects(normalized)):
+        if normalized.get(field) is None:
+            raise LocalActionsHandoffError(f"consumer_{field}_required")
+    return normalized
+
+
 def _required_consumer_subjects(consumer_scope):
     """Return subject fields that must be present and bound for this consumer."""
     required = {
@@ -489,23 +555,21 @@ def _required_consumer_subjects(consumer_scope):
     context = consumer_scope.get("context")
     target = consumer_scope.get("target")
     action = consumer_scope.get("action")
-    if context is not None or target is not None:
+    if context is not None and target is not None:
         if (
-            target in {"candidate", "artifact"}
+            target in CANDIDATE_CONSUMER_TARGETS
+            or context == "release"
             or action == "release"
-            or (context == "release" and target != "event_head")
         ):
             required.update(
                 {"event_ref", "scope_id", "expected_set_ref", "candidate_digest"}
             )
-        elif context in {
-            "pull_request",
-            "push",
-            "merge_group",
-            "actions_gate",
-            "ci",
-        } or target in {"event_head", "branch", "tag", "ref"}:
+        elif target in EVENT_HEAD_CONSUMER_TARGETS:
             required.update({"event_ref", "scope_id", "expected_set_ref"})
+    elif action == "release":
+        required.update(
+            {"event_ref", "scope_id", "expected_set_ref", "candidate_digest"}
+        )
     return required
 
 
@@ -719,12 +783,16 @@ def verify_local_handoff(
     execution_authority=None,
     authorization_authority=None,
     evaluated_at,
+    require_formal_consumer_scope=False,
 ):
     """Verify a local handoff package at the Actions/ECI boundary.
 
     ``consumer_scope`` is the independently established Actions/#66
     Action×Target×Phase×Check set. The producer grant is compared to that
-    consumer scope; the grant is never treated as the current scope.
+    consumer scope; the grant is never treated as the current scope. Formal
+    event/PR/main/Release receivers pass ``require_formal_consumer_scope=True``
+    (or call ``verify_event_local_handoff``) so omitting ``context`` or
+    ``target`` is refused instead of degrading to an unscoped check.
 
     ``execution_authority`` must return ``{"accepted": True, "executed_at": ...}``
     to authenticate execution/collection time. Bare ``True`` leaves execution
@@ -734,6 +802,7 @@ def verify_local_handoff(
     execution boundaries never verify.
     """
     validate_local_handoff_package(package)
+    _flag(require_formal_consumer_scope, "handoff_formal_scope_flag_invalid")
     if not isinstance(handoff_policy, dict):
         raise LocalActionsHandoffError("handoff_policy_invalid")
     allowed_issuers = handoff_policy.get("allowed_issuers")
@@ -743,6 +812,11 @@ def verify_local_handoff(
     if not isinstance(allowed_boundaries, list) or not allowed_boundaries:
         raise LocalActionsHandoffError("handoff_policy_boundaries_missing")
     consumer = _normalize_consumer_scope(consumer_scope)
+    formal_event_context_bound = bool(
+        consumer.get("context") is not None and consumer.get("target") is not None
+    )
+    if require_formal_consumer_scope and not formal_event_context_bound:
+        raise LocalActionsHandoffError("handoff_formal_consumer_context_required")
     evaluated = _datetime(evaluated_at, "handoff_evaluated_at_invalid")
     issuer_authority = _callable_or_none(
         issuer_authority, "handoff_issuer_authority_invalid"
@@ -945,6 +1019,7 @@ def verify_local_handoff(
         "execution_boundary": copy.deepcopy(package["execution_boundary"]),
         "producer_authorization": _authorization_record(authorization),
         "consumer_scope": copy.deepcopy(consumer),
+        "formal_event_context_bound": formal_event_context_bound,
         "evaluated_at": evaluated.isoformat(),
         "executed_at": executed_at.isoformat() if executed_at is not None else None,
         "authorized_check_ids": (
@@ -965,6 +1040,8 @@ def verify_local_handoff(
         ],
         "verification_ref": None,
     }
+    if not formal_event_context_bound:
+        result["limitations"].append("unscoped_consumer_context_not_formal_event")
     if not verified:
         result["limitations"].append("unverified_handoff_must_run_actions_checks")
     if partial:
@@ -975,3 +1052,30 @@ def verify_local_handoff(
         {key: value for key, value in result.items() if key != "verification_ref"}
     )
     return result
+
+
+def verify_event_local_handoff(
+    package,
+    *,
+    handoff_policy,
+    consumer_scope,
+    issuer_authority=None,
+    execution_authority=None,
+    authorization_authority=None,
+    evaluated_at,
+):
+    """Formal PR/main/merge_group/Release receiver verification entrypoint.
+
+    Requires complete receiver-established ``context`` and ``target`` on
+    ``consumer_scope`` so callers cannot downgrade to an unscoped handoff.
+    """
+    return verify_local_handoff(
+        package,
+        handoff_policy=handoff_policy,
+        consumer_scope=consumer_scope,
+        issuer_authority=issuer_authority,
+        execution_authority=execution_authority,
+        authorization_authority=authorization_authority,
+        evaluated_at=evaluated_at,
+        require_formal_consumer_scope=True,
+    )

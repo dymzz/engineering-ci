@@ -2359,3 +2359,247 @@ def test_new014_prerequisite_trust_closure_across_t1_projection_and_r1():
     assert check_row(r1_s, tach_s)["status"] == "satisfied"
     assert check_row(r1_s, docs_s)["status"] == "unverified"
     required_assessment.validate_assessment(r1_s)
+
+
+def test_new014_p2a_p2b_multi_receipt_conflict_and_cross_source_across_r1():
+    profile = make_profile(
+        declared_checks=["tach"],
+        obligations=[{"obligation_ref": "o/tach", "check_names": ["tach"]}],
+    )
+    prereq_rule = check_contract.rule_ref("docs", 1, digest="a" * 64)
+    prereq_src = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="3" * 40,
+        actual_execution_source="worktree",
+        head_commit="2" * 40,
+        content_digest="a" * 64,
+        verified_scope=["docs/guide.md"],
+        scope_kind="check_input_closure",
+    )
+    dep_src = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="3" * 40,
+        actual_execution_source="dagger_directory",
+        head_commit="2" * 40,
+        content_digest="b" * 64,
+        verified_scope=["src/app.py", "tach.toml"],
+        scope_kind="check_input_closure",
+    )
+    prereq_res = check_contract.native_result(
+        check_contract.definition_for("docs"),
+        source=prereq_src,
+        status="passed",
+        result_origin="host",
+        result_instance="prereq-inv",
+        native_exit_code=0,
+        evidence={"stdout": "docs/guide.md"},
+        rule_ref=copy.deepcopy(prereq_rule),
+        runner_ref=RUNNER_REF,
+        profile_ref=copy.deepcopy(PROFILE_REF),
+        tool=check_contract.tool_ref("git/ls-files"),
+    )
+    prereq_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "docs-inventory",
+                "status": "passed",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [prereq_res],
+            }
+        ],
+    }
+    prereq_report_ref = report_ref_for(prereq_report)
+    prereq_input = [{"kind": "check_result", "result_id": prereq_res["result_id"]}]
+    tach_entry = make_entry(
+        "tach", required_by=("o/tach",), rule_ref=RULE_TACH, source=dep_src
+    )
+    tach_entry["input_refs"] = prereq_input
+    tach_entry["expected_check_ref"] = expected_checks.entry_identity(tach_entry)
+    expected = make_projection(profile, [tach_entry], source=dep_src)
+    obligations = [check_obligation("o/tach", [tach_entry["expected_check_ref"]])]
+    universe = make_universe(profile, expected, obligations)
+    tach_res = check_contract.native_result(
+        check_contract.definition_for("tach"),
+        source=copy.deepcopy(dep_src),
+        status="passed",
+        result_origin="host",
+        result_instance="run-1",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=copy.deepcopy(RULE_TACH),
+        input_refs=copy.deepcopy(prereq_input),
+        runner_ref=RUNNER_REF,
+        profile_ref=copy.deepcopy(PROFILE_REF),
+        tool=check_contract.tool_ref("tach/check"),
+    )
+    tach_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "tach",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [tach_res],
+            }
+        ],
+    }
+    tach_report_ref = report_ref_for(tach_report)
+    tach_jr = {
+        "kind": reconciliation.JOB_RECEIPT_KIND,
+        "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+        "job_ref": "job/release",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": copy.deepcopy(tach_report_ref),
+        "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
+        "verification_status": "upstream_verified",
+    }
+    routing = [
+        {
+            "expected_check_ref": tach_entry["expected_check_ref"],
+            "job_refs": ["job/release"],
+            "job_instances": [
+                {
+                    "job_ref": "job/release",
+                    "run_ref": RUN_REF,
+                    "attempt_ref": ATTEMPT_REF,
+                    "runner_ref": RUNNER_REF,
+                    "attempt_eligibility": "eligible",
+                    "qualification_ref": copy.deepcopy(ATTEMPT_QUALIFICATION_REF),
+                    "report_ref": copy.deepcopy(tach_report_ref),
+                }
+            ],
+            "mapping_status": "routed",
+            "scheduler_ref": {"name": "controlled", "version": "1"},
+            "effective_config_ref": {"name": "fixture", "version": "1"},
+            "reason": None,
+        }
+    ]
+    resolutions = [
+        {
+            "expected_check_ref": tach_entry["expected_check_ref"],
+            "rule_ref": copy.deepcopy(RULE_TACH),
+            "source_ref": copy.deepcopy(dep_src),
+            "baseline_ref": None,
+            "rule_source_ref": copy.deepcopy(RULE_SOURCE_REF),
+            "source_receipt_ref": copy.deepcopy(SOURCE_RECEIPT_REF),
+            "input_refs": copy.deepcopy(prereq_input),
+        }
+    ]
+    receipt = reconciliation.reconcile_expected_results(
+        expected,
+        routing=routing,
+        resolutions=resolutions,
+        observations=[
+            {
+                "job_ref": "job/release",
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "report": tach_report,
+                "report_ref": copy.deepcopy(tach_report_ref),
+                "native_results": [tach_res],
+                "job_receipt": copy.deepcopy(tach_jr),
+            }
+        ],
+    )
+    policy = {
+        "trusted_issuers": [copy.deepcopy(JOB_ISSUER_REF)],
+        "approved_implementations": [
+            {
+                "check_id": tach_entry["check_id"],
+                "definition_version": tach_entry["definition_version"],
+                **IMPLEMENTATION,
+            },
+            {
+                "check_id": check_contract.definition_for("docs").check_id,
+                "definition_version": check_contract.definition_for(
+                    "docs"
+                ).definition_version,
+                **IMPLEMENTATION,
+            },
+        ],
+    }
+
+    def run_with(extra_receipts):
+        t1 = admission.admit_evidence(
+            expected,
+            receipt,
+            reports=[tach_report, prereq_report],
+            job_receipts=[tach_jr, *extra_receipts],
+            policy=policy,
+            authority=lambda ctx: (
+                ctx["issuer_ref"] == JOB_ISSUER_REF
+                and ctx["implementation"] == IMPLEMENTATION
+            ),
+            resolutions=resolutions,
+            resolution_authority=lambda ctx: (
+                ctx["resolution"]["source_receipt_ref"] == SOURCE_RECEIPT_REF
+            ),
+        )
+        proj = admission.project_t1_t2_gate_admission(
+            t1,
+            expected=expected,
+            evaluation=required_assessment._projection_evaluation(
+                required_assessment._validate_universe(universe)
+            ),
+            current_authorization=_df02_current_authorization(),
+            source_authority=df02_source_authority(t1, universe),
+            receipt=receipt,
+            contract_sample=True,
+        )
+        r1 = _assess(
+            t1,
+            universe,
+            expected,
+            receipt,
+            authority=df02_source_authority(t1, universe),
+        )
+        return t1, proj, r1
+
+    base_prereq_jr = {
+        "kind": reconciliation.JOB_RECEIPT_KIND,
+        "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+        "job_ref": "job/prereq-match",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": copy.deepcopy(prereq_report_ref),
+        "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
+        "verification_status": "upstream_verified",
+        "scope_id": expected["scope_id"],
+    }
+    wrong_scope_jr = {
+        **base_prereq_jr,
+        "job_ref": "job/prereq-000",
+        "scope_id": "sha256:" + "0" * 64,
+    }
+    # Swapped order with wrong-scope receipt + valid cross-Check source_ref -> PASSES end-to-end.
+    key = f"{expected['scope_id']}/{tach_entry['expected_check_ref']}"
+    for ordered in ([wrong_scope_jr, base_prereq_jr], [base_prereq_jr, wrong_scope_jr]):
+        t1_ok, proj_ok, r1_ok = run_with(ordered)
+        assert t1_ok["status"] == "admitted"
+        assert (
+            proj_ok["accepted_coverage_by_instance"][key]["admission_status"]
+            == "admitted"
+        )
+        assert r1_ok["status"] == "passed"
+        required_assessment.validate_assessment(r1_ok)
+
+    # Two distinct in-scope authenticated receipts -> conflict stays blocked across T1-a/Proj/R1.
+    conflict_jr = {**base_prereq_jr, "job_ref": "job/prereq-second"}
+    for ordered in ([base_prereq_jr, conflict_jr], [conflict_jr, base_prereq_jr]):
+        t1_c, proj_c, r1_c = run_with(ordered)
+        assert t1_c["entries"][0]["admitted"] is False
+        assert "prerequisite_result_conflict" in t1_c["entries"][0]["reasons"]
+        assert (
+            proj_c["accepted_coverage_by_instance"][key]["admission_status"]
+            == "unverified"
+        )
+        assert proj_c["remaining_work"][0]["reason"] == "prerequisite_result_conflict"
+        assert r1_c["status"] == "blocked"
+        assert check_row(r1_c, tach_entry)["status"] == "unverified"
+        required_assessment.validate_assessment(r1_c)

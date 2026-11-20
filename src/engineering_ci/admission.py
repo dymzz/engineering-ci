@@ -487,17 +487,25 @@ def _authenticate_prerequisite(
     job_receipts,
     policy,
     authority,
-    preferred_run_ref=None,
-    preferred_attempt_ref=None,
+    dependent_fact=None,
+    dependent_raw=None,
+    scope_id=None,
+    expected_set_ref=None,
+    expected_entry=None,
 ):
     """Authenticate one consumed prerequisite Result that was not observed.
 
-    The prerequisite is located in the supplied raw Reports by its exact
-    ``result_id`` and attributed to the Job Receipt that binds that Report. It
-    then goes through the same ``_authenticate_evidence`` path as any selected
-    witness (Report/Receipt digests, upstream verification, trusted Issuer,
-    approved Implementation). A raw Report's self-reported status is never
-    trusted by itself.
+    All candidate ``(Report, JobReceipt)`` bindings carrying ``prereq_id`` go
+    through full ``_authenticate_evidence`` provenance verification BEFORE
+    selecting against consumer scope compatibility:
+
+    - A single authenticated in-scope candidate is selected deterministically
+      regardless of caller input order or unrelated out-of-scope receipts.
+    - Multiple distinct authenticated in-scope candidates are preserved as an
+      unresolvable ``prerequisite_result_conflict`` rather than guessed
+      lexicographically.
+    - Only out-of-scope authenticated candidates produce
+      ``prerequisite_result_scope_mismatch``.
     """
     matching_reports = [
         (report_key, report)
@@ -507,7 +515,7 @@ def _authenticate_prerequisite(
     if not matching_reports:
         return None, "prerequisite_result_missing"
     candidates = []
-    for report_key, report in matching_reports:
+    for report_key, _report in matching_reports:
         sha = report_key.split(":", 1)[1]
         for receipt_key, receipt in job_receipts.items():
             receipt_report = receipt.get("report_ref")
@@ -516,24 +524,16 @@ def _authenticate_prerequisite(
                 or receipt_report.get("sha256") != sha
             ):
                 continue
-            attempt_rank = (
-                0
-                if (
-                    preferred_run_ref is not None
-                    and preferred_attempt_ref is not None
-                    and (receipt.get("run_ref"), receipt.get("attempt_ref"))
-                    == (preferred_run_ref, preferred_attempt_ref)
-                )
-                else 1
-            )
-            candidates.append(
-                (attempt_rank, report_key, receipt_key, receipt, receipt_report)
-            )
+            candidates.append((report_key, receipt_key, receipt, receipt_report))
     if not candidates:
         return None, "prerequisite_job_receipt_missing"
-    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
-    first_failure = None
-    for _, _report_key, receipt_key, receipt, receipt_report in candidates:
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    in_scope = []
+    out_of_scope = []
+    failures = []
+    dep_run = (dependent_fact or {}).get("run_ref")
+    dep_attempt = (dependent_fact or {}).get("attempt_ref")
+    for report_key, receipt_key, receipt, receipt_report in candidates:
         evidence = {
             "result_id": prereq_id,
             "report_ref": copy.deepcopy(receipt_report),
@@ -552,13 +552,108 @@ def _authenticate_prerequisite(
                 authority=authority,
             )
         except _EvidenceFailure as failure:
-            if first_failure is None:
-                first_failure = f"prerequisite_{failure.reason}"
+            scope_rank = (
+                0
+                if (
+                    dependent_fact is None
+                    or (receipt.get("run_ref"), receipt.get("attempt_ref"))
+                    == (dep_run, dep_attempt)
+                )
+                and (scope_id is None or receipt.get("scope_id") in (None, scope_id))
+                else 1
+            )
+            rejected_rank = 0 if failure.origin_status == "rejected" else 1
+            failures.append(
+                (scope_rank, rejected_rank, report_key, receipt_key, failure.reason)
+            )
             continue
         raw = fact.pop("_raw_result", None)
         fact["selected"] = False
-        return (fact, raw), None
-    return None, first_failure or "prerequisite_result_unverified"
+        if _prerequisite_scope_mismatch(
+            fact,
+            raw,
+            dependent_fact,
+            dependent_raw,
+            scope_id=scope_id,
+            expected_set_ref=expected_set_ref,
+            expected_entry=expected_entry,
+            job_receipts=job_receipts,
+        ):
+            out_of_scope.append((fact, raw))
+        else:
+            in_scope.append((fact, raw))
+    if len(in_scope) == 1:
+        return in_scope[0], None
+    if len(in_scope) > 1:
+        return None, "prerequisite_result_conflict"
+    if out_of_scope:
+        return None, "prerequisite_result_scope_mismatch"
+    failures.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    return (
+        None,
+        f"prerequisite_{failures[0][4]}"
+        if failures
+        else "prerequisite_result_unverified",
+    )
+
+
+def _prerequisite_source_mismatch(prereq_raw, dependent_raw):
+    """Compare prerequisite vs dependent source identity without breaking valid closures.
+
+    Same-Check results must share identical ``source_ref`` objects (matching
+    ``check_contract._validate_coherent_results``). Across distinct Checks and
+    ``generated_input`` consumer views, ``execution._verified_check_source_ref``
+    produces Check-specific ``verified_input_scope`` and ``content_digest`` (and
+    potentially host/container/consumer-view ``actual_execution_source``,
+    ``scope_kind``, ``binding_status``, or ``materialization_ref``). Base
+    repository identity (``snapshot``, ``declared_target_tree``, ``head_commit``,
+    ``index_tree``), bound source strength, and byte equality for identical
+    non-overlaid closures still remain mandatory.
+    """
+    prereq_src = prereq_raw.get("source_ref")
+    dep_src = dependent_raw.get("source_ref")
+    if not isinstance(prereq_src, dict) or not isinstance(dep_src, dict):
+        return True
+    prereq_check = prereq_raw.get("check") or {}
+    dep_check = dependent_raw.get("check") or {}
+    same_check_instance = (
+        prereq_check.get("check_id") == dep_check.get("check_id")
+        and prereq_check.get("definition_version")
+        == dep_check.get("definition_version")
+        and prereq_check.get("rule_ref") == dep_check.get("rule_ref")
+        and prereq_check.get("profile_ref") == dep_check.get("profile_ref")
+    )
+    if same_check_instance and prereq_src != dep_src:
+        return True
+    for key in ("snapshot", "declared_target_tree", "head_commit", "index_tree"):
+        if prereq_src.get(key) != dep_src.get(key):
+            return True
+    if (
+        dep_src.get("binding_status") != "unknown"
+        and prereq_src.get("binding_status") == "unknown"
+    ):
+        return True
+    has_generated_overlay = any(
+        isinstance(ref, dict) and ref.get("kind") == "generated_input"
+        for ref in (dependent_raw.get("input_refs") or ())
+    )
+    prereq_scope = prereq_src.get("verified_input_scope") or []
+    dep_scope = dep_src.get("verified_input_scope") or []
+    same_closure_surface = (
+        prereq_src.get("actual_execution_source")
+        == dep_src.get("actual_execution_source")
+        and prereq_src.get("scope_kind") == dep_src.get("scope_kind")
+        and (
+            (bool(prereq_scope) and prereq_scope == dep_scope)
+            or prereq_src.get("scope_kind") == "full_input_closure"
+        )
+    )
+    if same_closure_surface and not has_generated_overlay:
+        if prereq_src.get("content_digest") != dep_src.get("content_digest"):
+            return True
+        if prereq_src.get("materialization_ref") != dep_src.get("materialization_ref"):
+            return True
+    return False
 
 
 def _prerequisite_scope_mismatch(
@@ -579,7 +674,7 @@ def _prerequisite_scope_mismatch(
         dependent_fact.get("attempt_ref"),
     ):
         return True
-    if prereq_raw.get("source_ref") != dependent_raw.get("source_ref"):
+    if _prerequisite_source_mismatch(prereq_raw, dependent_raw):
         return True
     prereq_receipt = job_receipts.get(fact.get("job_receipt_ref")) or {}
     if (
@@ -640,7 +735,8 @@ def _prerequisite_closure(
     selected_ids = {fact["result_id"] for fact in selected_facts}
     fact_by_selected = {fact["result_id"]: fact for fact in selected_facts}
     derived = []
-    derived_by_id = {}
+    derived_seen = set()
+    derived_by_scope = {}
     failed = False
     unverified = []
     visited = set(selected_ids)
@@ -670,8 +766,11 @@ def _prerequisite_closure(
             if prereq_id in unresolved_sibling_selected_ids:
                 unverified.append("prerequisite_resolution_unverified")
                 continue
-            fact = facts_by_id.get(prereq_id) or derived_by_id.get(prereq_id)
-            prereq_raw = raw_by_id.get(prereq_id)
+            edge_key = (prereq_id, (cur_fact or {}).get("job_receipt_ref"))
+            fact = facts_by_id.get(prereq_id)
+            prereq_raw = raw_by_id.get(prereq_id) if fact is not None else None
+            if fact is None and edge_key in derived_by_scope:
+                fact, prereq_raw = derived_by_scope[edge_key]
             if fact is None:
                 resolved, reason = _authenticate_prerequisite(
                     prereq_id,
@@ -679,17 +778,25 @@ def _prerequisite_closure(
                     job_receipts=job_receipts,
                     policy=policy,
                     authority=authority,
-                    preferred_run_ref=(cur_fact or {}).get("run_ref"),
-                    preferred_attempt_ref=(cur_fact or {}).get("attempt_ref"),
+                    dependent_fact=cur_fact,
+                    dependent_raw=cur_raw,
+                    scope_id=scope_id,
+                    expected_set_ref=expected_set_ref,
+                    expected_entry=expected_entry,
                 )
                 if resolved is None:
                     unverified.append(reason)
                     continue
                 fact, prereq_raw = resolved
-                derived.append(fact)
-                derived_by_id[prereq_id] = fact
-                if prereq_raw is not None:
-                    raw_by_id[prereq_id] = prereq_raw
+                derived_by_scope[edge_key] = (fact, prereq_raw)
+                derived_id = (
+                    fact["result_id"],
+                    fact.get("job_receipt_ref"),
+                    (fact.get("report_ref") or {}).get("sha256"),
+                )
+                if derived_id not in derived_seen:
+                    derived_seen.add(derived_id)
+                    derived.append(fact)
             if prereq_raw is not None:
                 prereq_check = prereq_raw.get("check") or {}
                 prereq_key = (

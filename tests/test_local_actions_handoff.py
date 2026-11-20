@@ -890,3 +890,148 @@ def test_d_g02_context_action_target_required_subjects_and_legitimate_no_candida
     )
     assert wrong_subjects_map["status"] == "rejected"
     assert "authorization_authority_rejected" in wrong_subjects_map["reasons"]
+
+
+def test_d_g02_formal_event_context_completeness_and_release_target_contract():
+    # Generic unscoped caller stays non-formal and records explicit limitation.
+    bare_scope = {
+        "action": "validate",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+    }
+    bare_pkg = build_package(
+        producer_authorization=producer_authorization(scope=bare_scope)
+    )
+    generic = verify(bare_pkg, consumer_scope=bare_scope)
+    assert generic["formal_event_context_bound"] is False
+    assert "unscoped_consumer_context_not_formal_event" in generic["limitations"]
+
+    # Formal Event/Release receiver refuses omitted context/target.
+    with pytest.raises(
+        handoff.LocalActionsHandoffError,
+        match="handoff_formal_consumer_context_required",
+    ):
+        handoff.verify_event_local_handoff(
+            bare_pkg,
+            handoff_policy=handoff_policy(),
+            consumer_scope=bare_scope,
+            issuer_authority=accept_issuer,
+            execution_authority=accept_execution,
+            authorization_authority=accept_authorization,
+            evaluated_at=EVALUATED_AT,
+        )
+
+    # Half-specified formal context (only context or only target) is refused.
+    with pytest.raises(
+        handoff.LocalActionsHandoffError, match="handoff_consumer_context_incomplete"
+    ):
+        verify(bare_pkg, consumer_scope={**bare_scope, "context": "pull_request"})
+
+    # Release action/context cannot use event_head to waive Candidate binding.
+    for combo in (
+        {"context": "pull_request", "action": "release", "target": "event_head"},
+        {"context": "release", "action": "publish", "target": "event_head"},
+        {"context": "release", "action": "release", "target": "branch"},
+    ):
+        with pytest.raises(
+            handoff.LocalActionsHandoffError,
+            match="handoff_release_requires_candidate_target",
+        ):
+            verify(
+                bare_pkg,
+                consumer_scope={
+                    **combo,
+                    "target_ref": "refs/heads/main",
+                    "phase": "pre_publish",
+                    "check_ids": ["eci/hygiene/tach"],
+                    "event_ref": "evt/actions-1",
+                    "scope_id": "scope/main-pre",
+                    "expected_set_ref": "sha256:" + "7" * 64,
+                },
+            )
+
+    # Receiver-established valid event_head PR scope succeeds without candidate_digest,
+    # whereas release x release x candidate demands candidate_digest.
+    pr_scope = handoff.build_event_consumer_scope(
+        context="pull_request",
+        action="validate",
+        target="event_head",
+        target_ref="refs/pull/42/merge",
+        phase="pre_publish",
+        check_ids=["eci/hygiene/tach"],
+        event_ref="evt/pr-42",
+        scope_id="scope/pr-42",
+        expected_set_ref="sha256:" + "7" * 64,
+    )
+    pr_grant = {
+        "action": "validate",
+        "target_ref": "refs/pull/42/merge",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+        "event_ref": "evt/pr-42",
+        "scope_id": "scope/pr-42",
+        "expected_set_ref": "sha256:" + "7" * 64,
+    }
+    pr_verified = handoff.verify_event_local_handoff(
+        build_package(producer_authorization=producer_authorization(scope=pr_grant)),
+        handoff_policy=handoff_policy(),
+        consumer_scope=pr_scope,
+        issuer_authority=accept_issuer,
+        execution_authority=accept_execution,
+        authorization_authority=accept_authorization,
+        evaluated_at=EVALUATED_AT,
+    )
+    assert pr_verified["status"] == "verified"
+    assert pr_verified["formal_event_context_bound"] is True
+    assert pr_verified["admitted_for_t1a"] is True
+
+    with pytest.raises(
+        handoff.LocalActionsHandoffError, match="consumer_candidate_digest_required"
+    ):
+        handoff.build_event_consumer_scope(
+            context="release",
+            action="release",
+            target="candidate",
+            target_ref="refs/tags/v1.0.0",
+            phase="pre_publish",
+            check_ids=["eci/hygiene/tach"],
+            event_ref="evt/rel-1",
+            scope_id="scope/rel-1",
+            expected_set_ref="sha256:" + "7" * 64,
+        )
+
+    rel_scope = handoff.build_event_consumer_scope(
+        context="release",
+        action="release",
+        target="candidate",
+        target_ref="refs/tags/v1.0.0",
+        phase="pre_publish",
+        check_ids=["eci/hygiene/tach"],
+        event_ref="evt/rel-1",
+        scope_id="scope/rel-1",
+        expected_set_ref="sha256:" + "7" * 64,
+        candidate_digest="sha256:" + "8" * 64,
+    )
+    rel_grant = {
+        "action": "release",
+        "target_ref": "refs/tags/v1.0.0",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+        "event_ref": "evt/rel-1",
+        "scope_id": "scope/rel-1",
+        "expected_set_ref": "sha256:" + "7" * 64,
+        "candidate_digest": "sha256:" + "8" * 64,
+    }
+    rel_verified = handoff.verify_event_local_handoff(
+        build_package(producer_authorization=producer_authorization(scope=rel_grant)),
+        handoff_policy=handoff_policy(),
+        consumer_scope=rel_scope,
+        issuer_authority=accept_issuer,
+        execution_authority=accept_execution,
+        authorization_authority=accept_authorization,
+        evaluated_at=EVALUATED_AT,
+    )
+    assert rel_verified["status"] == "verified"
+    assert rel_verified["formal_event_context_bound"] is True
+    assert rel_verified["admitted_for_t1a"] is True

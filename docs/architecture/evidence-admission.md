@@ -71,13 +71,20 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
 - 未选中（unrelated）的坏 observation 只进入 diagnostics；只有共享同一具体
   Report/Job Receipt（或其他实际共同依赖）的坏事实才污染 selected witness；仅共享
   Job/Run/Attempt 标签不构成污染。
-- **Typed `check_result` 前置依赖传递闭包（NEW-014）**：`input_refs` 引用的上游
-  `check_result`（及其传递前置结果）不得信任 raw Report 自报 `status="passed"`，
-  必须独立通过完整 #63 证据认证（`JobReceipt`、受信任 Issuer、已批准实现、Resolution
-  与有效 `(run_ref, attempt_ref)` / `source_ref` / `profile_ref` / Receipt 作用域一致），
-  且不得被兄弟/上游 `rejected`、`not_applicable` 或 `resolution_status!=verified`
-  结果绕过；Report `blocked_by` 亦仅在共享已观测 Report/Job Receipt 或匹配前置
-  `result_id` 上传播，不做跨全量 Reports 的同名 Check 匹配。
+- **Typed `check_result` 前置依赖传递闭包（NEW-014）**：本次 Expected 条目通过
+  `#66-C` Resolution 与 `resolution_authority` 验证自身 Expected/Receipt 与输入绑定；
+  `input_refs` 引用的附带外部上游 `check_result`（及其传递前置结果）不得信任 raw
+  Report 自报 `status="passed"`，必须独立通过 `#63` 来源与实现认证（`JobReceipt`、
+  受信任 Issuer、已批准实现）、当前 `(run_ref, attempt_ref)` / 仓库 Source 标识
+  （`snapshot`、`declared_target_tree`、`head_commit`、`index_tree`；同 Check 要求
+  `source_ref` 全等，跨 Check 允许各自 per-Check 输入闭包及 `generated_input`
+  consumer view 覆盖，非 `unknown` 绑定且非覆盖相同范围不得发生字节漂移）/ `profile_ref` /
+  Receipt 作用域一致性，且拦截兄弟 Expected `rejected`、`not_applicable` 或
+  `resolution_status!=verified` 结果。多候选 Receipt 先全量认证并按当前消费作用域
+  过滤后再选中唯一候选；同一消费作用域内存在多个可认证候选时保留
+  `prerequisite_result_conflict` 歧义而非按字典序猜测。Report `blocked_by` 亦仅在
+  共享已观测 Report/Job Receipt 或匹配前置 `result_id` 上传播，不做跨全量 Reports
+  的同名 Check 匹配。
 - 合法空 Expected 不会被自动升级为完整/受信 PASS。
 
 ## 信任边界

@@ -1545,3 +1545,217 @@ def test_t1a_resolution_verifier_exception_keeps_diagnosis():
     assert entry["resolution_status"] == "rejected"
     assert "resolution_authority_verifier_error" in entry["reasons"]
     assert entry["admitted"] is False
+
+
+def _prereq_multi_receipt_fixture(
+    *,
+    prereq_source=STRONG_SOURCE,
+    dep_source=STRONG_SOURCE,
+    dep_extra_inputs=(),
+    receipt_specs=(),
+):
+    docs_def = check_contract.definition_for("docs")
+    prereq = check_contract.native_result(
+        docs_def,
+        source=copy.deepcopy(prereq_source),
+        status="passed",
+        result_origin="host",
+        result_instance="prereq-inv",
+        native_exit_code=0,
+        evidence={"stdout": "docs/guide.md"},
+        rule_ref=check_contract.rule_ref("docs", 1, digest="a" * 64),
+        runner_ref=RUNNER_REF,
+        profile_ref=None,
+        tool=check_contract.tool_ref("git/ls-files"),
+    )
+    prereq_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "docs-inventory",
+                "status": "passed",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [prereq],
+            }
+        ],
+    }
+    prereq_report_ref = report_ref_for(prereq_report)
+    prereq_input = [
+        {"kind": "check_result", "result_id": prereq["result_id"]},
+        *[copy.deepcopy(item) for item in dep_extra_inputs],
+    ]
+    entry = make_entry(source=dep_source, input_refs=prereq_input)
+    projection = make_projection(entry, source=dep_source)
+    dependent = check_contract.native_result(
+        check_contract.definition_for("tach"),
+        source=copy.deepcopy(dep_source),
+        status="passed",
+        result_origin="host",
+        result_instance="run-1",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=copy.deepcopy(RULE_TACH),
+        input_refs=copy.deepcopy(prereq_input),
+        runner_ref=RUNNER_REF,
+        profile_ref=None,
+        tool=check_contract.tool_ref("tach/check"),
+    )
+    report = report_for(dependent)
+    report_ref = report_ref_for(report)
+    job_receipt = job_receipt_for(report_ref)
+    resolution = {
+        **resolution_for(entry),
+        "source_ref": copy.deepcopy(dep_source),
+        "input_refs": copy.deepcopy(prereq_input),
+    }
+    receipt = reconciliation.reconcile_expected_results(
+        projection,
+        routing=[routing_for(entry)],
+        resolutions=[resolution],
+        observations=[observation_for(report, report_ref, job_receipt)],
+    )
+    prereq_receipts = []
+    for spec in receipt_specs:
+        doc = {
+            **job_receipt_for(prereq_report_ref, issuer=spec.get("issuer", JOB_ISSUER)),
+            "job_ref": spec.get("job_ref", "job-prereq"),
+            "attempt_ref": spec.get("attempt_ref", ATTEMPT_REF),
+            "run_ref": spec.get("run_ref", RUN_REF),
+        }
+        if "scope_id" in spec:
+            doc["scope_id"] = spec["scope_id"]
+        if "expected_set_ref" in spec:
+            doc["expected_set_ref"] = spec["expected_set_ref"]
+        prereq_receipts.append(doc)
+    policy = policy_for()
+    policy["approved_implementations"].append(
+        {
+            "check_id": docs_def.check_id,
+            "definition_version": docs_def.definition_version,
+            **IMPLEMENTATION,
+        }
+    )
+    result = admit_evidence(
+        projection,
+        receipt,
+        reports=[report, prereq_report],
+        job_receipts=[job_receipt, *prereq_receipts],
+        policy=policy,
+        resolutions=[resolution],
+    )
+    return result, result["entries"][0], prereq, prereq_receipts
+
+
+def test_t1a_new014_multiple_receipts_select_unique_in_scope_regardless_of_order():
+    # Create an out-of-scope authenticated receipt whose digest may sort before
+    # or after the valid matching-scope receipt, plus an untrusted noise receipt.
+    wrong_scope = {
+        "job_ref": "job-prereq-000",
+        "scope_id": "sha256:" + "0" * 64,
+    }
+    wrong_attempt = {
+        "job_ref": "job-prereq-zzz",
+        "attempt_ref": "attempt/0",
+    }
+    rogue = {
+        "job_ref": "job-prereq-rogue",
+        "issuer": {"name": "rogue", "version": "1", "sha256": "9" * 64},
+    }
+    right = {"job_ref": "job-prereq-match"}
+    right_sha = None
+    for ordered in (
+        [wrong_scope, rogue, right],
+        [right, wrong_scope, wrong_attempt],
+        [wrong_attempt, wrong_scope, right],
+    ):
+        res, entry_res, prereq, created = _prereq_multi_receipt_fixture(
+            receipt_specs=ordered
+        )
+        assert entry_res["admitted"] is True
+        assert entry_res["status"] == "admitted"
+        assert res["remaining_work"] == []
+        matching = next(doc for doc in created if doc["job_ref"] == "job-prereq-match")
+        expected_ref = reconciliation._digest(matching)
+        if right_sha is None:
+            right_sha = expected_ref
+        else:
+            assert expected_ref == right_sha
+        prereq_facts = [
+            f for f in entry_res["facts"] if f["result_id"] == prereq["result_id"]
+        ]
+        assert [f["job_receipt_ref"] for f in prereq_facts] == [right_sha]
+
+
+def test_t1a_new014_ambiguous_in_scope_receipts_preserve_conflict_not_guess():
+    rec_a = {"job_ref": "job-prereq-alpha"}
+    rec_b = {"job_ref": "job-prereq-beta"}
+    for ordered in ([rec_a, rec_b], [rec_b, rec_a]):
+        res, entry_res, _prereq, _ = _prereq_multi_receipt_fixture(
+            receipt_specs=ordered
+        )
+        assert entry_res["admitted"] is False
+        assert "prerequisite_result_conflict" in entry_res["reasons"]
+        assert len(res["remaining_work"]) == 1
+
+
+def test_t1a_new014_cross_check_per_check_source_and_consumer_view_closure():
+    prereq_src = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="3" * 40,
+        actual_execution_source="worktree",
+        head_commit="2" * 40,
+        content_digest="a" * 64,
+        verified_scope=["docs/guide.md"],
+        scope_kind="check_input_closure",
+    )
+    dep_overlay_src = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="3" * 40,
+        actual_execution_source="dagger_directory",
+        head_commit="2" * 40,
+        content_digest="b" * 64,
+        verified_scope=["src/app.py", "tach.toml", "docs/generated.md"],
+        scope_kind="full_input_closure",
+        binding_status="byte_tree",
+        materialization_ref="sha256:" + "f" * 64,
+    )
+    res, entry_res, _, _ = _prereq_multi_receipt_fixture(
+        prereq_source=prereq_src,
+        dep_source=dep_overlay_src,
+        dep_extra_inputs=(
+            {
+                "kind": "generated_input",
+                "input_kind": "file",
+                "path": "docs/generated.md",
+                "sha256": "d" * 64,
+            },
+        ),
+        receipt_specs=[{"job_ref": "job-prereq"}],
+    )
+    assert entry_res["admitted"] is True
+    assert res["remaining_work"] == []
+
+    # Same repo identity check still refuses weak/unknown prereq, drifted
+    # commit/tree, or same-closure byte drift without overlay.
+    different_commit = check_contract.source_ref(
+        "worktree",
+        declared_target_tree="3" * 40,
+        actual_execution_source="worktree",
+        head_commit="9" * 40,
+        content_digest="a" * 64,
+        verified_scope=["docs/guide.md"],
+        scope_kind="check_input_closure",
+    )
+    for bad_prereq, bad_dep in (
+        (different_commit, dep_overlay_src),
+        (WEAK_SOURCE, STRONG_SOURCE),
+        (OTHER_SOURCE, STRONG_SOURCE),
+    ):
+        _res, bad_entry, _, _ = _prereq_multi_receipt_fixture(
+            prereq_source=bad_prereq,
+            dep_source=bad_dep,
+            receipt_specs=[{"job_ref": "job-prereq"}],
+        )
+        assert bad_entry["admitted"] is False
+        assert "prerequisite_result_scope_mismatch" in bad_entry["reasons"]
