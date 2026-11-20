@@ -142,6 +142,65 @@ documentation, third-party examples or controlled tests. An unreadable Step log 
 grant. Any production-readiness claim for this native Provider path requires
 successful observed access to the exact Job/Step/Artifact identity.
 
+## D-G04 production consumer baseline
+
+At `main@a99efd5`, the Release Workflow invokes
+`workflow_actions release publish` → `release.publishing.main` →
+`publish_release`. That path verifies the native Manifest, Run/Attempt,
+Jobs and Artifact evidence before the release writes. Its call graph has yet
+to consume `require_reconciliation_manifest` or an R4 authorization. R5
+`reconcile_post_stage` has a pair contract and test consumers. Production
+trigger and final disposition consumption are unverified.
+[Release Workflow](../../.github/workflows/release.yml) ·
+[Publishing entry point](../../src/engineering_ci/release/publishing.py) ·
+[R5 contract](required-assessment-post.md)
+
+The default-branch Post-run producer completed Run `44767235384/1`. Its
+upload step succeeded and GitHub lists Artifact `14646306762`, named
+`cicd-telemetry-44766709012-1`, with an archive digest. The source Run's
+Attempt 1 Jobs API returned four completed, successful Jobs for
+`a99efd5b59dde41de3ccea82c4d89c2b0e962669`. The archive download through
+native `gh` returned HTTP 401, so this baseline verifies upload metadata
+and source Jobs. Root, Terminal Correlation, Receiver ACK and downstream
+consumption remain unverified.
+[Producer Run](https://github.com/dymzz/engineering-ci/actions/runs/44767235384) ·
+[Source Run](https://github.com/dymzz/engineering-ci/actions/runs/44766709012)
+
+The historical Release Run `39614205390/1` had successful `verified` and
+`publish` Jobs. Its Actions Artifact listing now returns zero entries.
+That Run is retained as evidence of the existing Release path. A current
+Candidate with R4 Provider and R5 Trigger evidence is still needed.
+[Historical Release Run](https://github.com/dymzz/engineering-ci/actions/runs/39614205390)
+
+### Acceptance for the existing consumers
+
+1. Bind a real completed Run/Attempt and source SHA to the #75 Candidate
+   and byte-verified capture. Consume the #52 D4 Expected and #74 Terminal
+   Correlation through the existing post-completion Plan and Native Result
+   path. Record a missing Root or unreadable evidence as unverified, and
+   keep the source Workflow independent of this post-completion work.
+2. For the same Release Candidate, obtain a current, non-sample R1
+   Assessment, complete Profile Artifact obligations, and independently
+   authorized Policy, Provider and Handoff inputs as applicable. Exercise
+   R4 at the existing Release publication boundary before Tag, Release
+   or asset writes. Recheck the native Manifest and exact Run, Attempt,
+   Job, upload step, Artifact ID and digest. Validation mode carries no
+   publish grant.
+3. Authenticate the R5 Trigger for the same lifecycle from actual GitHub
+   Run completion, publication or Artifact facts as appropriate. Verify
+   the governing Phase Order and Due Window, then trace the result to
+   the existing Verification/Disposition consumer. Exercise incorrect
+   Attempt or Artifact, missing or late evidence, and post-stage failure.
+   Keep the prior decision and pair-level lifecycle coverage visible.
+
+The initial D-G04 acceptance status is `not_verified`. Its inputs and
+consumers are tracked under
+[#52](https://github.com/dymzz/engineering-ci/issues/52),
+[#74](https://github.com/dymzz/engineering-ci/issues/74),
+[#75](https://github.com/dymzz/engineering-ci/issues/75),
+[#61](https://github.com/dymzz/engineering-ci/issues/61) and
+[#125](https://github.com/dymzz/engineering-ci/issues/125).
+
 ## Artifact obligations
 
 Caller supplies an authorized Profile Artifact set:
