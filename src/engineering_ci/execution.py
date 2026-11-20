@@ -4256,6 +4256,33 @@ def _workflow_result_source(item, source):
     return source
 
 
+def _check_source_content_binding(source_snapshots, check_name, source):
+    """Project verified per-path hashes matching ``source`` for report checks."""
+    if (
+        not isinstance(source, dict)
+        or source.get("binding_status") not in {"content_digest", "byte_tree"}
+        or not source.get("verified_input_scope")
+    ):
+        return None
+    binding = _snapshot_binding_for_check(source_snapshots, check_name)
+    if (
+        not isinstance(binding, dict)
+        or binding.get("unverified_paths")
+        or not isinstance(binding.get("paths"), dict)
+    ):
+        return None
+    sub_digest = _subset_digest_from_binding(binding, source["verified_input_scope"])
+    if sub_digest is None or sub_digest != source.get("content_digest"):
+        return None
+    return {
+        "algorithm": "sha256-paths",
+        "digest": sub_digest,
+        "paths": {
+            path: binding["paths"][path] for path in source["verified_input_scope"]
+        },
+    }
+
+
 def _decorate_checks(
     plan,
     checks,
@@ -4359,6 +4386,9 @@ def _decorate_checks(
                 item["result_id"] = inventory_result["result_id"]
                 item["result_origin"] = inventory_result["result_origin"]
                 item["source_ref"] = source
+                binding = _check_source_content_binding(source_snapshots, name, source)
+                if binding is not None and "source_content_binding" not in item:
+                    item["source_content_binding"] = binding
             item["check_contract"] = {
                 "kind": check_contract.CHECK_CONTRACT_KIND,
                 "schema_version": check_contract.CONTRACT_VERSION,
@@ -4422,6 +4452,9 @@ def _decorate_checks(
         item["result_id"] = primary["result_id"]
         item["result_origin"] = primary["result_origin"]
         item["source_ref"] = source
+        binding = _check_source_content_binding(source_snapshots, name, source)
+        if binding is not None and "source_content_binding" not in item:
+            item["source_content_binding"] = binding
     return checks
 
 

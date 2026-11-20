@@ -501,9 +501,13 @@ def _authenticate_prerequisite(
 
     - A single authenticated in-scope candidate is selected deterministically
       regardless of caller input order or unrelated out-of-scope receipts.
-    - Multiple distinct authenticated in-scope candidates are preserved as an
-      unresolvable ``prerequisite_result_conflict`` rather than guessed
-      lexicographically.
+    - Multiple distinct authenticated in-scope candidates are accepted **only**
+      when they represent a #66-C-compatible duplicate observation of the
+      single execution fact (same Report SHA256, Issuer, Run, Attempt, Runner,
+      VerificationStatus, and attribution/scope fields across distinct
+      ``job_ref`` observers), preserving full observed origin tracing;
+      incompatible attribution/report/job-attempt identities are rejected as
+      ``prerequisite_result_conflict`` rather than guessed lexicographically.
     - Only out-of-scope authenticated candidates produce
       ``prerequisite_result_scope_mismatch``.
     """
@@ -578,13 +582,54 @@ def _authenticate_prerequisite(
             expected_set_ref=expected_set_ref,
             expected_entry=expected_entry,
             job_receipts=job_receipts,
+            reports=reports,
         ):
             out_of_scope.append((fact, raw))
         else:
-            in_scope.append((fact, raw))
+            in_scope.append((fact, raw, report_key, receipt_key, receipt))
     if len(in_scope) == 1:
-        return in_scope[0], None
+        return (in_scope[0][0], in_scope[0][1]), None
     if len(in_scope) > 1:
+        report_keys = {item[2] for item in in_scope}
+        receipt_attributions = {
+            json.dumps(
+                {
+                    "issuer_ref": item[4].get("issuer_ref"),
+                    "run_ref": item[4].get("run_ref"),
+                    "attempt_ref": item[4].get("attempt_ref"),
+                    "runner_ref": item[4].get("runner_ref"),
+                    "verification_status": item[4].get("verification_status"),
+                    "invocation_ref": item[4].get("invocation_ref"),
+                    "event_ref": item[4].get("event_ref"),
+                    "scope_id": item[4].get("scope_id"),
+                    "expected_set_ref": item[4].get("expected_set_ref"),
+                },
+                sort_keys=True,
+            )
+            for item in in_scope
+        }
+        job_attempt_keys = {
+            (
+                item[4].get("job_ref"),
+                item[4].get("run_ref"),
+                item[4].get("attempt_ref"),
+            )
+            for item in in_scope
+        }
+        if (
+            len(report_keys) == 1
+            and len(receipt_attributions) == 1
+            and len(job_attempt_keys) == len(in_scope)
+        ):
+            primary_fact = copy.deepcopy(in_scope[0][0])
+            primary_fact["duplicate_observation"] = True
+            primary_fact["observed_job_receipt_refs"] = sorted(
+                item[3] for item in in_scope
+            )
+            primary_fact["observed_job_refs"] = sorted(
+                item[4]["job_ref"] for item in in_scope
+            )
+            return (primary_fact, in_scope[0][1]), None
         return None, "prerequisite_result_conflict"
     if out_of_scope:
         return None, "prerequisite_result_scope_mismatch"
@@ -597,18 +642,117 @@ def _authenticate_prerequisite(
     )
 
 
-def _prerequisite_source_mismatch(prereq_raw, dependent_raw):
-    """Compare prerequisite vs dependent source identity without breaking valid closures.
+def _normalize_sha256_hex(value):
+    if not isinstance(value, str):
+        return None
+    text = value.removeprefix("sha256:").lower()
+    return text if _SHA256_RE.fullmatch(text) else None
+
+
+def _generated_overlays(raw_result):
+    overlays = []
+    for ref in raw_result.get("input_refs") or ():
+        if not isinstance(ref, dict) or ref.get("kind") != "generated_input":
+            continue
+        raw_path = ref.get("path")
+        sha_hex = _normalize_sha256_hex(ref.get("sha256"))
+        if not isinstance(raw_path, str) or not raw_path.strip() or sha_hex is None:
+            return None
+        norm = raw_path.replace("\\", "/").strip("/")
+        kind = ref.get("input_kind") or "file"
+        if not norm or kind not in {"file", "directory"}:
+            return None
+        overlays.append({"path": norm, "input_kind": kind, "sha256": sha_hex})
+    return overlays
+
+
+def _covering_overlays(rel_path, overlays):
+    norm = str(rel_path).replace("\\", "/").strip("/")
+    hits = []
+    for item in overlays:
+        ov = item["path"]
+        if item["input_kind"] == "file":
+            if norm == ov or ov.startswith(norm + "/"):
+                hits.append(item)
+        elif norm == ov or norm.startswith(ov + "/") or ov.startswith(norm + "/"):
+            hits.append(item)
+    return hits
+
+
+def _verified_path_digests(raw_result, report=None):
+    """Extract and digest-verify per-path SHA256 map when supplied.
+
+    Returns ``("none", None)`` when no per-path binding exists,
+    ``("ok", {path: sha256})`` when every path in ``verified_input_scope``
+    hashes identically to ``source_ref["content_digest"]``, or
+    ``("invalid", None)`` if a supplied binding fails integrity verification.
+    """
+    source = raw_result.get("source_ref") or {}
+    evidence = raw_result.get("evidence")
+    binding = (
+        evidence.get("source_content_binding") if isinstance(evidence, dict) else None
+    )
+    if binding is None and isinstance(report, dict) and raw_result.get("result_id"):
+        parent = _parent_check(report, raw_result["result_id"])
+        if isinstance(parent, dict):
+            binding = parent.get("source_content_binding")
+    if binding is None:
+        return "none", None
+    scope = sorted(source.get("verified_input_scope") or ())
+    if (
+        not isinstance(binding, dict)
+        or binding.get("algorithm") != "sha256-paths"
+        or not isinstance(binding.get("paths"), dict)
+        or not scope
+        or not source.get("content_digest")
+    ):
+        return "invalid", None
+    paths = binding["paths"]
+    subset = {}
+    for item in scope:
+        norm = str(item).replace("\\", "/")
+        sha = _normalize_sha256_hex(paths.get(item, paths.get(norm)))
+        if sha is None:
+            return "invalid", None
+        subset[norm] = sha
+    recomputed = hashlib.sha256(
+        json.dumps(subset, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if recomputed != _normalize_sha256_hex(source.get("content_digest")):
+        return "invalid", None
+    if binding.get("digest") is not None and (
+        _normalize_sha256_hex(binding.get("digest")) != recomputed
+    ):
+        return "invalid", None
+    return "ok", subset
+
+
+def _prerequisite_source_mismatch(
+    prereq_raw,
+    dependent_raw,
+    *,
+    prereq_report=None,
+    dep_report=None,
+):
+    """Compare prerequisite vs dependent source identity and overlapping byte proofs.
 
     Same-Check results must share identical ``source_ref`` objects (matching
-    ``check_contract._validate_coherent_results``). Across distinct Checks and
-    ``generated_input`` consumer views, ``execution._verified_check_source_ref``
-    produces Check-specific ``verified_input_scope`` and ``content_digest`` (and
-    potentially host/container/consumer-view ``actual_execution_source``,
-    ``scope_kind``, ``binding_status``, or ``materialization_ref``). Base
-    repository identity (``snapshot``, ``declared_target_tree``, ``head_commit``,
-    ``index_tree``), bound source strength, and byte equality for identical
-    non-overlaid closures still remain mandatory.
+    ``check_contract._validate_coherent_results``). Across distinct Checks:
+    1. Repository base identity (``snapshot``, ``declared_target_tree``,
+       ``head_commit``, ``index_tree``) and non-``unknown`` source strength
+       must hold.
+    2. Paths covered by validated ``generated_input`` entries in
+       ``dependent_raw["input_refs"]`` are excluded from equal-byte requirement
+       ONLY for the specific covered paths, and exact ``file`` overlays must
+       agree with verified consumer path digests when present (or re-hash to
+       ``dep_src["content_digest"]`` when closing the full consumer scope).
+    3. Overlapping paths not covered by a valid ``generated_input`` overlay
+       (``uncovered_overlap``) MUST agree on bytes: identical closures via
+       ``content_digest``, full closures via matching ``content_digest`` and
+       ``materialization_ref``, or differing/overlaid closures via shared
+       immutable ``materialization_ref`` or cryptographically verified per-path
+       content bindings matching each Check's ``source_ref["content_digest"]``.
+       Unproven overlap fails closed.
     """
     prereq_src = prereq_raw.get("source_ref")
     dep_src = dependent_raw.get("source_ref")
@@ -633,26 +777,108 @@ def _prerequisite_source_mismatch(prereq_raw, dependent_raw):
         and prereq_src.get("binding_status") == "unknown"
     ):
         return True
-    has_generated_overlay = any(
-        isinstance(ref, dict) and ref.get("kind") == "generated_input"
-        for ref in (dependent_raw.get("input_refs") or ())
+
+    overlays = _generated_overlays(dependent_raw)
+    if overlays is None:
+        return True
+    prereq_state, prereq_paths = _verified_path_digests(prereq_raw, prereq_report)
+    dep_state, dep_paths = _verified_path_digests(dependent_raw, dep_report)
+    if prereq_state == "invalid" or dep_state == "invalid":
+        return True
+
+    prereq_scope = sorted(
+        {
+            str(p).replace("\\", "/")
+            for p in (prereq_src.get("verified_input_scope") or ())
+        }
     )
-    prereq_scope = prereq_src.get("verified_input_scope") or []
-    dep_scope = dep_src.get("verified_input_scope") or []
-    same_closure_surface = (
-        prereq_src.get("actual_execution_source")
-        == dep_src.get("actual_execution_source")
-        and prereq_src.get("scope_kind") == dep_src.get("scope_kind")
-        and (
-            (bool(prereq_scope) and prereq_scope == dep_scope)
-            or prereq_src.get("scope_kind") == "full_input_closure"
-        )
+    dep_scope = sorted(
+        {str(p).replace("\\", "/") for p in (dep_src.get("verified_input_scope") or ())}
     )
-    if same_closure_surface and not has_generated_overlay:
+    overlap = sorted(set(prereq_scope) & set(dep_scope))
+    overlaid_overlap = [p for p in overlap if _covering_overlays(p, overlays)]
+    uncovered_overlap = [p for p in overlap if not _covering_overlays(p, overlays)]
+
+    for path in overlaid_overlap:
+        hits = [
+            ov
+            for ov in _covering_overlays(path, overlays)
+            if ov["input_kind"] == "file" and ov["path"] == path
+        ]
+        if hits:
+            if len({ov["sha256"] for ov in hits}) > 1:
+                return True
+            if dep_paths is not None:
+                if dep_paths.get(path) != hits[0]["sha256"]:
+                    return True
+            elif all(
+                any(
+                    ov["input_kind"] == "file" and ov["path"] == item
+                    for ov in _covering_overlays(item, overlays)
+                )
+                for item in dep_scope
+            ):
+                entries = {
+                    item: next(
+                        ov["sha256"]
+                        for ov in _covering_overlays(item, overlays)
+                        if ov["input_kind"] == "file" and ov["path"] == item
+                    )
+                    for item in dep_scope
+                }
+                expected_digest = hashlib.sha256(
+                    json.dumps(entries, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                if expected_digest != _normalize_sha256_hex(
+                    dep_src.get("content_digest")
+                ):
+                    return True
+            else:
+                return True
+
+    if prereq_scope == dep_scope and not overlaid_overlap:
         if prereq_src.get("content_digest") != dep_src.get("content_digest"):
             return True
-        if prereq_src.get("materialization_ref") != dep_src.get("materialization_ref"):
-            return True
+        return bool(
+            prereq_src.get("scope_kind") == "full_input_closure"
+            and dep_src.get("scope_kind") == "full_input_closure"
+            and prereq_src.get("actual_execution_source")
+            == dep_src.get("actual_execution_source")
+            and prereq_src.get("materialization_ref")
+            != dep_src.get("materialization_ref")
+        )
+
+    if (
+        prereq_src.get("scope_kind") == "full_input_closure"
+        and dep_src.get("scope_kind") == "full_input_closure"
+        and not overlays
+    ):
+        return prereq_src.get("content_digest") != dep_src.get(
+            "content_digest"
+        ) or prereq_src.get("materialization_ref") != dep_src.get("materialization_ref")
+
+    if uncovered_overlap:
+        if prereq_paths is not None and dep_paths is not None:
+            for path in uncovered_overlap:
+                if prereq_paths.get(path) != dep_paths.get(path):
+                    return True
+            return False
+        shared_tree = bool(
+            not overlays
+            and prereq_src.get("materialization_ref") is not None
+            and prereq_src.get("materialization_ref")
+            == dep_src.get("materialization_ref")
+            and (
+                prereq_src.get("binding_status") == "byte_tree"
+                or dep_src.get("binding_status") == "byte_tree"
+                or prereq_src.get("scope_kind") == "full_input_closure"
+                or dep_src.get("scope_kind") == "full_input_closure"
+            )
+        )
+        return not shared_tree
+
     return False
 
 
@@ -666,6 +892,7 @@ def _prerequisite_scope_mismatch(
     expected_set_ref,
     expected_entry,
     job_receipts,
+    reports=None,
 ):
     if dependent_fact is None or prereq_raw is None:
         return True
@@ -674,7 +901,19 @@ def _prerequisite_scope_mismatch(
         dependent_fact.get("attempt_ref"),
     ):
         return True
-    if _prerequisite_source_mismatch(prereq_raw, dependent_raw):
+    prereq_report = None
+    dep_report = None
+    if isinstance(reports, dict):
+        p_sha = (fact.get("report_ref") or {}).get("sha256")
+        d_sha = (dependent_fact.get("report_ref") or {}).get("sha256")
+        prereq_report = reports.get("sha256:" + p_sha) if p_sha else None
+        dep_report = reports.get("sha256:" + d_sha) if d_sha else None
+    if _prerequisite_source_mismatch(
+        prereq_raw,
+        dependent_raw,
+        prereq_report=prereq_report,
+        dep_report=dep_report,
+    ):
         return True
     prereq_receipt = job_receipts.get(fact.get("job_receipt_ref")) or {}
     if (
@@ -816,6 +1055,7 @@ def _prerequisite_closure(
                 expected_set_ref=expected_set_ref,
                 expected_entry=expected_entry,
                 job_receipts=job_receipts,
+                reports=reports,
             ):
                 unverified.append("prerequisite_result_scope_mismatch")
                 continue
@@ -2381,6 +2621,14 @@ def _gate_origin(value, code):
         if type(exit_code) is not int:
             raise AdmissionError(code)
         origin["native_exit_code"] = exit_code
+    if value.get("duplicate_observation") is True:
+        origin["duplicate_observation"] = True
+        if isinstance(value.get("observed_job_receipt_refs"), list):
+            origin["observed_job_receipt_refs"] = list(
+                value["observed_job_receipt_refs"]
+            )
+        if isinstance(value.get("observed_job_refs"), list):
+            origin["observed_job_refs"] = list(value["observed_job_refs"])
     return origin
 
 

@@ -54,13 +54,16 @@ fails a consumed typed `check_result` prerequisite — where the selected
 Expected entry is verified by `#66-C` Resolution + `resolution_authority` and
 attached external prerequisite results are independently verified via `#63` Job
 Receipt, Issuer, Implementation, `(run_ref, attempt_ref)`, repository Source
-identity (preserving per-Check `verified_input_scope` / `generated_input`
-consumer-view closures across distinct Checks while enforcing identical
-snapshot/tree/commit and non-drift invariants), Profile/Receipt scope, sibling
-Expected applicability/resolution checks, and scope-filtered receipt selection
-with explicit conflict preservation (`prerequisite_result_conflict`), plus
-shared-Report/Receipt `blocked_by` edges without global Check-name
-cross-contamination (`prerequisite_result_failed`); and a verified failure for the same
+identity (preserving non-overlapping Check closures while verifying shared
+`materialization_ref` or digest-checked `source_content_binding` per-path hashes
+across overlapping non-overlaid inputs and per-path `generated_input` overlay
+digests, plus identical snapshot/tree/commit invariants), Profile/Receipt scope,
+sibling Expected applicability/resolution checks, and scope-filtered receipt
+selection (permitting `#66-C`-compatible redundant `job_ref` observations of one
+Report/Issuer/Attempt/Attribution with preserved `observed_job_receipt_refs`,
+while blocking incompatible attribution/Report/job-attempt identities as
+`prerequisite_result_conflict`), plus shared-Report/Receipt `blocked_by` edges
+without global Check-name cross-contamination (`prerequisite_result_failed`); and a verified failure for the same
 `(scope_id, expected_check_ref)` from a different attempt/run is projected into
 `authenticated_failures_by_instance` so R1 blocks the instance as `unmet` until
 covered by an authenticated retry adjudication. T2 candidate selection uses a
