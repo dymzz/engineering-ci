@@ -157,6 +157,7 @@ def publication_inputs(context, _manifest):
     def policy(proof):
         reference = accept_policy(proof)
         reference["assessment_scope"]["candidate"] = {"commit": HEAD}
+        reference["required_check_bindings"] = []
         return reference
 
     return {
@@ -167,7 +168,15 @@ def publication_inputs(context, _manifest):
     }
 
 
-def publish(api, value=None, *, authority=publication_inputs, run_id=123, attempt=1):
+def publish(
+    api,
+    value=None,
+    *,
+    authority=publication_inputs,
+    run_id=123,
+    attempt=1,
+    receipt=None,
+):
     with tempfile.TemporaryDirectory() as temp:
         return release.publish_release(
             api,
@@ -178,6 +187,7 @@ def publish(api, value=None, *, authority=publication_inputs, run_id=123, attemp
             run_id=run_id,
             run_attempt=attempt,
             release_authority=authority,
+            authorization_receipt=receipt,
         )
 
 
