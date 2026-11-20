@@ -2,15 +2,15 @@
 
 > **审计状态：持续进行，当前发现不是全仓缺陷全集。** 本文件集中记录 ECI 的源码观察、原始证据、反例、反证、依赖和结论演进；它既不提供运行时授权，也不承担对未来实现方案的批准或限制职能。
 >
-> 初始审计快照（2026-11-18）：`main@fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83`（[#125-D / PR #128](https://github.com/dymzz/engineering-ci/pull/128) 已合并）；当时的旧候选为 `#124@4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5`，彼时尚不在 main。**当前结算快照为 2026-11-19 `main@e3ec016bef5cdbe158783197d41b6fc3ccd0ce47`：#124 已合并，D-F01/D-F02 等修复状态以紧随其后的最新结算及 §0A 为准，不能以初始快照否定后续修复。**
+> 初始审计快照（2026-11-18）：`main@fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83`（[#125-D / PR #128](https://github.com/dymzz/engineering-ci/pull/128) 已合并）；当时的旧候选为 `#124@4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5`，彼时尚不在 main。**当前结算快照更新为 2026-11-20 `main@e6e20986d76cc25d5d0709e7517e1fc0f3e5d7b7`（PR #139 合并后）；#124/#138 与各已合并修复按实际 Merge Commit 结算。历史快照保持原证据时态，不能反推当前仍未修复。**
 >
 > **审计范围是 `dymzz/engineering-ci` 全仓。** 包括原始工程目标、架构与成熟工具、重复建设、Hooks/Lefthook、Dagger/Actions、证据/权限、Tool Runtime、OTel/Weaver、Release/GitHub 与历史需求和 Issue/PR。[#125](https://github.com/dymzz/engineering-ci/issues/125) 是授权链调查切面，不构成审计范围上限；未调查的其他领域保留为未知。其他仓库、规范和成熟工具源码只作为核实 ECI 设计选择的证据。
 
 > **2026-11-18 表述纠偏说明：** 保留历史发现 ID、源码/测试链接及既有证据；原 NEW 候选的预估 P1/P2 统一改为“优先级待评估”。代码观察、合同违例、生产可达性和修复方式分开裁决；历史判断仍可由 PR #129 的先前提交追溯。
 
-## 2026-11-19 · 最新合并结算与当前执行导航
+## 2026-11-20 · 最新合并结算与当前执行导航
 
-本节依据当前 ECI main e3ec016bef5cdbe158783197d41b6fc3ccd0ce47、实际 GitHub 合并记录、对应代码 Review 和 CI 更新。文件旧基线 main@fc0df2a 是 2026-11-18 的审计快照，并非现行源码；后续原文的旧版“未修复/待合并”只作为发现历史。**以本节和 §0A 为当前结算，所有修复的原始证据不删除。**
+本节依据 ECI main e6e20986d76cc25d5d0709e7517e1fc0f3e5d7b7、实际 GitHub 合并记录、对应源码差分及定向验证记录更新至 2026-11-20。文件旧基线 main@fc0df2a 是 2026-11-18 的审计快照，并非现行源码；后续原文的旧版“未修复/待合并”只作为发现历史。**以本节和 §0A 为当前结算，所有修复的原始证据不删除。**
 
 | 已完成的具体问题 | GitHub 合并与定向 CI | 明确未由该切片证明的边界 |
 | --- | --- | --- |
@@ -18,15 +18,15 @@
 | D-F02 / #63→#61 | [PR #138](https://github.com/dymzz/engineering-ci/pull/138)，merge d0566bce；[CI 44546276039](https://github.com/dymzz/engineering-ci/actions/runs/44546276039) SUCCESS | 生产 Issuer、Local→Actions、G2/G3 和 Release |
 | NEW-001/027 / R5 | [PR #134](https://github.com/dymzz/engineering-ci/pull/134)，merge e3ec016b；[CI 44573997371](https://github.com/dymzz/engineering-ci/actions/runs/44573997371) SUCCESS | 真实 Trigger Authority 与历史事件签发 |
 | NEW-012/054 / R4 | [PR #136](https://github.com/dymzz/engineering-ci/pull/136)，merge 5f81e373；[CI 44573374482](https://github.com/dymzz/engineering-ci/actions/runs/44573374482) SUCCESS | 真实 Release/Tag/Provider 完整发布与恢复 |
-| NEW-053 / #66 | [PR #132](https://github.com/dymzz/engineering-ci/pull/132)，merge b10dce6a；[CI 44564689873](https://github.com/dymzz/engineering-ci/actions/runs/44564689873) SUCCESS | #66-P0 历史 Blob pre-execution Readiness、#86 Dagger 真实 Handoff；#139 是另一个 AST 迁移职责 |
+| NEW-053 / #66 | [PR #132](https://github.com/dymzz/engineering-ci/pull/132)，merge b10dce6a；[CI 44564689873](https://github.com/dymzz/engineering-ci/actions/runs/44564689873) SUCCESS | #66-P0 历史 Blob pre-execution Readiness、#86 Dagger 真实 Handoff；AST 迁移差异已由独立的 #139 合并修复 |
 | NEW-055 / #58 | [PR #135](https://github.com/dymzz/engineering-ci/pull/135)，merge edd40943；[CI 44499442394](https://github.com/dymzz/engineering-ci/actions/runs/44499442394) SUCCESS | #86 Producer 原始生成结果可重读 → #66 独立 Source Resolution 正向交接尚为 needs_wiring |
 | NEW-056/057 / #51 | [PR #137](https://github.com/dymzz/engineering-ci/pull/137)，merge da5e9397；[CI 44490180853](https://github.com/dymzz/engineering-ci/actions/runs/44490180853) SUCCESS | 现行 OSV Policy 的单 approved Git pin + registry 正例不等于所有合法多源场景 |
 
-**当前开放代码 PR（不可误认作上述缺陷未修）：** [PR #139](https://github.com/dymzz/engineering-ci/pull/139)（Open/Draft，HEAD 9fe33b55，CI 44569779592 SUCCESS）修复独立的 Forwarding AST 迁移差异：__all__、__init__.py、非空 Base AST 与 CheckDefinition v2，且与已合并 #132 源码集成；仍待独立 Review。[PR #133](https://github.com/dymzz/engineering-ci/pull/133)（Open/Draft，HEAD a5a68545）与已合并 #135 NEW-055 重叠，优先比对它独有的有效合同/测试，不再重复部署同义实现。
+**在途去重已结算：** [PR #139](https://github.com/dymzz/engineering-ci/pull/139) 已于 2026-11-20 04:24:53 UTC 合并（merge `e6e20986`，HEAD `50c88837`），交付 Forwarding AST 迁移语义（`__all__`、`__init__.py`、非空 Base AST、CheckDefinition v2）及与 #132 的 Source 交叉回归。[PR #133](https://github.com/dymzz/engineering-ci/pull/133) 已与 #135 的源码和测试去重，于 2026-11-20 **Closed / Unmerged**（旧 HEAD `a5a68545`）；旧分支静默过滤异常发现目标，与已合并 #135 的 `problems` 拒绝传播存在实质差异。逐项复核未找到必须单独移植的独有有效实现或验收反例，保留旧 Review 供追溯。
 
 **仍未交付的生产链路不能随旧缺陷结算消失：** #86 生成 File/Directory 可重读 Producer 证明 → #66 Source Resolution/Expected/Native，#66-P0 历史 Blob Readiness 与 #63 T2 等价，#63 T1-b Local→Actions 真正授权，#61 G2/G3 服务端 Required 和 R4/R5 真实 Release/Trigger，#52 Terminal/Weaver 生产身份，#57 Policy 签发/撤销，以及 #87 OTel 可核查消费。按原 Issue 和实际受影响接口验收，保留已完成的 Native/合同正反例。
 
-## 0A. 逐项责任与实施追踪（2026-11-19）
+## 0A. 逐项责任与实施追踪（2026-11-20）
 
 本节只维护**稳定缺陷 ID → 单一主责 Issue → 现存代码 PR/待启动状态**，实施验收和修法在各原 Issue/代码 PR；调查结论留在本台账。单一主责不排除跨模块原子实现与 Producer/Consumer 协作；各项仍以其原证据等级为准。这里的已分发表示任务已写入 Issue，**不表示缺陷已确诊、代码已验收、真实生产覆盖已闭合**。每项由实际变更对应的代码 PR 独立验收，不用数量强制划分 PR。
 
@@ -86,9 +86,9 @@
 | [NEW-050](#new-050) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-051](#new-051) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-052](#new-052) | [#87](https://github.com/dymzz/engineering-ci/issues/87) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-053](#new-053) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | [PR #132](https://github.com/dymzz/engineering-ci/pull/132) **已合并**（b10dce6a）；Host Forwarding Git Source/ODB/删除/链接/Native Receipt；历史 Blob Readiness、Dagger 正向 Handoff 属 #66/#86，AST 语义属 #139 |
+| [NEW-053](#new-053) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | [PR #132](https://github.com/dymzz/engineering-ci/pull/132) **已合并**（b10dce6a）；Host Forwarding Git Source/ODB/删除/链接/Native Receipt；历史 Blob Readiness、Dagger 正向 Handoff 属 #66/#86，AST 语义由 [PR #139](https://github.com/dymzz/engineering-ci/pull/139) **已合并**（e6e20986） |
 | [NEW-054](#new-054) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #136](https://github.com/dymzz/engineering-ci/pull/136) **已合并**（5f81e373）；R4 Artifact ID/Run/Attempt/上传证据绑定；完整 Release 发布链另证 |
-| [NEW-055](#new-055) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | [PR #135](https://github.com/dymzz/engineering-ci/pull/135) **已合并**（edd40943）；Workflow/Shell 扫描目标 Source 准入；生成 File/Directory 独立可重读 Handoff 仍归 #86/#66，#133 待去重 |
+| [NEW-055](#new-055) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | [PR #135](https://github.com/dymzz/engineering-ci/pull/135) **已合并**（edd40943）；Workflow/Shell 扫描目标 Source 准入；生成 File/Directory 独立可重读 Handoff 仍归 #86/#66；#133 已核实重叠并关闭（未合并） |
 | [NEW-056](#new-056) | [#51](https://github.com/dymzz/engineering-ci/issues/51) | [PR #137](https://github.com/dymzz/engineering-ci/pull/137) **已合并**（da5e9397）；OSV Git/PyPI 同名实体拆分；仅证明现有批准的单 Git pin 加 Registry 范围 |
 | [NEW-057](#new-057) | [#51](https://github.com/dymzz/engineering-ci/issues/51) | [PR #137](https://github.com/dymzz/engineering-ci/pull/137) **已合并**（da5e9397）；OSV Native Input 来源分组及脱敏投影；不宣称保存未修改的完整 Native JSON |
 | [NEW-058](#new-058) | [#57](https://github.com/dymzz/engineering-ci/issues/57) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
@@ -96,7 +96,7 @@
 | [NEW-060](#new-060) | [#130](https://github.com/dymzz/engineering-ci/issues/130) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-061](#new-061) | [#131](https://github.com/dymzz/engineering-ci/issues/131) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 
-**当前去重状态：** NEW-055 的 #135 已合并；#133 仍 Draft，需先确定相对 #135 的独有有效差分，不把两个分支都算作已交付。NEW-053 的 Host Git Source/ODB 由 #132 已合并，Forwarding AST 历史迁移差异独立由 #139 承担；NEW-056/057 已由 #137 合并。本节未完成的 #66/#86 正向 Handoff 与 #63 Trusted 是不同的后续交付范围。
+**当前去重状态（2026-11-20）：** NEW-055 由 #135 已合并交付；#133 的旧分支仅返回通过 Source 检查的发现目标，原测试期望仓外/悬空目标从发现列表消失，旧 CI 曾出现绝对路径错误归因失败。相比之下 #135/current main 已记录发现失败并传播至受影响 Check，还包含 Host/Dagger、外部授权、Generated Inputs、Source Resolution 与 Native/Enforce 定向案例。未发现 #133 独有且当前缺失的有效实现/关键测试，因此 #133 **已关闭、未合并**，保留历史 Review。NEW-053 的 #132 与 Forwarding AST 的 #139 均已合并，后者 merge `e6e20986`。#86→#66 生成文件/目录独立可重读正向 Handoff、#66-P0 历史 Readiness 和 #63 Trusted 是各自未完成的后续交付；不能由局部 #135/#139 成功推导为生产全链通过。
 
 ### 0A.2 已复现合同差异与跨责任交接
 
@@ -113,9 +113,9 @@
 
 | 优先序 | 既有实施入口 | 需要验收或完成的实际增量 | 独立性与已完成证据 |
 | --- | --- | --- | --- |
-| **1-A 在途** | [PR #139](https://github.com/dymzz/engineering-ci/pull/139) / #66 | 独立审阅 Forwarding AST 迁移等价性、__all__、__init__.py、Definition v2，并核对与 #132 Git Source/链接/删除修复的交叉回归 | 已有 CI 成功，但没有正式 Review；不重新实施 NEW-053 |
-| **1-B 去重** | [PR #133](https://github.com/dymzz/engineering-ci/pull/133) / #58 | 与已合并 #135 逐项比较 Source 发现、错误传播和独有测试；只有实际未覆盖的合同才保留增量，否则停止重复实现并另行处置 Draft | 可与 1-A 并行审查，不再按同一 NEW-055 建两份实现 |
-| **1-C 原生错误清洁判定** | [#58](https://github.com/dymzz/engineering-ci/issues/58) NEW-049 | 当前 main 的 `workflow_analysis._actionlint_facts()` 请求 JSON 时，异常文本仍回退正则且可返回空 Findings/空 Limitations；先以明确非 JSON+exit=0 的受控反例核实是否被上层判为 `clean`，再修复真实原生输出合同、保留必要诊断。**这是较接近 false PASS 的独立 Check 风险，不应等待完整 Release 链。** | 与 #139/#133 的 Review 和 #86/#66 Source 工作并行；正常 Actionlint JSON 正例保留 |
+| **0-A 已结算** | [PR #139](https://github.com/dymzz/engineering-ci/pull/139) / #66 | Forwarding AST 迁移差异与 #132 Git Source 联合修复已合并（merge `e6e20986`）；不再列作待审实现 | `__all__`、`__init__.py`、非空 Base AST、Definition v2 与定向 Source 交叉回归保留原验收范围 |
+| **0-B 已结算** | [PR #133](https://github.com/dymzz/engineering-ci/pull/133) / #58 | 已逐项比较 #133 的发现、External Admission、绝对路径、`extra_paths`、Native 失败与测试，同类有效范围由已合并 #135 覆盖；#133 已关闭且未合并 | #133 异常 Source 静默过滤反例不能移植；#135 保留原始拒绝、独立 Source/Native 证据；#86→#66 正向 Handoff 继续独立推进 |
+| **1 原生错误清洁判定** | [#58](https://github.com/dymzz/engineering-ci/issues/58) NEW-049 | 当前 main 的 `workflow_analysis._actionlint_facts()` 请求 JSON 时，异常文本仍回退正则且可返回空 Findings/空 Limitations；先以明确非 JSON+exit=0 的受控反例核实是否被上层判为 `clean`，再修复真实原生输出合同、保留必要诊断。**这是较接近 false PASS 的独立 Check 风险，不应等待完整 Release 链。** | 与 #86/#66 Source 工作并行；#139/#133 已结算；正常 Actionlint JSON 正例保留 |
 | **2 正向 Source 闭包** | [#86](https://github.com/dymzz/engineering-ci/issues/86) → [#66](https://github.com/dymzz/engineering-ci/issues/66) | 保留原始生成 File/Directory 的可重读身份/字节/摘要/Producer 证据，独立复原 Consumer View 并完成 Source→Expected/Native 正向交接；另核 #66-P0 历史 Blob 执行前 Readiness 与 #63 历史等价的区别 | #135/#132 的 Host 检查与失败闭锁有效，不等于合法生成输入可独立消费 |
 | **3 Trusted/Required 真正交接** | [#63](https://github.com/dymzz/engineering-ci/issues/63) → [#61](https://github.com/dymzz/engineering-ci/issues/61)；[#125](https://github.com/dymzz/engineering-ci/issues/125) | 核对 Local→Actions 当前授权、Issuer、Run/Attempt/Result 与 R1/G2/G3 服务端 Required；对 NEW-059 check_ids 类型、NEW-014 局部 PASS/独立 Report FAIL 做定向正反例 | #138 类型化 Gate 合同已修；Producer 与服务端真资格仍需证据。可与顺位 2 的独立生产者并行 |
 | **4 后置与发布** | [#52](https://github.com/dymzz/engineering-ci/issues/52) Terminal/D4，[#61](https://github.com/dymzz/engineering-ci/issues/61) R4/R5 | 真实 Weaver Terminal/Expected、Root/Task-only、Run/Attempt，Release Provider/Artifact/Tag、Trigger/历史重评与消费者授权链；按 #125 的权威来源双向验证 | #124/#134/#136 的定向修复复用，只有真正依赖的前置证据未齐时才阻断最后发布验收 |
