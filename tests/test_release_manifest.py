@@ -46,6 +46,31 @@ class ManifestGitHub:
             groups[name]["steps"].append(
                 {"name": step, "status": "completed", "conclusion": "success"}
             )
+        groups["verified"] = {
+            "id": len(groups) + 1,
+            "run_id": 123,
+            "run_attempt": 1,
+            "head_sha": HEAD,
+            "name": "verified",
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [],
+        }
+        self.upload_ids = {}
+        for name, (job_name, step_name) in evidence.ARTIFACT_UPLOAD_STEPS.items():
+            job = groups[job_name]
+            number = len(job["steps"]) + 1
+            job["steps"].append(
+                {
+                    "name": step_name + "v7.0.2"
+                    if step_name.endswith("@")
+                    else step_name,
+                    "number": number,
+                    "status": "completed",
+                    "conclusion": "success",
+                }
+            )
+            self.upload_ids[job["id"], number] = (name, IDS.get(name, 99))
         self.jobs = list(groups.values())
         self.artifacts = [
             {
@@ -72,6 +97,13 @@ class ManifestGitHub:
                     return item
             raise release.ApiError(404)
         raise AssertionError((path, method, data))
+
+    def job_step_log(self, job_id, step_number):
+        name, asset_id = self.upload_ids[job_id, step_number]
+        return (
+            f"2026-10-10T12:23:50.0105940Z Artifact {name} has been successfully uploaded! "
+            f"Final size is 2005 bytes. Artifact ID is {asset_id}\n"
+        )
 
 
 def facts():
@@ -441,6 +473,8 @@ def test_old_artifacts_of_same_run_and_sha_are_not_enumerated_or_selected():
     value = make_manifest(api)
     assert {item["id"] for item in value["artifacts"]} == set(IDS.values())
     assert 999 not in {item["id"] for item in value["artifacts"]}
+    with pytest.raises(ValueError, match="Artifact ID does not match the upload step"):
+        make_manifest(api, ids={**IDS, old["name"]: old["id"]})
     api.artifacts[0]["workflow_run"]["id"] = 999
     with pytest.raises(ValueError, match="Artifact identity"):
         make_manifest(api)
@@ -458,6 +492,7 @@ def test_expired_artifacts_block_new_evidence_but_metadata_can_validate_history(
         item["id"],
         HEAD,
         123,
+        1,
         allow_expired=True,
     )
     assert record["id"] == item["id"]

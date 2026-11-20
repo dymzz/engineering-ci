@@ -112,14 +112,7 @@ def require_jobs(needs, head, publishing=False):
 
 
 def published_evidence(api, value, repository, tag, head):
-    from .manifest import (
-        CHECKS,
-        artifact_metadata,
-        check_record,
-        run_context,
-        validate,
-        workflow_jobs,
-    )
+    from .manifest import run_context, validate, verify_original_evidence
 
     validate(value, repository, tag, head)
     if (
@@ -137,22 +130,7 @@ def published_evidence(api, value, repository, tag, head):
         workflow["run_attempt"],
         publication=True,
     )
-    jobs = workflow_jobs(api, workflow["run_id"], workflow["run_attempt"], head)
-    for key, source in CHECKS.items():
-        if check_record(jobs, *source) != value["checks"][key]:
-            raise ValueError("Manifest does not match original Actions results")
-    for record in value["artifacts"]:
-        current = artifact_metadata(
-            api,
-            repository,
-            record["name"],
-            record["id"],
-            head,
-            workflow["run_id"],
-            allow_expired=True,
-        )
-        if record["digest"] is not None and record["digest"] != current["digest"]:
-            raise ValueError("Manifest Artifact digest mismatch")
+    verify_original_evidence(api, value, repository, head)
 
 
 def release_asset(api, release, recovery_head=None):

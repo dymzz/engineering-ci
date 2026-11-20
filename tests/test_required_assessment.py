@@ -79,6 +79,8 @@ def make_profile(
     evaluated_at="2026-11-16T00:10:00Z",
     phase=None,
     allowed_inapplicability=None,
+    action="publish",
+    target="candidate",
 ):
     profile = expected_checks.build_effective_profile(
         profile_ref=copy.deepcopy(PROFILE_REF),
@@ -88,8 +90,8 @@ def make_profile(
         effective_at="2026-11-16T00:00:00Z",
         evaluated_at=evaluated_at,
         context="release",
-        action="publish",
-        target="candidate",
+        action=action,
+        target=target,
         phase=phase,
         required_obligations=list(
             obligations

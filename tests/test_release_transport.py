@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 from engineering_ci.release import publishing as release
 
 
-@pytest.mark.parametrize("operation", ["upload", "download", "metadata"])
+@pytest.mark.parametrize("operation", ["upload", "download", "metadata", "step_log"])
 def test_permission_errors_keep_status_and_redact_responses(operation, tmp_path):
     result = subprocess.CompletedProcess(
         [],
@@ -33,12 +33,28 @@ def test_permission_errors_keep_status_and_redact_responses(operation, tmp_path)
             client.upload("v0.4.9", tmp_path / "release-manifest.json")
         elif operation == "download":
             client.download(20)
+        elif operation == "step_log":
+            client.job_step_log(123, 9)
         else:
             client("releases")
     if operation == "upload":
         assert "--clobber" not in process.call_args.args[0]
     assert error.value.status == 403
     assert "SENSITIVE_RESPONSE" not in str(error.value)
+
+
+def test_job_step_log_selects_exact_job_and_step():
+    client = release.GitHub("example/ci")
+    result = subprocess.CompletedProcess(
+        [], 0, stdout=b"\xef\xbb\xbfstep log\n", stderr=b""
+    )
+    with patch.object(release.subprocess, "run", return_value=result) as process:
+        assert client.job_step_log(123, 9) == "step log\n"
+    assert process.call_args.args[0] == [
+        "gh",
+        "api",
+        "repos/example/ci/actions/jobs/123/steps/9/logs",
+    ]
 
 
 def test_empty_delete_is_supported_but_empty_or_null_get_is_not_missing():

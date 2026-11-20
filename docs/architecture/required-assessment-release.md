@@ -51,6 +51,20 @@ A future publish boundary must still recheck policy authorization and exact
 current Run/Attempt/Artifact evidence; this module does not perform Tag/Release
 publication.
 
+## Release policy scope
+
+`policy_snapshot_authority` receives the R1 Profile snapshot with its actual
+`assessment_scope` and the requested `publish_context`, including Repository,
+Tag, mode, Head, Phase, Run and Attempt. An accepted response must supply an
+`assessment_scope` independently derived from the authorized Profile for that
+Release. It must match the R1 `context`, `action`, `target`, `refs` including
+Ref actions, `phase`, and full `candidate` identity. The authority can map an
+authorized Release Target or Ref representation to the R1 representation.
+Reconciliation compares the result exactly.
+
+The envelope records both scopes. Existing envelopes without that binding
+require fresh reconciliation before they can establish verified scope.
+
 ## Manifest identity binding
 
 R4 output records `manifest_identity` for the Manifest that passed
@@ -64,9 +78,69 @@ Consumers compare with the same rule via `bind_manifest_identity` /
 `require_reconciliation_manifest`. Changing a valid Artifact ID or Digest
 changes both the Manifest identity and `reconciliation_ref`.
 
+## Provider evidence availability
+
+The verification and publication adapters reuse the existing Release Provider.
+`provider_evidence.availability` records which kind of proof that read produced:
+
+| Availability | Meaning | Reconciliation status |
+| --- | --- | --- |
+| `live` | `manifest_provider_from_verification` or `manifest_provider_from_publication` completed the existing native read | May be `verified` |
+| `accepted` | A caller callback returned true. This is not a native Job/Step/Artifact read and cannot set `release_authorized` | Structural `verified` only |
+| `contradicted` | The existing verifier observed a failed or missing upload step, or an ID/Attempt/digest disagreement | `rejected` |
+| `unavailable` | The API or step log could not be read (401/403/404, empty log, expired origin no longer accessible) | `unverified` |
+| `not_consulted` | No provider authority was supplied | `unverified` |
+
+An unavailable step log is not a producer mismatch and is not accepted from Artifact name, HEAD, and Run alone. A still-readable expired Artifact remains proof only when that same Attempt's upload step log still binds the exact ID. Green CI and a validation-only Run do not by themselves prove a full publish or historical recovery cycle.
+
 `validate_release_reconciliation` also requires `publish_context.validation_identity`
 to equal top-level `validation_identity` for `validation_to_publication`, and
 rejects a top-level Validation identity under `same_run`.
+
+## Serialized envelope and provider trust boundary
+
+`reconciliation_ref` binds the serialized envelope's contents; recomputing it
+does **not** authenticate the writer or prove that a native Provider read
+occurred. `validate_release_reconciliation()` checks structure, digest and
+authorization consistency, rather than independently re-reading GitHub.
+
+In particular, for `release_authorized=false` a deliberately modified
+`status=verified` validation-mode envelope with
+`authorization_basis=provider_verified` and
+`provider_evidence.availability=accepted` may pass structural validation after
+its `reconciliation_ref` is recomputed. The normal
+`reconcile_release_assessment()` producer does not emit that combination.
+It does not turn `release_authorized` true: that stronger claim requires a
+native `live` Provider basis and the remaining publication conditions.
+Consumers must not derive permission to publish from `status=verified`,
+`authorization_basis`, or the content digest alone. This false-authorization
+serialization edge remains a nonblocking follow-up observation under #61,
+not evidence of a demonstrated production publication bypass.
+
+## Native execution evidence and remaining integration scope
+
+The real [validation-only Run 44455217421](https://github.com/dymzz/engineering-ci/actions/runs/44455217421)
+on earlier candidate `f659429` completed two Attempts with a successful
+`verified` Job and a native `release-manifest` upload. Both Attempts skipped
+`publish`. The historical v0.7.0 Release artifacts provide partial provenance,
+but some original Artifact metadata is no longer readable after retention.
+These facts establish neither a live dynamic Required Release decision nor a
+real Tag/Release publication followed by Draft recovery.
+
+For the R4 code at `d9020b5`, [PR CI 44490530299](https://github.com/dymzz/engineering-ci/actions/runs/44490530299)
+completed four Jobs successfully and the targeted Release tests passed. Those
+are code/test evidence, not a new native publish-and-recover execution. Issue #61
+continues to own the larger real Provider → Required assessment → publishing
+and recovery end-to-end acceptance; merging this slice does not close #61.
+
+GitHub [documents a per-step Job log endpoint](https://docs.github.com/en/rest/actions/workflow-jobs#download-step-logs-for-a-workflow-run-job),
+and [prior 404 reports later confirmed working on 2026-11-12](https://github.com/github/rest-api-description/issues/7369)
+show that historical deployment and token access differed. The endpoint's
+successful availability for this Release Attempt cannot be inferred from
+documentation, third-party examples or controlled tests. An unreadable Step log remains
+`unverified/unavailable`, not a proven Artifact mismatch and never a release
+grant. Any production-readiness claim for this native Provider path requires
+successful observed access to the exact Job/Step/Artifact identity.
 
 ## Artifact obligations
 
@@ -89,7 +163,7 @@ Profile projection. A bare name list without that authority cannot authorize.
   `manifest_provider_from_verification(api)` /
   `manifest_provider_from_publication(api)`, which call existing
   `verification.evidence` / `publishing.published_evidence` for Artifact
-  ID/digest/Run linkage — R4 does not invent a second remote verifier. |
+  ID/digest linkage to the upload step of the Manifest's Run and Attempt. |
 
 Digest integrity is **not** authorization. `validate_release_reconciliation()`
 recomputes `reconciliation_ref` **and** re-checks pure authorization-consistency

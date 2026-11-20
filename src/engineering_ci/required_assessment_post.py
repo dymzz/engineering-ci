@@ -313,54 +313,78 @@ def _bind_lifecycle(prior, post, trigger, *, phase_order):
 
 
 def _bind_temporal(prior, post, trigger, evaluated_at):
-    """Align trigger / Assessment / envelope clocks and event→evidence causality."""
-    reasons = []
-    gaps = []
+    """Bind the event and Assessment times to the envelope's evaluation."""
     observed = _datetime(trigger["observed_at"], "post_trigger_observed_at_invalid")
     prior_at = _datetime(prior.get("evaluated_at"), "post_prior_evaluated_at_invalid")
     post_at = _datetime(post.get("evaluated_at"), "post_post_evaluated_at_invalid")
-    if observed > evaluated_at:
-        reasons.append("post_trigger_observed_in_future")
-        gaps.append(
-            {
-                "kind": "temporal",
-                "ref": trigger["observed_at"],
-                "reason": "trigger_after_envelope_evaluation",
-            }
+    historical = trigger.get("historical_as_of")
+    checks = [
+        (
+            observed > evaluated_at,
+            "post_trigger_observed_in_future",
+            "trigger_after_envelope_evaluation",
+            observed,
+        ),
+        (
+            prior_at > evaluated_at,
+            "post_prior_assessment_evaluated_in_future",
+            "prior_assessment_after_envelope_evaluation",
+            prior_at,
+        ),
+        (
+            post_at > evaluated_at,
+            "post_assessment_evaluated_in_future",
+            "post_assessment_after_envelope_evaluation",
+            post_at,
+        ),
+        (
+            trigger["kind"] == "authorized_reevaluation" and prior_at > observed,
+            "post_reevaluation_prior_after_trigger",
+            "prior_assessment_after_reevaluation_event",
+            prior_at,
+        ),
+    ]
+    if historical is None:
+        checks.extend(
+            [
+                (
+                    post_at < prior_at,
+                    "post_assessment_before_prior_assessment",
+                    "post_before_prior",
+                    post_at,
+                ),
+                (
+                    post_at < observed,
+                    "post_assessment_before_trigger_event",
+                    "post_evidence_predates_trigger",
+                    post_at,
+                ),
+            ]
         )
-    if post_at > evaluated_at:
-        reasons.append("post_assessment_evaluated_in_future")
-        gaps.append(
-            {
-                "kind": "temporal",
-                "ref": post.get("evaluated_at"),
-                "reason": "post_assessment_after_envelope_evaluation",
-            }
+    else:
+        as_of = _datetime(historical, "post_historical_reevaluation_time_invalid")
+        checks.extend(
+            [
+                (
+                    as_of != post_at,
+                    "post_historical_reevaluation_time_mismatch",
+                    "post_assessment_differs_from_historical_as_of",
+                    post_at,
+                ),
+                (
+                    as_of > observed,
+                    "post_historical_reevaluation_after_trigger",
+                    "historical_as_of_after_reevaluation_event",
+                    as_of,
+                ),
+            ]
         )
-    if prior_at > post_at and trigger.get("kind") != "authorized_reevaluation":
-        # Re-eval may refresh the same stage clock; progression should not move backward.
-        reasons.append("post_assessment_before_prior_assessment")
-        gaps.append(
-            {
-                "kind": "temporal",
-                "ref": post.get("evaluated_at"),
-                "reason": "post_before_prior",
-            }
-        )
-    # Terminal/publication/artifact triggers require post evidence at/after the event.
-    if (
-        trigger.get("kind")
-        in {"run_completed", "publication_completed", "artifact_available"}
-        and post_at < observed
-    ):
-        reasons.append("post_assessment_before_trigger_event")
-        gaps.append(
-            {
-                "kind": "temporal",
-                "ref": post.get("evaluated_at"),
-                "reason": "post_evidence_predates_trigger",
-            }
-        )
+    reasons = []
+    gaps = []
+    for failed, reason, gap, at in checks:
+        if failed:
+            reasons.append(reason)
+            gaps.append({"kind": "temporal", "ref": at.isoformat(), "reason": gap})
     return reasons, gaps
 
 
@@ -403,6 +427,14 @@ def _normalize_trigger(value):
         trigger["artifact_digest"] = _internal_ref(
             digest, "post_trigger_artifact_digest_invalid"
         )
+    if value.get("historical_as_of") is not None:
+        if kind != "authorized_reevaluation":
+            raise RequiredAssessmentPostError(
+                "post_historical_reevaluation_trigger_invalid"
+            )
+        trigger["historical_as_of"] = _datetime(
+            value["historical_as_of"], "post_historical_reevaluation_time_invalid"
+        ).isoformat()
     return trigger
 
 
@@ -571,11 +603,18 @@ def _consistency(envelope):
     identity = envelope.get("lifecycle_identity")
     if not isinstance(identity, dict):
         errors.append("post_lifecycle_identity_invalid")
-    trigger = envelope.get("trigger_event")
-    if not isinstance(trigger, dict) or trigger.get("kind") not in TRIGGER_KINDS:
-        errors.append("post_trigger_invalid")
-    elif trigger.get("run_completed") is not True and status == "verified":
-        errors.append("post_verified_requires_completed_run_trigger")
+    try:
+        trigger = _normalize_trigger(envelope.get("trigger_event"))
+    except RequiredAssessmentPostError as error:
+        errors.append(error.code)
+    else:
+        if status == "verified":
+            if trigger["run_completed"] is not True:
+                errors.append("post_verified_requires_completed_run_trigger")
+            if trigger["kind"] == "authorized_reevaluation" and (
+                envelope.get("prior_phase") != envelope.get("post_phase")
+            ):
+                errors.append("post_verified_reevaluation_requires_same_phase")
     return errors
 
 
@@ -623,7 +662,11 @@ def reconcile_post_stage(
 
     reasons = []
     gaps = []
-    if contract_sample or prior.get("inputs", {}).get("contract_sample"):
+    if (
+        contract_sample
+        or prior["inputs"]["contract_sample"]
+        or post["inputs"]["contract_sample"]
+    ):
         reasons.append("contract_sample_inputs_not_production_post_stage")
         contract_sample = True
 
@@ -662,16 +705,23 @@ def reconcile_post_stage(
     due_state = _due_state(evaluated, window, not_applicable=not_applicable)
 
     phase_order_binding = lifecycle_identity.get("phase_order_binding") or {}
+    assessment_context = {
+        "lifecycle_identity": lifecycle_identity,
+        "phase_order": order,
+        "trigger_event": trigger,
+        "prior_phase": prior["phase"],
+        "post_phase": post["phase"],
+        "prior_assessment_ref": prior["assessment_ref"],
+        "post_assessment_ref": post["assessment_ref"],
+        "prior_evaluated_at": prior["evaluated_at"],
+        "post_evaluated_at": post["evaluated_at"],
+        "evaluated_at": evaluated.isoformat(),
+    }
     phase_ok, phase_status, phase_reasons, _phase_detail = _authority_gate(
         phase_order_authority,
         {
-            "phase_order": copy.deepcopy(order),
+            **copy.deepcopy(assessment_context),
             "phase_order_binding": copy.deepcopy(phase_order_binding),
-            "lifecycle_identity": copy.deepcopy(lifecycle_identity),
-            "prior_phase": prior.get("phase"),
-            "post_phase": post.get("phase"),
-            "prior_assessment_ref": prior["assessment_ref"],
-            "post_assessment_ref": post["assessment_ref"],
             "prior_universe_ref": (prior.get("inputs") or {}).get("universe_ref"),
             "post_universe_ref": (post.get("inputs") or {}).get("universe_ref"),
         },
@@ -682,25 +732,22 @@ def reconcile_post_stage(
     if not phase_ok:
         reasons.extend(phase_reasons)
 
-    trigger_ok, trigger_status, trigger_reasons, _trigger_detail = _authority_gate(
+    trigger_ok, trigger_status, trigger_reasons, trigger_detail = _authority_gate(
         trigger_authority,
-        {
-            "trigger_event": copy.deepcopy(trigger),
-            "lifecycle_identity": copy.deepcopy(lifecycle_identity),
-            "phase_order": copy.deepcopy(order),
-            "prior_phase": prior.get("phase"),
-            "post_phase": post.get("phase"),
-            "prior_assessment_ref": prior["assessment_ref"],
-            "post_assessment_ref": post["assessment_ref"],
-            "prior_evaluated_at": prior.get("evaluated_at"),
-            "post_evaluated_at": post.get("evaluated_at"),
-        },
+        copy.deepcopy(assessment_context),
         missing_code="post_trigger_authority_missing",
         rejected_code="post_trigger_authority_rejected",
         unverified_code="post_trigger_authority_unverified",
     )
     if not trigger_ok:
         reasons.extend(trigger_reasons)
+    elif (
+        "historical_as_of" in trigger
+        and trigger_detail.get("historical_reevaluation_accepted") is not True
+    ):
+        trigger_ok = False
+        trigger_status = "unverified"
+        reasons.append("post_historical_reevaluation_unproven")
 
     due_ok, due_status, due_reasons, due_detail = _authority_gate(
         due_window_authority,

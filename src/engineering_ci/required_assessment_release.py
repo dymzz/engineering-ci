@@ -24,6 +24,7 @@ import re
 from datetime import datetime
 
 from . import required_assessment
+from .github_cli import ApiError
 from .release import manifest as release_manifest
 from .release import publishing as release_publishing
 from .release import registry as release_registry
@@ -36,11 +37,18 @@ RELEASE_PHASES = frozenset({"pre_publish", "publish", "post_publish"})
 PUBLISH_MODES = frozenset({"validation", "publication"})
 MANIFEST_BINDINGS = frozenset({"same_run", "validation_to_publication"})
 AUTHORIZATION_BASES = frozenset({"structural_fixture", "provider_verified"})
+_SCOPE_TEXT_FIELDS = ("context", "action", "target", "phase")
+_SCOPE_FIELDS = (*_SCOPE_TEXT_FIELDS, "refs", "candidate")
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-_INFORMATIONAL_REASONS = frozenset({"contract_sample_inputs_not_production_release"})
+_INFORMATIONAL_REASONS = frozenset(
+    {
+        "contract_sample_inputs_not_production_release",
+        "release_provider_callback_not_native_proof",
+    }
+)
 
 
 class RequiredAssessmentReleaseError(ValueError):
@@ -352,31 +360,70 @@ def _profile_snapshot(assessment):
         },
         "assessment_ref": assessment.get("assessment_ref"),
         "assessment_evaluated_at": assessment.get("evaluated_at"),
+        "assessment_scope": {
+            key: copy.deepcopy(assessment.get(key)) for key in _SCOPE_FIELDS
+        },
         "universe_ref": inputs.get("universe_ref"),
     }
 
 
-def _policy_still_authorized(snapshot, *, evaluated_at, authority):
+def _valid_policy_scope(scope):
+    return (
+        isinstance(scope, dict)
+        and set(scope) == set(_SCOPE_FIELDS)
+        and all(
+            isinstance(scope[key], str) and scope[key].strip()
+            for key in _SCOPE_TEXT_FIELDS
+        )
+        and isinstance(scope["refs"], list)
+        and bool(scope["refs"])
+        and all(
+            isinstance(ref, dict)
+            and set(ref) == {"target_ref", "ref_action"}
+            and all(isinstance(field, str) and field.strip() for field in ref.values())
+            for ref in scope["refs"]
+        )
+        and isinstance(scope["candidate"], dict)
+        and isinstance(scope["candidate"].get("commit"), str)
+        and set(scope["candidate"])
+        <= set(required_assessment.CANDIDATE_IDENTITY_FIELDS)
+        and all(
+            isinstance(field, str) and field.strip()
+            for field in scope["candidate"].values()
+        )
+    )
+
+
+def _policy_still_authorized(snapshot, *, publish_context, authority):
     if authority is None:
-        return False, "policy_snapshot_authority_missing", "unverified"
+        return "policy_snapshot_authority_missing", "unverified", None
     context = {
         "snapshot": copy.deepcopy(snapshot),
-        "evaluated_at": evaluated_at.isoformat(),
+        "publish_context": copy.deepcopy(publish_context),
+        "evaluated_at": publish_context["evaluated_at"],
     }
     result = authority(context)
     if result is True:
-        return True, None, "authorized"
+        return "release_policy_scope_missing", "unverified", None
     if result is False or result is None:
-        return False, "policy_snapshot_authority_rejected", "rejected"
+        return "policy_snapshot_authority_rejected", "rejected", None
     if not isinstance(result, dict):
         raise RequiredAssessmentReleaseError("policy_snapshot_authority_result_invalid")
     status = result.get("status")
     if status == "authorized" and result.get("accepted") is True:
-        return True, None, "authorized"
+        scope = result.get("assessment_scope")
+        if scope is None:
+            return "release_policy_scope_missing", "unverified", None
+        if not _valid_policy_scope(scope):
+            return "release_policy_scope_invalid", "unverified", None
+        scope = copy.deepcopy(scope)
+        if scope != snapshot["assessment_scope"]:
+            return "release_assessment_scope_mismatch", "rejected", scope
+        return None, "authorized", scope
     if status in {"revoked", "expired", "superseded", "rejected"}:
-        return False, f"policy_snapshot_{status}", "rejected"
+        return f"policy_snapshot_{status}", "rejected", None
     if status == "unverified" or result.get("accepted") is not True:
-        return False, "policy_snapshot_unverified", "unverified"
+        return "policy_snapshot_unverified", "unverified", None
     raise RequiredAssessmentReleaseError("policy_snapshot_authority_result_invalid")
 
 
@@ -406,6 +453,53 @@ def _artifact_set_authorized(obligations, *, authority, snapshot):
     raise RequiredAssessmentReleaseError("artifact_obligation_authority_result_invalid")
 
 
+class _NativeProviderRead:
+    """Provenance minted only by the verification and publication adapters."""
+
+    def __init__(self, source):
+        self.source = source
+
+
+def _provider_evidence(
+    availability, *, error_class=None, http_status=None, source=None
+):
+    return {
+        "availability": availability,
+        "error_class": error_class,
+        "http_status": http_status,
+        "source": source,
+    }
+
+
+def _provider_failure(exc):
+    """Classify provider failures by exception type, not by message text.
+
+    ``ReleaseEvidenceUnavailable`` and ``ApiError`` mean the native read did not
+    return evidence. Any other ``ValueError`` from the existing verifier is an
+    observed Job, Step, Attempt, ID, or digest failure.
+    """
+    if isinstance(exc, release_manifest.ReleaseEvidenceUnavailable):
+        return {
+            "accepted": False,
+            "status": "unverified",
+            "reason": "release_provider_evidence_unavailable",
+            "provider_error": {
+                "class": exc.error_class,
+                "status": exc.http_status,
+            },
+        }
+    if isinstance(exc, ApiError):
+        return {
+            "accepted": False,
+            "status": "unverified",
+            "reason": "release_provider_evidence_unavailable",
+            "provider_error": {"class": "ApiError", "status": exc.status},
+        }
+    if isinstance(exc, ValueError):
+        return False
+    raise exc
+
+
 def manifest_provider_from_verification(api):
     """Adapter: reuse ``verification.evidence`` — do not invent a second verifier."""
 
@@ -420,9 +514,9 @@ def manifest_provider_from_verification(api):
                 publish["tag"],
                 publish["head_sha"],
             )
-        except ValueError:
-            return False
-        return True
+        except (ApiError, ValueError) as exc:
+            return _provider_failure(exc)
+        return _NativeProviderRead("verification.evidence")
 
     return authority
 
@@ -441,9 +535,9 @@ def manifest_provider_from_publication(api):
                 publish["tag"],
                 publish["head_sha"],
             )
-        except ValueError:
-            return False
-        return True
+        except (ApiError, ValueError) as exc:
+            return _provider_failure(exc)
+        return _NativeProviderRead("publishing.published_evidence")
 
     return authority
 
@@ -453,23 +547,69 @@ def _provider_basis(manifest, context, *, provider_authority, handoff_authority)
 
     Production callers should pass ``manifest_provider_from_verification`` /
     ``manifest_provider_from_publication`` so Artifact ID/digest/Run linkage is
-    checked by the existing Release Provider path.
+    checked by the existing Release Provider path. A live re-read of the upload
+    step log is fresh proof. A still-readable expired Artifact plus that same
+    log is retained proof. An unreadable log or Artifact is unavailable proof,
+    not a contradicted producer.
     """
     if provider_authority is None:
-        return "structural_fixture", ["release_provider_authority_missing"]
+        return (
+            "structural_fixture",
+            ["release_provider_authority_missing"],
+            _provider_evidence("not_consulted"),
+        )
     provider_context = {
         "manifest": copy.deepcopy(manifest),
         "publish_context": copy.deepcopy(context),
     }
     accepted = provider_authority(provider_context)
-    if accepted is not True:
-        return "structural_fixture", ["release_provider_authority_rejected"]
+    if isinstance(accepted, _NativeProviderRead):
+        evidence = _provider_evidence("live", source=accepted.source)
+        verified_basis = "provider_verified"
+        acceptance_reasons = []
+    elif accepted is True:
+        # A boolean callback can support a structural fixture. It cannot mint
+        # production publication permission.
+        evidence = _provider_evidence("accepted")
+        verified_basis = "structural_fixture"
+        acceptance_reasons = ["release_provider_callback_not_native_proof"]
+    elif isinstance(accepted, dict) and accepted.get("status") == "unverified":
+        error = accepted.get("provider_error") or {}
+        error_class = error.get("class")
+        http_status = error.get("status")
+        if error_class not in {None, "ApiError", "ValueError"} or (
+            http_status is not None and type(http_status) is not int
+        ):
+            raise RequiredAssessmentReleaseError("release_provider_evidence_invalid")
+        return (
+            "structural_fixture",
+            ["release_provider_evidence_unavailable"],
+            _provider_evidence(
+                "unavailable",
+                error_class=error_class,
+                http_status=http_status,
+            ),
+        )
+    else:
+        return (
+            "structural_fixture",
+            ["release_provider_authority_rejected"],
+            _provider_evidence("contradicted"),
+        )
     if context["manifest_binding"] == "validation_to_publication":
         if handoff_authority is None:
-            return "structural_fixture", ["release_handoff_authority_missing"]
+            return (
+                "structural_fixture",
+                ["release_handoff_authority_missing", *acceptance_reasons],
+                evidence,
+            )
         if handoff_authority(provider_context) is not True:
-            return "structural_fixture", ["release_handoff_authority_rejected"]
-    return "provider_verified", []
+            return (
+                "structural_fixture",
+                ["release_handoff_authority_rejected", *acceptance_reasons],
+                evidence,
+            )
+    return verified_basis, acceptance_reasons, evidence
 
 
 def _blocking_reasons(reasons):
@@ -485,6 +625,7 @@ def _derive_status(blocking, *, policy_status, artifact_status):
         "artifact_obligation_authority_missing",
         "artifact_obligation_unverified",
         "release_provider_authority_missing",
+        "release_provider_evidence_unavailable",
         "release_handoff_authority_missing",
     }
     if (
@@ -618,6 +759,18 @@ def _authorization_consistent(envelope):
         mode = normalized["mode"]
         binding = normalized["manifest_binding"]
         aligned = status == "verified" or authorized is True
+        if aligned:
+            snapshot = envelope.get("profile_snapshot")
+            scope = envelope.get("policy_scope")
+            if (
+                not isinstance(snapshot, dict)
+                or snapshot.get("assessment_ref") != envelope.get("assessment_ref")
+                or not _valid_policy_scope(scope)
+                or scope != snapshot.get("assessment_scope")
+                or scope["phase"] != normalized["phase"]
+                or scope["candidate"]["commit"].lower() != normalized["head_sha"]
+            ):
+                errors.append("release_verified_requires_assessment_scope_alignment")
         if authorized is True:
             if mode != "publication":
                 errors.append("release_authorized_requires_publication_mode")
@@ -667,6 +820,36 @@ def _authorization_consistent(envelope):
         errors.append("release_candidate_tag_mismatch")
     if candidate.get("repository") != context.get("repository"):
         errors.append("release_candidate_repository_mismatch")
+    evidence = envelope.get("provider_evidence")
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != {"availability", "error_class", "http_status", "source"}
+        or evidence.get("availability")
+        not in {"live", "accepted", "unavailable", "contradicted", "not_consulted"}
+        or evidence.get("error_class") not in {None, "ApiError", "ValueError"}
+        or evidence.get("source")
+        not in {None, "verification.evidence", "publishing.published_evidence"}
+        or (
+            evidence.get("availability") == "live"
+            and evidence.get("source")
+            not in {"verification.evidence", "publishing.published_evidence"}
+        )
+        or (
+            evidence.get("availability") != "live"
+            and evidence.get("source") is not None
+        )
+        or (
+            evidence.get("http_status") is not None
+            and type(evidence.get("http_status")) is not int
+        )
+    ):
+        errors.append("release_provider_evidence_invalid")
+    elif authorized is True and evidence.get("availability") != "live":
+        errors.append("release_authorized_requires_native_provider_evidence")
+    elif "release_provider_evidence_unavailable" in reasons and (
+        evidence.get("availability") != "unavailable" or status == "rejected"
+    ):
+        errors.append("release_provider_unavailable_must_stay_unverified")
     return errors
 
 
@@ -685,7 +868,9 @@ def reconcile_release_assessment(
 ):
     """Reconcile an R1 Assessment with Manifest v1 for Release publication.
 
-    Manifest structure is gated by ``release.manifest.validate``. Production
+    Manifest structure is gated by ``release.manifest.validate``. The policy
+    authority supplies the authorized ``assessment_scope`` for the requested
+    Release. Production
     ``release_authorized`` additionally requires provider-verified evidence
     (and handoff proof for validation→publication). Structural fixtures may
     reach ``status=verified`` only as a contract shape — they do not authorize
@@ -870,15 +1055,15 @@ def reconcile_release_assessment(
     if local_revoked is not None and evaluated >= local_revoked:
         reasons.append("release_assessment_authority_revoked_locally")
 
-    policy_ok, policy_reason, policy_status = _policy_still_authorized(
+    policy_reason, policy_status, policy_scope = _policy_still_authorized(
         snapshot,
-        evaluated_at=evaluated,
+        publish_context=context,
         authority=policy_snapshot_authority,
     )
-    if not policy_ok:
+    if policy_reason:
         reasons.append(policy_reason)
 
-    authorization_basis, provider_reasons = _provider_basis(
+    authorization_basis, provider_reasons, provider_evidence = _provider_basis(
         normalized_manifest,
         context,
         provider_authority=manifest_provider_authority,
@@ -897,6 +1082,7 @@ def reconcile_release_assessment(
         status == "verified"
         and not contract_sample
         and authorization_basis == "provider_verified"
+        and provider_evidence.get("availability") == "live"
         and context["mode"] == "publication"
         and assessment.get("status") == "passed"
         and artifact_status == "authorized"
@@ -929,6 +1115,8 @@ def reconcile_release_assessment(
         },
         "profile_snapshot": snapshot,
         "policy_snapshot_status": policy_status,
+        "policy_scope": policy_scope,
+        "provider_evidence": provider_evidence,
         "artifact_obligation_status": artifact_status,
         "artifact_obligations": artifacts,
         "fixed_manifest_checks": {
@@ -955,6 +1143,8 @@ def reconcile_release_assessment(
             "same_candidate_sha_does_not_preserve_policy_authorization",
             "fixture_authorities_are_not_production_trust_roots",
             "structural_fixture_is_not_provider_verification",
+            "step_log_or_artifact_unavailable_is_not_a_producer_mismatch",
+            "name_head_and_run_alone_do_not_bind_attempt",
             "reconciliation_digest_is_not_authorization_proof",
         ],
         "reconciliation_ref": None,

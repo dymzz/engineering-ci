@@ -10,10 +10,12 @@ import re
 import subprocess
 from pathlib import Path
 
+from ..github_cli import ApiError
 from . import RELEASE_CONFIG
 from .registry import (
     ARTIFACT_NAMES,
     ARTIFACT_OUTPUTS,
+    ARTIFACT_UPLOAD_STEPS,
     CHECKS,
     DAGGER_POLICY_CHECKS,
     REQUIRED_TOOLS,
@@ -26,7 +28,39 @@ REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 TOOL_VERSION = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[a-z0-9.+-]*)$")
+UPLOAD_RESULT = re.compile(
+    r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+(?:\.[0-9]+)?Z )?"
+    r"Artifact ([a-z0-9-]+) has been successfully uploaded! "
+    r"Final size is [0-9]+ bytes\. Artifact ID is ([1-9][0-9]*)"
+)
 # These are the actual v0.4.8 release jobs/steps, not a new execution plan.
+
+
+class ReleaseEvidenceUnavailable(ValueError):
+    """A native Release read did not return evidence. This is not a mismatch."""
+
+    def __init__(self, message, *, error_class, http_status=None):
+        super().__init__(message)
+        self.error_class = error_class
+        self.http_status = http_status
+
+
+def _read_upload_step_log(api, job_id, step_number):
+    """Read one upload step log. Transport and empty-log failures stay unavailable."""
+    try:
+        return api.job_step_log(job_id, step_number)
+    except ApiError as exc:
+        raise ReleaseEvidenceUnavailable(
+            "Artifact upload step log is unreadable",
+            error_class="ApiError",
+            http_status=exc.status,
+        ) from exc
+    except ValueError as exc:
+        raise ReleaseEvidenceUnavailable(
+            "Artifact upload step log is unreadable",
+            error_class="ValueError",
+            http_status=None,
+        ) from exc
 
 
 def dagger_cli_version(output):
@@ -71,26 +105,95 @@ def workflow_jobs(api, run_id, attempt, head):
     return jobs
 
 
+def artifact_upload_id(api, name, head, run_id, attempt, *, jobs=None):
+    """Read the Artifact ID reported by its producer in this Run attempt."""
+    if jobs is None:
+        jobs = workflow_jobs(api, run_id, attempt, head)
+    job_name, step_name = ARTIFACT_UPLOAD_STEPS[name]
+    sources = [job for job in jobs if job.get("name") == job_name]
+    if len(sources) != 1:
+        raise ValueError(
+            f"Artifact upload job unavailable for this Run attempt: {name}"
+        )
+    job = sources[0]
+    job_id = job.get("id")
+    if (
+        job.get("status") != "completed"
+        or job.get("run_id") != run_id
+        or job.get("run_attempt") != attempt
+        or job.get("head_sha") != head
+        or type(job_id) is not int
+        or job_id <= 0
+    ):
+        raise ValueError(f"Artifact upload job does not match this Run attempt: {name}")
+    steps = [
+        step
+        for step in job.get("steps", [])
+        if step.get("name") == step_name
+        or (step_name.endswith("@") and step.get("name", "").startswith(step_name))
+    ]
+    if (
+        len(steps) != 1
+        or steps[0].get("status") != "completed"
+        or steps[0].get("conclusion") != "success"
+    ):
+        raise ValueError(f"Successful Artifact upload step unavailable: {name}")
+    step_number = steps[0].get("number")
+    if type(step_number) is not int or step_number <= 0:
+        raise ValueError(f"Artifact upload step number unavailable: {name}")
+    ids = []
+    for line in _read_upload_step_log(api, job_id, step_number).splitlines():
+        match = UPLOAD_RESULT.fullmatch(line)
+        if match and match[1] == name:
+            ids.append(int(match[2]))
+    unique = set(ids)
+    if len(unique) == 1:
+        return unique.pop()
+    # A readable log with no recognized ID, or several different IDs, does not
+    # prove a conflicting producer. A single parsed ID that later disagrees with
+    # the Manifest is a contradiction in artifact_metadata.
+    raise ReleaseEvidenceUnavailable(
+        f"Artifact upload step log does not prove one ID: {name}",
+        error_class="ValueError",
+        http_status=None,
+    )
+
+
 def artifact_metadata(
-    api, repository, name, asset_id, head, run_id, *, allow_expired=False
+    api,
+    repository,
+    name,
+    asset_id,
+    head,
+    run_id,
+    attempt,
+    *,
+    jobs=None,
+    allow_expired=False,
 ):
     if name not in ARTIFACT_NAMES or type(asset_id) is not int or asset_id <= 0:
         raise ValueError("Invalid native Artifact ID")
     item = api(f"actions/artifacts/{asset_id}")
+    artifact_run = item.get("workflow_run")
     expected_url = (
         f"https://api.github.com/repos/{repository}/actions/artifacts/{asset_id}"
     )
     if (
-        item["id"] != asset_id
-        or item["name"] != name
-        or item.get("workflow_run", {}).get("head_sha") != head
-        or item.get("workflow_run", {}).get("id") != run_id
+        item.get("id") != asset_id
+        or item.get("name") != name
+        or not isinstance(artifact_run, dict)
+        or artifact_run.get("head_sha") != head
+        or artifact_run.get("id") != run_id
         or item.get("url") != expected_url
         or type(item.get("expired")) is not bool
     ):
         raise ValueError("Artifact identity or commit mismatch")
     if item.get("expired") and not allow_expired:
         return None
+    if asset_id != artifact_upload_id(api, name, head, run_id, attempt, jobs=jobs):
+        raise ValueError(
+            f"Artifact ID does not match the upload step for this Run attempt: {name}"
+        )
     return {
         "name": name,
         "id": asset_id,
@@ -271,6 +374,29 @@ def check_record(jobs, name, step):
     return result
 
 
+def verify_original_evidence(api, value, repository, head):
+    workflow = value["workflow"]
+    run_id, attempt = workflow["run_id"], workflow["run_attempt"]
+    jobs = workflow_jobs(api, run_id, attempt, head)
+    for key, source in CHECKS.items():
+        if check_record(jobs, *source) != value["checks"][key]:
+            raise ValueError("Manifest does not match original Actions results")
+    for item in value["artifacts"]:
+        current = artifact_metadata(
+            api,
+            repository,
+            item["name"],
+            item["id"],
+            head,
+            run_id,
+            attempt,
+            jobs=jobs,
+            allow_expired=True,
+        )
+        if item["digest"] is not None and item["digest"] != current["digest"]:
+            raise ValueError("Manifest Artifact digest mismatch")
+
+
 def manifest(api, repository, tag, head, run_id, attempt, mode, evidence, *, ids=None):
     if not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
         raise ValueError("Invalid release version")
@@ -305,7 +431,9 @@ def manifest(api, repository, tag, head, run_id, attempt, mode, evidence, *, ids
         checks["evidence"]["status"] = "unavailable"
     artifacts = []
     for name, asset_id in (ids or {}).items():
-        record = artifact_metadata(api, repository, name, asset_id, head, run_id)
+        record = artifact_metadata(
+            api, repository, name, asset_id, head, run_id, attempt, jobs=jobs
+        )
         if record is not None:
             artifacts.append(record)
     if (

@@ -105,7 +105,7 @@ def _validate_expected(expected, git, plan, *, root=None, materialized_sources=N
             "unknown",
         }:
             raise PlanError("expected_consumer_completeness_invalid")
-        if expected.get("authority_status") not in {None, "verified", "unverified"}:
+        if expected.get("authority_status") not in {"verified", "unverified"}:
             raise PlanError("effective_profile_authority_untrusted")
         if expected.get("trusted_admission_status", "not_evaluated") != "not_evaluated":
             raise PlanError("expected_trusted_admission_unproven")
