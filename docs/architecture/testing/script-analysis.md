@@ -72,6 +72,28 @@ Worktree observations keep `changed_paths` Source coverage. Native results
 retain the actual scan outcome, and strict reconciliation still requires a
 closed Source.
 
+### NEW-055 / PR #141 — generated Producer handoff accepted
+
+**Delivered and accepted (2026-11-20):** [PR #141](https://github.com/dymzz/engineering-ci/pull/141)
+implements the [#86](https://github.com/dymzz/engineering-ci/issues/86)
+Producer File/Directory retention and independent
+[#66-P0/#66-C](https://github.com/dymzz/engineering-ci/issues/66) Source
+Resolution → Expected/Native reconciliation. The reviewed implementation
+retains native PASS/FAIL and the normal no-Data-Edge Host behavior established
+by [PR #135](https://github.com/dymzz/engineering-ci/pull/135). It does not
+create a new evidence store or a parallel reconciliation system.
+
+The directed Host tests cover original Producer/Closure/Plan/Event/Candidate
+identity, bound Run/Attempt, File/Directory bytes (including empty directories),
+independent Consumer View reconstruction, matched positives and accurately
+typed missing, tampered and mismatched negatives. The Dagger Engine
+`v1.0.0-beta.16` integration run was reported with exact command, original
+Plan/Report/Handoff and artifact identifiers, and matched/negative outcomes in
+[the PR #141 verification record](../../verification/plan-result-sharing/README.md#pr-141-producer-artifact-handoff-and-independent-source-resolution-86--66).
+The accepted PR #141 slice has **no outstanding repeat-test or extra raw-bundle
+upload condition**. Broader #86/#66 obligations remain separately scoped in
+those Issues; they do not reopen this delivered slice.
+
 Data edges can supply generated files and directories to a native scan through
 the verified Producer output and Consumer View. When execution runs only with
 temporary directories (`produced_artifacts_dir=None`), the result retains
