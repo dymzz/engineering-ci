@@ -21,11 +21,15 @@ def continuation(repo, version, run_id, command="wait"):
     return f"uv run --locked python scripts/release.py {command} --repo {repo} --version v{version} --run {run_id}"
 
 
-def inspect(api, repo, version, run_id):
+def inspect(api, repo, version, run_id, *, post_stage_authority=None):
     """Verify real evidence for this Run, including original published attempts."""
     identity = verification.run_target(api, repo, run_id, version)
     publication = verification.published(
-        api, repo, identity["tag"], head=identity["commit_sha"]
+        api,
+        repo,
+        identity["tag"],
+        head=identity["commit_sha"],
+        post_stage_authority=post_stage_authority,
     )
     if publication and publication["status"] == "published":
         workflow = publication["manifest"]["workflow"]
@@ -45,7 +49,7 @@ def inspect(api, repo, version, run_id):
     }
 
 
-def main(argv=None):
+def main(argv=None, *, post_stage_authority=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command", choices=["publish", "validate", "status", "verify", "wait"]
@@ -162,13 +166,29 @@ def main(argv=None):
                 )
                 code = watch_code
             else:
-                value.update(inspect(api, repo, args.version, args.run))
+                value.update(
+                    inspect(
+                        api,
+                        repo,
+                        args.version,
+                        args.run,
+                        post_stage_authority=post_stage_authority,
+                    )
+                )
                 code = 0 if value["result"] in {"validated", "published"} else 1
         elif args.command in {"publish", "validate"} and live["status"] != "completed":
             value["result"] = "requested"
             code = 0  # request accepted; explicitly not publication success
         else:
-            value.update(inspect(api, repo, args.version, args.run))
+            value.update(
+                inspect(
+                    api,
+                    repo,
+                    args.version,
+                    args.run,
+                    post_stage_authority=post_stage_authority,
+                )
+            )
             code = (
                 0
                 if value["result"] in {"validated", "published"}
@@ -234,6 +254,8 @@ def main(argv=None):
             )
         if value["publication"].get("release_url"):
             print("Release: " + value["publication"]["release_url"])
+        if post_stage := value["publication"].get("post_stage"):
+            print("Post-stage: " + post_stage["status"])
         if value.get("reason"):
             print(value["reason"])
         if value.get("intent"):

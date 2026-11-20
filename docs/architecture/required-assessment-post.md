@@ -87,11 +87,33 @@ Optional `disposition_authority` may record authorized follow-ups
 (`await_repair`, `reevaluate`, `notify`, `block_progression`, …). Default is
 `none`. `auto_revoke_published` is always false in this contract.
 
+## Published Release inspection
+
+`release.verification.published()` and `cli.release.inspect()` return
+the historical Release result and a separate `post_stage` observation.
+For a protected caller supplying `post_stage_authority`, the read-side
+adapter checks the final native Release ID and publication time, its
+immutable Manifest, and the original completed Run and Attempt. It
+binds the `publication_completed` event and any required Artifact ID
+and digest to those facts. The independent trigger verifier receives the
+native publication identity and the applicable Artifact ID alongside
+the governed R5 context. The caller must supply both original R1
+Assessments and the governing Phase, Trigger and Due authorities.
+
+The adapter runs R5 at read time. Its result may show a requested
+disposition and does not execute one. The CLI continues to report
+the historical publication even when current post-stage evidence
+is pending, rejected or unverified. The default CLI has no governed
+authority binding and reports that evidence gap explicitly. Other
+trigger types and any policy-selected Promotion, Notification or
+Reevaluation need their own native entry and outcome receipt.
+
 ## Limits
 
 - Prior Assessment documents remain immutable references.
 - Digest integrity is not authorization.
-- No CLI / Actions / server-protection wiring in this slice.
+- The Release CLI only consumes publication-triggered R5 observations.
+  Action consumers and server-protection changes are outside that read.
 
 ## NEW-001 / NEW-027 scope and evidence
 
