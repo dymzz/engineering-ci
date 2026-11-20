@@ -152,6 +152,66 @@ A1_LIVE_SENSITIVE_PREFIXES = (
 )
 
 
+_GIT_C_ESCAPES = {
+    "a": b"\a",
+    "b": b"\b",
+    "t": b"\t",
+    "n": b"\n",
+    "v": b"\v",
+    "f": b"\f",
+    "r": b"\r",
+    '"': b'"',
+    "\\": b"\\",
+}
+
+
+def _unescape_git_quoted_path(raw: str) -> str:
+    """Decode Git C-style quoted paths if ``core.quotePath`` escaped characters."""
+    if not (len(raw) >= 2 and raw.startswith('"') and raw.endswith('"')):
+        return raw
+    inner = raw[1:-1]
+    out = bytearray()
+    idx = 0
+    while idx < len(inner):
+        ch = inner[idx]
+        if ch != "\\" or idx + 1 >= len(inner):
+            out.extend(ch.encode("utf-8"))
+            idx += 1
+            continue
+        nxt = inner[idx + 1]
+        if nxt in _GIT_C_ESCAPES:
+            out.extend(_GIT_C_ESCAPES[nxt])
+            idx += 2
+        elif idx + 3 < len(inner) and all(
+            digit in "01234567" for digit in inner[idx + 1 : idx + 4]
+        ):
+            out.append(int(inner[idx + 1 : idx + 4], 8))
+            idx += 4
+        else:
+            out.extend(("\\" + nxt).encode("utf-8"))
+            idx += 2
+    return out.decode("utf-8", errors="replace")
+
+
+def _normalize_a1_changed_path(raw: str) -> str:
+    """Normalize a Git changed path without stripping leading dots from hidden paths."""
+    norm = _unescape_git_quoted_path(raw.strip()).replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm.lstrip("/")
+
+
+def _read_changed_paths_file(path: Path) -> list[str]:
+    raw = path.read_bytes()
+    if b"\x00" in raw:
+        return [
+            chunk.decode("utf-8", errors="replace")
+            for chunk in raw.split(b"\x00")
+            if chunk
+        ]
+    return raw.decode("utf-8", errors="replace").splitlines()
+
+
 def select_a1_capture_scope(
     changed_paths: list[str],
     *,
@@ -161,9 +221,9 @@ def select_a1_capture_scope(
 ) -> dict[str, Any]:
     """Classify whether A.1 CI must run 3 live Engine captures or offline contract regression."""
     normalized = [
-        path.replace("\\", "/").strip().lstrip("./")
+        norm
         for path in changed_paths
-        if path and path.strip()
+        if path and path.strip() and (norm := _normalize_a1_changed_path(path))
     ]
     matched_paths: list[str] = []
     for path in normalized:
@@ -3123,11 +3183,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.subcommand == "a1-scope":
         changed_paths = list(args.changed_file)
         if args.changed_files_file and args.changed_files_file.is_file():
-            changed_paths.extend(
-                args.changed_files_file.read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines()
-            )
+            changed_paths.extend(_read_changed_paths_file(args.changed_files_file))
         decision = select_a1_capture_scope(
             changed_paths,
             explicit_reverify=args.explicit_reverify,

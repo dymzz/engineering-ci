@@ -213,6 +213,30 @@ def _records(raw: str) -> tuple[dict, list[dict]]:
     return envelope, [item for item in diagnostics if isinstance(item, dict)]
 
 
+def invoke_arguments(
+    helper_root: Path,
+    module_root: Path,
+    policy: dict,
+    scripts: list[Path],
+) -> list[str]:
+    """Build native `powershell_invoke.ps1` arguments with repeatable `-Path` entries."""
+    arguments = [
+        "-File",
+        str(invocation_script(helper_root)),
+        "-ModuleRoot",
+        str(module_root),
+        "-Version",
+        policy["pinned_version"],
+    ]
+    for item in scripts:
+        arguments += ["-Path", str(item)]
+    if policy["settings"]:
+        arguments += ["-Settings", policy["settings"]]
+    if policy["severity"]:
+        arguments += ["-Severity", policy["severity"]]
+    return arguments
+
+
 def analyse(
     workspace: Path,
     helper_root: Path,
@@ -248,20 +272,7 @@ def analyse(
     module_root, module_source = prepare_module(
         Path(tempfile.gettempdir()) / "engineering-ci-pssa", timeout
     )
-    arguments = [
-        "-File",
-        str(invocation_script(helper_root)),
-        "-ModuleRoot",
-        str(module_root),
-        "-Version",
-        policy["pinned_version"],
-        "-Path",
-        *[str(item) for item in scripts],
-    ]
-    if policy["settings"]:
-        arguments += ["-Settings", policy["settings"]]
-    if policy["severity"]:
-        arguments += ["-Severity", policy["severity"]]
+    arguments = invoke_arguments(helper_root, module_root, policy, scripts)
     result = _run_powershell(arguments, workspace, timeout)
     envelope, records = _records(result.stdout)
     if envelope.get("status") != "ok":
@@ -377,7 +388,7 @@ def main(argv=None) -> int:
     workspace = Path(args.workspace).resolve()
     try:
         policy = paths_policy(
-            [item for item in args.paths.split(",") if item.strip()],
+            [item.strip() for item in args.paths.split(",") if item.strip()],
             args.settings,
             args.severity,
         )

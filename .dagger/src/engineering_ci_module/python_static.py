@@ -41,6 +41,8 @@ SCANNER_VERSIONS = {
     "pylint": "4.1.3",
 }
 
+STDOUT_JSON_TOOLS = frozenset({"pyright", "pylint"})
+
 MAX_NATIVE_BYTES = 1024 * 1024
 MAX_STREAM_CHARS = 8000
 MAX_FINDINGS = 100
@@ -409,10 +411,14 @@ def _classify_vulture(exit_code, findings, native, limitations) -> tuple[str, st
 
 def _classify_pyright(exit_code, findings, native, limitations) -> tuple[str, str]:
     if exit_code == 0:
+        if not isinstance(native, dict):
+            return "failure", "pyright_report_unavailable"
         if any("analyzed 0 files" in item for item in limitations):
             return "not_executed", "no_applicable_source"
         return "clean", "no_type_errors"
     if exit_code == 1:
+        if not isinstance(native, dict):
+            return "failure", "pyright_report_unavailable"
         return "findings", "type_errors_reported"
     return "failure", _PYRIGHT_FAILURES.get(exit_code, "pyright_execution_error")
 
@@ -464,14 +470,15 @@ def static_report(
     tool = policy["tool"]
     if tool not in CLASSIFIERS:
         raise ValueError(f"Unknown static-analysis scanner: {tool}")
-    native, native_note = _load_native(native_raw)
+    structured_raw = native_raw or (stdout if tool in STDOUT_JSON_TOOLS else "")
+    native, native_note = _load_native(structured_raw)
     findings, limitations, observed = FACTS[tool](
         native if tool != "vulture" else stdout
     )
     if native_note:
         limitations.append(native_note)
     outcome, reason = CLASSIFIERS[tool](exit_code, findings, native, limitations)
-    truncated = len(native_raw.encode("utf-8")) > MAX_NATIVE_BYTES
+    truncated = len(structured_raw.encode("utf-8")) > MAX_NATIVE_BYTES
     return {
         "schema_version": 1,
         "tool": tool,

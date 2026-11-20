@@ -60,9 +60,10 @@ outcomes and integers in CI.
 | vulture | `0` | no dead code | `clean` |
 | vulture | `3` | dead code reported | `findings` |
 | vulture | `1` | unparsable file or missing path | `failure` |
-| pyright | `0` | no diagnostics | `clean` |
+| pyright | `0` with structured JSON report | no diagnostics | `clean` |
 | pyright | `0` with `filesAnalyzed: 0` | nothing applicable was analysed | `not_executed` |
-| pyright | `1` | type errors reported | `findings` |
+| pyright | `0` or `1` without a structured JSON object | structured output unavailable | `failure` |
+| pyright | `1` with structured JSON report | type errors reported | `findings` |
 | pyright | `2` | fatal error | `failure` |
 | pyright | `3` | configuration could not be parsed | `failure` |
 | pyright | `4` | path does not exist | `failure` |
@@ -97,11 +98,14 @@ mode.
 `omitted_findings`, `limitations`, `native_json_available`, `native_json`,
 `native_truncated`, `stdout` and `stderr`.
 
-Native stdout, stderr, exit codes and structured output are preserved. Where a
-tool only writes structured output to a file, the file is read after the same
-execution; the scan is never repeated to produce a report. Streams are bounded
-to the last 8 000 characters and structured output to 1 MiB; when the bound is
-hit, `native_truncated` is `true` so the loss is never silent.
+Native stdout, stderr, exit codes and structured output are preserved. Pyright
+(`--outputjson`) and Pylint (`--output-format=json`) emit their structured JSON
+directly on stdout, and `_run_static` / `static_report` consume that stdout
+JSON from the same execution. Where a tool writes structured output to a file
+(`deptry --json-output`), only that file is read after the same execution; the
+scan is never repeated to produce a report. Streams are bounded to the last
+8 000 characters and structured output to 1 MiB; when the bound is hit,
+`native_truncated` is `true` so the loss is never silent.
 
 `observed_version` is filled only where the tool reports its own version inside
 its normal output.
