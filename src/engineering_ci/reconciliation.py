@@ -720,6 +720,14 @@ def _normalize_resolutions(resolutions, expected_refs):
             or any(not isinstance(value, dict) for value in inputs)
         ):
             raise ReconciliationError("resolution_input_refs_invalid")
+        res_status = item.get("resolution_status")
+        if res_status is not None and res_status not in {
+            "verified",
+            "unverified",
+            "insufficient",
+            "contradicted",
+        }:
+            raise ReconciliationError("resolution_status_invalid")
         normalized[ref] = dict(item)
     return normalized
 
@@ -883,6 +891,16 @@ def _unknown_fields(reason):
         "effective_attempt_unqualified": ["attempt_eligibility"],
         "multiple_eligible_attempts": ["attempt_eligibility"],
         "execution_object_mismatch": ["result_identity"],
+        "source_resolution_generated_inputs_unproven": ["source_ref", "input_refs"],
+        "producer_handoff_invalid": ["source_ref", "input_refs"],
+        "producer_handoff_version_unsupported": ["source_ref", "input_refs"],
+        "producer_handoff_missing": ["source_ref", "input_refs"],
+        "producer_handoff_attempt_unverified": ["source_ref", "input_refs"],
+        "producer_execution_not_verified": ["source_ref", "input_refs"],
+        "producer_artifact_authority_unverified": ["source_ref", "input_refs"],
+        "producer_artifact_missing": ["source_ref", "input_refs"],
+        "producer_artifact_unreadable": ["source_ref", "input_refs"],
+        "producer_artifact_expired": ["source_ref", "input_refs"],
     }
     return mapping.get(reason, ["expected_constraints"])
 
@@ -1022,6 +1040,17 @@ def _resolve_expected(entry, resolution):
     """
     if resolution is None:
         return None, "unknown", "resolution_missing", {}
+    res_status = resolution.get("resolution_status")
+    if res_status in {"unverified", "insufficient", "contradicted"}:
+        reason = resolution.get("reason")
+        if not isinstance(reason, str) or not reason:
+            reason = (
+                "resolution_evidence_missing"
+                if res_status == "unverified"
+                else "resolution_source_contradicted"
+            )
+        mapped = "unknown" if res_status == "unverified" else "insufficient"
+        return None, mapped, reason, {}
     evidence = {}
     for key in ("rule_source_ref", "source_receipt_ref"):
         if resolution.get(key) is None:

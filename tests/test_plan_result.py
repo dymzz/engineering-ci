@@ -2458,3 +2458,205 @@ def test_dag_generated_refs_are_bound_before_native_result_identity(
         assert report["status"] == "blocked", report
         with pytest.raises(RuntimeError):
             asyncio.run(saved.enforce())
+
+
+def test_dagger_plan_execution_producer_artifact_handoff_reaches_resolution(
+    modules, tmp_path
+):
+    from test_execution import run
+
+    from engineering_ci import execution, hygiene, selection
+
+    _result, collector = modules
+    gen_file = "scripts/generated.sh"
+    gen_file_bytes = b"#!/bin/sh\necho dagger-file\n"
+    gen_file_sha = hashlib.sha256(gen_file_bytes).hexdigest()
+
+    gen_dir = "scripts/generated_dir"
+    dir_stage = tmp_path / "dir_stage"
+    (dir_stage / "sub").mkdir(parents=True)
+    (dir_stage / "empty_subdir").mkdir()
+    (dir_stage / "sub/helper.sh").write_bytes(b"#!/bin/sh\necho dagger-dir\n")
+    gen_dir_sha = execution.artifact_directory_id(dir_stage)
+
+    emit_script = tmp_path / "emit.py"
+    emit_script.write_text(
+        f"""\
+import os
+from pathlib import Path
+
+root = Path(os.environ["ENGINEERING_CI_ARTIFACT_DIR"])
+(root / {gen_file!r}).parent.mkdir(parents=True, exist_ok=True)
+(root / {gen_file!r}).write_bytes({gen_file_bytes!r})
+(root / {gen_dir!r} / "sub").mkdir(parents=True, exist_ok=True)
+(root / {gen_dir!r} / "empty_subdir").mkdir(parents=True, exist_ok=True)
+(root / {gen_dir!r} / "sub/helper.sh").write_bytes(b"#!/bin/sh\\necho dagger-dir\\n")
+""",
+        encoding="utf-8",
+    )
+
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    (repo / "scripts").mkdir()
+    (repo / "tach.toml").write_text(
+        'source_roots = ["src"]\n[[modules]]\npath = "src"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (repo / "ci-selection.toml").write_text(
+        f"""\
+schema_version = 1
+checks = ["shellcheck"]
+
+[[non_code_rules]]
+prefix = "scripts/"
+tests = []
+reason = "shell scripts"
+
+[prerequisite_actions.generate]
+type = "command"
+argv = {json.dumps([sys.executable, str(emit_script)])}
+
+[[dependency_edges]]
+producer_ref = {{ kind = "prerequisite_action", name = "generate" }}
+consumer_ref = {{ kind = "check", name = "shellcheck" }}
+dependency_kind = "data"
+requires_pass = true
+output_ref = {{ kind = "file", path = "{gen_file}", sha256 = "{gen_file_sha}" }}
+
+[[dependency_edges]]
+producer_ref = {{ kind = "prerequisite_action", name = "generate" }}
+consumer_ref = {{ kind = "check", name = "shellcheck" }}
+dependency_kind = "data"
+requires_pass = true
+output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}" }}
+""",
+        encoding="utf-8",
+    )
+    (repo / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["forwarding"]\n',
+        encoding="utf-8",
+    )
+    (repo / "scripts/check.sh").write_text(
+        "#!/bin/sh\necho repo-script\n", encoding="utf-8", newline="\n"
+    )
+    (repo / "src/mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    run(repo, "init", "-q", "-b", "main")
+    run(repo, "config", "user.email", "dagger86@example.invalid")
+    run(repo, "config", "user.name", "Dagger 86 Test")
+    run(repo, "add", "-A")
+    run(repo, "commit", "-q", "-m", "init")
+    head = run(repo, "rev-parse", "HEAD").strip()
+
+    cfg = selection.load_config(repo / "ci-selection.toml")
+    hyg = hygiene.load_config(repo / "ci-hygiene.toml")
+    cs = selection.ChangeSet(
+        root=repo,
+        base_ref="origin/main",
+        head_ref="HEAD",
+        base_commit=head,
+        head_commit=head,
+        tree=run(repo, "rev-parse", "HEAD^{tree}").strip(),
+        paths=("scripts/check.sh",),
+        worktree_dirty=False,
+        complete=True,
+        snapshot="worktree",
+    )
+    sel = selection.select(cs, cfg, root=repo)
+    plan_doc = selection.plan(
+        sel,
+        config=cfg,
+        config_path=repo / "ci-selection.toml",
+        hygiene_config=hyg,
+        hygiene_config_path=repo / "ci-hygiene.toml",
+        root=repo,
+    )
+
+    source_tree = MemoryDirectory(
+        {
+            "ci-selection.toml": (repo / "ci-selection.toml").read_bytes(),
+            "ci-hygiene.toml": (repo / "ci-hygiene.toml").read_bytes(),
+            "tach.toml": (repo / "tach.toml").read_bytes(),
+            "scripts/check.sh": (repo / "scripts/check.sh").read_bytes(),
+            "src/mod.py": (repo / "src/mod.py").read_bytes(),
+        }
+    )
+    saved = asyncio.run(
+        collector.execute(
+            NativeDouble(),
+            MemoryFile(json.dumps(plan_doc)),
+            source_tree,
+            "3.14",
+            "ci-weaver.toml",
+            run_ref="dag-run",
+            attempt_ref="3",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", json.dumps(
+        [
+            (c.get("name"), c.get("status"), c.get("reason"), c.get("stderr"))
+            for c in report["checks"]
+        ]
+    )
+    handoff = report["producer_artifact_handoff"]
+    assert handoff["execution_context"] == "dagger_export"
+    assert handoff["execution_identity"]["run_ref"] == "dag-run"
+    assert handoff["execution_identity"]["attempt_ref"] == "3"
+    assert len(handoff["artifacts"]) == 2
+
+    exported = tmp_path / "exported_dagger_artifacts"
+    asyncio.run(saved.artifacts.export(exported))
+    assert (exported / "produced/prerequisite_action/generate" / gen_file).is_file()
+    assert (
+        exported / "produced/prerequisite_action/generate" / gen_dir / "empty_subdir"
+    ).is_dir()
+
+    plan_ref = execution._canonical_sha256(plan_doc)
+    event = execution._plan_event_identity(plan_doc)
+    candidate = execution._plan_candidate_identity(plan_doc)
+
+    def authority(request):
+        return (
+            request["kind"] == "producer_artifact"
+            and request["plan_ref"] == plan_ref
+            and request["event"] == event
+            and request["check"] == "shellcheck"
+            and request["source"].get("candidate") == candidate
+        )
+
+    resolution = execution.build_source_resolution(
+        plan_doc,
+        "shellcheck",
+        root=repo,
+        producer_artifact_handoff=handoff,
+        producer_artifacts_dir=exported,
+        producer_artifact_authority=authority,
+        expected_run_ref="dag-run",
+        expected_attempt_ref="3",
+    )
+    assert resolution["producer_artifact_handoff_id"] == handoff["handoff_digest"]
+    assert {
+        (ref["kind"], ref["input_kind"], ref["path"])
+        for ref in resolution["input_refs"]
+        if ref.get("kind") == "generated_input"
+    } == {
+        ("generated_input", "file", gen_file),
+        ("generated_input", "directory", gen_dir),
+    }
+
+    (
+        exported / "produced/prerequisite_action/generate" / gen_dir / "empty_subdir"
+    ).rmdir()
+    truncated = execution.evaluate_source_resolution(
+        plan_doc,
+        "shellcheck",
+        root=repo,
+        producer_artifact_handoff=handoff,
+        producer_artifacts_dir=exported,
+        producer_artifact_authority=authority,
+        expected_run_ref="dag-run",
+        expected_attempt_ref="3",
+    )
+    assert truncated["resolution_status"] == "contradicted"
+    assert truncated["reason"] == "producer_directory_truncated"

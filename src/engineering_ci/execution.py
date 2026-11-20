@@ -142,6 +142,23 @@ def _rebased_consumer_plan(plan, source_root):
     return {**plan, "inputs": new_inputs}
 
 
+def _rebased_consumer_arg_path(value, source_root, view_root):
+    """Rebase explicit repo-local config path parameters onto a Consumer View."""
+    if not isinstance(value, (str, os.PathLike)):
+        return value
+    raw = Path(value)
+    if not raw.is_absolute():
+        return value
+    try:
+        resolved = raw.resolve()
+        src_resolved = Path(source_root).resolve()
+    except OSError:
+        return value
+    if resolved.is_relative_to(src_resolved):
+        return Path(view_root) / resolved.relative_to(src_resolved)
+    return value
+
+
 def _consumer_view_binding_matches(binding, source_root, view_root, actual):
     """Allow only the absolute-link rewrite performed when copying a Source."""
     paths = binding.get("paths")
@@ -1269,7 +1286,11 @@ def _run_workflow_script_checks(
             else None
         ),
         validate_target_source=_workflow_target_validator(
-            plan, root, generated_input_refs, authority=workflow_authority
+            plan,
+            root,
+            generated_input_refs,
+            authority=workflow_authority,
+            _consumer_source_root=consumer_source_root,
         ),
     )
     source_current = binding_current()
@@ -1308,28 +1329,50 @@ def _run_workflow_script_checks(
     return results, any_failed
 
 
+PRODUCER_HANDOFF_KIND = "engineering-ci-producer-artifact-handoff"
+PRODUCER_HANDOFF_VERSION = 1
+
+_EVENT_IDENTITY_FIELDS = (
+    "snapshot",
+    "execution_tree",
+    "tree",
+    "index_tree",
+    "merge_tree",
+    "head_commit",
+    "base_commit",
+    "remote_ref",
+    "local_ref",
+    "ref_action",
+)
+
+
+def _plan_event_identity(plan):
+    git = (plan or {}).get("git") or {}
+    return {key: git[key] for key in _EVENT_IDENTITY_FIELDS if key in git}
+
+
+def _plan_candidate_identity(plan):
+    git = (plan or {}).get("git") or {}
+    binding = git.get("content_binding")
+    digest = binding.get("digest") if isinstance(binding, dict) else None
+    return {
+        "snapshot": git.get("snapshot"),
+        "execution_tree": git.get("execution_tree"),
+        "tree": git.get("tree"),
+        "index_tree": git.get("index_tree"),
+        "merge_tree": git.get("merge_tree"),
+        "head_commit": git.get("head_commit"),
+        "source_tree_id": git.get("source_tree_id"),
+        "content_binding_digest": digest,
+    }
+
+
 def _workflow_source_authorizer(plan, verify):
     """Bind Workflow/Shell Source Handoff to the original Plan and Git event."""
     if not callable(verify):
         return None
     plan_ref = _canonical_sha256(plan)
-    git = plan["git"]
-    event = {
-        key: git[key]
-        for key in (
-            "snapshot",
-            "execution_tree",
-            "tree",
-            "index_tree",
-            "merge_tree",
-            "head_commit",
-            "base_commit",
-            "remote_ref",
-            "local_ref",
-            "ref_action",
-        )
-        if key in git
-    }
+    event = _plan_event_identity(plan)
 
     def authorize(kind, check_name, claim):
         return (
@@ -1365,7 +1408,14 @@ def _workflow_tree_materialization(git, root, tree, check_name, authority):
     return None
 
 
-def _workflow_target_validator(plan, root, generated_inputs, *, authority=None):
+def _workflow_target_validator(
+    plan,
+    root,
+    generated_inputs,
+    *,
+    authority=None,
+    _consumer_source_root=None,
+):
     """Verify the observed target against its original Git or Producer source."""
     git = plan["git"]
     declared = (git.get("content_binding") or {}).get("paths") or {}
@@ -1376,7 +1426,8 @@ def _workflow_target_validator(plan, root, generated_inputs, *, authority=None):
         or git.get("merge_tree")
     )
     immutable = git.get("snapshot") in {"commit", "push", "pr_merge", "index"}
-    git_available = immutable and selection._resolve_git_dir(root) is not None
+    base_root = _consumer_source_root if _consumer_source_root is not None else root
+    git_available = immutable and selection._resolve_git_dir(base_root) is not None
     generated = {item["path"]: item for item in generated_inputs}
     verified_directories = {}
     materializations = {}
@@ -1384,7 +1435,7 @@ def _workflow_target_validator(plan, root, generated_inputs, *, authority=None):
     def materialization_verified(check_name):
         if check_name not in materializations:
             materializations[check_name] = _workflow_tree_materialization(
-                git, root, tree, check_name, authority
+                git, base_root, tree, check_name, authority
             )
         return materializations[check_name]
 
@@ -1420,11 +1471,16 @@ def _workflow_target_validator(plan, root, generated_inputs, *, authority=None):
         if path in declared and declared[path] != digest:
             return "workflow_target_plan_digest_mismatch"
         if git_available:
-            blob = selection._git_bytes(root, "cat-file", "blob", f"{tree}:{resolved}")
+            blob = selection._git_bytes(
+                base_root, "cat-file", "blob", f"{tree}:{resolved}"
+            )
             if blob.returncode or hashlib.sha256(blob.stdout).hexdigest() != digest:
                 return "workflow_target_tree_mismatch"
             # Reuse the Git binding check for every component of an alias.
-            if path != resolved and not _verify_git_execution_binding(plan, root)[0]:
+            if (
+                path != resolved
+                and not _verify_git_execution_binding(plan, base_root)[0]
+            ):
                 return "workflow_target_tree_mismatch"
         return None
 
@@ -1740,6 +1796,630 @@ def evaluate_edge(edge, producer_result, *, artifact_root=None):
             return False, closure["reason"], entry
         return True, None, entry
     return True, None, None
+
+
+PRODUCER_HANDOFF_UNVERIFIED_REASONS = frozenset(
+    {
+        "source_resolution_generated_inputs_unproven",
+        "source_resolution_missing",
+        "source_resolution_root_missing",
+        "source_resolution_profile_unverified",
+        "source_resolution_baseline_unproven",
+        "source_resolution_scope_required",
+        "producer_handoff_invalid",
+        "producer_handoff_version_unsupported",
+        "producer_handoff_missing",
+        "producer_handoff_attempt_unverified",
+        "producer_execution_not_verified",
+        "producer_artifact_authority_unverified",
+        "producer_artifact_missing",
+        "producer_artifact_unreadable",
+        "producer_artifact_expired",
+        "workflow_config_unverified",
+        "workflow_target_tree_unverified",
+        "workflow_external_source_unverified",
+        "workflow_external_config_unverified",
+        "source_config_unreadable",
+        "hygiene_config_unreadable",
+        "selection_config_unreadable",
+    }
+)
+
+
+def _classify_resolution_error(code):
+    """Distinguish missing/unverified proof from proved conflict/tampering."""
+    if code in PRODUCER_HANDOFF_UNVERIFIED_REASONS:
+        return "unverified"
+    return "contradicted"
+
+
+def _edge_retention_key(producer_ref, consumer_ref, output_ref):
+    p_ref = producer_ref or {}
+    c_ref = consumer_ref or {}
+    o_ref = output_ref or {}
+    return (
+        str(p_ref.get("kind") or ""),
+        str(p_ref.get("name") or ""),
+        str(c_ref.get("kind") or ""),
+        str(c_ref.get("name") or ""),
+        str(o_ref.get("kind") or ""),
+        str(o_ref.get("path") or ""),
+        str(o_ref.get("sha256") or ""),
+    )
+
+
+def _normalize_rel_artifact_path(rel_path):
+    if not isinstance(rel_path, str) or not rel_path:
+        raise ExecutionError("producer_artifact_path_invalid")
+    if (
+        rel_path.startswith("/")
+        or "\\" in rel_path
+        or re.match(r"^[A-Za-z]:", rel_path)
+    ):
+        raise ExecutionError("producer_artifact_path_invalid")
+    parts = rel_path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ExecutionError("producer_artifact_path_invalid")
+    return "/".join(parts)
+
+
+def _assert_no_symlink_components(
+    base_root, target_path, *, error_code="producer_artifact_symlink"
+):
+    base = Path(base_root)
+    rel = target_path.relative_to(base)
+    current = base
+    for part in rel.parts:
+        current = current / part
+        if current.is_symlink() or current.is_junction():
+            raise ExecutionError(error_code)
+
+
+def retained_producer_root(bundle_root, producer_ref):
+    """Confined retained artifact namespace under ``<bundle>/produced/<kind>/<name>``."""
+    base = Path(bundle_root) / "produced"
+    kind = (producer_ref or {}).get("kind")
+    name = (producer_ref or {}).get("name")
+    if kind not in {"prerequisite_action", "check"}:
+        raise ExecutionError("producer_artifact_path_invalid")
+    if (
+        not isinstance(name, str)
+        or name in {".", ".."}
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", name)
+    ):
+        raise ExecutionError("producer_artifact_path_invalid")
+    if base.exists() and (base.is_symlink() or base.is_junction()):
+        raise ExecutionError("producer_artifact_symlink")
+    target = base / kind / name
+    _assert_no_symlink_components(Path(bundle_root), target)
+    return target.resolve()
+
+
+def _resolve_confined_artifact_path(root_path, rel_path):
+    normalized = _normalize_rel_artifact_path(rel_path)
+    root = Path(root_path).resolve()
+    target = root / normalized
+    try:
+        resolved = target.resolve()
+    except OSError as error:
+        raise ExecutionError("producer_artifact_unreadable") from error
+    if not resolved.is_relative_to(root):
+        raise ExecutionError("producer_artifact_path_invalid")
+    _assert_no_symlink_components(root, target)
+    return normalized, target
+
+
+def _inspect_artifact_entries(root_path, rel_path, expected_kind):
+    normalized, target = _resolve_confined_artifact_path(root_path, rel_path)
+    root = Path(root_path).resolve()
+    if not target.exists():
+        raise ExecutionError("producer_artifact_missing")
+    if target.is_symlink() or target.is_junction():
+        raise ExecutionError("producer_artifact_symlink")
+    if expected_kind == "file":
+        if not target.is_file():
+            raise ExecutionError("producer_artifact_type_mismatch")
+        try:
+            content = target.read_bytes()
+        except OSError as error:
+            raise ExecutionError("producer_artifact_unreadable") from error
+        sha = hashlib.sha256(content).hexdigest()
+        return {
+            "kind": "file",
+            "sha256": sha,
+            "materialized_files": [normalized],
+            "materialized_dirs": [],
+            "file_digests": {normalized: sha},
+        }
+    if expected_kind == "directory":
+        if not target.is_dir():
+            raise ExecutionError("producer_artifact_type_mismatch")
+        dirs = [normalized]
+        files = []
+        file_digests = {}
+        try:
+            entries = sorted(
+                target.rglob("*"), key=lambda item: item.relative_to(target).as_posix()
+            )
+        except OSError as error:
+            raise ExecutionError("producer_artifact_unreadable") from error
+        for entry in entries:
+            if entry.is_symlink() or entry.is_junction():
+                raise ExecutionError("producer_artifact_symlink")
+            rel_entry = entry.relative_to(root).as_posix()
+            if entry.is_dir():
+                dirs.append(rel_entry)
+            elif entry.is_file():
+                try:
+                    raw = entry.read_bytes()
+                except OSError as error:
+                    raise ExecutionError("producer_artifact_unreadable") from error
+                files.append(rel_entry)
+                file_digests[rel_entry] = hashlib.sha256(raw).hexdigest()
+        return {
+            "kind": "directory",
+            "sha256": artifact_directory_id(target),
+            "materialized_files": files,
+            "materialized_dirs": dirs,
+            "file_digests": file_digests,
+        }
+    raise ExecutionError("producer_artifact_type_mismatch")
+
+
+def _artifact_retention_snapshot(producer_root, output_ref, *, producer_ref):
+    rel = output_ref.get("path")
+    kind = output_ref.get("kind")
+    snap = _inspect_artifact_entries(producer_root, rel, kind)
+    normalized = _normalize_rel_artifact_path(rel)
+    bundle_path = f"produced/{producer_ref['kind']}/{producer_ref['name']}/{normalized}"
+    return {
+        **snap,
+        "bundle_path": bundle_path,
+        "retention": {
+            "status": "retained",
+            "layout": "produced/<kind>/<name>/<rel>",
+            "valid": True,
+        },
+    }
+
+
+def retain_closure_artifacts(artifact_root, bundle_root, closure_records):
+    """Copy verified Data-edge outputs to retained storage and re-verify bytes."""
+    retained = {}
+    bundle_path = Path(bundle_root)
+    for rec in closure_records or ():
+        if not rec.get("verified"):
+            continue
+        p_ref = rec["producer_ref"]
+        o_ref = rec["output_ref"]
+        rel = o_ref["path"]
+        kind = o_ref["kind"]
+        key = _edge_retention_key(p_ref, rec.get("consumer_ref"), o_ref)
+        src_root = producer_artifact_root(artifact_root, p_ref)
+        dst_root = retained_producer_root(bundle_path, p_ref)
+        _, src_target = _resolve_confined_artifact_path(src_root, rel)
+        snap_before = _inspect_artifact_entries(src_root, rel, kind)
+        norm_rel = _normalize_rel_artifact_path(rel)
+        dst_target = dst_root / norm_rel
+        dst_target.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "directory":
+            shutil.copytree(src_target, dst_target, symlinks=False, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src_target, dst_target)
+        post = verify_artifact_output(dst_root, o_ref)
+        if not post.get("ok") or post.get("sha256") != rec.get("sha256"):
+            raise ExecutionError(
+                post.get("reason") or "producer_artifact_digest_mismatch"
+            )
+        snap_after = _artifact_retention_snapshot(dst_root, o_ref, producer_ref=p_ref)
+        if snap_after["sha256"] != snap_before["sha256"] or (
+            snap_after["file_digests"] != snap_before["file_digests"]
+        ):
+            raise ExecutionError("producer_artifact_digest_mismatch")
+        retained[key] = snap_after
+    return retained
+
+
+def _producer_execution_summary(producer_ref, result):
+    if not isinstance(result, dict):
+        return {
+            "kind": producer_ref.get("kind"),
+            "name": producer_ref.get("name"),
+            "status": "not_executed",
+            "reason": "producer_execution_not_verified",
+        }
+    return {
+        "kind": producer_ref.get("kind"),
+        "name": producer_ref.get("name"),
+        "type": result.get("type"),
+        "status": result.get("status", "not_executed"),
+        "exit_code": result.get("exit_code"),
+        "reason": result.get("reason"),
+    }
+
+
+def build_producer_artifact_handoff(
+    plan,
+    *,
+    closure_records,
+    prerequisite_results=(),
+    execution_identity=None,
+    execution_context="host",
+    retention_metadata=None,
+):
+    """Build the signed-digest #86 Producer Artifact Handoff over retained outputs."""
+    prereq_by_name = {
+        item.get("name"): item
+        for item in prerequisite_results or ()
+        if isinstance(item, dict) and item.get("name")
+    }
+    retention_map = retention_metadata if isinstance(retention_metadata, dict) else {}
+    artifacts = []
+    for rec in closure_records or ():
+        if not rec.get("verified"):
+            continue
+        p_ref = rec["producer_ref"]
+        c_ref = rec["consumer_ref"]
+        o_ref = rec["output_ref"]
+        key = _edge_retention_key(p_ref, c_ref, o_ref)
+        meta = retention_map.get(key)
+        if not isinstance(meta, dict):
+            continue
+        p_exec = _producer_execution_summary(
+            p_ref, prereq_by_name.get(p_ref.get("name"))
+        )
+        artifacts.append(
+            {
+                "producer_ref": dict(p_ref),
+                "producer_execution": p_exec,
+                "consumer_ref": dict(c_ref),
+                "output_ref": dict(o_ref),
+                "kind": o_ref.get("kind"),
+                "path": o_ref.get("path"),
+                "sha256": meta.get("sha256") or rec.get("sha256"),
+                "materialized_files": list(
+                    meta.get("materialized_files")
+                    or rec.get("materialized_files")
+                    or ()
+                ),
+                "materialized_dirs": list(meta.get("materialized_dirs") or ()),
+                "file_digests": dict(meta.get("file_digests") or {}),
+                "bundle_path": meta["bundle_path"],
+                "retention": dict(
+                    meta.get("retention")
+                    or {
+                        "status": "retained",
+                        "layout": "produced/<kind>/<name>/<rel>",
+                        "valid": True,
+                    }
+                ),
+            }
+        )
+    artifacts.sort(
+        key=lambda item: _edge_retention_key(
+            item["producer_ref"], item["consumer_ref"], item["output_ref"]
+        )
+    )
+    producer_executions = [
+        _producer_execution_summary(
+            {"kind": "prerequisite_action", "name": name},
+            prereq_by_name[name],
+        )
+        for name in sorted(prereq_by_name)
+    ]
+    payload = {
+        "schema_version": PRODUCER_HANDOFF_VERSION,
+        "kind": PRODUCER_HANDOFF_KIND,
+        "plan_ref": _canonical_sha256(plan),
+        "event": _plan_event_identity(plan),
+        "candidate": _plan_candidate_identity(plan),
+        "execution_context": execution_context,
+        "execution_identity": dict(execution_identity)
+        if isinstance(execution_identity, dict)
+        else None,
+        "layout": "produced/<kind>/<name>/<rel>",
+        "producer_executions": producer_executions,
+        "artifacts": artifacts,
+    }
+    return {**payload, "handoff_digest": _canonical_sha256(payload)}
+
+
+def _validate_handoff_envelope(
+    plan,
+    handoff,
+    *,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
+):
+    if not isinstance(handoff, dict):
+        raise ExecutionError("producer_handoff_invalid")
+    if handoff.get("kind") != PRODUCER_HANDOFF_KIND:
+        raise ExecutionError("producer_handoff_invalid")
+    if handoff.get("schema_version") != PRODUCER_HANDOFF_VERSION:
+        raise ExecutionError("producer_handoff_version_unsupported")
+    recorded_digest = handoff.get("handoff_digest")
+    if not isinstance(recorded_digest, str) or not recorded_digest:
+        raise ExecutionError("producer_handoff_invalid")
+    body = {k: v for k, v in handoff.items() if k != "handoff_digest"}
+    if _canonical_sha256(body) != recorded_digest:
+        raise ExecutionError("producer_handoff_digest_mismatch")
+    if handoff.get("event") != _plan_event_identity(plan):
+        raise ExecutionError("producer_handoff_event_mismatch")
+    if handoff.get("candidate") != _plan_candidate_identity(plan):
+        raise ExecutionError("producer_handoff_candidate_mismatch")
+    if handoff.get("plan_ref") != _canonical_sha256(plan):
+        raise ExecutionError("producer_handoff_plan_mismatch")
+    ident = handoff.get("execution_identity")
+    if ident is not None and not isinstance(ident, dict):
+        raise ExecutionError("producer_handoff_invalid")
+    if isinstance(ident, dict) and bool(ident.get("run_ref")) != bool(
+        ident.get("attempt_ref")
+    ):
+        raise ExecutionError("producer_handoff_attempt_unverified")
+    if expected_run_ref is not None or expected_attempt_ref is not None:
+        if (
+            not isinstance(ident, dict)
+            or not ident.get("run_ref")
+            or not ident.get("attempt_ref")
+        ):
+            raise ExecutionError("producer_handoff_attempt_unverified")
+        if (
+            expected_run_ref is not None and ident.get("run_ref") != expected_run_ref
+        ) or (
+            expected_attempt_ref is not None
+            and ident.get("attempt_ref") != expected_attempt_ref
+        ):
+            raise ExecutionError("producer_handoff_attempt_mismatch")
+    if not isinstance(handoff.get("artifacts"), list):
+        raise ExecutionError("producer_handoff_invalid")
+    return body
+
+
+def _match_handoff_record(edge, handoff):
+    p_ref = edge["producer_ref"]
+    c_ref = edge["consumer_ref"]
+    o_ref = edge["output_ref"]
+    artifacts = handoff.get("artifacts") or ()
+    exact = next(
+        (
+            rec
+            for rec in artifacts
+            if isinstance(rec, dict)
+            and rec.get("producer_ref") == p_ref
+            and rec.get("consumer_ref") == c_ref
+            and rec.get("output_ref") == o_ref
+        ),
+        None,
+    )
+    if exact is not None:
+        return exact
+    for rec in artifacts:
+        if not isinstance(rec, dict):
+            continue
+        same_c = rec.get("consumer_ref") == c_ref
+        same_p = rec.get("producer_ref") == p_ref
+        same_o = rec.get("output_ref") == o_ref
+        if same_c and same_o and not same_p:
+            raise ExecutionError("producer_handoff_producer_mismatch")
+        if same_p and same_o and not same_c:
+            raise ExecutionError("producer_handoff_consumer_mismatch")
+        if same_p and same_c and not same_o:
+            raise ExecutionError("producer_handoff_output_ref_mismatch")
+    for rec in artifacts:
+        if not isinstance(rec, dict):
+            continue
+        rec_o = rec.get("output_ref") or {}
+        if rec_o.get("path") == o_ref.get("path"):
+            if rec.get("producer_ref") != p_ref:
+                raise ExecutionError("producer_handoff_producer_mismatch")
+            if rec.get("consumer_ref") != c_ref:
+                raise ExecutionError("producer_handoff_consumer_mismatch")
+            raise ExecutionError("producer_handoff_output_ref_mismatch")
+    for p_exec in handoff.get("producer_executions") or ():
+        if (
+            isinstance(p_exec, dict)
+            and p_exec.get("kind") == p_ref.get("kind")
+            and p_exec.get("name") == p_ref.get("name")
+        ):
+            status = p_exec.get("status")
+            if status == "failed":
+                raise ExecutionError("producer_execution_failed")
+            if status != "passed":
+                raise ExecutionError("producer_execution_not_verified")
+    raise ExecutionError("producer_handoff_missing")
+
+
+def _verify_retained_bundle_artifact(
+    record, edge, *, bundle_root, check_name, authority, handoff
+):
+    p_exec = record.get("producer_execution")
+    if not isinstance(p_exec, dict):
+        raise ExecutionError("producer_execution_not_verified")
+    p_status = p_exec.get("status")
+    if p_status == "failed":
+        raise ExecutionError("producer_execution_failed")
+    if p_status != "passed":
+        raise ExecutionError("producer_execution_not_verified")
+    if p_exec.get("kind") != edge["producer_ref"].get("kind") or p_exec.get(
+        "name"
+    ) != edge["producer_ref"].get("name"):
+        raise ExecutionError("producer_handoff_producer_mismatch")
+
+    retention = record.get("retention")
+    if not isinstance(retention, dict):
+        raise ExecutionError("producer_artifact_retention_invalid")
+    r_status = retention.get("status")
+    if r_status == "expired":
+        raise ExecutionError("producer_artifact_expired")
+    if r_status != "retained" or retention.get("valid") is False:
+        raise ExecutionError("producer_artifact_retention_invalid")
+
+    o_ref = edge["output_ref"]
+    kind = o_ref.get("kind")
+    rel = o_ref.get("path")
+    if record.get("kind") != kind:
+        raise ExecutionError("producer_artifact_type_mismatch")
+    if record.get("path") != rel:
+        raise ExecutionError("producer_handoff_output_ref_mismatch")
+
+    expected_sha = record.get("sha256")
+    edge_sha = o_ref.get("sha256")
+    if not isinstance(expected_sha, str) or not _is_hex64(expected_sha):
+        raise ExecutionError("producer_handoff_invalid")
+    if edge_sha is not None and expected_sha != edge_sha:
+        raise ExecutionError("producer_handoff_output_ref_mismatch")
+
+    norm_rel = _normalize_rel_artifact_path(rel)
+    expected_bundle_path = f"produced/{edge['producer_ref']['kind']}/{edge['producer_ref']['name']}/{norm_rel}"
+    if record.get("bundle_path") != expected_bundle_path:
+        raise ExecutionError("producer_artifact_path_invalid")
+
+    if authority is None:
+        raise ExecutionError("producer_artifact_authority_unverified")
+
+    bundle_path = Path(bundle_root)
+    if not bundle_path.exists():
+        raise ExecutionError("producer_artifact_missing")
+    bundle_producer_root = retained_producer_root(bundle_path, edge["producer_ref"])
+    claim = {
+        "handoff_id": handoff.get("handoff_digest"),
+        "producer_ref": record["producer_ref"],
+        "producer_execution": p_exec,
+        "consumer_ref": record["consumer_ref"],
+        "output_ref": o_ref,
+        "kind": kind,
+        "path": rel,
+        "sha256": expected_sha,
+        "bundle_path": expected_bundle_path,
+        "resolved_bundle_root": str(bundle_producer_root),
+        "candidate": handoff.get("candidate"),
+        "execution_identity": handoff.get("execution_identity"),
+    }
+    if not authority("producer_artifact", check_name, claim):
+        raise ExecutionError("producer_artifact_authority_unverified")
+
+    actual = _inspect_artifact_entries(bundle_producer_root, rel, kind)
+    exp_files = list(record.get("materialized_files") or ())
+    exp_dirs = list(record.get("materialized_dirs") or ())
+    exp_digests = record.get("file_digests")
+    if kind == "directory" and (
+        set(exp_files) - set(actual["materialized_files"])
+        or set(exp_dirs) - set(actual["materialized_dirs"])
+    ):
+        raise ExecutionError("producer_directory_truncated")
+    if isinstance(exp_digests, dict):
+        for f_rel, f_sha in exp_digests.items():
+            if f_rel not in actual["file_digests"]:
+                raise ExecutionError(
+                    "producer_directory_truncated"
+                    if kind == "directory"
+                    else "producer_artifact_missing"
+                )
+            if actual["file_digests"][f_rel] != f_sha:
+                raise ExecutionError("producer_artifact_digest_mismatch")
+        if set(actual["file_digests"]) != set(exp_digests):
+            raise ExecutionError("producer_artifact_digest_mismatch")
+    elif set(actual["materialized_files"]) != set(exp_files):
+        raise ExecutionError("producer_artifact_digest_mismatch")
+
+    checked = verify_artifact_output(bundle_producer_root, o_ref)
+    if not checked.get("ok"):
+        code_map = {
+            "data_artifact_missing": "producer_artifact_missing",
+            "data_artifact_type_mismatch": "producer_artifact_type_mismatch",
+            "data_artifact_symlink": "producer_artifact_symlink",
+            "data_artifact_digest_mismatch": "producer_artifact_digest_mismatch",
+            "data_artifact_path_invalid": "producer_artifact_path_invalid",
+        }
+        raise ExecutionError(
+            code_map.get(checked.get("reason"), "producer_artifact_digest_mismatch")
+        )
+    if actual["sha256"] != expected_sha or checked.get("sha256") != expected_sha:
+        raise ExecutionError("producer_artifact_digest_mismatch")
+
+    return {
+        "producer_root": bundle_producer_root,
+        "rel": norm_rel,
+        "kind": kind,
+        "closure": {
+            "producer_ref": dict(edge["producer_ref"]),
+            "consumer_ref": dict(edge["consumer_ref"]),
+            "output_ref": dict(o_ref),
+            "verified": True,
+            "reason": None,
+            "sha256": actual["sha256"],
+            "materialized_files": actual["materialized_files"],
+            "materialized_objects": [{"kind": kind, "path": norm_rel}],
+        },
+        "record": record,
+    }
+
+
+def verify_producer_artifact_handoff(
+    plan,
+    check_name,
+    *,
+    handoff,
+    producer_artifacts_dir,
+    authority=None,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
+):
+    """Independently verify #86 retained File/Directory artifacts for one Consumer Check."""
+    edges = [
+        edge
+        for edge in pre_execution_edges(plan).get(("check", check_name), ())
+        if edge.get("dependency_kind") == "data"
+    ]
+    if not edges:
+        return None
+    if handoff is None or producer_artifacts_dir is None:
+        raise ExecutionError("source_resolution_generated_inputs_unproven")
+    _validate_handoff_envelope(
+        plan,
+        handoff,
+        expected_run_ref=expected_run_ref,
+        expected_attempt_ref=expected_attempt_ref,
+    )
+    closures = []
+    artifact_tuples = []
+    verified_records = []
+    seen_paths = {}
+    for edge in edges:
+        record = _match_handoff_record(edge, handoff)
+        verified = _verify_retained_bundle_artifact(
+            record,
+            edge,
+            bundle_root=producer_artifacts_dir,
+            check_name=check_name,
+            authority=authority,
+            handoff=handoff,
+        )
+        p_root = str(verified["producer_root"])
+        rel = verified["rel"]
+        if rel in seen_paths and seen_paths[rel] != p_root:
+            raise ExecutionError("data_artifact_conflict")
+        if any(
+            _artifact_paths_overlap(rel, existing) and owner != p_root
+            for existing, owner in seen_paths.items()
+        ):
+            raise ExecutionError("data_artifact_conflict")
+        seen_paths[rel] = p_root
+        closures.append(verified["closure"])
+        artifact_tuples.append((verified["producer_root"], rel, verified["kind"]))
+        verified_records.append(verified["record"])
+
+    consumer_ref = {"kind": "check", "name": check_name}
+    gen_refs = generated_input_refs(closures, consumer_ref)
+    return {
+        "handoff_id": handoff["handoff_digest"],
+        "execution_identity": handoff.get("execution_identity"),
+        "closures": closures,
+        "artifact_tuples": artifact_tuples,
+        "generated_input_refs": gen_refs,
+        "artifact_paths": artifact_target_paths(artifact_tuples),
+        "verified_artifacts": verified_records,
+    }
 
 
 def run_prerequisite_action(
@@ -2229,6 +2909,74 @@ def _tree_files_for_snapshot(plan, root, execution_context):
     return None
 
 
+def _relative_view_entries(root_path):
+    """Map non-.git relative POSIX paths to ('file', sha256) or ('symlink', link)."""
+    root = Path(root_path).resolve()
+    entries = {}
+    for current, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d != ".git")
+        cur_path = Path(current)
+        for d in list(dirnames):
+            dp = cur_path / d
+            if dp.is_symlink():
+                rel = dp.relative_to(root).as_posix()
+                entries[rel] = ("symlink", os.readlink(dp))
+                dirnames.remove(d)
+        for f in sorted(filenames):
+            fp = cur_path / f
+            rel = fp.relative_to(root).as_posix()
+            if fp.is_symlink():
+                entries[rel] = ("symlink", os.readlink(fp))
+            elif fp.is_file():
+                entries[rel] = ("file", hashlib.sha256(fp.read_bytes()).hexdigest())
+    return entries
+
+
+def _verify_consumer_view_closure(base_path, view_path, generated_refs):
+    """Prove the Consumer View equals base_path plus only verified generated artifacts."""
+    base_root = Path(base_path).resolve()
+    view_root = Path(view_path).resolve()
+    if base_root == view_root:
+        return False
+    gen_files = set()
+    for gref in generated_refs or ():
+        kind = gref.get("input_kind")
+        path = gref.get("path")
+        sha = gref.get("sha256")
+        if kind not in {"file", "directory"} or not path or not _is_hex64(sha):
+            return False
+        checked = verify_artifact_output(
+            view_root, {"kind": kind, "path": path, "sha256": sha}
+        )
+        if not checked.get("ok"):
+            return False
+        gen_files.update(checked.get("files") or ())
+    base_entries = _relative_view_entries(base_root)
+    view_entries = _relative_view_entries(view_root)
+    for rel, view_val in view_entries.items():
+        if rel in gen_files:
+            continue
+        base_val = base_entries.get(rel)
+        if view_val != base_val:
+            if (
+                base_val is not None
+                and view_val[0] == "symlink"
+                and base_val[0] == "symlink"
+            ):
+                try:
+                    if (view_root / rel).resolve().relative_to(view_root) == (
+                        base_root / rel
+                    ).resolve().relative_to(base_root):
+                        continue
+                except (OSError, ValueError):
+                    pass
+            return False
+    for rel in base_entries:
+        if rel not in gen_files and rel not in view_entries:
+            return False
+    return True
+
+
 def _prepare_source_snapshots(
     plan,
     selected,
@@ -2239,14 +2987,16 @@ def _prepare_source_snapshots(
     sources_config=None,
     artifact_paths=(),
     workflow_authority=None,
+    base_root=None,
 ):
     git = plan.get("git") or {}
     snapshot = str(git.get("snapshot") or "worktree")
+    base_path = Path(base_root) if base_root is not None else Path(root)
     if snapshot in {"index", "commit", "push", "pr_merge"}:
-        tree_files = _tree_files_for_snapshot(plan, root, execution_context)
+        tree_files = _tree_files_for_snapshot(plan, base_path, execution_context)
         if tree_files:
             binding = selection.worktree_content_binding(
-                root, tree_files, require_files=True
+                base_path, tree_files, require_files=True
             )
             snapshots = {
                 "kind": "full",
@@ -2265,19 +3015,19 @@ def _prepare_source_snapshots(
                     or git.get("index_tree")
                     or git.get("merge_tree")
                 )
-                git_root = selection._resolve_git_dir(root)
+                git_root = selection._resolve_git_dir(base_path)
                 if git_root is None and snapshot != "index":
                     snapshots["workflow_materializations"] = {
                         name: _workflow_tree_materialization(
-                            git, root, tree, name, workflow_authority
+                            git, base_path, tree, name, workflow_authority
                         )
                         for name in sorted(workflow_checks)
                     }
                 elif execution_context == "host" and _is_git_oid(tree):
-                    content_id = selection.tree_content_id(root, tree)
+                    content_id = selection.tree_content_id(base_path, tree)
                     if (
                         content_id
-                        and selection.directory_content_id(root) == content_id
+                        and selection.directory_content_id(base_path) == content_id
                     ):
                         snapshots["workflow_tree_content_id"] = content_id
             return snapshots
@@ -2317,12 +3067,18 @@ def _verified_check_source_ref(
     sources_config=None,
     artifact_paths=(),
     require_execution_started=True,
+    base_root=None,
 ):
     if (
         require_execution_started and item.get("execution_started") is False
     ) or source_snapshots is None:
         return None
     resolved_root = Path(root).resolve()
+    base_path = Path(base_root).resolve() if base_root is not None else resolved_root
+    gen_refs = list(item.get("generated_input_refs") or ())
+    retained = bool(item.get("generated_inputs_retained"))
+    if gen_refs and not retained and name in _WORKFLOW_SCRIPT_CHECKS:
+        return None
     loaded_hyg = (
         _load_hygiene_for_closure(plan, resolved_root, hygiene_config)
         if name in _HYGIENE_CHECKS
@@ -2351,9 +3107,8 @@ def _verified_check_source_ref(
             config_input.get("workflow_external_configs")
             or config_input.get("policy_scope") == "event_external"
             or (name == "zizmor" and not workflow_config.get("zizmor_offline", True))
-            or item.get("generated_input_refs")
             or item.get("target_source_problem")
-            or selection.directory_content_id(root) != workflow_tree
+            or selection.directory_content_id(base_path) != workflow_tree
         ):
             return None
     elif not _closure_supported(
@@ -2393,53 +3148,80 @@ def _verified_check_source_ref(
         elif snapshot == "index":
             exp_tree = declared
             if selection.index_source_refusal(
-                root, exp_tree, index_file=git.get("index_file")
+                base_path, exp_tree, index_file=git.get("index_file")
             ):
                 return None
             actual = "index_verified_worktree"
         elif snapshot in {"commit", "push", "pr_merge"} and execution_context == "host":
-            if selection.worktree_tree_refusal(root, declared):
+            if selection.worktree_tree_refusal(base_path, declared):
                 return None
             head_commit = git.get("head_commit")
             if (
                 snapshot in {"commit", "push"}
                 and head_commit
-                and selection._resolve(root, "HEAD") != head_commit
+                and selection._resolve(base_path, "HEAD") != head_commit
             ):
                 return None
         elif (
             execution_context == "dagger_export"
             and git.get("source_tree_id")
-            and selection.directory_content_id(root) != git["source_tree_id"]
+            and selection.directory_content_id(base_path) != git["source_tree_id"]
         ):
             return None
-        after = selection.worktree_content_binding(root, files, require_files=True)
+        after = selection.worktree_content_binding(base_path, files, require_files=True)
         if after != before:
+            return None
+        if gen_refs and not _verify_consumer_view_closure(
+            base_path, resolved_root, gen_refs
+        ):
             return None
         mat_digest = workflow_tree or (
             str(git["source_tree_id"])
             if git.get("source_tree_id")
             else str(before["digest"])
         )
-        if external_targets:
-            # The verified repository and the independently admitted bytes
-            # together close this Check's inputs, including the staged aliases.
+        if external_targets or gen_refs:
+            # The verified repository and independently proven external/generated
+            # inputs together close this Check's inputs.
+            sorted_gen = sorted(
+                gen_refs,
+                key=lambda ref: (
+                    str(ref.get("path") or ""),
+                    str(ref.get("input_kind") or ""),
+                    str(ref.get("sha256") or ""),
+                ),
+            )
+            digest_payload = {"directory_content_id": mat_digest}
+            if external_targets:
+                digest_payload["external_scan_targets"] = external_targets
+            if sorted_gen:
+                digest_payload["generated_inputs"] = sorted_gen
+            scope = [*files]
+            for target in external_targets:
+                if target["path"] not in scope:
+                    scope.append(target["path"])
+            for gpath in sorted(
+                {
+                    *(str(p).replace("\\", "/") for p in (artifact_paths or ()) if p),
+                    *(
+                        str(ref.get("path") or "").replace("\\", "/")
+                        for ref in sorted_gen
+                        if ref.get("path")
+                    ),
+                }
+            ):
+                if gpath and gpath not in scope:
+                    scope.append(gpath)
             return check_contract.source_ref(
                 snapshot,
                 declared_target_tree=declared,
                 actual_execution_source=actual,
                 head_commit=git.get("head_commit"),
                 index_tree=git.get("index_tree"),
-                content_digest=_canonical_sha256(
-                    {
-                        "directory_content_id": mat_digest,
-                        "external_scan_targets": external_targets,
-                    }
-                ).removeprefix("sha256:"),
-                verified_scope=[
-                    *files,
-                    *(target["path"] for target in external_targets),
-                ],
+                content_digest=_canonical_sha256(digest_payload).removeprefix(
+                    "sha256:"
+                ),
+                verified_scope=scope,
                 binding_status="content_digest",
                 scope_kind="check_input_closure",
                 materialization_ref=f"sha256:{mat_digest}",
@@ -2462,6 +3244,12 @@ def _verified_check_source_ref(
     before_files = entry["files"]
     before = entry["binding"]
     if before.get("unverified_paths"):
+        return None
+    if (
+        base_path != resolved_root
+        and gen_refs
+        and not _verify_consumer_view_closure(base_path, resolved_root, gen_refs)
+    ):
         return None
     if name == "docs" and isinstance((item or {}).get("inventory"), dict):
         # Also include any discovered inventory files that did not exist under '.' scan.
@@ -3750,12 +4538,18 @@ def build_source_resolution(
     execution_context="host",
     admitted_external_targets=None,
     workflow_source_authority=None,
+    producer_artifact_handoff=None,
+    producer_artifacts_dir=None,
+    producer_artifact_authority=None,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
 ):
     """Independently build a #66-C Source/Rule/Baseline resolution item from Plan + disk/ODB.
 
-    Workflow/Shell Source Handoff uses the same runtime verifier as execution.
-    Resolution reads the supplied Source independently of Native Results and
-    retains partial provenance when the available evidence covers changed paths.
+    Workflow/Shell Source Handoff and #86 Producer Artifact Handoff use
+    independently verified authorities and retained bundle bytes. Resolution
+    ignores Native Results and retains partial provenance when evidence only
+    covers changed paths.
     """
     if not isinstance(plan, dict):
         raise ExecutionError("source_resolution_invalid")
@@ -3778,143 +4572,259 @@ def build_source_resolution(
     )
     if matched_expected.get("name") != check_name:
         raise ExecutionError("source_resolution_expected_mismatch")
+
     workflow_check = check_name in _WORKFLOW_SCRIPT_CHECKS
-    if workflow_check and any(
-        edge["dependency_kind"] == "data"
-        for edge in pre_execution_edges(plan).get(("check", check_name), ())
-    ):
-        raise ExecutionError("source_resolution_generated_inputs_unproven")
-    rule_ref, rule_source_ref, cfg_input = _independent_rule_for_check(
-        plan,
-        check_name,
-        root=resolved_root,
-        hygiene_config=hygiene_config,
-        sources_config=sources_config,
-        selection_config=selection_config,
-    )
-    scope_item = next(
-        (
-            entry
-            for entry in _selected_checks(plan)
-            if isinstance(entry, dict) and entry.get("name") == check_name
-        ),
-        {"name": check_name, "inputs": []},
-    )
     authority = _workflow_source_authorizer(plan, workflow_source_authority)
-    snapshots = _prepare_source_snapshots(
+    artifact_auth = _workflow_source_authorizer(
         plan,
-        [scope_item],
-        root=resolved_root,
-        execution_context=execution_context,
-        hygiene_config=hygiene_config,
-        sources_config=sources_config,
-        workflow_authority=authority,
+        producer_artifact_authority
+        if producer_artifact_authority is not None
+        else workflow_source_authority,
     )
-    input_refs = [cfg_input]
-    for path in scope_item.get("inputs") or ():
-        if isinstance(path, str) and path:
-            input_refs.append({"kind": "changed_path", "path": path})
-    if workflow_check:
-        bound, reason, _ = _verify_execution_binding(
-            plan, resolved_root, execution_context=execution_context
-        )
-        if not bound:
-            raise ExecutionError(reason or "workflow_target_source_unverified")
-        admitted = workflow_analysis._authorized_external_targets(
-            admitted_external_targets,
-            check_name,
-            functools.partial(authority, "external_target") if authority else None,
-        )
-        validate_target = _workflow_target_validator(
-            plan, resolved_root, (), authority=authority
-        )
-        targets = []
-        for path in sorted(set(scope_item.get("inputs") or ())):
-            target, reason = workflow_analysis._inspect_target(
-                resolved_root.resolve(), path, admitted
-            )
-            if reason is None:
-                reason = validate_target(target, check_name=check_name)
-            if reason is not None:
-                raise ExecutionError(reason)
-            targets.append(target)
-            input_refs.append({"kind": "scan_target", **target})
-        scope_item = {**scope_item, "target_sources": targets}
-    source_ref = _verified_check_source_ref(
+    handoff_verified = verify_producer_artifact_handoff(
         plan,
         check_name,
-        scope_item,
-        root=resolved_root,
-        execution_context=execution_context,
-        source_snapshots=snapshots,
-        hygiene_config=hygiene_config,
-        sources_config=sources_config,
+        handoff=producer_artifact_handoff,
+        producer_artifacts_dir=producer_artifacts_dir,
+        authority=artifact_auth,
+        expected_run_ref=expected_run_ref,
+        expected_attempt_ref=expected_attempt_ref,
     )
-    if source_ref is None:
-        source_ref = _source_reference(plan, execution_context)
-    if workflow_check:
-        source_ref = _workflow_result_source(scope_item, source_ref)
-    receipt_payload = {
-        "scope_id": expected_scope.get("scope_id"),
-        "expected_check_ref": matched_expected["expected_check_ref"],
-        "source_ref": source_ref,
-        "rule_source_ref": rule_source_ref,
-    }
-    if workflow_check:
-        receipt_payload["input_refs"] = input_refs
-    receipt_sha = hashlib.sha256(
-        json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()
-    baseline = _baseline_reference(plan)
-    resolved_profile = _profile_reference(
-        plan, root=resolved_root, execution_context=execution_context
+    gen_refs = (
+        list(handoff_verified["generated_input_refs"])
+        if handoff_verified is not None
+        else []
     )
-    if matched_expected.get("profile_ref") is not None and resolved_profile is None:
-        raise ExecutionError("source_resolution_profile_unverified")
-    item = {
-        "expected_check_ref": matched_expected["expected_check_ref"],
-        "rule_ref": rule_ref,
-        "source_ref": source_ref,
-        "baseline_ref": baseline,
-        "input_refs": input_refs,
-        "rule_source_ref": rule_source_ref,
-        "source_receipt_ref": {
-            "name": "independent-source-resolution",
-            "version": "1",
-            "sha256": receipt_sha,
-        },
-    }
-    if resolved_profile is not None:
-        item["profile_ref"] = resolved_profile
-    changed_binding = git.get("content_binding") or {}
-    changed_digest = changed_binding.get("digest")
-    if isinstance(changed_digest, str) and changed_digest:
-        current_changed = selection.worktree_content_binding(
-            resolved_root, git.get("changed_paths") or ()
+    art_tuples = (
+        list(handoff_verified["artifact_tuples"])
+        if handoff_verified is not None
+        else []
+    )
+    art_paths = (
+        tuple(handoff_verified["artifact_paths"])
+        if handoff_verified is not None
+        else ()
+    )
+
+    temporary = None
+    work_root = resolved_root
+    eval_plan = plan
+    view_hyg = hygiene_config
+    view_src = sources_config
+    view_sel = selection_config
+    if art_tuples:
+        temporary, work_root = build_consumer_view(resolved_root, art_tuples)
+        eval_plan = _rebased_consumer_plan(plan, resolved_root)
+        view_hyg = _rebased_consumer_arg_path(hygiene_config, resolved_root, work_root)
+        view_src = _rebased_consumer_arg_path(sources_config, resolved_root, work_root)
+        view_sel = _rebased_consumer_arg_path(
+            selection_config, resolved_root, work_root
         )
-        if current_changed.get("digest") != changed_digest:
-            raise ExecutionError("source_resolution_changed_paths_stale")
-        if not current_changed.get("unverified_paths"):
-            item["changed_paths_content_digest"] = changed_digest
-    if baseline is not None:
-        base_commit = str(baseline.get("base_commit") or "")
-        odb_tree = selection._git(
-            resolved_root, "rev-parse", "--verify", f"{base_commit}^{{tree}}"
+    try:
+        rule_ref, rule_source_ref, cfg_input = _independent_rule_for_check(
+            eval_plan,
+            check_name,
+            root=work_root,
+            hygiene_config=view_hyg,
+            sources_config=view_src,
+            selection_config=view_sel,
         )
-        tree_oid = odb_tree.stdout.strip()
-        if odb_tree.returncode != 0 or not _is_git_oid(tree_oid):
-            raise ExecutionError("source_resolution_baseline_unproven")
-        baseline_digest = hashlib.sha256(
-            f"{base_commit}:{tree_oid}".encode()
-        ).hexdigest()
-        item["baseline_source_ref"] = {
-            "name": "git-odb-commit",
-            "version": "1",
-            "sha256": baseline_digest,
+        scope_item = next(
+            (
+                dict(entry)
+                for entry in _selected_checks(eval_plan)
+                if isinstance(entry, dict) and entry.get("name") == check_name
+            ),
+            {"name": check_name, "inputs": []},
+        )
+        if gen_refs:
+            scope_item["generated_input_refs"] = gen_refs
+            scope_item["generated_inputs_retained"] = True
+        snapshots = _prepare_source_snapshots(
+            eval_plan,
+            [scope_item],
+            root=work_root,
+            execution_context=execution_context,
+            hygiene_config=view_hyg,
+            sources_config=view_src,
+            artifact_paths=art_paths,
+            workflow_authority=authority,
+            base_root=resolved_root if art_tuples else None,
+        )
+        input_refs = [cfg_input]
+        for ref in gen_refs:
+            input_refs.append(dict(ref))
+        seen_changed = set()
+
+        def add_changed_path(path):
+            if isinstance(path, str) and path and path not in seen_changed:
+                seen_changed.add(path)
+                input_refs.append({"kind": "changed_path", "path": path})
+
+        for path in scope_item.get("inputs") or ():
+            add_changed_path(path)
+        if workflow_check:
+            bound, reason, _ = _verify_execution_binding(
+                eval_plan,
+                resolved_root if art_tuples else work_root,
+                execution_context=execution_context,
+            )
+            if not bound:
+                raise ExecutionError(reason or "workflow_target_source_unverified")
+            admitted = workflow_analysis._authorized_external_targets(
+                admitted_external_targets,
+                check_name,
+                functools.partial(authority, "external_target") if authority else None,
+            )
+            sel_cfg, _, sel_err = _load_optional_selection_config(
+                eval_plan, work_root, selection_config=view_sel
+            )
+            scope_cfg = (
+                sel_cfg.check_scope
+                if sel_err is None and sel_cfg is not None
+                else selection.CheckScopeConfig()
+            )
+            declared = scope_item.get("inputs")
+            is_workflow_family = check_name in {
+                "actionlint",
+                "workflow_shellcheck",
+                "zizmor",
+            }
+            if handoff_verified is not None and (
+                not isinstance(declared, (list, tuple))
+                or (scope_item.get("status") == "unknown" and not declared)
+            ):
+                if is_workflow_family:
+                    declared = workflow_analysis.discover_workflow_files(
+                        work_root,
+                        scope_cfg.workflow_prefixes,
+                        admitted_external_targets=admitted,
+                    )
+                else:
+                    declared = workflow_analysis.discover_shell_files(
+                        work_root,
+                        scope_cfg.shell_prefixes,
+                        admitted_external_targets=admitted,
+                    )
+            matched_extras = []
+            for p in art_paths:
+                matched = (
+                    workflow_analysis.is_workflow_file(p, scope_cfg.workflow_prefixes)
+                    if is_workflow_family
+                    else workflow_analysis.is_shell_file(p, scope_cfg.shell_prefixes)
+                )
+                if matched:
+                    matched_extras.append(p)
+            target_candidates = sorted({*(declared or ()), *matched_extras})
+            for path in target_candidates:
+                add_changed_path(path)
+            validate_target = _workflow_target_validator(
+                eval_plan,
+                work_root,
+                gen_refs,
+                authority=authority,
+                _consumer_source_root=resolved_root if art_tuples else None,
+            )
+            targets = []
+            for path in target_candidates:
+                target, reason = workflow_analysis._inspect_target(
+                    work_root.resolve(), path, admitted
+                )
+                if reason is None:
+                    reason = validate_target(target, check_name=check_name)
+                if reason is not None:
+                    raise ExecutionError(reason)
+                targets.append(target)
+                input_refs.append({"kind": "scan_target", **target})
+            scope_item = {**scope_item, "target_sources": targets}
+        source_ref = _verified_check_source_ref(
+            eval_plan,
+            check_name,
+            scope_item,
+            root=work_root,
+            execution_context=execution_context,
+            source_snapshots=snapshots,
+            hygiene_config=view_hyg,
+            sources_config=view_src,
+            artifact_paths=art_paths,
+            base_root=resolved_root if art_tuples else None,
+        )
+        if source_ref is None:
+            source_ref = _source_reference(eval_plan, execution_context)
+        if workflow_check:
+            source_ref = _workflow_result_source(scope_item, source_ref)
+        receipt_payload = {
+            "scope_id": expected_scope.get("scope_id"),
+            "expected_check_ref": matched_expected["expected_check_ref"],
+            "source_ref": source_ref,
+            "rule_source_ref": rule_source_ref,
         }
-    return item
+        if workflow_check or gen_refs:
+            receipt_payload["input_refs"] = input_refs
+        if handoff_verified is not None:
+            receipt_payload["producer_artifact_handoff_id"] = handoff_verified[
+                "handoff_id"
+            ]
+        receipt_sha = hashlib.sha256(
+            json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        baseline = _baseline_reference(eval_plan)
+        resolved_profile = _profile_reference(
+            eval_plan,
+            root=resolved_root,
+            execution_context=execution_context,
+        )
+        if matched_expected.get("profile_ref") is not None and resolved_profile is None:
+            raise ExecutionError("source_resolution_profile_unverified")
+        item = {
+            "expected_check_ref": matched_expected["expected_check_ref"],
+            "rule_ref": rule_ref,
+            "source_ref": source_ref,
+            "baseline_ref": baseline,
+            "input_refs": input_refs,
+            "rule_source_ref": rule_source_ref,
+            "source_receipt_ref": {
+                "name": "independent-source-resolution",
+                "version": "1",
+                "sha256": receipt_sha,
+            },
+        }
+        if handoff_verified is not None:
+            item["producer_artifact_handoff_id"] = handoff_verified["handoff_id"]
+        if resolved_profile is not None:
+            item["profile_ref"] = resolved_profile
+        changed_binding = git.get("content_binding") or {}
+        changed_digest = changed_binding.get("digest")
+        if isinstance(changed_digest, str) and changed_digest:
+            current_changed = selection.worktree_content_binding(
+                resolved_root, git.get("changed_paths") or ()
+            )
+            if current_changed.get("digest") != changed_digest:
+                raise ExecutionError("source_resolution_changed_paths_stale")
+            if not current_changed.get("unverified_paths"):
+                item["changed_paths_content_digest"] = changed_digest
+        if baseline is not None:
+            base_commit = str(baseline.get("base_commit") or "")
+            odb_tree = selection._git(
+                resolved_root, "rev-parse", "--verify", f"{base_commit}^{{tree}}"
+            )
+            tree_oid = odb_tree.stdout.strip()
+            if odb_tree.returncode != 0 or not _is_git_oid(tree_oid):
+                raise ExecutionError("source_resolution_baseline_unproven")
+            baseline_digest = hashlib.sha256(
+                f"{base_commit}:{tree_oid}".encode()
+            ).hexdigest()
+            item["baseline_source_ref"] = {
+                "name": "git-odb-commit",
+                "version": "1",
+                "sha256": baseline_digest,
+            }
+        return item
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
 
 
 def source_resolution_receipt(
@@ -3930,6 +4840,11 @@ def source_resolution_receipt(
     execution_context="host",
     admitted_external_targets=None,
     workflow_source_authority=None,
+    producer_artifact_handoff=None,
+    producer_artifacts_dir=None,
+    producer_artifact_authority=None,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
 ):
     """Independent #66-C resolution builder (alias to build_source_resolution; ignores NativeResult)."""
     return build_source_resolution(
@@ -3944,7 +4859,77 @@ def source_resolution_receipt(
         execution_context=execution_context,
         admitted_external_targets=admitted_external_targets,
         workflow_source_authority=workflow_source_authority,
+        producer_artifact_handoff=producer_artifact_handoff,
+        producer_artifacts_dir=producer_artifacts_dir,
+        producer_artifact_authority=producer_artifact_authority,
+        expected_run_ref=expected_run_ref,
+        expected_attempt_ref=expected_attempt_ref,
     )
+
+
+def evaluate_source_resolution(
+    plan,
+    check_or_name,
+    *,
+    root=None,
+    expected_check_ref=None,
+    scope_id=None,
+    hygiene_config=None,
+    sources_config=None,
+    selection_config=None,
+    execution_context="host",
+    admitted_external_targets=None,
+    workflow_source_authority=None,
+    producer_artifact_handoff=None,
+    producer_artifacts_dir=None,
+    producer_artifact_authority=None,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
+):
+    """Resolve a Check for #66-C reconciliation, distinguishing unverified vs contradicted."""
+    check_name = (
+        check_or_name.get("name")
+        if isinstance(check_or_name, dict)
+        else str(check_or_name)
+    )
+    resolved_ref = expected_check_ref
+    if resolved_ref is None and isinstance(plan, dict):
+        try:
+            matched, _ = _locate_expected_entry(
+                plan.get("expected_checks"),
+                check_name,
+                expected_check_ref=expected_check_ref,
+                scope_id=scope_id,
+            )
+            resolved_ref = matched.get("expected_check_ref")
+        except ExecutionError:
+            resolved_ref = None
+    try:
+        return build_source_resolution(
+            plan,
+            check_or_name,
+            root=root,
+            expected_check_ref=expected_check_ref,
+            scope_id=scope_id,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            selection_config=selection_config,
+            execution_context=execution_context,
+            admitted_external_targets=admitted_external_targets,
+            workflow_source_authority=workflow_source_authority,
+            producer_artifact_handoff=producer_artifact_handoff,
+            producer_artifacts_dir=producer_artifacts_dir,
+            producer_artifact_authority=producer_artifact_authority,
+            expected_run_ref=expected_run_ref,
+            expected_attempt_ref=expected_attempt_ref,
+        )
+    except ExecutionError as error:
+        return {
+            "expected_check_ref": resolved_ref,
+            "check_name": check_name,
+            "resolution_status": _classify_resolution_error(error.code),
+            "reason": error.code,
+        }
 
 
 def _input_refs(rule, item=None):
@@ -4243,13 +5228,20 @@ def _workflow_result_source(item, source):
             head_commit=source.get("head_commit"),
             index_tree=source.get("index_tree"),
         )
+    suffixes = []
     if any(
         target["policy_scope"] == "event_external"
         for target in item.get("target_sources", ())
     ):
+        suffixes.append("event_external")
+    if item.get("generated_input_refs") and item.get("generated_inputs_retained"):
+        suffixes.append("generated_inputs")
+    if suffixes:
         return {
             **source,
-            "actual_execution_source": f"{source['actual_execution_source']}_with_event_external",
+            "actual_execution_source": (
+                f"{source['actual_execution_source']}_with_{'_and_'.join(suffixes)}"
+            ),
         }
     return source
 
@@ -4266,13 +5258,15 @@ def _decorate_checks(
     hygiene_config=None,
     sources_config=None,
     artifact_paths=(),
+    base_root=None,
 ):
     fallback_source = _source_reference(plan, execution_context)
     baseline = _baseline_reference(plan)
     origin, runner_ref, parent_ctx = _result_origin_and_runner(execution_context)
+    profile_root = base_root if base_root is not None else root
     verified_profile = _profile_reference(
         plan,
-        root=root,
+        root=profile_root,
         execution_context=execution_context,
         profile_ref=profile_ref,
     )
@@ -4313,6 +5307,7 @@ def _decorate_checks(
                 hygiene_config=hygiene_config,
                 sources_config=sources_config,
                 artifact_paths=artifact_paths,
+                base_root=base_root,
             )
             if root is not None
             else None
@@ -4442,13 +5437,28 @@ def run_host_check(
     admitted_external_targets=None,
     workflow_source_authority=None,
     _consumer_source_root=None,
+    _consumer_generated_retained=None,
 ):
     """Run one selected Host check (hygiene, source or workflow/script) with contract decoration."""
     name = item.get("name")
     run_instance = run_instance or uuid.uuid4().hex
+    retained = (
+        bool(item.get("generated_inputs_retained"))
+        if _consumer_generated_retained is None
+        else bool(_consumer_generated_retained)
+    )
     workflow_authority = _workflow_source_authorizer(plan, workflow_source_authority)
     if _consumer_source_root is not None:
         plan = _rebased_consumer_plan(plan, _consumer_source_root)
+        hygiene_config = _rebased_consumer_arg_path(
+            hygiene_config, _consumer_source_root, root
+        )
+        sources_config = _rebased_consumer_arg_path(
+            sources_config, _consumer_source_root, root
+        )
+        selection_config = _rebased_consumer_arg_path(
+            selection_config, _consumer_source_root, root
+        )
     source_snapshots = _prepare_source_snapshots(
         plan,
         [item],
@@ -4458,6 +5468,7 @@ def run_host_check(
         sources_config=sources_config,
         artifact_paths=artifact_paths,
         workflow_authority=workflow_authority,
+        base_root=_consumer_source_root,
     )
     if name in _HYGIENE_CHECKS:
         results, _ = _run_hygiene_checks(
@@ -4516,6 +5527,10 @@ def run_host_check(
                 "reason": "no native check execution wired",
             }
         ]
+    if retained:
+        for entry in raw:
+            if isinstance(entry, dict):
+                entry["generated_inputs_retained"] = True
     decorated = _decorate_checks(
         plan,
         raw,
@@ -4527,6 +5542,7 @@ def run_host_check(
         hygiene_config=hygiene_config,
         sources_config=sources_config,
         artifact_paths=artifact_paths,
+        base_root=_consumer_source_root,
     )
     return decorated[0]
 
@@ -4562,6 +5578,7 @@ def _execute_with_dependencies(
     profile_ref=None,
     admitted_external_targets=None,
     workflow_source_authority=None,
+    produced_artifacts_dir=None,
 ):
     chosen = plan["selection"]
     tests = tuple(chosen["tests"])
@@ -4574,6 +5591,7 @@ def _execute_with_dependencies(
     check_cache = {}
     script_cache = {}
     closure_records = []
+    retention_metadata = {}
 
     with tempfile.TemporaryDirectory() as artifact_dir:
         artifact_root = Path(artifact_dir)
@@ -4738,6 +5756,39 @@ def _execute_with_dependencies(
                     profile_ref=profile_ref,
                 )
             elif files:
+                retained_for_check = False
+                if produced_artifacts_dir is not None:
+                    relevant = [
+                        rec
+                        for rec in closure_records
+                        if rec.get("verified")
+                        and rec.get("consumer_ref") == {"kind": "check", "name": name}
+                    ]
+                    if relevant:
+                        try:
+                            retention_metadata.update(
+                                retain_closure_artifacts(
+                                    artifact_root,
+                                    produced_artifacts_dir,
+                                    relevant,
+                                )
+                            )
+                            retained_for_check = True
+                        except ExecutionError as error:
+                            entry = _decorated_blocked_check(
+                                plan,
+                                name,
+                                item.get("status"),
+                                error.code,
+                                [],
+                                execution_context=execution_context,
+                                run_instance=run_instance,
+                                root=root,
+                                profile_ref=profile_ref,
+                            )
+                            check_cache[name] = entry
+                            return entry
+                item["generated_inputs_retained"] = retained_for_check
                 try:
                     temporary, consumer_root = build_consumer_view(root, files)
                 except ExecutionError as error:
@@ -4773,6 +5824,7 @@ def _execute_with_dependencies(
                         admitted_external_targets=admitted_external_targets,
                         workflow_source_authority=workflow_source_authority,
                         _consumer_source_root=root,
+                        _consumer_generated_retained=retained_for_check,
                     )
                 finally:
                     temporary.cleanup()
@@ -4946,6 +5998,31 @@ def _execute_with_dependencies(
     ]
     if closure_records:
         report["artifact_closure"] = closure_records
+    if produced_artifacts_dir is not None:
+        if closure_records:
+            unretained = [
+                rec
+                for rec in closure_records
+                if rec.get("verified")
+                and _edge_retention_key(
+                    rec["producer_ref"], rec.get("consumer_ref"), rec["output_ref"]
+                )
+                not in retention_metadata
+            ]
+            if unretained:
+                retention_metadata.update(
+                    retain_closure_artifacts(
+                        artifact_root, produced_artifacts_dir, unretained
+                    )
+                )
+        report["producer_artifact_handoff"] = build_producer_artifact_handoff(
+            plan,
+            closure_records=closure_records,
+            prerequisite_results=report.get("prerequisites") or (),
+            execution_identity=report.get("execution_identity"),
+            execution_context=execution_context,
+            retention_metadata=retention_metadata,
+        )
     return None
 
 
@@ -5181,6 +6258,9 @@ def execute(
     profile_ref=None,
     admitted_external_targets=None,
     workflow_source_authority=None,
+    produced_artifacts_dir=None,
+    run_ref=None,
+    attempt_ref=None,
 ):
     """Execute a Plan with optional independently verified Workflow/Shell Source claims.
 
@@ -5189,6 +6269,8 @@ def execute(
     that authority.
     """
     try:
+        if bool(run_ref) != bool(attempt_ref):
+            raise ExecutionError("execution_run_attempt_pair_required")
         validate_plan(plan)
         if (
             plan["schema_version"] == plan_contract.PLAN_VERSION
@@ -5224,9 +6306,9 @@ def execute(
             "execution_ref": run_instance
             if run_instance.startswith("execution:")
             else "execution:" + run_instance,
-            "run_ref": None,
-            "attempt_ref": None,
-            "run_attempt_verification": "not_supplied",
+            "run_ref": run_ref or None,
+            "attempt_ref": attempt_ref or None,
+            "run_attempt_verification": "unverified" if run_ref else "not_supplied",
             "origin_execution_attributed": False,
         },
         "plan": {
@@ -5281,6 +6363,7 @@ def execute(
             profile_ref=profile_ref,
             admitted_external_targets=admitted_external_targets,
             workflow_source_authority=workflow_source_authority,
+            produced_artifacts_dir=produced_artifacts_dir,
         )
         if early is not None:
             return early

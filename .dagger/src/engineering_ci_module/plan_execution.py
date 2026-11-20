@@ -951,7 +951,13 @@ async def _execute_dag(
                 temporary = None
                 consumer_root = Path(directory)
                 artifact_paths = ()
+                check_item = item
                 if fs_files:
+                    check_item = {
+                        **item,
+                        "generated_input_refs": generated_refs,
+                        "generated_inputs_retained": True,
+                    }
                     temporary, consumer_root = execution.build_consumer_view(
                         consumer_root, fs_files
                     )
@@ -960,7 +966,7 @@ async def _execute_dag(
                     entry = await asyncio.to_thread(
                         execution.run_host_check,
                         host_plan,
-                        item,
+                        check_item,
                         root=consumer_root,
                         runner=runner,
                         execution_context="dagger_export",
@@ -969,6 +975,8 @@ async def _execute_dag(
                         generated_input_refs=generated_refs,
                         shared_cache=None if fs_files else script_shared_cache,
                         profile_ref=verified_profile,
+                        _consumer_source_root=Path(directory) if fs_files else None,
+                        _consumer_generated_retained=bool(fs_files),
                     )
                 finally:
                     if temporary is not None:
@@ -1151,6 +1159,7 @@ async def _execute_dag(
                 "prerequisites/" + name, native_outputs
             )
 
+        bundle_error = False
         if produced_files:
 
             async def _finalize_artifacts():
@@ -1162,6 +1171,7 @@ async def _execute_dag(
             if isinstance(bundle_outcome, BaseException):
                 if not isinstance(bundle_outcome, Exception):
                     raise bundle_outcome
+                bundle_error = True
                 _record_delivery_failure(
                     report,
                     {"kind": "artifact_bundle"},
@@ -1191,6 +1201,39 @@ async def _execute_dag(
                 bool(closure_records)
                 and all(entry["verified"] for entry in closure_records)
                 and not delivery_blocked
+            )
+        has_data_edges = any(
+            edge.get("dependency_kind") == "data"
+            for edges in incoming.values()
+            for edge in edges
+        )
+        if produced_files or has_data_edges or closure_records:
+            retention_metadata = {}
+            if not bundle_error:
+                for rec in closure_records:
+                    if not rec.get("verified"):
+                        continue
+                    key = execution._edge_retention_key(
+                        rec["producer_ref"],
+                        rec.get("consumer_ref"),
+                        rec["output_ref"],
+                    )
+                    retention_metadata[key] = execution._artifact_retention_snapshot(
+                        execution.producer_artifact_root(
+                            artifact_root, rec["producer_ref"]
+                        ),
+                        rec["output_ref"],
+                        producer_ref=rec["producer_ref"],
+                    )
+            report["producer_artifact_handoff"] = (
+                execution.build_producer_artifact_handoff(
+                    value,
+                    closure_records=closure_records,
+                    prerequisite_results=report.get("prerequisites") or (),
+                    execution_identity=report.get("execution_identity"),
+                    execution_context="dagger_export",
+                    retention_metadata=retention_metadata,
+                )
             )
 
         report["result_sharing"] = {
