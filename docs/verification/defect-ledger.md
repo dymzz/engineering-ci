@@ -2,7 +2,7 @@
 
 > **审计状态：持续进行，当前发现不是全仓缺陷全集。** 本文件集中记录 ECI 的源码观察、原始证据、反例、反证、依赖和结论演进；它既不提供运行时授权，也不承担对未来实现方案的批准或限制职能。
 >
-> 初始审计快照（2026-11-18）：`main@fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83`（[#125-D / PR #128](https://github.com/dymzz/engineering-ci/pull/128) 已合并）；当时的旧候选为 `#124@4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5`，彼时尚不在 main。**当前结算快照更新为 2026-11-20 `main@e6e20986d76cc25d5d0709e7517e1fc0f3e5d7b7`（PR #139 合并后）；#124/#138 与各已合并修复按实际 Merge Commit 结算。历史快照保持原证据时态，不能反推当前仍未修复。**
+> 初始审计快照（2026-11-18）：`main@fc0df2a85c2ebeb9c39cf9ecff588c15b27d0b83`（[#125-D / PR #128](https://github.com/dymzz/engineering-ci/pull/128) 已合并）；当时的旧候选为 `#124@4a41b4e2ef53bcd7b6194c9d390bdb0b01cf44b5`，彼时尚不在 main。**当前结算快照更新为 2026-11-20 `main@f18e520f9a5fcf958080f4d6a77e7a5596a1dca4`（PR #142 合并后）；#124/#138 与各已合并修复按实际 Merge Commit 结算。历史快照保持原证据时态，不能反推当前仍未修复。**
 >
 > **审计范围是 `dymzz/engineering-ci` 全仓。** 包括原始工程目标、架构与成熟工具、重复建设、Hooks/Lefthook、Dagger/Actions、证据/权限、Tool Runtime、OTel/Weaver、Release/GitHub 与历史需求和 Issue/PR。[#125](https://github.com/dymzz/engineering-ci/issues/125) 是授权链调查切面，不构成审计范围上限；未调查的其他领域保留为未知。其他仓库、规范和成熟工具源码只作为核实 ECI 设计选择的证据。
 
@@ -10,7 +10,7 @@
 
 ## 2026-11-20 · 最新合并结算与当前执行导航
 
-本节依据 ECI main e6e20986d76cc25d5d0709e7517e1fc0f3e5d7b7、实际 GitHub 合并记录、对应源码差分及定向验证记录更新至 2026-11-20。文件旧基线 main@fc0df2a 是 2026-11-18 的审计快照，并非现行源码；后续原文的旧版“未修复/待合并”只作为发现历史。**以本节和 §0A 为当前结算，所有修复的原始证据不删除。**
+本节依据 ECI main f18e520f9a5fcf958080f4d6a77e7a5596a1dca4、实际 GitHub 合并记录、对应源码差分及定向验证记录更新至 2026-11-20。文件旧基线 main@fc0df2a 是 2026-11-18 的审计快照，并非现行源码；后续原文的旧版“未修复/待合并”只作为发现历史。**以本节和 §0A 为当前结算，所有修复的原始证据不删除。**
 
 | 已完成的具体问题 | GitHub 合并与定向 CI | 明确未由该切片证明的边界 |
 | --- | --- | --- |
@@ -21,6 +21,7 @@
 | NEW-053 / #66 | [PR #132](https://github.com/dymzz/engineering-ci/pull/132)，merge b10dce6a；[CI 44564689873](https://github.com/dymzz/engineering-ci/actions/runs/44564689873) SUCCESS | #66-P0 历史 Blob pre-execution Readiness、#86 Dagger 真实 Handoff；AST 迁移差异已由独立的 #139 合并修复 |
 | NEW-055 / #58 | [PR #135](https://github.com/dymzz/engineering-ci/pull/135)，merge edd40943；[CI 44499442394](https://github.com/dymzz/engineering-ci/actions/runs/44499442394) SUCCESS | #86 Producer 原始生成结果可重读 → #66 独立 Source Resolution 正向交接尚为 needs_wiring |
 | NEW-056/057 / #51 | [PR #137](https://github.com/dymzz/engineering-ci/pull/137)，merge da5e9397；[CI 44490180853](https://github.com/dymzz/engineering-ci/actions/runs/44490180853) SUCCESS | 现行 OSV Policy 的单 approved Git pin + registry 正例不等于所有合法多源场景 |
+| D-G03 / NEW-010/011/045/046/047 / #61 G2/G3 | [PR #142](https://github.com/dymzz/engineering-ci/pull/142)，merge f18e520f；[CI 44707896242](https://github.com/dymzz/engineering-ci/actions/runs/44707896242) 4/4 SUCCESS；[最终 Review 5990766956](https://github.com/dymzz/engineering-ci/pull/142#pullrequestreview-5990766956) PASS | 仅合同已修复；实际受信 Publisher/原 R1、App Installation/凭证、有效 Ruleset/Protection、Native Context 与 GitHub 服务端拒绝未验收 |
 
 **在途去重已结算：** [PR #139](https://github.com/dymzz/engineering-ci/pull/139) 已于 2026-11-20 04:24:53 UTC 合并（merge `e6e20986`，HEAD `50c88837`），交付 Forwarding AST 迁移语义（`__all__`、`__init__.py`、非空 Base AST、CheckDefinition v2）及与 #132 的 Source 交叉回归。[PR #133](https://github.com/dymzz/engineering-ci/pull/133) 已与 #135 的源码和测试去重，于 2026-11-20 **Closed / Unmerged**（旧 HEAD `a5a68545`）；旧分支静默过滤异常发现目标，与已合并 #135 的 `problems` 拒绝传播存在实质差异。逐项复核未找到必须单独移植的独有有效实现或验收反例，保留旧 Review 供追溯。
 
@@ -43,8 +44,8 @@
 | [NEW-007](#new-007) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-008](#new-008) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-009](#new-009) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-010](#new-010) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-011](#new-011) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-010](#new-010) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
+| [NEW-011](#new-011) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
 | [NEW-012](#new-012) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #136](https://github.com/dymzz/engineering-ci/pull/136) **已合并**（5f81e373）；R4 原始 Assessment Action/Target/Refs/Phase/Candidate 授权身份绑定；生产 Release Provider 另证 |
 | [NEW-013](#new-013) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-014](#new-014) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
@@ -78,9 +79,9 @@
 | [NEW-042](#new-042) | [#57](https://github.com/dymzz/engineering-ci/issues/57) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-043](#new-043) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-044](#new-044) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-045](#new-045) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-046](#new-046) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-047](#new-047) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-045](#new-045) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
+| [NEW-046](#new-046) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
+| [NEW-047](#new-047) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
 | [NEW-048](#new-048) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-049](#new-049) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-050](#new-050) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
@@ -822,7 +823,7 @@
 | --- | --- | --- | --- |
 | D-G01 | 完整治理/委托/继承/排除域、真实 Phase/Universe Producer、有效期与撤销 | #66-B2、#61-R1 | 未验证 |
 | D-G02 | T1/T2/T1-b 受信 Issuer、Local/Actions Receiver、P0 当前授权、跨 Run 复用和 Remaining Work 消费 | #63、#66-P0 | 未验证 |
-| D-G03 | 真实 Required Check 发布者、GitHub 服务端 Required 与受控拒绝证明 | #61-G2/G3 | 当前 `main` Branch API 报 `protected=false`、Required Status Checks `off`；可见 Rulesets 列表为空；直接 Protection GET 因权限 403，故服务端完整配置/真实拒绝尚未做端到端验证。比旧“仅 HTTP401，不知是否有保护”证据更具体 |
+| D-G03 | 真实 Required Check 发布者、GitHub 服务端 Required 与受控拒绝证明 | #61-G2/G3 / #125 | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**修复 NEW-010/011/045/046/047 的代码合同（含 Missing Assessment 有权 failure 发布）；当前 `main.protected=false`、可见 Rulesets `[]`、Protection GET 403，#142 HEAD 只有 GitHub Actions App 15368 的普通 Check，未见稳定 Required Assessment Check。受信 Publisher/Assessment、发布前 App Installation/凭证、`Checks:write`、Ruleset/Native Context/Bypass 与真实服务端拒绝仍未完成 D-G03 生产验收 |
 | D-G04 | R4/R5 真正 Release/Post 消费、同候选 Manifest/Artifact/Policy/Trigger/Due | #61-R4/R5、现有 Release | 未验证 |
 | D-G05 | 实际受保护工具、Policy anchor、Source/Revision 与持久授权边界 | 现有 Security Policy/Tool Runtime 集成 | 未验证 |
 
