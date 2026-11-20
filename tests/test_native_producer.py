@@ -60,7 +60,14 @@ def weaver_observation(
         "inputs": {"config_sha256": "c" * 64},
         "commands": commands,
         "trusted": False,
-        **({"phase": "post_completion"} if kind == "terminal" else {}),
+        **(
+            {
+                "phase": "post_completion",
+                "terminal_correlation_status": "failed" if gate_failed else "passed",
+            }
+            if kind == "terminal"
+            else {}
+        ),
     }
 
 
@@ -120,11 +127,34 @@ def test_native_failure_is_not_replaced_by_the_gate_exit_or_missing_later_stages
 
 
 def test_gate_failure_after_native_zero_keeps_the_native_process_fact():
-    item = adapt(weaver_observation("terminal", gate_failed=True))
+    raw = weaver_observation("terminal", gate_failed=True)
+    raw["reason"] = "terminal_pipeline_signal_missing"
+    item = adapt(raw)
     assert item["status"] == "failed"
-    assert item["native_results"][-1]["status"] == "passed"
+    native = item["native_results"][-1]
+    assert native["status"] == "passed"
+    assert native["native_exit_code"] == 0
+    assert native["evidence"]["gate_exit_code"] == 9
+    assert native["evidence"]["terminal_correlation_status"] == "failed"
+    assert native["evidence"]["terminal_correlation_reason"] == raw["reason"]
+    assert item["native_satisfaction"]["status"] == "unsatisfied"
+    assert item["native_satisfaction"]["reason"] == "terminal_correlation_unproven"
+    assert item["native_satisfaction"]["selected_result_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "correlation,gate_failed",
+    [(None, False), ("not_executed", False), ("passed", True)],
+)
+def test_terminal_satisfaction_requires_passed_correlation_and_gate(
+    correlation, gate_failed
+):
+    raw = weaver_observation("terminal", gate_failed=gate_failed)
+    raw["terminal_correlation_status"] = correlation
+    item = adapt(raw)
     assert item["native_results"][-1]["native_exit_code"] == 0
-    assert item["native_results"][-1]["evidence"]["gate_exit_code"] == 9
+    assert item["native_satisfaction"]["status"] == "unsatisfied"
+    assert item["native_satisfaction"]["reason"] == "terminal_correlation_unproven"
 
 
 def test_configuration_refusal_has_no_fabricated_native_result():
