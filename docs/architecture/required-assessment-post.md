@@ -47,7 +47,10 @@ still belong to the authorized order.
 | `overdue` | After `due_at`; missing/failed post evidence cannot verify. Overdue + PASS still needs `due_window_authority` to accept late evidence (`late_evidence_accepted=true`) |
 | `not_applicable` | Derived only from a **passed** post Assessment whose rows are all `not_applicable` (or empty). A blocked post cannot claim N/A |
 
-The trigger and both Assessments must be at or before envelope evaluation.
+Trigger observation and both Assessments must be at or before envelope
+evaluation. An explicit `occurred_at` records when the event happened
+and must precede or equal `observed_at`, which records its receipt.
+Older Trigger records use `observed_at` for both.
 For progression and current reevaluation, the post Assessment must be at or
 after both the prior Assessment and the trigger. Reevaluation references a
 prior Assessment that exists at trigger time. Timestamps are normalized to UTC.
@@ -87,11 +90,38 @@ Optional `disposition_authority` may record authorized follow-ups
 (`await_repair`, `reevaluate`, `notify`, `block_progression`, …). Default is
 `none`. `auto_revoke_published` is always false in this contract.
 
+## Published Release inspection
+
+`release.verification.published()` and `cli.release.inspect()` return
+the historical Release result and a separate `post_stage` observation.
+For a protected caller supplying `post_stage_authority`, the read-side
+adapter checks the final native Release ID and publication time, its
+immutable Manifest, and the original completed Run and Attempt. It
+binds the `publication_completed` event and any required Artifact ID
+and digest to those facts. Native `published_at` supplies the event's
+`occurred_at`. The independent Trigger authority verifies the receipt's
+`observed_at`, which may be later. The verifier receives the
+native publication identity and the applicable Artifact ID alongside
+the governed R5 context. The caller must supply both original R1
+Assessments and the governing Phase, Trigger and Due authorities.
+
+The adapter runs R5 at read time. Its result may show a requested
+disposition and does not execute one. The CLI continues to report
+the historical publication even when current post-stage evidence
+is pending, rejected or unverified. CLI exit 0 and `result=published`
+establish successful historical inspection. A governed promotion write
+must consume its own applicable authorization and record the action or
+refusal. The default CLI has no governed
+authority binding and reports that evidence gap explicitly. Other
+trigger types and any policy-selected Promotion, Notification or
+Reevaluation need their own native entry and outcome receipt.
+
 ## Limits
 
 - Prior Assessment documents remain immutable references.
 - Digest integrity is not authorization.
-- No CLI / Actions / server-protection wiring in this slice.
+- The Release CLI only consumes publication-triggered R5 observations.
+  Action consumers and server-protection changes are outside that read.
 
 ## NEW-001 / NEW-027 scope and evidence
 
