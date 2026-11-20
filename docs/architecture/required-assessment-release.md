@@ -185,21 +185,38 @@ and `otlp_delivered` are false. This verifies a real no-Root input and
 Task trace identity. Native Weaver exit and findings, independent Issuer
 authentication, Receiver ACK and Terminal execution remain unverified.
 
+Four additional default-branch Post-run archives were readable and matched
+their GitHub SHA-256 values. Artifact `14648469807` came from Post-run
+`44775634689/1` for source `44775264598/1`, `14648877313` from
+`44775134954/1` for `44774736338/1`, `14648263310` from `44773808079/1`
+for `44773475745/1`, and `14645279469` from `44769863530/1` for
+`44769458290/1`. Each recorded `end_time_uncertain`, zero SERVER
+spans, and no confirmed bundle delivery. The default Workflow supplies
+`observed_upper_bound` with no approved uncertainty budget. Its GitHub
+Attempt adapter does not assign an exact completion time. Terminal positive
+acceptance still needs a separately sourced authoritative end time or a
+governed observation budget and a matching live capture.
+[Post-run Workflow](../../.github/workflows/cicd-telemetry-post-run.yml) ·
+[GitHub Attempt adapter](../../src/engineering_ci/cicd_telemetry.py)
+
 Historical Release Run `39614205390/1` has successful `verified` and
 `publish` Jobs. Its current Actions Artifact listing returns zero entries.
 This establishes that the native Release path ran on that earlier candidate.
+The native Release API reports `v0.7.0` as Release ID `419641784`,
+published at `2026-10-21T14:12:08Z`, with Manifest asset `662727226`.
 A current candidate still needs its own native Provider and lifecycle
 authority evidence.
-[Historical Release Run](https://github.com/dymzz/engineering-ci/actions/runs/39614205390)
+[Historical Release Run](https://github.com/dymzz/engineering-ci/actions/runs/39614205390) ·
+[v0.7.0 Release](https://github.com/dymzz/engineering-ci/releases/tag/v0.7.0)
 
 ### Producer, verifier and consumer evidence
 
 | Requirement and implementation owner | Producer and observed identity | Scope, time and evidence | Verifier and current evidence level | Final consumer and acceptance result |
 | --- | --- | --- | --- | --- |
 | [#75](https://github.com/dymzz/engineering-ci/issues/75) / [#74](https://github.com/dymzz/engineering-ci/issues/74), reuse #83/#84 | `cicd-telemetry-post-run.yml` and `cicd_telemetry`, Runs `44767235384/1` → `44766709012/1`, Artifact `14646306762` and the digests above | Four completed Jobs, four Task Spans, Root withheld, producer exit 0 and no observed Receiver ACK | Bytes and Task trace identity verified. Pinned Registry, applicable Native Live/Terminal result and required delivery await independent verification | #74 Native Checker into #52 Report. Real no-Root input confirmed. Need a genuine Task-only Native positive and a Terminal positive with an authorized Root and valid time quality |
-| [#52 D4](https://github.com/dymzz/engineering-ci/issues/52), [#66-C](https://github.com/dymzz/engineering-ci/issues/66) and [#63](https://github.com/dymzz/engineering-ci/issues/63), reuse #124 | Authorized #66-B2 Check Expected plus completed Run/Attempt and #74 Native Result | `scope_id`, `expected_check_ref`, current Profile/Phase, Rule/Source, Candidate and original capture inputs | Terminal Plan validation, #66-C structural Receipt and #63 authenticated Admission. Current Artifact supplies the no-Root negative input | R1 per-check Coverage, Native FAIL and Remaining Work. Authorized positive and wrong Attempt/Source/Rule/Capture or expired-Profile rejection require actual handoff evidence |
-| [#61 R4](https://github.com/dymzz/engineering-ci/issues/61), E065/E066/E067/E072, reuse #121/#136 | Current non-sample R1 and authorized Profile/Policy/Handoff plus Release `verified` Job and native Provider | Repository/Tag/HEAD, action/target/ref/phase, approved validity, exact Manifest bytes, Run/Attempt/Job/upload Step and Artifact ID/digest | R4 reconciliation and native Provider contracts exist. Historical workflow Jobs supply separate native evidence | `workflow_actions release publish` → `publish_release`. Current R4 consumption and authorized publication or validation-only receipts remain unverified |
-| [#61 R5](https://github.com/dymzz/engineering-ci/issues/61), E068, reuse #123/#134 | Independently authenticated Run/Release/Artifact event, ordered Phase/Due authorities and two same-Candidate R1 assessments | Trigger type/time, Run/Attempt, target/ref, Artifact digest when applicable, evaluation time and authorized due window | R5 pair, chronology and refusal contracts exist. Production Trigger and resulting consumer action remain unverified | Existing Release Verification read path and any governed Promotion/Disposition exit. Need a real timely pair and consumer receipts for pending, overdue, late, rejected and reevaluated cases |
+| [#52 D4](https://github.com/dymzz/engineering-ci/issues/52), [#66-C](https://github.com/dymzz/engineering-ci/issues/66) and [#63](https://github.com/dymzz/engineering-ci/issues/63), reuse #124 | Authorized #66-B2 Check Expected plus completed Run/Attempt and #74 Native Result | `scope_id`, `expected_check_ref`, current Profile/Phase, Rule/Source, Candidate and original capture inputs | Terminal Plan validation, #66-C Receipt and #63 Admission. [#145](https://github.com/dymzz/engineering-ci/pull/145) at `b72e620` fixes the Native Correlation handoff and passed its contract review | R1 per-check Coverage, Native FAIL and Remaining Work. The examined archives supply real no-Root inputs. A qualified native positive and authenticated handoff still need evidence |
+| [#61 R4](https://github.com/dymzz/engineering-ci/issues/61), E065/E066/E067/E072, reuse #121/#136 | Current non-sample R1 and authorized Profile/Policy/Handoff plus Release `verified` Job and native Provider | Repository/Tag/HEAD, action/target/ref/phase, approved validity, exact Manifest bytes, Run/Attempt/Job/upload Step and Artifact ID/digest | [Draft #147](https://github.com/dymzz/engineering-ci/pull/147) at `10721fc` uses the original Provider. A recording API proved zero writes for the covered refusals | `workflow_actions release publish` → `publish_release`. The Draft enforces current R4 before mutation. Live Workflow authority binding and authorized production receipt remain unverified |
+| [#61 R5](https://github.com/dymzz/engineering-ci/issues/61), E068, reuse #123/#134 | Independently authenticated Run/Release/Artifact event, ordered Phase/Due authorities and two same-Candidate R1 assessments | Trigger type/time, Run/Attempt, target/ref, Artifact digest when applicable, evaluation time and authorized due window | [Draft #148](https://github.com/dymzz/engineering-ci/pull/148) at `344c0c8` binds native publication metadata and the original Attempt before R5. Controlled tests cover refusal, due and late outcomes | The Draft consumes the pair in Release inspection and retains the historical publication. Governed live R1/Trigger inputs and any Policy-selected Promotion/Disposition receipt remain unverified |
 
 ### Terminal Source and Expected handoff
 
