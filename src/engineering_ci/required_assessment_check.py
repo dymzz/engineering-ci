@@ -7,7 +7,7 @@ publication**:
   self-digesting envelope and request body. They do not call GitHub.
 - ``publish_check_run`` is the production publisher for the stable Required
   Context name. It refuses contract-sample / non-production Check names and
-  requires a verified publishing authorization before POSTing ``success``.
+  requires verified publishing authorization for every POST.
 
 This module does **not** re-run Assessment (#61 R1), admit evidence (#63),
 read Rulesets (#61 R3), authorize Release (#61 R4/R5), or prove that a
@@ -19,9 +19,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 
 from . import required_assessment
-from .github_cli import ApiError, GitHub
+from .github_cli import ApiError
 
 PUBLICATION_KIND = "engineering-ci-required-assessment-check"
 PUBLICATION_VERSION = 1
@@ -115,6 +116,33 @@ def _canonical_evidence(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _assessment_scope(value):
+    code = "publication_assessment_scope_invalid"
+    if not isinstance(value, dict):
+        raise RequiredAssessmentCheckError(code)
+    scope = {
+        key: _text(value.get(key), code)
+        for key in ("context", "action", "target", "phase")
+    }
+    refs = value.get("refs")
+    if not isinstance(refs, list) or not refs:
+        raise RequiredAssessmentCheckError(code)
+    scope["refs"] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            raise RequiredAssessmentCheckError(code)
+        scope["refs"].append(
+            {key: _text(ref.get(key), code) for key in ("target_ref", "ref_action")}
+        )
+    return scope
+
+
+def _source_app_id(value):
+    if type(value) is not int or value <= 0:
+        raise RequiredAssessmentCheckError("publication_source_app_invalid")
+    return value
+
+
 def normalize_target_binding(value, context):
     """Require an explicit Assessment→GitHub target mapping.
 
@@ -159,6 +187,8 @@ def normalize_target_binding(value, context):
     }
     if value.get("tree") is not None:
         binding["tree"] = _sha1(value.get("tree"), "publication_target_tree_invalid")
+    if "assessment_scope" in value:
+        binding["assessment_scope"] = _assessment_scope(value["assessment_scope"])
     return binding
 
 
@@ -219,6 +249,13 @@ def _bind_assessment_target(assessment, context):
     """Fail closed unless Assessment identity matches the verified target."""
     binding = context["target_binding"]
     candidate = assessment.get("candidate")
+    scope = binding.get("assessment_scope")
+    if scope is not None and scope != _assessment_scope(assessment):
+        raise RequiredAssessmentCheckError("publication_assessment_scope_mismatch")
+    if binding["tree"] is not None and (
+        not isinstance(candidate, dict) or candidate.get("tree") != binding["tree"]
+    ):
+        raise RequiredAssessmentCheckError("publication_assessment_tree_mismatch")
     commit = None
     if isinstance(candidate, dict):
         raw = candidate.get("commit")
@@ -482,8 +519,17 @@ def validate_publication(publication):
         raise RequiredAssessmentCheckError("forbidden_conclusion")
     if conclusion not in CONCLUSIONS:
         raise RequiredAssessmentCheckError("conclusion_invalid")
-    if publication.get("assessment_status") == "blocked" and conclusion == "success":
+    assessment_status = publication.get("assessment_status")
+    if conclusion == "success" and (
+        assessment_status != "passed" or publication.get("assessment_ref") is None
+    ):
         raise RequiredAssessmentCheckError("forced_success_refused")
+    if (assessment_status, conclusion) not in (
+        ("passed", "success"),
+        ("blocked", "failure"),
+        (None, "failure"),
+    ):
+        raise RequiredAssessmentCheckError("assessment_status_invalid")
     request = publication.get("request")
     if not isinstance(request, dict):
         raise RequiredAssessmentCheckError("publication_request_invalid")
@@ -496,6 +542,8 @@ def validate_publication(publication):
     if request.get("status") != CHECK_STATUS_COMPLETED:
         raise RequiredAssessmentCheckError("publication_request_status_incomplete")
     assessment_ref = publication.get("assessment_ref")
+    if (assessment_ref is None) != (assessment_status is None):
+        raise RequiredAssessmentCheckError("publication_assessment_ref_invalid")
     if assessment_ref is None:
         if request.get("external_id") is not None:
             raise RequiredAssessmentCheckError("publication_external_id_unexpected")
@@ -533,7 +581,6 @@ def validate_publication(publication):
     )
     if normalized_target != publication.get("target_binding"):
         raise RequiredAssessmentCheckError("publication_target_binding_mismatch")
-    publication["target_binding"] = normalized_target
     return publication
 
 
@@ -547,9 +594,11 @@ def normalize_publishing_authorization(value, publication):
     if not isinstance(value, dict):
         raise RequiredAssessmentCheckError("publishing_authorization_invalid")
     record = {
-        "assessment_ref": _internal_ref(
-            value.get("assessment_ref"), "publishing_authorization_assessment_invalid"
+        "assessment_ref": value.get("assessment_ref"),
+        "publication_ref": _internal_ref(
+            value.get("publication_ref"), "publishing_authorization_ref_invalid"
         ),
+        "source_app_id": _source_app_id(value.get("source_app_id")),
         "check_name": _text(
             value.get("check_name"), "publishing_authorization_check_name_invalid"
         ),
@@ -593,8 +642,10 @@ def normalize_publishing_authorization(value, publication):
         raise RequiredAssessmentCheckError(
             "publishing_authorization_non_production_check"
         )
-    if record["conclusion"] != "success":
-        raise RequiredAssessmentCheckError("publishing_authorization_success_required")
+    if record["publication_ref"] != publication["publication_ref"]:
+        raise RequiredAssessmentCheckError(
+            "publishing_authorization_publication_mismatch"
+        )
     if record["assessment_ref"] != publication.get("assessment_ref"):
         raise RequiredAssessmentCheckError(
             "publishing_authorization_assessment_mismatch"
@@ -657,12 +708,12 @@ def normalize_publishing_authorization(value, publication):
     return record
 
 
-def publishing_authorization_for(publication, *, authority_ref):
-    """Build a correctly bound success authorization envelope for tests/stubs."""
-    if publication.get("conclusion") != "success":
-        raise RequiredAssessmentCheckError("publishing_authorization_success_required")
+def publishing_authorization_for(publication, *, authority_ref, source_app_id):
+    """Bind a publication claim for independent authorization."""
     return {
         "assessment_ref": publication["assessment_ref"],
+        "publication_ref": publication["publication_ref"],
+        "source_app_id": _source_app_id(source_app_id),
         "check_name": publication["check_name"],
         "conclusion": publication["conclusion"],
         "head_sha": publication["head_sha"],
@@ -682,7 +733,7 @@ def publishing_authorization_for(publication, *, authority_ref):
 def copy_target_binding(value):
     if not isinstance(value, dict):
         raise RequiredAssessmentCheckError("publication_target_binding_invalid")
-    return {
+    copied = {
         "kind": value["kind"],
         "commit": value["commit"],
         "repository": value["repository"],
@@ -691,6 +742,9 @@ def copy_target_binding(value):
         "run_attempt": value["run_attempt"],
         "tree": value.get("tree"),
     }
+    if "assessment_scope" in value:
+        copied["assessment_scope"] = _assessment_scope(value["assessment_scope"])
+    return copied
 
 
 def publish_check_run(
@@ -698,16 +752,14 @@ def publish_check_run(
     *,
     publishing_authorization=None,
     publish_authority=None,
+    assessment_authority=None,
     repository=None,
     github=None,
 ):
     """POST a production Required Check through native ``gh api``.
 
-    Refuses contract-sample / non-production Check names. Production
-    ``success`` requires ``publishing_authorization`` bound to the publication
-    and accepted by ``publish_authority`` (trusted Provider/Workflow boundary).
-    Caller-asserted ``trust_basis`` alone never authorizes the POST. Repository
-    overrides that disagree with the publication are rejected.
+    Both conclusions require an independently authorized publisher. Success
+    also requires the original PASS from a trusted Assessment reader.
     """
     validate_publication(publication)
     if repository is not None and repository != publication["repository"]:
@@ -719,21 +771,67 @@ def publish_check_run(
         raise RequiredAssessmentCheckError(
             "production_publisher_rejects_non_production_check"
         )
+    if not callable(publish_authority):
+        raise RequiredAssessmentCheckError("publish_authority_missing")
+    authorization = normalize_publishing_authorization(
+        publishing_authorization, publication
+    )
+    if (
+        publish_authority(deepcopy(authorization), deepcopy(publication), github)
+        is not True
+    ):
+        raise RequiredAssessmentCheckError("publishing_authorization_rejected")
+    if publication["trust_basis"] not in PRODUCTION_TRUST_BASES:
+        raise RequiredAssessmentCheckError("publishing_trust_basis_not_production")
+    target = publication["target_binding"]
+    if "assessment_scope" not in target:
+        raise RequiredAssessmentCheckError("publication_assessment_scope_missing")
     if publication["conclusion"] == "success":
-        if publish_authority is None:
-            raise RequiredAssessmentCheckError("publish_authority_missing")
-        authorization = normalize_publishing_authorization(
-            publishing_authorization, publication
+        if target["tree"] is None:
+            raise RequiredAssessmentCheckError("publication_target_tree_missing")
+        if not callable(assessment_authority):
+            raise RequiredAssessmentCheckError("assessment_authority_missing")
+        assessment = assessment_authority(
+            publication["assessment_ref"], deepcopy(publication)
         )
-        if publish_authority(authorization, publication) is not True:
-            raise RequiredAssessmentCheckError("publishing_authorization_rejected")
-    client = github or GitHub(publication["repository"])
+        if (
+            not isinstance(assessment, dict)
+            or assessment.get("assessment_ref") != publication["assessment_ref"]
+        ):
+            raise RequiredAssessmentCheckError("publication_assessment_unverified")
+        expected = build_check_publication(
+            assessment,
+            {**publication, "details_url": publication["request"].get("details_url")},
+        )
+        if expected != publication:
+            raise RequiredAssessmentCheckError("publication_assessment_mismatch")
+    if (
+        not callable(github)
+        or getattr(github, "repository", None) != publication["repository"]
+    ):
+        raise RequiredAssessmentCheckError("publisher_transport_unverified")
     try:
-        result = client("check-runs", method="POST", data=publication["request"])
+        result = github("check-runs", method="POST", data=publication["request"])
     except ApiError as error:
         raise RequiredAssessmentCheckError(
             f"github_check_publish_failed:{error.status or 'unavailable'}"
         ) from None
-    if not isinstance(result, dict) or type(result.get("id")) is not int:
+    if (
+        not isinstance(result, dict)
+        or type(result.get("id")) is not int
+        or result["id"] <= 0
+    ):
         raise RequiredAssessmentCheckError("github_check_response_invalid")
+    app = result.get("app")
+    if (
+        not isinstance(app, dict)
+        or type(app.get("id")) is not int
+        or app["id"] != authorization["source_app_id"]
+    ):
+        raise RequiredAssessmentCheckError("github_check_source_app_mismatch")
+    if any(
+        result.get(key) != publication["request"].get(key)
+        for key in ("name", "head_sha", "status", "conclusion", "external_id")
+    ):
+        raise RequiredAssessmentCheckError("github_check_response_mismatch")
     return result

@@ -22,12 +22,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from urllib.parse import quote
 
 from .github_cli import ApiError, GitHub
 from .required_assessment_check import CHECK_NAME
 
 PROTECTION_KIND = "engineering-ci-required-assessment-protection"
-PROTECTION_VERSION = 1
+PROTECTION_VERSION = 2
 VISIBILITY_STATUSES = frozenset({"readable", "absent", "forbidden", "error"})
 ENFORCEMENT_STATUSES = frozenset(
     {"configured", "absent", "not_verified", "misconfigured"}
@@ -100,53 +101,97 @@ def _paginate(github, base_path, *, per_page=_PER_PAGE, max_pages=_MAX_PAGES):
     return "ok", items, False
 
 
-def _contexts_from_status_check_rule(rule):
-    names = []
-    if not isinstance(rule, dict):
-        return names
-    if rule.get("type") != "required_status_checks":
-        return names
+def _required_check(context, app_id, strict):
+    if not isinstance(context, str) or not context:
+        return None
+    pinned = type(app_id) is int and app_id > 0
+    return {
+        "context": context,
+        "source_app_id": app_id if pinned else None,
+        "source_app_status": (
+            "pinned"
+            if pinned
+            else "unpinned"
+            if app_id is None or type(app_id) is int and app_id == -1
+            else "unknown"
+        ),
+        "strict": strict if type(strict) is bool else None,
+    }
+
+
+def _checks_from_status_check_rule(rule):
+    if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+        return []
     parameters = rule.get("parameters") or {}
     if not isinstance(parameters, dict):
-        return names
+        return []
+    checks = []
+    strict = parameters.get("strict_required_status_checks_policy")
     for item in _as_list(parameters.get("required_status_checks")):
-        if isinstance(item, dict) and isinstance(item.get("context"), str):
-            names.append(item["context"])
-        elif isinstance(item, str):
-            names.append(item)
-    return names
+        if isinstance(item, dict):
+            check = _required_check(
+                item.get("context"), item.get("integration_id"), strict
+            )
+        else:
+            check = _required_check(item, None, strict)
+        if check is not None:
+            checks.append(check)
+    return checks
 
 
-def _context_names_from_branch_rules(rules):
-    names = []
-    for rule in _as_list(rules):
-        names.extend(_contexts_from_status_check_rule(rule))
-    return names
+def _checks_from_branch_rules(rules):
+    return [
+        check
+        for rule in _as_list(rules)
+        for check in _checks_from_status_check_rule(rule)
+    ]
 
 
 def _context_names_from_ruleset_detail(detail):
-    names = []
     if not isinstance(detail, dict):
-        return names
-    for rule in _as_list(detail.get("rules")):
-        names.extend(_contexts_from_status_check_rule(rule))
-    return names
+        return []
+    return [
+        check["context"] for check in _checks_from_branch_rules(detail.get("rules"))
+    ]
 
 
-def _context_names_from_branch_protection(payload):
-    names = []
+def _checks_from_branch_protection(payload):
+    checks = []
     if not isinstance(payload, dict):
-        return names
+        return checks
     status_checks = payload.get("required_status_checks")
     if not isinstance(status_checks, dict):
-        return names
+        return checks
+    strict = status_checks.get("strict")
     for item in _as_list(status_checks.get("checks")):
-        if isinstance(item, dict) and isinstance(item.get("context"), str):
-            names.append(item["context"])
+        if isinstance(item, dict):
+            check = _required_check(item.get("context"), item.get("app_id"), strict)
+            if check is not None:
+                checks.append(check)
+    # GitHub also lists typed entries in the legacy contexts array.
+    typed_names = {check["context"] for check in checks}
     for context in _as_list(status_checks.get("contexts")):
-        if isinstance(context, str):
-            names.append(context)
-    return names
+        if isinstance(context, str) and context not in typed_names:
+            check = _required_check(context, None, strict)
+            if check is not None:
+                checks.append(check)
+    return checks
+
+
+def _match_source_app(checks, expected_app_id):
+    if not checks or expected_app_id is None:
+        return "not_verified"
+    if any(item["source_app_status"] == "unpinned" for item in checks):
+        return "unpinned"
+    if any(
+        item["source_app_status"] == "pinned"
+        and item["source_app_id"] != expected_app_id
+        for item in checks
+    ):
+        return "mismatch"
+    if any(item["source_app_status"] == "unknown" for item in checks):
+        return "not_verified"
+    return "matched"
 
 
 def _branch_ref_applicability(conditions, branch):
@@ -207,6 +252,7 @@ def _load_supplemental_rulesets(github, *, branch):
             "contexts": [],
             "conditions": None,
             "branch_applicability": "unknown",
+            "bypass_actors": None,
         }
         if detail_visibility == "ok":
             if not isinstance(detail, dict):
@@ -216,6 +262,8 @@ def _load_supplemental_rulesets(github, *, branch):
                 enforcement = detail.get("enforcement")
                 record["enforcement"] = enforcement
                 record["contexts"] = _context_names_from_ruleset_detail(detail)
+                if isinstance(detail.get("bypass_actors"), list):
+                    record["bypass_actors"] = detail["bypass_actors"]
                 conditions = detail.get("conditions")
                 record["conditions"] = (
                     copy_conditions(conditions)
@@ -259,6 +307,7 @@ def inspect_server_protection(
     *,
     branch="main",
     check_name=CHECK_NAME,
+    expected_source_app_id=None,
     github=None,
 ):
     """Observe branch-applicable Rules / Branch Protection for ``check_name``.
@@ -272,16 +321,20 @@ def inspect_server_protection(
         raise RequiredAssessmentProtectionError("protection_repository_invalid")
     branch = _text(branch, "protection_branch_invalid")
     check_name = _text(check_name, "protection_check_name_invalid")
+    if expected_source_app_id is not None and (
+        type(expected_source_app_id) is not int or expected_source_app_id <= 0
+    ):
+        raise RequiredAssessmentProtectionError("protection_source_app_invalid")
     client = github or GitHub(repository)
 
     reasons = []
     branch_rules_status, branch_rules, branch_rules_complete = _paginate(
-        client, f"rules/branches/{branch}"
+        client, f"rules/branches/{quote(branch, safe='')}"
     )
-    branch_rule_contexts = []
+    branch_rule_checks = []
     if branch_rules_status == "ok":
         branch_rules_visibility = "readable"
-        branch_rule_contexts = _context_names_from_branch_rules(branch_rules)
+        branch_rule_checks = _checks_from_branch_rules(branch_rules)
         if not branch_rules_complete:
             reasons.append("branch_rules_pagination_incomplete")
     elif branch_rules_status == "forbidden":
@@ -306,11 +359,13 @@ def inspect_server_protection(
     ) = _load_supplemental_rulesets(client, branch=branch)
     reasons.extend(ruleset_errors)
 
-    bp_visibility_raw, bp_payload = _get(client, f"branches/{branch}/protection")
-    branch_protection_contexts = []
-    if bp_visibility_raw == "ok":
+    bp_visibility_raw, bp_payload = _get(
+        client, f"branches/{quote(branch, safe='')}/protection"
+    )
+    branch_protection_checks = []
+    if bp_visibility_raw == "ok" and isinstance(bp_payload, dict):
         bp_visibility = "readable"
-        branch_protection_contexts = _context_names_from_branch_protection(bp_payload)
+        branch_protection_checks = _checks_from_branch_protection(bp_payload)
     elif bp_visibility_raw == "absent":
         bp_visibility = "absent"
     elif bp_visibility_raw == "forbidden":
@@ -320,6 +375,16 @@ def inspect_server_protection(
         bp_visibility = "error"
         reasons.append("branch_protection_read_error")
 
+    branch_rule_contexts = [check["context"] for check in branch_rule_checks]
+    branch_protection_contexts = [
+        check["context"] for check in branch_protection_checks
+    ]
+    named_checks = [
+        check
+        for check in branch_rule_checks + branch_protection_checks
+        if check["context"] == check_name
+    ]
+    source_app_status = _match_source_app(named_checks, expected_source_app_id)
     in_branch_rules = None
     if branch_rules_visibility == "readable" and branch_rules_complete:
         in_branch_rules = check_name in branch_rule_contexts
@@ -386,8 +451,15 @@ def inspect_server_protection(
             branch_evaluate_hits.append(record["id"])
 
     if readable_hits:
-        enforcement_status = "configured"
-        reasons.append("required_assessment_context_configured")
+        if source_app_status in {"unpinned", "mismatch"}:
+            enforcement_status = "misconfigured"
+            reasons.append(f"required_assessment_source_app_{source_app_status}")
+        elif applicable_incomplete or source_app_status != "matched":
+            enforcement_status = "not_verified"
+            reasons.append("required_assessment_source_app_not_verified")
+        else:
+            enforcement_status = "configured"
+            reasons.append("required_assessment_context_configured")
     elif applicable_incomplete and not readable_hits:
         enforcement_status = "not_verified"
         if branch_rules_visibility in {"forbidden", "error"} and bp_visibility in {
@@ -429,6 +501,7 @@ def inspect_server_protection(
         "repository": repository,
         "branch": branch,
         "check_name": check_name,
+        "expected_source_app_id": expected_source_app_id,
         "visibility": {
             "branch_rules": branch_rules_visibility,
             "rulesets": supplemental_visibility,
@@ -439,9 +512,17 @@ def inspect_server_protection(
             if branch_rules_visibility == "readable"
             else [],
             "branch_rule_contexts": sorted(set(branch_rule_contexts)),
+            "branch_rule_checks": branch_rule_checks,
             "rulesets": ruleset_records,
             "ruleset_contexts": sorted(set(branch_rule_contexts)),
             "branch_protection_contexts": sorted(set(branch_protection_contexts)),
+            "branch_protection_checks": branch_protection_checks,
+            "branch_protection_enforce_admins": (
+                bp_payload["enforce_admins"].get("enabled")
+                if isinstance(bp_payload, dict)
+                and isinstance(bp_payload.get("enforce_admins"), dict)
+                else None
+            ),
             "required_assessment_in_branch_rules": in_branch_rules,
             "required_assessment_in_rulesets": in_rulesets,
             "required_assessment_in_branch_protection": in_branch_protection,
@@ -451,6 +532,7 @@ def inspect_server_protection(
         },
         "enforcement": {
             "status": enforcement_status,
+            "source_app_status": source_app_status,
             "probe": "not_performed",
             "reasons": reasons,
         },
@@ -484,7 +566,8 @@ def validate_protection_observation(observation):
         raise RequiredAssessmentProtectionError("protection_observation_invalid")
     if observation.get("kind") != PROTECTION_KIND:
         raise RequiredAssessmentProtectionError("protection_kind_invalid")
-    if observation.get("schema_version") != PROTECTION_VERSION:
+    version = observation.get("schema_version")
+    if type(version) is not int or version not in {1, PROTECTION_VERSION}:
         raise RequiredAssessmentProtectionError("protection_version_invalid")
     check_name = _text(observation.get("check_name"), "protection_check_name_invalid")
     repository = _text(observation.get("repository"), "protection_repository_invalid")
@@ -509,10 +592,40 @@ def validate_protection_observation(observation):
     )
     if observation.get("observation_ref") != expected:
         raise RequiredAssessmentProtectionError("protection_observation_ref_mismatch")
+    enforcement_status = enforcement["status"]
+    if version == 1 and enforcement_status == "configured":
+        enforcement_status = "not_verified"
+    if version == PROTECTION_VERSION and enforcement_status == "configured":
+        configuration = observation.get("configuration")
+        if not isinstance(configuration, dict):
+            raise RequiredAssessmentProtectionError("protection_source_app_unverified")
+        checks = [
+            check
+            for key in ("branch_rule_checks", "branch_protection_checks")
+            for check in _as_list(configuration.get(key))
+            if isinstance(check, dict) and check.get("context") == check_name
+        ]
+        app_id = observation.get("expected_source_app_id")
+        if (
+            type(app_id) is not int
+            or app_id <= 0
+            or not checks
+            or any(
+                type(check.get("source_app_id")) is not int
+                or check["source_app_id"] != app_id
+                or check.get("source_app_status") != "pinned"
+                for check in checks
+            )
+            or configuration.get("branch_rules_complete") is not True
+            or visibility["branch_rules"] != "readable"
+            or visibility["branch_protection"] not in {"readable", "absent"}
+            or enforcement.get("source_app_status") != "matched"
+        ):
+            raise RequiredAssessmentProtectionError("protection_source_app_unverified")
     return {
         "repository": repository,
         "branch": branch,
         "check_name": check_name,
-        "enforcement_status": enforcement["status"],
+        "enforcement_status": enforcement_status,
         "observation_ref": expected,
     }
