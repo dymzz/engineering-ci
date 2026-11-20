@@ -897,27 +897,37 @@ def resolve_new_ref_baseline(
 
 def _git(root, *args, env=None):
     environment = {**os.environ, **env} if env else None
-    return subprocess.run(
-        ["git", *args],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        env=environment,
-    )
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            env=environment,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            ["git", *args], 127, "", "missing executable: git"
+        )
 
 
 def _git_bytes(root, *args, env=None):
     environment = {**os.environ, **env} if env else None
-    return subprocess.run(
-        ["git", *args],
-        cwd=root,
-        capture_output=True,
-        check=False,
-        env=environment,
-    )
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            ["git", *args], 127, b"", b"missing executable: git"
+        )
 
 
 def _hidden_worktree_refusal(

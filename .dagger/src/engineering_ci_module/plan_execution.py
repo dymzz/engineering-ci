@@ -566,13 +566,34 @@ def _tag_command_prerequisites(entries):
             entry.setdefault("engine_cached", False)
 
 
+def _relative_repo_config_path(raw_path, repo_root):
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    cand = Path(raw_path)
+    base_root = Path(repo_root)
+    if cand.is_absolute() and base_root.is_absolute():
+        resolved_cand = cand.resolve()
+        resolved_base = base_root.resolve()
+        if resolved_cand.is_relative_to(resolved_base):
+            return resolved_cand.relative_to(resolved_base).as_posix()
+    for pure_cls in (PureWindowsPath, PurePosixPath):
+        p_root = pure_cls(str(repo_root))
+        p_cand = pure_cls(str(raw_path))
+        if (
+            p_root.is_absolute()
+            and p_cand.is_absolute()
+            and p_cand.is_relative_to(p_root)
+        ):
+            return p_cand.relative_to(p_root).as_posix()
+    return None
+
+
 def _plan_with_repo_relative_configs(value):
     """Rewrite repo-internal config paths relative to the exported directory root."""
     normalized = dict(value)
     repo_root = (normalized.get("git") or {}).get("repo_root")
     inputs = normalized.get("inputs")
     if isinstance(repo_root, str) and repo_root and isinstance(inputs, dict):
-        base_root = Path(repo_root).resolve()
         updated_inputs = dict(inputs)
         for key in ("config", "hygiene", "sources"):
             decl = inputs.get(key)
@@ -582,20 +603,16 @@ def _plan_with_repo_relative_configs(value):
                 and isinstance(decl.get("path"), str)
                 and decl["path"]
             ):
-                cand = Path(decl["path"])
-                if cand.is_absolute():
-                    resolved_cand = cand.resolve()
-                    if resolved_cand.is_relative_to(base_root):
-                        updated_decl = dict(decl)
-                        updated_decl["path"] = resolved_cand.relative_to(
-                            base_root
-                        ).as_posix()
-                        updated_inputs[key] = updated_decl
+                rel = _relative_repo_config_path(decl["path"], repo_root)
+                if rel is not None:
+                    updated_decl = dict(decl)
+                    updated_decl["path"] = rel
+                    updated_inputs[key] = updated_decl
         normalized["inputs"] = updated_inputs
     return normalized
 
 
-def _host_adapter_plan(value, selected_host_checks):
+def _host_adapter_plan(value, selected_host_checks, *, preserve_verified_git=False):
     import copy
 
     host_plan = copy.deepcopy(value)
@@ -607,13 +624,14 @@ def _host_adapter_plan(value, selected_host_checks):
     host_plan["selection"].pop("check_scope", None)
     host_plan.pop("expected_checks", None)
     host_plan["git"] = dict(host_plan.get("git") or {})
-    # This is only the Host adapter's filesystem view. Preserve the
-    # original Git identity in source_handoff, and do not claim an
-    # exported Directory has the original ODB or verified full Tree.
-    host_plan["git"]["execution_tree"] = None
-    host_plan["git"]["index_tree"] = None
-    host_plan["git"]["content_binding"] = None
-    host_plan["git"]["snapshot"] = "worktree"
+    if not preserve_verified_git:
+        # This is only the Host adapter's filesystem view. Preserve the
+        # original Git identity in source_handoff, and do not claim an
+        # exported Directory has the original ODB or verified full Tree.
+        host_plan["git"]["execution_tree"] = None
+        host_plan["git"]["index_tree"] = None
+        host_plan["git"]["content_binding"] = None
+        host_plan["git"]["snapshot"] = "worktree"
     host_plan["check_scope"] = list(selected_host_checks)
     host_plan["selection"]["checks"] = [
         item["name"] for item in selected_host_checks if item.get("name")
@@ -650,6 +668,36 @@ async def _execute_dag(
         item for item in selected_checks if item.get("name") not in weaver_checks
     ]
     host_plan = _host_adapter_plan(value, host_checks)
+    verified_workflow_plan = None
+    verified_workflow_authority = None
+    raw_snapshot = (value.get("git") or {}).get("snapshot") or "worktree"
+    if report.get("source_tree_verified") == "verified" or raw_snapshot == "worktree":
+        verified_workflow_plan = _host_adapter_plan(
+            value, host_checks, preserve_verified_git=True
+        )
+    if report.get("source_tree_verified") == "verified":
+        vw_plan_ref = execution._canonical_sha256(verified_workflow_plan)
+        vw_event = execution._plan_event_identity(verified_workflow_plan)
+        vw_git = verified_workflow_plan.get("git") or {}
+        vw_tree = (
+            vw_git.get("execution_tree")
+            or vw_git.get("tree")
+            or vw_git.get("index_tree")
+            or vw_git.get("merge_tree")
+        )
+        vw_tree_id = vw_git.get("source_tree_id")
+
+        def verified_workflow_authority(request):
+            return (
+                report.get("source_tree_verified") == "verified"
+                and request.get("kind") == "tree_materialization"
+                and request.get("plan_ref") == vw_plan_ref
+                and request.get("event") == vw_event
+                and request.get("check") in execution._WORKFLOW_SCRIPT_CHECKS
+                and request.get("source")
+                == {"tree": vw_tree, "source_tree_id": vw_tree_id}
+            )
+
     verified_profile = execution._profile_reference(
         _plan_with_repo_relative_configs(value),
         root=directory,
@@ -951,16 +999,26 @@ async def _execute_dag(
                 temporary = None
                 consumer_root = Path(directory)
                 artifact_paths = ()
+                check_item = item
                 if fs_files:
+                    check_item = {
+                        **item,
+                        "generated_input_refs": generated_refs,
+                        "generated_inputs_retained": True,
+                    }
                     temporary, consumer_root = execution.build_consumer_view(
                         consumer_root, fs_files
                     )
                     artifact_paths = execution.artifact_target_paths(fs_files)
+                use_verified_wf = (
+                    verified_workflow_plan is not None
+                    and name in execution._WORKFLOW_SCRIPT_CHECKS
+                )
                 try:
                     entry = await asyncio.to_thread(
                         execution.run_host_check,
-                        host_plan,
-                        item,
+                        verified_workflow_plan if use_verified_wf else host_plan,
+                        check_item,
                         root=consumer_root,
                         runner=runner,
                         execution_context="dagger_export",
@@ -969,6 +1027,11 @@ async def _execute_dag(
                         generated_input_refs=generated_refs,
                         shared_cache=None if fs_files else script_shared_cache,
                         profile_ref=verified_profile,
+                        workflow_source_authority=(
+                            verified_workflow_authority if use_verified_wf else None
+                        ),
+                        _consumer_source_root=Path(directory) if fs_files else None,
+                        _consumer_generated_retained=bool(fs_files),
                     )
                 finally:
                     if temporary is not None:
@@ -1151,6 +1214,7 @@ async def _execute_dag(
                 "prerequisites/" + name, native_outputs
             )
 
+        bundle_error = False
         if produced_files:
 
             async def _finalize_artifacts():
@@ -1162,6 +1226,7 @@ async def _execute_dag(
             if isinstance(bundle_outcome, BaseException):
                 if not isinstance(bundle_outcome, Exception):
                     raise bundle_outcome
+                bundle_error = True
                 _record_delivery_failure(
                     report,
                     {"kind": "artifact_bundle"},
@@ -1191,6 +1256,39 @@ async def _execute_dag(
                 bool(closure_records)
                 and all(entry["verified"] for entry in closure_records)
                 and not delivery_blocked
+            )
+        has_data_edges = any(
+            edge.get("dependency_kind") == "data"
+            for edges in incoming.values()
+            for edge in edges
+        )
+        if produced_files or has_data_edges or closure_records:
+            retention_metadata = {}
+            if not bundle_error:
+                for rec in closure_records:
+                    if not rec.get("verified"):
+                        continue
+                    key = execution._edge_retention_key(
+                        rec["producer_ref"],
+                        rec.get("consumer_ref"),
+                        rec["output_ref"],
+                    )
+                    retention_metadata[key] = execution._artifact_retention_snapshot(
+                        execution.producer_artifact_root(
+                            artifact_root, rec["producer_ref"]
+                        ),
+                        rec["output_ref"],
+                        producer_ref=rec["producer_ref"],
+                    )
+            report["producer_artifact_handoff"] = (
+                execution.build_producer_artifact_handoff(
+                    value,
+                    closure_records=closure_records,
+                    prerequisite_results=report.get("prerequisites") or (),
+                    execution_identity=report.get("execution_identity"),
+                    execution_context="dagger_export",
+                    retention_metadata=retention_metadata,
+                )
             )
 
         report["result_sharing"] = {

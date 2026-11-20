@@ -72,15 +72,59 @@ Worktree observations keep `changed_paths` Source coverage. Native results
 retain the actual scan outcome, and strict reconciliation still requires a
 closed Source.
 
-Data edges can supply generated files to a native scan through the verified
-Producer output and Consumer View. The result records the generated input and
-scan digest. Independent Resolution reports
-`source_resolution_generated_inputs_unproven` for the affected Check until it
-can verify the original Producer output. The #86 Data Dependency handoff
-supplies the retained File or Directory and its Producer, Consumer and output
-identity. The #66-P0/#66-C Source and Resolution handoff must verify those
-bytes and reconstruct the Consumer View for that Check. The new proof needs
-to match a real native scan and reject missing or mismatched Producer output.
+### NEW-055 / PR #141 — generated Producer handoff accepted
+
+**Delivered and accepted (2026-11-20):** [PR #141](https://github.com/dymzz/engineering-ci/pull/141)
+implements the [#86](https://github.com/dymzz/engineering-ci/issues/86)
+Producer File/Directory retention and independent
+[#66-P0/#66-C](https://github.com/dymzz/engineering-ci/issues/66) Source
+Resolution → Expected/Native reconciliation. The reviewed implementation
+retains native PASS/FAIL and the normal no-Data-Edge Host behavior established
+by [PR #135](https://github.com/dymzz/engineering-ci/pull/135). It does not
+create a new evidence store or a parallel reconciliation system.
+
+The directed Host tests cover original Producer/Closure/Plan/Event/Candidate
+identity, bound Run/Attempt, File/Directory bytes (including empty directories),
+independent Consumer View reconstruction, matched positives and accurately
+typed missing, tampered and mismatched negatives. The Dagger Engine
+`v1.0.0-beta.16` integration run was reported with exact command, original
+Plan/Report/Handoff and artifact identifiers, and matched/negative outcomes in
+[the PR #141 verification record](../../verification/plan-result-sharing/README.md#pr-141-producer-artifact-handoff-and-independent-source-resolution-86--66).
+The accepted PR #141 slice has **no outstanding repeat-test or extra raw-bundle
+upload condition**. Broader #86/#66 obligations remain separately scoped in
+those Issues; they do not reopen this delivered slice.
+
+Data edges can supply generated files and directories to a native scan through
+the verified Producer output and Consumer View. When execution runs only with
+temporary directories (`produced_artifacts_dir=None`), the result retains
+`changed_paths` Source scope and records the generated input and scan target
+digests while `build_source_resolution()` refuses with
+`source_resolution_generated_inputs_unproven`.
+
+When the host runner supplies `produced_artifacts_dir` (or Dagger `PlanExecution`
+exports `artifacts`), verified Data-edge Files and Directories are retained under
+`produced/<kind>/<name>/<rel>` with re-verified SHA-256 digests and recorded in
+`report["producer_artifact_handoff"]` bound to the Plan digest, Git event and
+candidate, Producer/Consumer/Output Ref, original Prerequisite Result and
+Artifact Closure digests, and Run/Attempt identity when supplied.
+After temporary execution directories are cleaned up, `build_source_resolution()`
+(and the non-raising `evaluate_source_resolution()` helper for `#66-C`
+reconciliation) requires `producer_artifact_handoff`, `producer_artifacts_dir`,
+and runtime `"producer_artifact"` authorization via `producer_artifact_authority`
+(for example `producer_artifact_authority_from_execution()`) or
+`workflow_source_authority`. Verification validates internal Producer execution
+consistency (`type`, `status`, integer `exit_code == 0`, `reason is None`,
+`execution_ref`, and original Prerequisite/Closure digests) and rejects omitted
+or mismatched `expected_run_ref`/`expected_attempt_ref` (or
+`execution_context_identity`) whenever the Handoff or consuming Job context
+carries a Run/Attempt while keeping identity-free local execution working. It
+independently re-reads and verifies the retained File/Directory bytes,
+reconstructs the Consumer View via `build_consumer_view()`, establishes
+`check_input_closure` on verified immutable snapshots while keeping
+`changed_paths` (`expected_source_scope_insufficient`) on open `worktree`
+workflow scans, and separates missing/unverified proof (`unknown`) from
+tampered/mismatched/truncated evidence (`insufficient`) without erasing native
+PASS/FAIL results or tainting adjacent Checks without Data edges.
 See [#86](https://github.com/dymzz/engineering-ci/issues/86) and
 [#66](https://github.com/dymzz/engineering-ci/issues/66).
 

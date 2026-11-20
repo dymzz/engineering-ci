@@ -720,6 +720,17 @@ def _normalize_resolutions(resolutions, expected_refs):
             or any(not isinstance(value, dict) for value in inputs)
         ):
             raise ReconciliationError("resolution_input_refs_invalid")
+        res_status = item.get("resolution_status")
+        if res_status is not None and res_status not in {
+            "verified",
+            "unverified",
+            "insufficient",
+            "contradicted",
+        }:
+            raise ReconciliationError("resolution_status_invalid")
+        prod_ident = item.get("producer_execution_identity")
+        if prod_ident is not None and not isinstance(prod_ident, dict):
+            raise ReconciliationError("resolution_producer_identity_invalid")
         normalized[ref] = dict(item)
     return normalized
 
@@ -883,6 +894,16 @@ def _unknown_fields(reason):
         "effective_attempt_unqualified": ["attempt_eligibility"],
         "multiple_eligible_attempts": ["attempt_eligibility"],
         "execution_object_mismatch": ["result_identity"],
+        "source_resolution_generated_inputs_unproven": ["source_ref", "input_refs"],
+        "producer_handoff_invalid": ["source_ref", "input_refs"],
+        "producer_handoff_version_unsupported": ["source_ref", "input_refs"],
+        "producer_handoff_missing": ["source_ref", "input_refs"],
+        "producer_handoff_attempt_unverified": ["source_ref", "input_refs"],
+        "producer_execution_not_verified": ["source_ref", "input_refs"],
+        "producer_artifact_authority_unverified": ["source_ref", "input_refs"],
+        "producer_artifact_missing": ["source_ref", "input_refs"],
+        "producer_artifact_unreadable": ["source_ref", "input_refs"],
+        "producer_artifact_expired": ["source_ref", "input_refs"],
     }
     return mapping.get(reason, ["expected_constraints"])
 
@@ -1022,6 +1043,17 @@ def _resolve_expected(entry, resolution):
     """
     if resolution is None:
         return None, "unknown", "resolution_missing", {}
+    res_status = resolution.get("resolution_status")
+    if res_status in {"unverified", "insufficient", "contradicted"}:
+        reason = resolution.get("reason")
+        if not isinstance(reason, str) or not reason:
+            reason = (
+                "resolution_evidence_missing"
+                if res_status == "unverified"
+                else "resolution_source_contradicted"
+            )
+        mapped = "unknown" if res_status == "unverified" else "insufficient"
+        return None, mapped, reason, {}
     evidence = {}
     for key in ("rule_source_ref", "source_receipt_ref"):
         if resolution.get(key) is None:
@@ -1535,6 +1567,61 @@ def _reconcile_entry(
         return output
     output["resolved_expected"] = strict
     output["resolved_expected_ref"] = _digest(strict)
+
+    producer_ident = (resolution or {}).get("producer_execution_identity")
+    if isinstance(producer_ident, dict):
+        p_run = producer_ident.get("run_ref")
+        p_attempt = producer_ident.get("attempt_ref")
+        if p_run is not None or p_attempt is not None:
+            attempt_bound = []
+            for result, observation in candidates:
+                obs_run = observation.get("run_ref")
+                obs_attempt = observation.get("attempt_ref")
+                if obs_run == p_run and obs_attempt == p_attempt:
+                    attempt_bound.append((result, observation))
+                    continue
+                output["rejected_results"].append(
+                    {
+                        "result_id": result["result_id"],
+                        "reason": (
+                            "producer_handoff_attempt_unverified"
+                            if not obs_run or not obs_attempt
+                            else "producer_handoff_attempt_mismatch"
+                        ),
+                        "job_ref": observation["job_ref"],
+                        "run_ref": obs_run,
+                        "attempt_ref": obs_attempt,
+                    }
+                )
+            if not attempt_bound:
+                rej_reasons = {
+                    item["reason"]
+                    for item in output["rejected_results"]
+                    if item["reason"]
+                    in {
+                        "producer_handoff_attempt_unverified",
+                        "producer_handoff_attempt_mismatch",
+                    }
+                }
+                fail_reason = (
+                    "producer_handoff_attempt_mismatch"
+                    if "producer_handoff_attempt_mismatch" in rej_reasons
+                    else "producer_handoff_attempt_unverified"
+                )
+                fail_status = (
+                    "insufficient"
+                    if fail_reason == "producer_handoff_attempt_mismatch"
+                    else "unknown"
+                )
+                output.update(
+                    binding_status=fail_status,
+                    reason=fail_reason,
+                    unknown_fields=(
+                        _unknown_fields(fail_reason) if fail_status == "unknown" else []
+                    ),
+                )
+                return output
+            candidates = attempt_bound
 
     expected_profile = entry.get("profile_ref")
     if expected_profile is not None:
