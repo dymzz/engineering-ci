@@ -11,6 +11,7 @@ import tomllib
 import zipfile
 from copy import deepcopy
 from datetime import UTC, datetime
+from subprocess import TimeoutExpired
 from urllib.parse import quote
 
 from ..github_cli import ApiError
@@ -382,7 +383,15 @@ def _publication_post_stage(api, release, value, authority):
         r5.validate_post_stage(pair)
     except r5.RequiredAssessmentPostError as error:
         return unavailable(error.code)
-    except (ApiError, OSError, ValueError, TypeError, KeyError, AttributeError):
+    except (
+        ApiError,
+        OSError,
+        TimeoutExpired,
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+    ):
         return unavailable("release_post_stage_evidence_unavailable")
     return {
         "status": pair["status"],

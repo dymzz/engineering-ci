@@ -288,6 +288,7 @@ def test_published_evidence_keeps_original_attempt_after_run_retry(
     [
         ("approved", "verified", None),
         ("missing_authority", "unverified", "release_post_stage_authority_missing"),
+        ("authority_timeout", "unverified", "release_post_stage_evidence_unavailable"),
         ("wrong_event", "unverified", "release_post_stage_trigger_mismatch"),
         ("wrong_attempt", "unverified", "release_post_stage_trigger_mismatch"),
         ("wrong_artifact", "unverified", "release_post_stage_trigger_mismatch"),
@@ -303,7 +304,7 @@ def test_published_evidence_keeps_original_attempt_after_run_retry(
     ],
 )
 def test_cli_consumes_release_post_stage_without_rewriting_publication(
-    case, expected, reason, tmp_path, monkeypatch, capsys
+    case, expected, reason, monkeypatch, capsys
 ):
     from test_required_assessment_post import (
         EVALUATED_AT,
@@ -318,11 +319,18 @@ def test_cli_consumes_release_post_stage_without_rewriting_publication(
     )
 
     api = API()
-    value = make_manifest(api, mode="publication")
-    publishing.publish_release(
-        api, TAG, HEAD, value, tmp_path / "release-manifest.json"
-    )
-    api.published["published_at"] = EVALUATED_AT
+    api.tag = HEAD
+    api.published = {
+        "id": 10,
+        "url": f"https://api.github.com/repos/{REPOSITORY}/releases/10",
+        "tag_name": TAG,
+        "html_url": f"https://github.com/{REPOSITORY}/releases/tag/{TAG}",
+        "draft": False,
+        "prerelease": False,
+        "published_at": EVALUATED_AT,
+    }
+    api.saved = make_manifest(api, mode="publication")
+    api.saved["release"]["release_url"] = api.published["url"]
     api.calls.clear()
 
     class Clock(datetime):
@@ -337,6 +345,8 @@ def test_cli_consumes_release_post_stage_without_rewriting_publication(
             return cls.fromisoformat(instant).astimezone(tz)
 
     def authority(source):
+        if case == "authority_timeout":
+            raise subprocess.TimeoutExpired(["provider"], 15)
         assert source["repository"] == REPOSITORY
         assert source["head_sha"] == HEAD
         assert source["release_id"] == 10
