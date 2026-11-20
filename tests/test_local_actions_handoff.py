@@ -15,6 +15,7 @@ PRODUCER = {"name": "org/local-cli", "version": "1", "sha256": "d" * 64}
 AUTHORITY = {"name": "org/local-producer-grant", "version": "1", "sha256": "e" * 64}
 TRANSPORT = {"name": "actions-artifact", "version": "1", "sha256": "f" * 64}
 PROOF = {"name": "execution-attestation", "version": "1", "sha256": "1" * 64}
+BOUND_SUBJECTS = {"event_ref": "evt/actions-1", "scope_id": "scope/main-pre"}
 PRODUCED_AT = "2026-11-17T04:00:00+00:00"
 EVALUATED_AT = "2026-11-17T05:00:00+00:00"
 
@@ -53,6 +54,7 @@ def producer_authorization(**changes):
             "target_ref": "refs/heads/main",
             "phase": "pre_publish",
             "check_ids": ["eci/hygiene/tach"],
+            **BOUND_SUBJECTS,
         },
         "valid_from": "2026-11-01T00:00:00+00:00",
         "valid_until": "2026-12-01T00:00:00+00:00",
@@ -279,6 +281,7 @@ def test_mixed_authorized_and_unauthorized_checks_not_ready_for_t1a():
                 "target_ref": "refs/heads/main",
                 "phase": "pre_publish",
                 "check_ids": ["eci/hygiene/tach"],
+                **BOUND_SUBJECTS,
             }
         )
     )
@@ -465,6 +468,7 @@ def test_new059_producer_authorization_deduplicates_valid_check_ids():
         "target_ref": "refs/heads/main",
         "phase": "pre_publish",
         "check_ids": ["eci/hygiene/tach", "eci/hygiene/tach"],
+        **BOUND_SUBJECTS,
     }
     package = build_package(producer_authorization=producer_authorization(scope=scope))
     assert package["producer_authorization"]["scope"]["check_ids"] == [
@@ -652,3 +656,237 @@ def test_rejected_handoff_keeps_all_consumer_checks_in_remaining_work():
             "reason": "producer_authorization_check_not_granted",
         },
     ]
+
+
+def _subject_consumer(**changes):
+    return consumer_scope(
+        expected_set_ref="sha256:" + "7" * 64,
+        candidate_digest="sha256:" + "8" * 64,
+        **changes,
+    )
+
+
+def _echo_authority(*, bound_subjects=None):
+    def authority(context):
+        decision = {
+            "accepted": True,
+            "handoff_ref": context["handoff_ref"],
+            "consumer_scope_ref": context["consumer_scope_ref"],
+        }
+        if bound_subjects is not None:
+            decision["bound_subjects"] = list(bound_subjects)
+        return decision
+
+    return authority
+
+
+def test_d_g02_required_subject_missing_from_grant_is_not_verified():
+    # The consumer requires Candidate and Expected-set identity; the grant only
+    # covers Event/Scope. A bare-True authorization cannot supply the missing
+    # subjects and must not release T1-a materials.
+    package = build_package()
+    result = verify(package, consumer_scope=_subject_consumer())
+    assert result["status"] == "unverified"
+    assert result["provenance_status"] == "unverified"
+    assert result["admitted_for_t1a"] is False
+    assert result["materials"] is None
+    assert "consumer_candidate_digest_unbound" in result["reasons"]
+    assert "consumer_expected_set_ref_unbound" in result["reasons"]
+    assert result["authorized_check_ids"] == []
+    assert result["remaining_work"] == [
+        {
+            "check_id": "eci/hygiene/tach",
+            "reason": "consumer_candidate_digest_unbound",
+        }
+    ]
+
+
+def test_d_g02_structured_authority_echo_without_subject_list_is_insufficient():
+    package = build_package()
+    result = verify(
+        package,
+        consumer_scope=_subject_consumer(),
+        authorization_authority=_echo_authority(),
+    )
+    assert result["status"] == "unverified"
+    assert "consumer_candidate_digest_unbound" in result["reasons"]
+    assert result["materials"] is None
+
+
+def test_d_g02_authority_must_cover_every_unbound_subject():
+    package = build_package()
+    partial = verify(
+        package,
+        consumer_scope=_subject_consumer(),
+        authorization_authority=_echo_authority(bound_subjects=["candidate_digest"]),
+    )
+    assert partial["status"] == "unverified"
+    assert "consumer_candidate_digest_unbound" not in partial["reasons"]
+    assert "consumer_expected_set_ref_unbound" in partial["reasons"]
+
+    covered = verify(
+        package,
+        consumer_scope=_subject_consumer(),
+        authorization_authority=_echo_authority(
+            bound_subjects=["candidate_digest", "expected_set_ref"]
+        ),
+    )
+    assert covered["status"] == "verified"
+    assert covered["admitted_for_t1a"] is True
+    assert covered["materials"] is not None
+
+
+def test_d_g02_authority_subject_binding_requires_matching_refs():
+    package = build_package()
+    wrong = verify(
+        package,
+        consumer_scope=_subject_consumer(),
+        authorization_authority=lambda ctx: {
+            "accepted": True,
+            "handoff_ref": ctx["handoff_ref"],
+            "consumer_scope_ref": "sha256:" + "0" * 64,
+            "bound_subjects": ["candidate_digest", "expected_set_ref"],
+        },
+    )
+    assert wrong["status"] == "rejected"
+    assert "authorization_authority_rejected" in wrong["reasons"]
+
+
+def test_d_g02_grant_and_receipt_bound_subjects_need_no_authority_echo():
+    scope = {
+        "action": "validate",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+        "candidate_digest": "sha256:" + "8" * 64,
+        **BOUND_SUBJECTS,
+    }
+    package = build_package(
+        payload=payload(
+            job_receipts=[
+                {
+                    "kind": "engineering-ci-job-receipt",
+                    "sha256": "3" * 64,
+                    "scope_id": "scope/main-pre",
+                    "expected_set_ref": "sha256:" + "7" * 64,
+                }
+            ]
+        ),
+        producer_authorization=producer_authorization(scope=scope),
+    )
+    result = verify(package, consumer_scope=_subject_consumer())
+    assert result["status"] == "verified"
+    assert result["admitted_for_t1a"] is True
+
+
+def test_d_g02_subjects_the_consumer_does_not_require_are_not_demanded():
+    bare_scope = {
+        "action": "validate",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+    }
+    package = build_package(
+        producer_authorization=producer_authorization(scope=bare_scope)
+    )
+    result = verify(package, consumer_scope=bare_scope)
+    assert result["status"] == "verified"
+    assert result["admitted_for_t1a"] is True
+
+
+def test_d_g02_context_action_target_required_subjects_and_legitimate_no_candidate():
+    # Release -> publish -> candidate requires event_ref, scope_id,
+    # expected_set_ref, and candidate_digest even when omitted from consumer_scope.
+    grant_no_cand = {
+        "action": "publish",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+        "event_ref": "evt/actions-1",
+        "scope_id": "scope/main-pre",
+        "expected_set_ref": "sha256:" + "7" * 64,
+    }
+    pkg_no_cand = build_package(
+        producer_authorization=producer_authorization(scope=grant_no_cand)
+    )
+    missing_cand = verify(
+        pkg_no_cand,
+        consumer_scope={
+            "context": "release",
+            "action": "publish",
+            "target": "candidate",
+            "target_ref": "refs/heads/main",
+            "phase": "pre_publish",
+            "check_ids": ["eci/hygiene/tach"],
+            "event_ref": "evt/actions-1",
+            "scope_id": "scope/main-pre",
+            "expected_set_ref": "sha256:" + "7" * 64,
+        },
+    )
+    assert missing_cand["status"] == "unverified"
+    assert "consumer_candidate_digest_required" in missing_cand["reasons"]
+    assert missing_cand["materials"] is None
+    assert missing_cand["admitted_for_t1a"] is False
+
+    # Pull-request -> validate -> event_head requires Event/Expected subjects
+    # and MUST NOT require or force a fabricated candidate_digest.
+    grant_pr = {
+        "action": "validate",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+        "event_ref": "evt/actions-1",
+        "scope_id": "scope/main-pre",
+        "expected_set_ref": "sha256:" + "7" * 64,
+    }
+    pkg_pr = build_package(
+        producer_authorization=producer_authorization(scope=grant_pr)
+    )
+    pr_verified = verify(
+        pkg_pr,
+        consumer_scope={
+            "context": "pull_request",
+            "action": "validate",
+            "target": "event_head",
+            "target_ref": "refs/heads/main",
+            "phase": "pre_publish",
+            "check_ids": ["eci/hygiene/tach"],
+            "event_ref": "evt/actions-1",
+            "scope_id": "scope/main-pre",
+            "expected_set_ref": "sha256:" + "7" * 64,
+        },
+    )
+    assert pr_verified["status"] == "verified"
+    assert pr_verified["admitted_for_t1a"] is True
+
+    # Payload Job Receipt event_ref mismatch is rejected, and mismatched
+    # authority subjects map is rejected.
+    wrong_receipt_event = verify(
+        build_package(
+            payload=payload(
+                job_receipts=[
+                    {
+                        "kind": "engineering-ci-job-receipt",
+                        "sha256": "3" * 64,
+                        "event_ref": "evt/other",
+                    }
+                ]
+            )
+        )
+    )
+    assert wrong_receipt_event["status"] == "rejected"
+    assert "handoff_payload_event_ref_mismatch" in wrong_receipt_event["reasons"]
+
+    wrong_subjects_map = verify(
+        build_package(),
+        consumer_scope=_subject_consumer(),
+        authorization_authority=lambda ctx: {
+            "accepted": True,
+            "handoff_ref": ctx["handoff_ref"],
+            "consumer_scope_ref": ctx["consumer_scope_ref"],
+            "bound_subjects": ["candidate_digest", "expected_set_ref"],
+            "subjects": {"candidate_digest": "sha256:" + "0" * 64},
+        },
+    )
+    assert wrong_subjects_map["status"] == "rejected"
+    assert "authorization_authority_rejected" in wrong_subjects_map["reasons"]

@@ -71,6 +71,13 @@ Admission 输入/输出形状，但没有可认证的生产 issuer、受控传�
 - 未选中（unrelated）的坏 observation 只进入 diagnostics；只有共享同一具体
   Report/Job Receipt（或其他实际共同依赖）的坏事实才污染 selected witness；仅共享
   Job/Run/Attempt 标签不构成污染。
+- **Typed `check_result` 前置依赖传递闭包（NEW-014）**：`input_refs` 引用的上游
+  `check_result`（及其传递前置结果）不得信任 raw Report 自报 `status="passed"`，
+  必须独立通过完整 #63 证据认证（`JobReceipt`、受信任 Issuer、已批准实现、Resolution
+  与有效 `(run_ref, attempt_ref)` / `source_ref` / `profile_ref` / Receipt 作用域一致），
+  且不得被兄弟/上游 `rejected`、`not_applicable` 或 `resolution_status!=verified`
+  结果绕过；Report `blocked_by` 亦仅在共享已观测 Report/Job Receipt 或匹配前置
+  `result_id` 上传播，不做跨全量 Reports 的同名 Check 匹配。
 - 合法空 Expected 不会被自动升级为完整/受信 PASS。
 
 ## 信任边界

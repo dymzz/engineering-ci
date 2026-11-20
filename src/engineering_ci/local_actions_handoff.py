@@ -40,6 +40,7 @@ _CONSUMER_SCOPE_REQUIRED = frozenset({"action", "target_ref", "phase", "check_id
 _CONSUMER_SCOPE_OPTIONAL = frozenset(
     {"candidate_digest", "scope_id", "event_ref", "expected_set_ref"}
 )
+_CONSUMER_SCOPE_META = frozenset({"context", "target", "required_subjects"})
 
 
 class LocalActionsHandoffError(ValueError):
@@ -432,11 +433,14 @@ def _normalize_consumer_scope(value):
 
     This is never taken from the producer-claimed grant. Empty ``check_ids``
     is invalid: unrestricted materials must not be released without a concrete
-    consumer Check set.
+    consumer Check set. Optional ``context``, ``target``, and
+    ``required_subjects`` declare which Event/Expected/Candidate identities are
+    mandatory for this invocation.
     """
     if not isinstance(value, dict):
         raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
-    unknown = set(value) - _CONSUMER_SCOPE_REQUIRED - _CONSUMER_SCOPE_OPTIONAL
+    allowed = _CONSUMER_SCOPE_REQUIRED | _CONSUMER_SCOPE_OPTIONAL | _CONSUMER_SCOPE_META
+    unknown = set(value) - allowed
     if unknown:
         raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
     missing = _CONSUMER_SCOPE_REQUIRED - set(value)
@@ -456,10 +460,53 @@ def _normalize_consumer_scope(value):
         "phase": _text(value.get("phase"), "handoff_consumer_scope_invalid"),
         "check_ids": normalized_checks,
     }
-    for key in _CONSUMER_SCOPE_OPTIONAL:
+    for key in _CONSUMER_SCOPE_OPTIONAL | {"context", "target"}:
         if value.get(key) is not None:
             record[key] = _text(value.get(key), "handoff_consumer_scope_invalid")
+    raw_required = value.get("required_subjects")
+    if raw_required is not None:
+        if not isinstance(raw_required, (list, tuple)):
+            raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
+        required_subjects = []
+        for field in raw_required:
+            text = _text(field, "handoff_consumer_scope_invalid")
+            if text not in _CONSUMER_SCOPE_OPTIONAL:
+                raise LocalActionsHandoffError("handoff_consumer_scope_invalid")
+            if text not in required_subjects:
+                required_subjects.append(text)
+        record["required_subjects"] = required_subjects
     return record
+
+
+def _required_consumer_subjects(consumer_scope):
+    """Return subject fields that must be present and bound for this consumer."""
+    required = {
+        field
+        for field in _CONSUMER_SCOPE_OPTIONAL
+        if consumer_scope.get(field) is not None
+    }
+    required.update(consumer_scope.get("required_subjects") or ())
+    context = consumer_scope.get("context")
+    target = consumer_scope.get("target")
+    action = consumer_scope.get("action")
+    if context is not None or target is not None:
+        if (
+            target in {"candidate", "artifact"}
+            or action == "release"
+            or (context == "release" and target != "event_head")
+        ):
+            required.update(
+                {"event_ref", "scope_id", "expected_set_ref", "candidate_digest"}
+            )
+        elif context in {
+            "pull_request",
+            "push",
+            "merge_group",
+            "actions_gate",
+            "ci",
+        } or target in {"event_head", "branch", "tag", "ref"}:
+            required.update({"event_ref", "scope_id", "expected_set_ref"})
+    return required
 
 
 def _resolve_authenticated_execution_time(authority_result, package):
@@ -505,27 +552,25 @@ def _match_consumer_authorization(authorization, consumer_scope, payload=None):
         if grant_value is not None and consumer_scope.get(field) != grant_value:
             blocking.append(f"producer_authorization_{field}_mismatch")
     if isinstance(payload, dict):
-        consumer_scope_id = consumer_scope.get("scope_id")
-        consumer_expected_set = consumer_scope.get("expected_set_ref")
         for job_receipt in payload.get("job_receipts") or ():
             if not isinstance(job_receipt, dict):
                 continue
-            receipt_scope = job_receipt.get("scope_id")
-            if (
-                consumer_scope_id is not None
-                and isinstance(receipt_scope, str)
-                and receipt_scope != consumer_scope_id
-                and "handoff_payload_scope_id_mismatch" not in blocking
+            for field in (
+                "candidate_digest",
+                "scope_id",
+                "event_ref",
+                "expected_set_ref",
             ):
-                blocking.append("handoff_payload_scope_id_mismatch")
-            receipt_expected_set = job_receipt.get("expected_set_ref")
-            if (
-                consumer_expected_set is not None
-                and isinstance(receipt_expected_set, str)
-                and receipt_expected_set != consumer_expected_set
-                and "handoff_payload_expected_set_mismatch" not in blocking
-            ):
-                blocking.append("handoff_payload_expected_set_mismatch")
+                consumer_val = consumer_scope.get(field)
+                receipt_val = job_receipt.get(field)
+                code = f"handoff_payload_{field}_mismatch"
+                if (
+                    consumer_val is not None
+                    and isinstance(receipt_val, str)
+                    and receipt_val != consumer_val
+                    and code not in blocking
+                ):
+                    blocking.append(code)
 
     grant_checks = set(grant["check_ids"])
     authorized = [
@@ -545,7 +590,7 @@ def _match_consumer_authorization(authorization, consumer_scope, payload=None):
 
 
 def _accept_authorization_authority_decision(
-    decision, *, handoff_ref, consumer_scope_ref
+    decision, *, handoff_ref, consumer_scope_ref, consumer_scope=None
 ):
     if decision is True:
         return True
@@ -553,10 +598,93 @@ def _accept_authorization_authority_decision(
         return False
     if "handoff_ref" in decision and decision.get("handoff_ref") != handoff_ref:
         return False
-    return not (
+    if (
         "consumer_scope_ref" in decision
         and decision.get("consumer_scope_ref") != consumer_scope_ref
-    )
+    ):
+        return False
+    subjects = decision.get("subjects")
+    if subjects is not None:
+        if not isinstance(subjects, dict):
+            return False
+        if isinstance(consumer_scope, dict):
+            for key, val in subjects.items():
+                if (
+                    key in _CONSUMER_SCOPE_OPTIONAL
+                    and consumer_scope.get(key) is not None
+                    and val != consumer_scope.get(key)
+                ):
+                    return False
+    return True
+
+
+def _authority_bound_subjects(
+    decision, *, handoff_ref, consumer_scope_ref, consumer_scope=None
+):
+    """Subjects an authorization decision explicitly attests to.
+
+    A bare ``True`` accepts the Check-ID/Action/Target/Phase grant only. To
+    cover a consumer subject (Candidate, Event, Scope, Expected set) the
+    decision must be structured, echo both the handoff and the exact consumer
+    scope refs, and list the subject field in ``bound_subjects`` (and if a
+    ``subjects`` mapping is present, agree with the exact value).
+    """
+    if not isinstance(decision, dict) or decision.get("accepted") is not True:
+        return frozenset()
+    if (
+        decision.get("handoff_ref") != handoff_ref
+        or decision.get("consumer_scope_ref") != consumer_scope_ref
+    ):
+        return frozenset()
+    bound = decision.get("bound_subjects")
+    if not isinstance(bound, (list, tuple)):
+        return frozenset()
+    subjects = decision.get("subjects")
+    if subjects is not None and not isinstance(subjects, dict):
+        return frozenset()
+    accepted = set()
+    for item in bound:
+        if item not in _CONSUMER_SCOPE_OPTIONAL:
+            continue
+        if (
+            isinstance(subjects, dict)
+            and isinstance(consumer_scope, dict)
+            and item in subjects
+            and subjects[item] != consumer_scope.get(item)
+        ):
+            continue
+        accepted.add(item)
+    return frozenset(accepted)
+
+
+def _unbound_subject_reasons(authorization, consumer_scope, payload, authority_bound):
+    """Return missing/unbound reasons for every consumer-required subject.
+
+    A required subject must be present on ``consumer_scope`` and bound by at
+    least one of: (a) the producer grant carrying the identical value, (b) every
+    payload Job Receipt carrying the identical value, or (c) an authorization
+    decision that echoes exact handoff and consumer scope refs and attests to
+    that subject. A subject the consumer Context×Action×Target does not require
+    is never demanded.
+    """
+    grant = authorization["scope"]
+    receipts = payload.get("job_receipts") if isinstance(payload, dict) else None
+    reasons = []
+    for field in sorted(_required_consumer_subjects(consumer_scope)):
+        required = consumer_scope.get(field)
+        if required is None:
+            reasons.append(f"consumer_{field}_required")
+            continue
+        if grant.get(field) == required:
+            continue
+        if receipts and all(
+            isinstance(item, dict) and item.get(field) == required for item in receipts
+        ):
+            continue
+        if field in authority_bound:
+            continue
+        reasons.append(f"consumer_{field}_unbound")
+    return reasons
 
 
 def _authorization_record(authorization):
@@ -672,6 +800,7 @@ def verify_local_handoff(
             blocking.append(exec_reason)
 
     consumer_scope_ref = _digest(consumer)
+    authority_bound = frozenset()
     if authorization_authority is None:
         blocking.append("authorization_authority_missing")
     else:
@@ -684,12 +813,27 @@ def verify_local_handoff(
             "evaluated_at": evaluated.isoformat(),
             "executed_at": executed_at.isoformat() if executed_at is not None else None,
         }
+        auth_decision = authorization_authority(auth_context)
         if not _accept_authorization_authority_decision(
-            authorization_authority(auth_context),
+            auth_decision,
             handoff_ref=package["handoff_ref"],
             consumer_scope_ref=consumer_scope_ref,
+            consumer_scope=consumer,
         ):
             blocking.append("authorization_authority_rejected")
+        else:
+            authority_bound = _authority_bound_subjects(
+                auth_decision,
+                handoff_ref=package["handoff_ref"],
+                consumer_scope_ref=consumer_scope_ref,
+                consumer_scope=consumer,
+            )
+    unbound_reasons = set(
+        _unbound_subject_reasons(
+            authorization, consumer, package["payload"], authority_bound
+        )
+    )
+    blocking.extend(sorted(unbound_reasons))
 
     if executed_at is not None:
         if executed_at > evaluated:
@@ -751,6 +895,7 @@ def verify_local_handoff(
         or "execution_authority_missing" in blocking
         or "authorization_authority_missing" in blocking
         or "execution_time_unverified" in blocking
+        or (blocking and all(item in unbound_reasons for item in blocking))
     ):
         status = "unverified"
         provenance_status = "unverified"

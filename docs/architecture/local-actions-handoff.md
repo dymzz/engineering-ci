@@ -52,8 +52,17 @@ Hook/CLI 原生证据 → Actions/ECI 受控交接输入/输出形状。它要�
 2. **执行边界受控** — `controlled=true`、`self_reported=false`；execution
    authority 返回认证 `executed_at`（须与包内 `produced_at` 一致；`produced_at`
    单独不作授权证明）。
-3. **生产者授权覆盖当前 consumer** — Action/Target/Phase 与独立
-   `consumer_scope` 一致，且 grant 覆盖全部 consumer `check_ids`。
+3. **生产者授权覆盖当前 consumer 与 Context×Action×Target 主体绑定** —
+   Action/Target/Phase 与独立 `consumer_scope` 一致，grant 覆盖全部 consumer
+   `check_ids`，且必须由 Producer Grant、native `job_receipts` 或结构化
+   `authorization_authority` 回执（回显匹配 `handoff_ref`、`consumer_scope_ref`
+   与 `bound_subjects`）绑定当前上下文必需的主体：
+   - 对 PR / push / `merge_group` / release 或 `event_head` 等事件驱动范围绑定
+     `event_ref`、`scope_id`、`expected_set_ref`（及 `consumer_scope` 显式声明的主体）；
+   - 仅当 Action/Target 实际指向 `candidate` / `artifact` / `release`（非
+     `event_head`）或范围显式声明时要求 `candidate_digest`，不对合法无
+     Candidate 的 PR/`event_head` 场景强加伪造 Candidate 摘要。
+   `authorization_authority` 仅返回裸布尔 `True` 不得补齐缺失的必需主体。
 4. **时间双检** — 授权在 `executed_at` **与** `evaluated_at` 均有效。
 5. **载荷摘要一致** — `payload_digest` / `handoff_ref` 可独立重算。
 

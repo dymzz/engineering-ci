@@ -50,18 +50,24 @@ Conversely, a verified `failed` Native Result blocks T1-a admission and enters
 `remaining_work` and `authenticated_failures_by_instance` whenever it is the
 terminal failure of that Check (`not admitted`), shares the same Report or Job
 Receipt (`shared_report_authenticated_failure`) with the selected witness, or
-fails a consumed prerequisite result or report `blocked_by` dependency
-(`prerequisite_result_failed`); and a verified failure for the same
+fails a consumed typed `check_result` prerequisite (verified transitively via
+full `#63` Job Receipt, Issuer, Implementation, Resolution and Run/Attempt/Source/
+Scope checks, or shared-Report/Receipt `blocked_by` edges without global
+Check-name cross-contamination) (`prerequisite_result_failed`); and a verified failure for the same
 `(scope_id, expected_check_ref)` from a different attempt/run is projected into
 `authenticated_failures_by_instance` so R1 blocks the instance as `unmet` until
 covered by an authenticated retry adjudication. T2 candidate selection uses a
 deterministic total order over scope, expected check ref, result IDs and
 candidate digest. T1-b `verify_local_handoff()` validates producer `check_ids`
 as a strict non-empty string sequence before normalization, enforces
-timezone-aware ISO timestamps (aligned with R4), binds optional grant/payload
-scope identities, and retains every consumer check in `remaining_work` whenever
-provenance is unauthenticated or rejected. Existing direct Gate inputs keep the
-legacy trust boundary. The integration tests invoke the #66-B2 / #63 / #61
+timezone-aware ISO timestamps (aligned with R4), enforces Context×Action×Target
+subject binding (`event_ref`, `scope_id`, `expected_set_ref`, and
+`candidate_digest` when Target/Action involves a Candidate rather than a
+no-Candidate `event_head` scope) via Producer Grant, native `job_receipts`, or
+structured `authorization_authority` (`bound_subjects`, rejecting bare `True`
+for unbound required subjects), and retains every consumer check in
+`remaining_work` whenever provenance is unauthenticated or rejected. Existing
+direct Gate inputs keep the legacy trust boundary. The integration tests invoke the #66-B2 / #63 / #61
 producer APIs with controlled authority decisions; production issuer trust roots
 and server-side Required Rulesets remain deployment/integration work.
 

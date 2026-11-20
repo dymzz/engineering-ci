@@ -816,26 +816,41 @@ def test_t1a_new014_shared_report_verified_failure_blocks_selected_witness():
     )
 
 
-def test_t1a_new014_prerequisite_failure_blocks_dependent_check():
-    prereq_failed = native(status="failed", source=STRONG_SOURCE)
+def prerequisite_scenario(
+    *,
+    prereq_status="passed",
+    prereq_job_receipt=True,
+    prereq_issuer=JOB_ISSUER,
+    prereq_attempt_ref=ATTEMPT_REF,
+    consumed_id=None,
+):
+    """Dependent tach result that consumes a ``check_result`` prerequisite."""
+    prereq = native(status=prereq_status, source=STRONG_SOURCE)
     prereq_report = {
         "kind": reconciliation.EXECUTION_REPORT_KIND,
         "schema_version": 1,
         "checks": [
             {
                 "name": "docs-inventory",
-                "status": "failed",
+                "status": prereq_status,
                 "verification_implementation": copy.deepcopy(IMPLEMENTATION),
-                "native_results": [prereq_failed],
+                "native_results": [prereq],
             }
         ],
     }
-    prereq_input = [{"kind": "check_result", "result_id": prereq_failed["result_id"]}]
+    prereq_report_ref = report_ref_for(prereq_report)
+    prereq_job_receipt_doc = {
+        **job_receipt_for(prereq_report_ref, issuer=prereq_issuer),
+        "job_ref": "job-prereq",
+        "attempt_ref": prereq_attempt_ref,
+    }
+    prereq_input = [
+        {"kind": "check_result", "result_id": consumed_id or prereq["result_id"]}
+    ]
     entry = make_entry(source=STRONG_SOURCE, input_refs=prereq_input)
     projection = make_projection(entry, source=STRONG_SOURCE)
-    definition = check_contract.definition_for("tach")
-    dependent_pass = check_contract.native_result(
-        definition,
+    dependent = check_contract.native_result(
+        check_contract.definition_for("tach"),
         source=copy.deepcopy(STRONG_SOURCE),
         status="passed",
         result_origin="host",
@@ -848,34 +863,259 @@ def test_t1a_new014_prerequisite_failure_blocks_dependent_check():
         profile_ref=None,
         tool=check_contract.tool_ref("tach/check"),
     )
-    report = report_for(dependent_pass)
+    report = report_for(dependent)
     report_ref = report_ref_for(report)
     job_receipt = job_receipt_for(report_ref)
-    resolution = {
-        **resolution_for(entry),
-        "input_refs": copy.deepcopy(prereq_input),
-    }
+    resolution = {**resolution_for(entry), "input_refs": copy.deepcopy(prereq_input)}
     receipt = reconciliation.reconcile_expected_results(
         projection,
         routing=[routing_for(entry)],
         resolutions=[resolution],
         observations=[observation_for(report, report_ref, job_receipt)],
     )
-    assert receipt["entries"][0]["selected_result_ids"] == [dependent_pass["result_id"]]
+    assert receipt["entries"][0]["selected_result_ids"] == [dependent["result_id"]]
+    job_receipts = [job_receipt]
+    if prereq_job_receipt:
+        job_receipts.append(prereq_job_receipt_doc)
     result = admit_evidence(
         projection,
         receipt,
         reports=[report, prereq_report],
-        job_receipts=[job_receipt],
+        job_receipts=job_receipts,
         policy=policy_for(),
         resolutions=[resolution],
     )
-    entry_result = result["entries"][0]
+    return result, result["entries"][0], prereq
+
+
+def test_t1a_new014_authenticated_prerequisite_pass_admits_dependent():
+    result, entry_result, prereq = prerequisite_scenario(prereq_status="passed")
+    assert entry_result["admitted"] is True
+    assert result["remaining_work"] == []
+    derived = [
+        fact
+        for fact in entry_result["facts"]
+        if fact["result_id"] == prereq["result_id"]
+    ]
+    assert derived and derived[0]["selected"] is False
+    assert derived[0]["issuer_status"] == "verified"
+
+
+@pytest.mark.parametrize(
+    "scenario,reason",
+    [
+        ({"prereq_job_receipt": False}, "prerequisite_job_receipt_missing"),
+        (
+            {
+                "prereq_issuer": {
+                    "name": "untrusted-observer",
+                    "version": "1",
+                    "sha256": "9" * 64,
+                }
+            },
+            "prerequisite_authority_rejected",
+        ),
+        ({"consumed_id": "sha256:" + "a" * 64}, "prerequisite_result_missing"),
+    ],
+)
+def test_t1a_new014_unauthenticated_prerequisite_pass_cannot_satisfy_dependency(
+    scenario, reason
+):
+    result, entry_result, _prereq = prerequisite_scenario(
+        prereq_status="passed", **scenario
+    )
+    assert entry_result["admitted"] is False
+    assert entry_result["status"] == "unverified"
+    assert entry_result["obligation_status"] == "unknown"
+    assert reason in entry_result["reasons"]
+    assert "prerequisite_result_failed" not in entry_result["reasons"]
+    assert len(result["remaining_work"]) == 1
+
+
+def test_t1a_new014_prerequisite_from_other_attempt_is_scope_mismatch():
+    result, entry_result, _prereq = prerequisite_scenario(
+        prereq_status="passed", prereq_attempt_ref="attempt/0"
+    )
+    assert entry_result["admitted"] is False
+    assert "prerequisite_result_scope_mismatch" in entry_result["reasons"]
+    assert len(result["remaining_work"]) == 1
+
+
+def test_t1a_new014_authenticated_prerequisite_failure_blocks_dependent():
+    result, entry_result, prereq = prerequisite_scenario(prereq_status="failed")
     assert entry_result["admitted"] is False
     assert entry_result["status"] == "unsatisfied"
     assert entry_result["obligation_status"] == "unsatisfied"
     assert "prerequisite_result_failed" in entry_result["reasons"]
     assert len(result["remaining_work"]) == 1
+    assert any(
+        fact["result_id"] == prereq["result_id"] and fact["status"] == "failed"
+        for fact in entry_result["facts"]
+    )
+
+
+def test_t1a_new014_unrelated_same_name_failure_does_not_contaminate():
+    projection, _receipt, report, _job_receipt = setup()
+    # Even when an authorized report carries an informational blocked_by edge
+    # naming a check that happens to fail in a separate, unconsumed Report, no
+    # failure propagates across unrelated reports without a typed check_result.
+    authorized_report = copy.deepcopy(report)
+    authorized_report["checks"][0]["plan_authorized"] = True
+    authorized_report["checks"][0]["check_contract"] = {
+        "kind": check_contract.CHECK_CONTRACT_KIND,
+        "schema_version": check_contract.CONTRACT_VERSION,
+        "status": "valid",
+    }
+    authorized_report["checks"][0]["blocked_by"] = [
+        {"producer_ref": {"kind": "check", "name": "docs-inventory"}}
+    ]
+    auth_ref = report_ref_for(authorized_report)
+    auth_receipt_doc = job_receipt_for(auth_ref)
+    entry = projection["checks"][0]
+    auth_receipt = reconciliation.reconcile_expected_results(
+        projection,
+        routing=[routing_for(entry)],
+        resolutions=[resolution_for(entry)],
+        observations=[observation_for(authorized_report, auth_ref, auth_receipt_doc)],
+    )
+    unrelated_failed = native(status="failed", source=STRONG_SOURCE)
+    unrelated_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "docs-inventory",
+                "status": "failed",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [unrelated_failed],
+            }
+        ],
+    }
+    unrelated_ref = report_ref_for(unrelated_report)
+    unrelated_receipt = {
+        **job_receipt_for(unrelated_ref),
+        "job_ref": "job-unrelated",
+    }
+    result = admit_evidence(
+        projection,
+        auth_receipt,
+        reports=[authorized_report, unrelated_report],
+        job_receipts=[auth_receipt_doc, unrelated_receipt],
+        policy=policy_for(),
+    )
+    entry_result = result["entries"][0]
+    assert entry_result["admitted"] is True
+    assert result["remaining_work"] == []
+
+
+def test_t1a_new014_transitive_prerequisite_and_unapproved_impl_block_dependent():
+    unapproved_impl = {
+        **IMPLEMENTATION,
+        "implementation_sha256": "f" * 64,
+    }
+    prereq = native(status="passed", source=STRONG_SOURCE)
+    prereq_report = report_for(prereq, implementation=unapproved_impl)
+    prereq_ref = report_ref_for(prereq_report)
+    prereq_receipt = {**job_receipt_for(prereq_ref), "job_ref": "job-prereq"}
+    prereq_input = [{"kind": "check_result", "result_id": prereq["result_id"]}]
+    entry = make_entry(source=STRONG_SOURCE, input_refs=prereq_input)
+    projection = make_projection(entry, source=STRONG_SOURCE)
+    dependent = check_contract.native_result(
+        check_contract.definition_for("tach"),
+        source=copy.deepcopy(STRONG_SOURCE),
+        status="passed",
+        result_origin="host",
+        result_instance="run-1",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=copy.deepcopy(RULE_TACH),
+        input_refs=copy.deepcopy(prereq_input),
+        runner_ref=RUNNER_REF,
+        profile_ref=None,
+        tool=check_contract.tool_ref("tach/check"),
+    )
+    report = report_for(dependent)
+    ref = report_ref_for(report)
+    jr = job_receipt_for(ref)
+    res = {**resolution_for(entry), "input_refs": copy.deepcopy(prereq_input)}
+    receipt = reconciliation.reconcile_expected_results(
+        projection,
+        routing=[routing_for(entry)],
+        resolutions=[res],
+        observations=[observation_for(report, ref, jr)],
+    )
+    unapproved_result = admit_evidence(
+        projection,
+        receipt,
+        reports=[report, prereq_report],
+        job_receipts=[jr, prereq_receipt],
+        policy=policy_for(),
+        resolutions=[res],
+        authority=lambda ctx: ctx["issuer_ref"] == JOB_ISSUER,
+    )
+    assert unapproved_result["entries"][0]["admitted"] is False
+    assert (
+        "prerequisite_implementation_unapproved"
+        in unapproved_result["entries"][0]["reasons"]
+    )
+
+    # Transitive chain: dependent -> middle -> root(missing receipt).
+    root_res = native(status="passed", source=STRONG_SOURCE)
+    root_report = report_for(root_res)
+    middle = check_contract.native_result(
+        check_contract.definition_for("tach"),
+        source=copy.deepcopy(STRONG_SOURCE),
+        status="passed",
+        result_origin="host",
+        result_instance="mid-1",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=copy.deepcopy(RULE_TACH),
+        input_refs=[{"kind": "check_result", "result_id": root_res["result_id"]}],
+        runner_ref=RUNNER_REF,
+        profile_ref=None,
+        tool=check_contract.tool_ref("tach/check"),
+    )
+    mid_report = report_for(middle)
+    mid_ref = report_ref_for(mid_report)
+    mid_jr = {**job_receipt_for(mid_ref), "job_ref": "job-mid"}
+    top_input = [{"kind": "check_result", "result_id": middle["result_id"]}]
+    top_entry = make_entry(source=STRONG_SOURCE, input_refs=top_input)
+    top_proj = make_projection(top_entry, source=STRONG_SOURCE)
+    top = check_contract.native_result(
+        check_contract.definition_for("tach"),
+        source=copy.deepcopy(STRONG_SOURCE),
+        status="passed",
+        result_origin="host",
+        result_instance="top-1",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=copy.deepcopy(RULE_TACH),
+        input_refs=copy.deepcopy(top_input),
+        runner_ref=RUNNER_REF,
+        profile_ref=None,
+        tool=check_contract.tool_ref("tach/check"),
+    )
+    top_report = report_for(top)
+    top_ref = report_ref_for(top_report)
+    top_jr = job_receipt_for(top_ref)
+    top_res = {**resolution_for(top_entry), "input_refs": copy.deepcopy(top_input)}
+    top_receipt = reconciliation.reconcile_expected_results(
+        top_proj,
+        routing=[routing_for(top_entry)],
+        resolutions=[top_res],
+        observations=[observation_for(top_report, top_ref, top_jr)],
+    )
+    transitive_res = admit_evidence(
+        top_proj,
+        top_receipt,
+        reports=[top_report, mid_report, root_report],
+        job_receipts=[top_jr, mid_jr],
+        policy=policy_for(),
+        resolutions=[top_res],
+    )
+    assert transitive_res["entries"][0]["admitted"] is False
+    assert "prerequisite_job_receipt_missing" in transitive_res["entries"][0]["reasons"]
 
 
 def test_t1a_new014_same_job_attempt_independent_checks_isolate_pass_and_fail():

@@ -480,112 +480,303 @@ def _same_observed_scope(left, right):
     return bool(left_receipt and left_receipt == right.get("job_receipt_ref"))
 
 
-def _blocked_by_names(check):
-    if not isinstance(check, dict):
-        return set()
-    blocked_by = check.get("blocked_by")
-    deps = (
-        [blocked_by]
-        if isinstance(blocked_by, str)
-        else list(blocked_by)
-        if isinstance(blocked_by, list)
-        else []
-    )
-    names = set()
-    for dep in deps:
-        if isinstance(dep, str) and dep:
-            names.add(dep)
-        elif isinstance(dep, dict):
-            ref = dep.get("producer_ref")
+def _authenticate_prerequisite(
+    prereq_id,
+    *,
+    reports,
+    job_receipts,
+    policy,
+    authority,
+    preferred_run_ref=None,
+    preferred_attempt_ref=None,
+):
+    """Authenticate one consumed prerequisite Result that was not observed.
+
+    The prerequisite is located in the supplied raw Reports by its exact
+    ``result_id`` and attributed to the Job Receipt that binds that Report. It
+    then goes through the same ``_authenticate_evidence`` path as any selected
+    witness (Report/Receipt digests, upstream verification, trusted Issuer,
+    approved Implementation). A raw Report's self-reported status is never
+    trusted by itself.
+    """
+    matching_reports = [
+        (report_key, report)
+        for report_key, report in reports.items()
+        if _contains_result(report, prereq_id)
+    ]
+    if not matching_reports:
+        return None, "prerequisite_result_missing"
+    candidates = []
+    for report_key, report in matching_reports:
+        sha = report_key.split(":", 1)[1]
+        for receipt_key, receipt in job_receipts.items():
+            receipt_report = receipt.get("report_ref")
             if (
-                isinstance(ref, dict)
-                and isinstance(ref.get("name"), str)
-                and ref["name"]
+                not isinstance(receipt_report, dict)
+                or receipt_report.get("sha256") != sha
             ):
-                names.add(ref["name"])
-            if isinstance(dep.get("name"), str) and dep["name"]:
-                names.add(dep["name"])
-            if isinstance(dep.get("check_id"), str) and dep["check_id"]:
-                names.add(dep["check_id"])
-    return names
-
-
-def _consumed_prerequisite_failed(selected_facts, selected_raw, facts_by_id, reports):
-    consumed_ids = set()
-    for raw in selected_raw:
-        if isinstance(raw, dict):
-            consumed_ids.update(
-                item
-                for item in check_contract._consumed_result_ids(raw)
-                if isinstance(item, str) and item
+                continue
+            attempt_rank = (
+                0
+                if (
+                    preferred_run_ref is not None
+                    and preferred_attempt_ref is not None
+                    and (receipt.get("run_ref"), receipt.get("attempt_ref"))
+                    == (preferred_run_ref, preferred_attempt_ref)
+                )
+                else 1
             )
-    for prereq_id in consumed_ids:
-        fact = facts_by_id.get(prereq_id)
-        if fact is not None:
+            candidates.append(
+                (attempt_rank, report_key, receipt_key, receipt, receipt_report)
+            )
+    if not candidates:
+        return None, "prerequisite_job_receipt_missing"
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    first_failure = None
+    for _, _report_key, receipt_key, receipt, receipt_report in candidates:
+        evidence = {
+            "result_id": prereq_id,
+            "report_ref": copy.deepcopy(receipt_report),
+            "job_ref": receipt.get("job_ref"),
+            "run_ref": receipt.get("run_ref"),
+            "attempt_ref": receipt.get("attempt_ref"),
+            "runner_ref": receipt.get("runner_ref"),
+            "job_receipt_ref": receipt_key,
+        }
+        try:
+            fact = _authenticate_evidence(
+                evidence,
+                reports=reports,
+                job_receipts=job_receipts,
+                policy=policy,
+                authority=authority,
+            )
+        except _EvidenceFailure as failure:
+            if first_failure is None:
+                first_failure = f"prerequisite_{failure.reason}"
+            continue
+        raw = fact.pop("_raw_result", None)
+        fact["selected"] = False
+        return (fact, raw), None
+    return None, first_failure or "prerequisite_result_unverified"
+
+
+def _prerequisite_scope_mismatch(
+    fact,
+    prereq_raw,
+    dependent_fact,
+    dependent_raw,
+    *,
+    scope_id,
+    expected_set_ref,
+    expected_entry,
+    job_receipts,
+):
+    if dependent_fact is None or prereq_raw is None:
+        return True
+    if (fact.get("run_ref"), fact.get("attempt_ref")) != (
+        dependent_fact.get("run_ref"),
+        dependent_fact.get("attempt_ref"),
+    ):
+        return True
+    if prereq_raw.get("source_ref") != dependent_raw.get("source_ref"):
+        return True
+    prereq_receipt = job_receipts.get(fact.get("job_receipt_ref")) or {}
+    if (
+        scope_id is not None
+        and prereq_receipt.get("scope_id") is not None
+        and prereq_receipt["scope_id"] != scope_id
+    ):
+        return True
+    if (
+        expected_set_ref is not None
+        and prereq_receipt.get("expected_set_ref") is not None
+        and prereq_receipt["expected_set_ref"] != expected_set_ref
+    ):
+        return True
+    dep_receipt = job_receipts.get(dependent_fact.get("job_receipt_ref")) or {}
+    for key in ("invocation_ref", "event_ref"):
+        if (
+            dep_receipt.get(key) is not None
+            and prereq_receipt.get(key) is not None
+            and prereq_receipt[key] != dep_receipt[key]
+        ):
+            return True
+    expected_profile = (expected_entry or {}).get("profile_ref")
+    prereq_profile = (prereq_raw.get("check") or {}).get("profile_ref")
+    return bool(
+        expected_profile is not None
+        and prereq_profile is not None
+        and prereq_profile != expected_profile
+    )
+
+
+def _prerequisite_closure(
+    selected_facts,
+    selected_raw,
+    facts_by_id,
+    raw_by_id,
+    *,
+    scope_id,
+    expected_set_ref,
+    expected_entry,
+    reports,
+    job_receipts,
+    policy,
+    authority,
+    rejected_result_ids=(),
+    inapplicable_result_ids=(),
+    inapplicable_check_identities=(),
+    unresolved_sibling_selected_ids=(),
+):
+    """Resolve the full transitive dependency DAG consumed by selected witnesses.
+
+    Dependency identity is the typed ``check_result`` input ref carried by
+    ``input_refs`` (never Check names or a Report's ``blocked_by``). Each
+    consumed prerequisite is authenticated via ``_authenticate_evidence`` and
+    checked for current Run/Attempt/Source/Scope compatibility before it can
+    satisfy the consumed edge.
+    """
+    selected_ids = {fact["result_id"] for fact in selected_facts}
+    fact_by_selected = {fact["result_id"]: fact for fact in selected_facts}
+    derived = []
+    derived_by_id = {}
+    failed = False
+    unverified = []
+    visited = set(selected_ids)
+    queue = [
+        (raw, fact_by_selected.get(raw.get("result_id")))
+        for raw in selected_raw
+        if isinstance(raw, dict)
+    ]
+    while queue:
+        cur_raw, cur_fact = queue.pop(0)
+        for prereq_id in sorted(
+            item
+            for item in check_contract._consumed_result_ids(cur_raw)
+            if isinstance(item, str) and item
+        ):
+            if prereq_id == cur_raw.get("result_id"):
+                unverified.append("prerequisite_result_cycle")
+                continue
+            if prereq_id in selected_ids:
+                continue
+            if prereq_id in rejected_result_ids:
+                unverified.append("prerequisite_result_rejected")
+                continue
+            if prereq_id in inapplicable_result_ids:
+                unverified.append("prerequisite_result_not_applicable")
+                continue
+            if prereq_id in unresolved_sibling_selected_ids:
+                unverified.append("prerequisite_resolution_unverified")
+                continue
+            fact = facts_by_id.get(prereq_id) or derived_by_id.get(prereq_id)
+            prereq_raw = raw_by_id.get(prereq_id)
+            if fact is None:
+                resolved, reason = _authenticate_prerequisite(
+                    prereq_id,
+                    reports=reports,
+                    job_receipts=job_receipts,
+                    policy=policy,
+                    authority=authority,
+                    preferred_run_ref=(cur_fact or {}).get("run_ref"),
+                    preferred_attempt_ref=(cur_fact or {}).get("attempt_ref"),
+                )
+                if resolved is None:
+                    unverified.append(reason)
+                    continue
+                fact, prereq_raw = resolved
+                derived.append(fact)
+                derived_by_id[prereq_id] = fact
+                if prereq_raw is not None:
+                    raw_by_id[prereq_id] = prereq_raw
+            if prereq_raw is not None:
+                prereq_check = prereq_raw.get("check") or {}
+                prereq_key = (
+                    prereq_check.get("check_id"),
+                    prereq_check.get("definition_version"),
+                    json.dumps(prereq_check.get("rule_ref"), sort_keys=True),
+                )
+                if prereq_key in inapplicable_check_identities:
+                    unverified.append("prerequisite_result_not_applicable")
+                    continue
+            if _prerequisite_scope_mismatch(
+                fact,
+                prereq_raw,
+                cur_fact,
+                cur_raw,
+                scope_id=scope_id,
+                expected_set_ref=expected_set_ref,
+                expected_entry=expected_entry,
+                job_receipts=job_receipts,
+            ):
+                unverified.append("prerequisite_result_scope_mismatch")
+                continue
+            if fact.get("status") in {"failed", "not_executed"}:
+                if fact.get("integrity_status") == "verified" and (
+                    fact.get("issuer_status") == "verified"
+                ):
+                    failed = True
+                else:
+                    unverified.append("prerequisite_result_unverified")
+                continue
+            if fact.get("implementation_status") == "unapproved":
+                unverified.append("prerequisite_implementation_unapproved")
+                continue
             if (
-                fact.get("origin_status") != "verified"
-                or fact.get("implementation_status") != "approved"
+                fact.get("integrity_status") != "verified"
+                or fact.get("issuer_status") != "verified"
+                or fact.get("origin_status") != "verified"
                 or fact.get("status") != "passed"
             ):
-                return True
-            continue
-        found_passing = False
-        for report in reports.values():
-            parent = _parent_check(report, prereq_id)
-            if parent is None:
+                unverified.append("prerequisite_result_unverified")
                 continue
-            if parent.get("status") in {"failed", "not_executed"}:
-                return True
-            native_items = parent.get("native_results")
-            if native_items is None and isinstance(parent.get("native_result"), dict):
-                native_items = [parent["native_result"]]
-            for candidate in native_items or ():
-                if (
-                    isinstance(candidate, dict)
-                    and candidate.get("result_id") == prereq_id
-                ):
-                    if candidate.get("status") != "passed":
-                        return True
-                    found_passing = True
-        if not found_passing:
-            return True
+            if prereq_id not in visited:
+                visited.add(prereq_id)
+                queue.append((prereq_raw, fact))
+    return derived, failed, list(dict.fromkeys(unverified))
 
-    failed_check_identifiers = set()
-    for report in reports.values():
-        for check in report.get("checks") or ():
-            if not isinstance(check, dict):
-                continue
-            native_items = check.get("native_results")
-            if native_items is None and isinstance(check.get("native_result"), dict):
-                native_items = [check["native_result"]]
-            has_failed_native = any(
-                isinstance(item, dict)
-                and item.get("status") in {"failed", "not_executed"}
-                for item in (native_items or ())
-            )
-            if check.get("status") in {"failed", "not_executed"} or has_failed_native:
-                if isinstance(check.get("name"), str) and check["name"]:
-                    failed_check_identifiers.add(check["name"])
-                if isinstance(check.get("check_id"), str) and check["check_id"]:
-                    failed_check_identifiers.add(check["check_id"])
 
-    if failed_check_identifiers:
-        for fact in selected_facts:
-            report_ref = fact.get("report_ref") or {}
-            sha = report_ref.get("sha256")
-            report = reports.get("sha256:" + sha) if isinstance(sha, str) else None
-            if report is None:
-                continue
-            parent = _parent_check(report, fact.get("result_id"))
-            if _blocked_by_names(parent) & failed_check_identifiers:
-                return True
-    return False
+def _resolve_entry_status(
+    entry,
+    *,
+    scope_id,
+    expected_entry,
+    resolution,
+    resolution_authority,
+):
+    if entry.get("binding_status") == "not_applicable":
+        return "not_applicable", None
+    if resolution is None:
+        return "unverified", "resolution_missing"
+    if resolution_authority is None:
+        return "unverified", "resolution_authority_verifier_missing"
+    context = {
+        "scope_id": scope_id,
+        "expected_check_ref": entry["expected_check_ref"],
+        "resolution": copy.deepcopy(resolution),
+    }
+    try:
+        authorized = resolution_authority(context)
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return "rejected", "resolution_authority_verifier_error"
+    if authorized is not True:
+        return "unverified", "resolution_authority_unverified"
+    recomputed, status, reason, _evidence = reconciliation._resolve_expected(
+        expected_entry, resolution
+    )
+    if recomputed is None or status != "matched":
+        return "unverified", reason or "resolution_unresolved"
+    if _digest(recomputed) != entry.get("resolved_expected_ref"):
+        return "rejected", "resolved_expected_derivation_mismatch"
+    return "verified", None
 
 
 def _entry_admission_v2(
     entry,
     *,
     scope_id,
+    expected_set_ref=None,
     expected_entry,
     reports,
     job_receipts,
@@ -593,6 +784,11 @@ def _entry_admission_v2(
     authority,
     resolution,
     resolution_authority,
+    resolution_override=None,
+    rejected_result_ids=(),
+    inapplicable_result_ids=(),
+    inapplicable_check_identities=(),
+    unresolved_sibling_selected_ids=(),
 ):
     if entry.get("binding_status") == "not_applicable":
         return {
@@ -610,39 +806,16 @@ def _entry_admission_v2(
             "facts": [],
             "reasons": [],
         }
-    resolution_status = "verified"
-    resolution_reason = None
-    if resolution is None:
-        resolution_status = "unverified"
-        resolution_reason = "resolution_missing"
-    elif resolution_authority is None:
-        resolution_status = "unverified"
-        resolution_reason = "resolution_authority_verifier_missing"
+    if resolution_override is not None:
+        resolution_status, resolution_reason = resolution_override
     else:
-        context = {
-            "scope_id": scope_id,
-            "expected_check_ref": entry["expected_check_ref"],
-            "resolution": copy.deepcopy(resolution),
-        }
-        try:
-            authorized = resolution_authority(context)
-        except (KeyError, RuntimeError, TypeError, ValueError):
-            resolution_status = "rejected"
-            resolution_reason = "resolution_authority_verifier_error"
-        if resolution_status != "rejected":
-            if authorized is not True:
-                resolution_status = "unverified"
-                resolution_reason = "resolution_authority_unverified"
-            else:
-                recomputed, status, reason, _evidence = (
-                    reconciliation._resolve_expected(expected_entry, resolution)
-                )
-                if recomputed is None or status != "matched":
-                    resolution_status = "unverified"
-                    resolution_reason = reason or "resolution_unresolved"
-                elif _digest(recomputed) != entry.get("resolved_expected_ref"):
-                    resolution_status = "rejected"
-                    resolution_reason = "resolved_expected_derivation_mismatch"
+        resolution_status, resolution_reason = _resolve_entry_status(
+            entry,
+            scope_id=scope_id,
+            expected_entry=expected_entry,
+            resolution=resolution,
+            resolution_authority=resolution_authority,
+        )
     selected_ids = list(entry.get("selected_result_ids") or ())
     observed_ids = list(entry.get("observed_result_ids") or ())
     evidence_by_id = {}
@@ -707,6 +880,35 @@ def _entry_admission_v2(
         facts.append(fact)
 
     selected_facts = [fact for fact in facts if fact["selected"]]
+    selected_raw = [raw_by_id[item] for item in selected_ids if raw_by_id.get(item)]
+    facts_by_id = {
+        fact["result_id"]: fact
+        for fact in facts
+        if isinstance(fact.get("result_id"), str)
+    }
+    sibling_unresolved = set(unresolved_sibling_selected_ids) - set(selected_ids)
+    prerequisite_facts, prerequisite_failed, prerequisite_unverified = (
+        _prerequisite_closure(
+            selected_facts,
+            selected_raw,
+            facts_by_id,
+            raw_by_id,
+            scope_id=scope_id,
+            expected_set_ref=expected_set_ref,
+            expected_entry=expected_entry,
+            reports=reports,
+            job_receipts=job_receipts,
+            policy=policy,
+            authority=authority,
+            rejected_result_ids=set(rejected_result_ids),
+            inapplicable_result_ids=set(inapplicable_result_ids),
+            inapplicable_check_identities=set(inapplicable_check_identities),
+            unresolved_sibling_selected_ids=sibling_unresolved,
+        )
+        if selected_facts
+        else ([], False, [])
+    )
+    facts.extend(prerequisite_facts)
     bad_facts = [fact for fact in facts if fact["origin_status"] != "verified"]
     contaminated = any(
         _same_observed_scope(selected, bad)
@@ -726,15 +928,6 @@ def _entry_admission_v2(
         for selected in selected_facts
         for failed in authenticated_failed
         if failed is not selected
-    )
-    selected_raw = [raw_by_id[item] for item in selected_ids if raw_by_id.get(item)]
-    facts_by_id = {
-        fact["result_id"]: fact
-        for fact in facts
-        if isinstance(fact.get("result_id"), str)
-    }
-    prerequisite_failed = bool(selected_facts) and _consumed_prerequisite_failed(
-        selected_facts, selected_raw, facts_by_id, reports
     )
     decision = None
     decision_reason = None
@@ -768,6 +961,7 @@ def _entry_admission_v2(
         and not contaminated
         and not shared_scope_failed
         and not prerequisite_failed
+        and not prerequisite_unverified
         and decision_ok
         and all(fact.get("status") == "passed" for fact in selected_facts)
     )
@@ -828,6 +1022,7 @@ def _entry_admission_v2(
         reasons.append("shared_report_authenticated_failure")
     if prerequisite_failed:
         reasons.append("prerequisite_result_failed")
+    reasons.extend(prerequisite_unverified)
     if any(
         fact.get("integrity_status") == "verified" and fact.get("status") == "failed"
         for fact in facts
@@ -965,21 +1160,66 @@ def admit_evidence(
         raise AdmissionError("admission_receipt_invalid")
     if {item.get("expected_check_ref") for item in raw_entries} != set(expected_by_ref):
         raise AdmissionError("admission_receipt_entries_mismatch")
-    entries = []
+    rejected_result_ids = set()
+    inapplicable_result_ids = set()
+    inapplicable_check_identities = set()
+    resolved_by_ref = {}
+    unresolved_selected_ids = set()
     for raw_entry in raw_entries:
         expected_entry = expected_by_ref.get(raw_entry.get("expected_check_ref"))
         if expected_entry is None:
             raise AdmissionError("admission_expected_entry_missing")
+        for rej in raw_entry.get("rejected_results") or ():
+            if isinstance(rej, dict) and isinstance(rej.get("result_id"), str):
+                rejected_result_ids.add(rej["result_id"])
+        if raw_entry.get("binding_status") == "not_applicable":
+            for rid in list(raw_entry.get("observed_result_ids") or ()) + list(
+                raw_entry.get("selected_result_ids") or ()
+            ):
+                if isinstance(rid, str) and rid:
+                    inapplicable_result_ids.add(rid)
+            inapplicable_check_identities.add(
+                (
+                    expected_entry.get("check_id"),
+                    expected_entry.get("definition_version"),
+                    json.dumps(expected_entry.get("rule_ref"), sort_keys=True),
+                )
+            )
+        res_pair = _resolve_entry_status(
+            raw_entry,
+            scope_id=scope.get("scope_id"),
+            expected_entry=expected_entry,
+            resolution=resolutions_by_ref.get(raw_entry.get("expected_check_ref")),
+            resolution_authority=resolution_authority,
+        )
+        resolved_by_ref[raw_entry["expected_check_ref"]] = res_pair
+        if res_pair[0] != "verified" and res_pair[0] != "not_applicable":
+            unresolved_selected_ids.update(
+                rid
+                for rid in (raw_entry.get("selected_result_ids") or ())
+                if isinstance(rid, str) and rid
+            )
+
+    entries = []
+    for raw_entry in raw_entries:
+        ref = raw_entry["expected_check_ref"]
+        expected_entry = expected_by_ref[ref]
         entry = _entry_admission_v2(
             raw_entry,
             scope_id=scope.get("scope_id"),
+            expected_set_ref=scope.get("expected_set_ref"),
             expected_entry=expected_entry,
             reports=reports,
             job_receipts=job_receipts,
             policy=policy,
             authority=authority,
-            resolution=resolutions_by_ref.get(raw_entry.get("expected_check_ref")),
+            resolution=resolutions_by_ref.get(ref),
             resolution_authority=resolution_authority,
+            resolution_override=resolved_by_ref[ref],
+            rejected_result_ids=rejected_result_ids,
+            inapplicable_result_ids=inapplicable_result_ids,
+            inapplicable_check_identities=inapplicable_check_identities,
+            unresolved_sibling_selected_ids=unresolved_selected_ids,
         )
         entry["scope_id"] = scope.get("scope_id")
         entry["resolved_expected_check_id"] = (
