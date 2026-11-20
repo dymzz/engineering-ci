@@ -3977,6 +3977,8 @@ def _check_evidence(item, name):
             "per_script_clean_receipts_available",
             "shared_actionlint",
             "native_json",
+            "native_truncated",
+            "limitations",
             "input_paths",
             "target_sources",
             "target_source_problem",
@@ -5024,6 +5026,7 @@ def _finalize_report(report):
     ] + [
         item for item in report["prerequisites"] if item.get("status") == "not_executed"
     ]
+    unresolved = [item for item in report["checks"] if item.get("status") == "unknown"]
     if report.get("targets") and tests_res.get("status") == "not_executed":
         unfinished.append(tests_res)
     invalid_contract = [
@@ -5091,7 +5094,7 @@ def _finalize_report(report):
         report["status"] = "blocked"
         report["exit_code"] = 5
         report["reason"] = "native_satisfaction_incomplete"
-    elif unfinished or artifact_blocked:
+    elif unfinished or artifact_blocked or unresolved:
         report["status"] = "blocked"
         report["exit_code"] = 5
         specific = (
@@ -5112,6 +5115,9 @@ def _finalize_report(report):
                     if item.get("blocked_by") and item.get("reason")
                 ),
                 None,
+            )
+            or next(
+                (item.get("reason") for item in unresolved if item.get("reason")), None
             )
         )
         report["reason"] = specific or "required_checks_not_executed"
