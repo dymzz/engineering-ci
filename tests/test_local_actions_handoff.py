@@ -431,3 +431,224 @@ def test_tampered_handoff_digest_is_rejected():
         handoff.LocalActionsHandoffError, match="handoff_payload_digest_mismatch"
     ):
         handoff.validate_local_handoff_package(tampered)
+
+
+@pytest.mark.parametrize(
+    "bad_check_ids",
+    [
+        "eci/hygiene/tach",
+        {"eci/hygiene/tach": True},
+        123,
+        True,
+        None,
+        [],
+        [""],
+        ["eci/hygiene/tach", 42],
+    ],
+)
+def test_new059_producer_authorization_rejects_malformed_check_ids(bad_check_ids):
+    scope = {
+        "action": "validate",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": bad_check_ids,
+    }
+    with pytest.raises(
+        handoff.LocalActionsHandoffError, match="handoff_authorization_scope_invalid"
+    ):
+        build_package(producer_authorization=producer_authorization(scope=scope))
+
+
+def test_new059_producer_authorization_deduplicates_valid_check_ids():
+    scope = {
+        "action": "validate",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach", "eci/hygiene/tach"],
+    }
+    package = build_package(producer_authorization=producer_authorization(scope=scope))
+    assert package["producer_authorization"]["scope"]["check_ids"] == [
+        "eci/hygiene/tach"
+    ]
+    assert handoff.validate_local_handoff_package(package) is package
+    verified = verify(package)
+    assert verified["status"] == "verified"
+    assert verified["authorized_check_ids"] == ["eci/hygiene/tach"]
+    assert verified["remaining_work"] == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "produced_at",
+        "evaluated_at",
+        "executed_at",
+        "valid_from",
+        "valid_until",
+        "revoked_at",
+    ],
+)
+def test_new044_naive_datetimes_are_rejected_without_type_error(field):
+    naive = "2026-11-17T04:00:00"
+    if field == "produced_at":
+        with pytest.raises(
+            handoff.LocalActionsHandoffError, match="handoff_produced_at_invalid"
+        ):
+            build_package(produced_at=naive)
+    elif field == "evaluated_at":
+        package = build_package()
+        with pytest.raises(
+            handoff.LocalActionsHandoffError, match="handoff_evaluated_at_invalid"
+        ):
+            verify(package, evaluated_at=naive)
+    elif field == "executed_at":
+        package = build_package()
+        with pytest.raises(
+            handoff.LocalActionsHandoffError, match="handoff_executed_at_invalid"
+        ):
+            verify(
+                package,
+                execution_authority=lambda _pkg: {
+                    "accepted": True,
+                    "executed_at": naive,
+                },
+            )
+    else:
+        with pytest.raises(
+            handoff.LocalActionsHandoffError,
+            match=f"handoff_authorization_{field}_invalid",
+        ):
+            build_package(
+                producer_authorization=producer_authorization(**{field: naive})
+            )
+
+
+def test_new044_mixed_timezone_offsets_verify_cleanly():
+    package = build_package(
+        produced_at="2026-11-17T12:00:00+08:00",
+        producer_authorization=producer_authorization(
+            valid_from="2026-11-01T00:00:00Z",
+            valid_until="2026-12-01T00:00:00Z",
+        ),
+    )
+    verified = verify(
+        package,
+        evaluated_at="2026-11-17T05:00:00Z",
+        execution_authority=lambda _pkg: {
+            "accepted": True,
+            "executed_at": "2026-11-17T04:00:00Z",
+        },
+    )
+    assert verified["status"] == "verified"
+    assert verified["admitted_for_t1a"] is True
+
+
+def test_new043_bound_grant_and_payload_scope_identities_reject_mismatches():
+    bound_scope = {
+        "action": "validate",
+        "target_ref": "refs/heads/main",
+        "phase": "pre_publish",
+        "check_ids": ["eci/hygiene/tach"],
+        "scope_id": "scope/main-pre",
+        "expected_set_ref": "sha256:" + "7" * 64,
+        "candidate_digest": "sha256:" + "8" * 64,
+        "event_ref": "evt/actions-1",
+    }
+    package = build_package(
+        payload=payload(
+            job_receipts=[
+                {
+                    "kind": "engineering-ci-job-receipt",
+                    "sha256": "3" * 64,
+                    "scope_id": "scope/main-pre",
+                    "expected_set_ref": "sha256:" + "7" * 64,
+                }
+            ]
+        ),
+        producer_authorization=producer_authorization(scope=bound_scope),
+    )
+    consumer = consumer_scope(
+        scope_id="scope/main-pre",
+        expected_set_ref="sha256:" + "7" * 64,
+        candidate_digest="sha256:" + "8" * 64,
+        event_ref="evt/actions-1",
+    )
+
+    def structured_auth(context):
+        return {
+            "accepted": True,
+            "handoff_ref": context["handoff_ref"],
+            "consumer_scope_ref": context["consumer_scope_ref"],
+        }
+
+    ok = verify(
+        package, consumer_scope=consumer, authorization_authority=structured_auth
+    )
+    assert ok["status"] == "verified"
+    assert ok["admitted_for_t1a"] is True
+
+    wrong_candidate = verify(
+        package,
+        consumer_scope={**consumer, "candidate_digest": "sha256:" + "9" * 64},
+        authorization_authority=structured_auth,
+    )
+    assert wrong_candidate["status"] == "rejected"
+    assert (
+        "producer_authorization_candidate_digest_mismatch" in wrong_candidate["reasons"]
+    )
+    assert wrong_candidate["remaining_work"] == [
+        {
+            "check_id": "eci/hygiene/tach",
+            "reason": "producer_authorization_candidate_digest_mismatch",
+        }
+    ]
+
+    wrong_payload_scope = verify(
+        build_package(
+            payload=payload(
+                job_receipts=[
+                    {
+                        "kind": "engineering-ci-job-receipt",
+                        "sha256": "3" * 64,
+                        "scope_id": "scope/other",
+                        "expected_set_ref": "sha256:" + "7" * 64,
+                    }
+                ]
+            ),
+        ),
+        consumer_scope=consumer,
+    )
+    assert wrong_payload_scope["status"] == "rejected"
+    assert "handoff_payload_scope_id_mismatch" in wrong_payload_scope["reasons"]
+    assert wrong_payload_scope["admitted_for_t1a"] is False
+
+    wrong_auth_binding = verify(
+        package,
+        consumer_scope=consumer,
+        authorization_authority=lambda ctx: {
+            "accepted": True,
+            "handoff_ref": ctx["handoff_ref"],
+            "consumer_scope_ref": "sha256:" + "0" * 64,
+        },
+    )
+    assert wrong_auth_binding["status"] == "rejected"
+    assert "authorization_authority_rejected" in wrong_auth_binding["reasons"]
+
+
+def test_rejected_handoff_keeps_all_consumer_checks_in_remaining_work():
+    package = build_package(issuer_ref=OTHER_ISSUER)
+    rejected = verify(
+        package,
+        consumer_scope=consumer_scope(
+            check_ids=["eci/hygiene/tach", "eci/hygiene/vulture"]
+        ),
+    )
+    assert rejected["status"] == "rejected"
+    assert rejected["authorized_check_ids"] == []
+    assert rejected["remaining_work"] == [
+        {"check_id": "eci/hygiene/tach", "reason": "handoff_issuer_not_allowed"},
+        {
+            "check_id": "eci/hygiene/vulture",
+            "reason": "producer_authorization_check_not_granted",
+        },
+    ]

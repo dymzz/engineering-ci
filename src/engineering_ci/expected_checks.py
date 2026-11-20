@@ -1883,6 +1883,172 @@ def _derive_v2_from_profile(
     return projection
 
 
+def _phase_evidence_ref(value, code):
+    if not isinstance(value, dict) or set(value) - {
+        "name",
+        "version",
+        "path",
+        "sha256",
+    }:
+        raise ExpectedError(code)
+    name = value.get("name")
+    version = value.get("version")
+    sha = value.get("sha256")
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(version, str)
+        or not version.strip()
+        or not isinstance(sha, str)
+        or len(sha) != 64
+        or any(ch not in "0123456789abcdefABCDEF" for ch in sha)
+    ):
+        raise ExpectedError(code)
+    record = {"name": name, "version": version, "sha256": sha.lower()}
+    if value.get("path") is not None:
+        path = value.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise ExpectedError(code)
+        record["path"] = path
+    return record
+
+
+def validate_phase_proof(
+    phase_proof,
+    *,
+    scope_id,
+    expected_set_ref,
+    phase,
+    profile_sha256,
+):
+    """Validate an issued #66-B2 phase proof against exact Expected identities."""
+    code = "effective_profile_phase_proof_invalid"
+    if not isinstance(phase_proof, dict):
+        raise ExpectedError(code)
+    stored_ref = phase_proof.get("proof_ref")
+    if (
+        not isinstance(stored_ref, str)
+        or not stored_ref.startswith("sha256:")
+        or len(stored_ref) != 71
+    ):
+        raise ExpectedError(code)
+    payload = {key: val for key, val in phase_proof.items() if key != "proof_ref"}
+    if _digest(payload) != stored_ref:
+        raise ExpectedError(code)
+    if (
+        phase_proof.get("status") != "verified"
+        or phase_proof.get("scope_id") != scope_id
+        or phase_proof.get("expected_set_ref") != expected_set_ref
+        or phase_proof.get("phase") != phase
+        or phase_proof.get("profile_sha256") != profile_sha256
+    ):
+        raise ExpectedError(code)
+    return {
+        "status": "verified",
+        "scope_id": scope_id,
+        "expected_set_ref": expected_set_ref,
+        "phase": phase,
+        "profile_sha256": profile_sha256,
+        "issuer_ref": _phase_evidence_ref(phase_proof.get("issuer_ref"), code),
+        "verification_ref": _phase_evidence_ref(
+            phase_proof.get("verification_ref"), code
+        ),
+        "proof_ref": stored_ref,
+    }
+
+
+def authenticate_phase_projection(
+    projection,
+    *,
+    phase_authority,
+    evaluated_at=None,
+):
+    """Authenticate a phase-bearing #66-B2 Expected v2 projection via a Phase Issuer.
+
+    Only promotes ``status`` to ``complete`` when phase verification was the sole
+    blocking gap; coexisting domain, authority, conflict, rule or multi-ref gaps
+    are never cleared.
+    """
+    if (
+        not isinstance(projection, dict)
+        or projection.get("kind") != EXPECTED_KIND
+        or projection.get("schema_version") != EXPECTED_V2
+        or projection.get("projection_source") != "effective_profile"
+    ):
+        raise ExpectedError("expected_projection_invalid")
+    profile = validate_effective_profile(projection.get("effective_profile"))
+    phase = profile.get("phase")
+    if not isinstance(phase, str) or not phase or projection.get("phase") != phase:
+        raise ExpectedError("effective_profile_phase_missing")
+    if not callable(phase_authority):
+        raise ExpectedError("phase_authority_verifier_required")
+    scope_id = projection.get("scope_id")
+    expected_set_ref = projection.get("expected_set_ref")
+    profile_sha256 = profile["profile_sha256"]
+    context = {
+        "scope_id": scope_id,
+        "expected_set_ref": expected_set_ref,
+        "phase": phase,
+        "profile_sha256": profile_sha256,
+        "effective_profile": json.loads(json.dumps(profile)),
+        "event_ref": json.loads(json.dumps(projection.get("event_ref"))),
+        "source_ref": json.loads(json.dumps(projection.get("source_ref"))),
+        "evaluated_at": evaluated_at or profile.get("evaluated_at"),
+    }
+    try:
+        decision = phase_authority(context)
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        raise ExpectedError("phase_authority_verifier_error") from None
+    if not isinstance(decision, dict) or (
+        decision.get("status") != "verified"
+        or decision.get("scope_id") != scope_id
+        or decision.get("expected_set_ref") != expected_set_ref
+        or decision.get("phase") != phase
+        or decision.get("profile_sha256") != profile_sha256
+    ):
+        raise ExpectedError("phase_authority_unverified")
+    code = "phase_authority_unverified"
+    proof = {
+        "status": "verified",
+        "scope_id": scope_id,
+        "expected_set_ref": expected_set_ref,
+        "phase": phase,
+        "profile_sha256": profile_sha256,
+        "issuer_ref": _phase_evidence_ref(decision.get("issuer_ref"), code),
+        "verification_ref": _phase_evidence_ref(decision.get("verification_ref"), code),
+    }
+    proof["proof_ref"] = _digest(proof)
+
+    updated = json.loads(json.dumps(projection))
+    updated["phase_status"] = "verified"
+    updated["phase_proof"] = proof
+    checks = updated.get("checks") or []
+    unresolved_rules = any(
+        c.get("rule_status") != "resolved"
+        for c in checks
+        if c.get("required_by_obligations")
+    )
+    can_complete = (
+        updated.get("reason") == "effective_profile_phase_unverified"
+        and not updated.get("conflicts")
+        and updated.get("authority_status") == "verified"
+        and updated.get("per_ref") is None
+        and bool(profile.get("domain_complete", False))
+        and isinstance(profile.get("declared_checks"), list)
+        and not updated.get("missing")
+        and not unresolved_rules
+        and updated.get("definitions_status") == "domain_complete"
+        and updated.get("applicability_status") == "domain_complete"
+    )
+    if can_complete:
+        updated["status"] = "complete"
+        updated["reason"] = (
+            "domain_complete_empty" if not checks else "expected_domain_complete"
+        )
+        updated["consumer_completeness"] = "expected_domain_complete"
+    return updated
+
+
 def derive_expected_checks(
     changeset,
     check_scope,

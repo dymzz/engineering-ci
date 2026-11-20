@@ -36,12 +36,26 @@ fact. A missing Receipt or T2 reuse yields `null` for that fact. R1 judges
 Required coverage per instance.
 
 `assess_required_obligations()` accepts an original T1-a or T2 object with
-`admission_source_authority` and `admission_current_authorization`. It
-invokes the #63 issuer using the validated evaluation context. The new
-projection's verification fields are accepted through that call. Existing
-direct Gate inputs keep the legacy trust boundary. The integration tests
-invoke the #63 producer APIs with controlled authority decisions. Production
-issuer and current authorization verification remain integration work.
+`admission_source_authority` and `admission_current_authorization` (plus
+optional `admission_adjudications`, which must be attested by
+`admission_source_authority` via `adjudications_ref`). It invokes the #63
+issuer using the validated evaluation context. Every integrity- and
+issuer-verified `failed` Native Result in T1-a is projected into
+`authenticated_failures_by_instance` (even when unselected): a verified failure
+sharing the same `(run_ref, attempt_ref, job_ref)` as a selected witness blocks
+T1-a admission (`same_attempt_authenticated_failure`) and enters
+`remaining_work`, while a verified failure from a different attempt blocks R1
+as `unmet` until covered by an authenticated adjudication. T2 candidate
+selection uses a deterministic total order over scope, expected check ref,
+result IDs and candidate digest. T1-b `verify_local_handoff()` validates
+producer `check_ids` as a strict non-empty string sequence before
+normalization, enforces timezone-aware ISO timestamps (aligned with R4), binds
+optional grant/payload scope identities, and retains every consumer check in
+`remaining_work` whenever provenance is unauthenticated or rejected. Existing
+direct Gate inputs keep the legacy trust boundary. The integration tests invoke
+the #66-B2 / #63 / #61 producer APIs with controlled authority decisions;
+production issuer trust roots and server-side Required Rulesets remain
+deployment/integration work.
 
 
 ## Position
@@ -181,19 +195,26 @@ declares them). The fact is consumed, not issued, by R1.
 Expected v2 for a phase-bearing authorized Profile carries `phase` (equal to
 the Profile phase) and `phase_status`. R1 consumes that status:
 
-- The current #66-B2 producer marks a phase-bearing projection
-  `phase_status="unverified"` because the actual CI/Release lifecycle Phase is
-  not yet independently proven; the parent cannot be `complete`. R1's Check
+- Without an independent Phase Issuer, `#66-B2` emits
+  `phase_status="unverified"` and the parent cannot be `complete`; R1's Check
   Domain fact blocks with `expected_phase_unverified`.
 - A multi-Ref child may keep a local `status="complete"`, but that is local
   Check-structure completeness only. When the parent `phase_status` is
   `unverified`, R1 blocks the staged Check Domain authorization while retaining
   every already-proven child Check row.
-- No trusted lifecycle Phase Producer contract exists in this repository yet.
-  While `"verified"` is retained as a schema evolution shape on `phase_status`,
-  R1 never trusts a bare self-reported `phase_status="verified"` string without
-  an authenticated #66-B2 / lifecycle Phase Producer proof contract, and fails
-  the Check Domain closed with `expected_phase_proof_unverified`.
+- `#66-B2` provides `expected_checks.authenticate_phase_projection(projection,
+  phase_authority=...)` to attach an immutable `phase_proof` (promoting
+  `status` to `complete` only when phase verification was the sole gap; domain,
+  authority, rule and conflict gaps are never cleared). R1 still refuses a bare
+  self-reported `phase_status="verified"` string without `phase_proof` and an
+  independent `phase_authority` verifier (`expected_phase_proof_unverified`).
+  When `phase_authority` (and optionally `universe_authority`) returns a
+  structured verified decision matching the exact scope, expected set, phase,
+  profile SHA-256, universe ref and proof ref, R1 accepts the Check Domain and
+  records `inputs.phase_verification` (and
+  `inputs.universe_source_verification`), which `validate_assessment()`
+  re-validates alongside authority temporal causality (`approved_at`,
+  `effective_at`, `evaluated_at`, `valid_from`, `valid_until`).
 - A no-Phase Profile uses `phase_status="not_applicable"` (or omits the field);
   its complete Check Domain remains legal.
 

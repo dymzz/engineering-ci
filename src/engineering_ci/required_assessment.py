@@ -282,6 +282,7 @@ def _select_expected_scope(expected, ref_scope_id):
             "per_ref": True,
             "phase": expected.get("phase"),
             "phase_status": expected.get("phase_status"),
+            "phase_proof": expected.get("phase_proof"),
             "conflicts": ref.get("conflicts") or [],
             "authority_status": expected.get("authority_status"),
             "trusted_admission_status": expected.get("trusted_admission_status"),
@@ -314,6 +315,7 @@ def _select_expected_scope(expected, ref_scope_id):
             "per_ref": False,
             "phase": expected.get("phase"),
             "phase_status": expected.get("phase_status"),
+            "phase_proof": expected.get("phase_proof"),
             "conflicts": expected.get("conflicts") or [],
             "authority_status": expected.get("authority_status"),
             "trusted_admission_status": expected.get("trusted_admission_status"),
@@ -1716,8 +1718,12 @@ def _authority_fact(universe, evaluated_at):
     reasons = []
     if authority["status"] != "verified":
         reasons.append("profile_authority_unverified")
+    if evaluated_at < authority["approved_at"]:
+        reasons.append("profile_not_yet_approved")
     if evaluated_at < authority["evaluated_at"]:
         reasons.append("authority_evaluated_after_assessment")
+    if evaluated_at < universe["evaluation"]["evaluated_at"]:
+        reasons.append("universe_evaluated_after_assessment")
     if evaluated_at < authority["effective_at"]:
         reasons.append("profile_not_yet_effective")
     if authority["valid_from"] is not None and evaluated_at < authority["valid_from"]:
@@ -1735,7 +1741,144 @@ def _authority_fact(universe, evaluated_at):
     return not reasons, reasons
 
 
-def _check_domain_fact(scope, checks):
+def _verify_phase_authority(scope, universe, phase_authority):
+    """Verify a phase-bearing Expected scope via an independent Phase Authority."""
+    phase = scope.get("phase")
+    if phase is None:
+        return None, None
+    if phase_authority is None:
+        return (
+            None,
+            "expected_phase_unverified"
+            if scope.get("phase_status") == "unverified"
+            else "expected_phase_proof_unverified",
+        )
+    if not callable(phase_authority):
+        raise RequiredAssessmentError("phase_authority_invalid")
+    if scope.get("phase_status") != "verified":
+        return None, "expected_phase_unverified"
+    profile_sha256 = scope["effective_profile"]["profile_sha256"]
+    raw_proof = scope.get("phase_proof")
+    if raw_proof is None:
+        return None, "expected_phase_proof_unverified"
+    try:
+        proof = expected_checks.validate_phase_proof(
+            raw_proof,
+            scope_id=scope["scope_id"],
+            expected_set_ref=scope["expected_set_ref"],
+            phase=phase,
+            profile_sha256=profile_sha256,
+        )
+    except expected_checks.ExpectedError:
+        return None, "expected_phase_proof_invalid"
+    context = {
+        "scope_id": scope["scope_id"],
+        "expected_set_ref": scope["expected_set_ref"],
+        "phase": phase,
+        "profile_sha256": profile_sha256,
+        "universe_ref": universe["universe_ref"],
+        "phase_proof": copy.deepcopy(proof),
+        "proof_ref": proof["proof_ref"],
+        "evaluation": _projection_evaluation(universe),
+    }
+    try:
+        decision = phase_authority(context)
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return None, "expected_phase_authority_error"
+    if not isinstance(decision, dict) or (
+        decision.get("status") != "verified"
+        or decision.get("scope_id") != scope["scope_id"]
+        or decision.get("expected_set_ref") != scope["expected_set_ref"]
+        or decision.get("phase") != phase
+        or decision.get("profile_sha256") != profile_sha256
+        or decision.get("universe_ref") != universe["universe_ref"]
+        or decision.get("proof_ref") != proof["proof_ref"]
+    ):
+        return None, "expected_phase_authority_rejected"
+    try:
+        issuer_ref = _evidence_ref(
+            decision.get("issuer_ref"), "expected_phase_authority_rejected"
+        )
+        verification_ref = _evidence_ref(
+            decision.get("verification_ref"), "expected_phase_authority_rejected"
+        )
+    except RequiredAssessmentError:
+        return None, "expected_phase_authority_rejected"
+    return (
+        {
+            "status": "verified",
+            "scope_id": scope["scope_id"],
+            "expected_set_ref": scope["expected_set_ref"],
+            "phase": phase,
+            "profile_sha256": profile_sha256,
+            "universe_ref": universe["universe_ref"],
+            "proof_ref": proof["proof_ref"],
+            "issuer_ref": copy.deepcopy(issuer_ref),
+            "verification_ref": copy.deepcopy(verification_ref),
+        },
+        None,
+    )
+
+
+def _verify_universe_authority(universe, scope, universe_authority):
+    """Verify the Obligations Universe issuer and governance closure authority."""
+    if universe_authority is None:
+        return None, None
+    if not callable(universe_authority):
+        raise RequiredAssessmentError("universe_authority_invalid")
+    profile_sha256 = universe["profile"]["profile_sha256"]
+    context = {
+        "universe_ref": universe["universe_ref"],
+        "profile": copy.deepcopy(universe["profile"]),
+        "profile_sha256": profile_sha256,
+        "authority": {
+            "status": universe["authority"]["status"],
+            "source_ref": copy.deepcopy(universe["authority"]["source_ref"]),
+            "approved_at": universe["authority"]["approved_at"].isoformat(),
+            "effective_at": universe["authority"]["effective_at"].isoformat(),
+            "evaluated_at": universe["authority"]["evaluated_at"].isoformat(),
+        },
+        "governance_domain": copy.deepcopy(universe["governance_domain"]),
+        "evaluation": _projection_evaluation(universe),
+        "scope_id": scope["scope_id"],
+        "expected_set_ref": scope["expected_set_ref"],
+    }
+    try:
+        decision = universe_authority(context)
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return None, "universe_issuer_error"
+    if not isinstance(decision, dict) or (
+        decision.get("status") != "verified"
+        or decision.get("universe_ref") != universe["universe_ref"]
+        or decision.get("profile_sha256") != profile_sha256
+        or decision.get("scope_id") != scope["scope_id"]
+        or decision.get("expected_set_ref") != scope["expected_set_ref"]
+    ):
+        return None, "universe_issuer_unverified"
+    try:
+        issuer_ref = _evidence_ref(
+            decision.get("issuer_ref"), "universe_issuer_unverified"
+        )
+        verification_ref = _evidence_ref(
+            decision.get("verification_ref"), "universe_issuer_unverified"
+        )
+    except RequiredAssessmentError:
+        return None, "universe_issuer_unverified"
+    return (
+        {
+            "status": "verified",
+            "universe_ref": universe["universe_ref"],
+            "profile_sha256": profile_sha256,
+            "scope_id": scope["scope_id"],
+            "expected_set_ref": scope["expected_set_ref"],
+            "issuer_ref": copy.deepcopy(issuer_ref),
+            "verification_ref": copy.deepcopy(verification_ref),
+        },
+        None,
+    )
+
+
+def _check_domain_fact(scope, checks, *, phase_verification_reason=None):
     reasons = []
     if scope["status"] != "complete":
         reasons.append("expected_check_domain_incomplete")
@@ -1743,16 +1886,8 @@ def _check_domain_fact(scope, checks):
         reasons.append("expected_check_conflicts")
     if scope.get("authority_status") != "verified":
         reasons.append("expected_authority_unverified")
-    if scope.get("phase") is not None:
-        # #66-B2 currently produces only phase_status="unverified" because no
-        # trusted lifecycle Phase Producer exists yet. Self-reported "verified"
-        # strings without an authenticated Phase Producer proof contract must
-        # fail closed rather than granting phase authorization.
-        reasons.append(
-            "expected_phase_unverified"
-            if scope.get("phase_status") == "unverified"
-            else "expected_phase_proof_unverified"
-        )
+    if scope.get("phase") is not None and phase_verification_reason is not None:
+        reasons.append(phase_verification_reason)
     if scope["status"] == "complete":
         expected_label = (
             "per_ref" if scope.get("per_ref") else "expected_domain_complete"
@@ -2507,6 +2642,8 @@ def _assemble(
     check_domain_verified,
     universe_verified,
     evidence_satisfied,
+    phase_verification=None,
+    universe_source_verification=None,
 ):
     blocked_reasons = []
     if not authority_verified:
@@ -2621,6 +2758,16 @@ def _assemble(
                 and admission["source_verification"] is not None
                 else {}
             ),
+            **(
+                {"phase_verification": phase_verification}
+                if phase_verification is not None
+                else {}
+            ),
+            **(
+                {"universe_source_verification": universe_source_verification}
+                if universe_source_verification is not None
+                else {}
+            ),
             "receipt_ref": (receipt["receipt_ref"] if receipt is not None else None),
             "contract_sample": contract_sample,
         },
@@ -2651,7 +2798,10 @@ def assess_required_obligations(
     ref_scope_id=None,
     admission_source_authority=None,
     admission_current_authorization=None,
+    admission_adjudications=(),
     admission_contract_sample=False,
+    phase_authority=None,
+    universe_authority=None,
 ):
     """Assess the complete current Required Obligations for one staged scope.
 
@@ -2696,6 +2846,7 @@ def assess_required_obligations(
                 current_authorization=admission_current_authorization,
                 source_authority=admission_source_authority,
                 receipt=receipt,
+                adjudications=admission_adjudications,
                 contract_sample=admission_contract_sample,
                 ref_scope_id=ref_scope_id,
             )
@@ -2734,15 +2885,31 @@ def assess_required_obligations(
     if admission_facts is not None and admission_facts["source_verification"]:
         authorized_at = normalized_universe["evaluation"]["evaluated_at"]
         if assessed_at < authorized_at:
-            authority_reasons = [
-                *authority_reasons,
-                "admission_before_authorized_evaluation",
-            ]
+            authority_reasons = _dedupe(
+                [
+                    *authority_reasons,
+                    "admission_before_authorized_evaluation",
+                ]
+            )
             authority_verified = False
-    check_domain_verified, check_domain_reasons = _check_domain_fact(scope, checks)
+    universe_source_verification, universe_issuer_reason = _verify_universe_authority(
+        normalized_universe, scope, universe_authority
+    )
+    if universe_issuer_reason is not None:
+        authority_reasons = _dedupe([*authority_reasons, universe_issuer_reason])
+        authority_verified = False
+    phase_verification, phase_reason = _verify_phase_authority(
+        scope, normalized_universe, phase_authority
+    )
+    check_domain_verified, check_domain_reasons = _check_domain_fact(
+        scope, checks, phase_verification_reason=phase_reason
+    )
     universe_verified, universe_reasons = _universe_fact(
         normalized_universe, cross_check_reasons
     )
+    if universe_issuer_reason is not None:
+        universe_reasons = _dedupe([*universe_reasons, universe_issuer_reason])
+        universe_verified = False
 
     phase = normalized_universe["evaluation"]["phase"]
     checks_by_ref = {entry["expected_check_ref"]: entry for entry in checks}
@@ -2881,6 +3048,8 @@ def assess_required_obligations(
         check_domain_verified=check_domain_verified,
         universe_verified=universe_verified,
         evidence_satisfied=evidence_satisfied,
+        phase_verification=phase_verification,
+        universe_source_verification=universe_source_verification,
     )
 
 
@@ -2956,6 +3125,40 @@ def validate_assessment(assessment):
                 raise RequiredAssessmentError(code)
         elif source_receipt is not None or reconciled is not None:
             raise RequiredAssessmentError(code)
+    if "phase_verification" in inputs:
+        code = "assessment_phase_verification_invalid"
+        proof = inputs["phase_verification"]
+        profile_inputs = inputs.get("profile")
+        if (
+            not isinstance(proof, dict)
+            or not isinstance(profile_inputs, dict)
+            or proof.get("status") != "verified"
+            or proof.get("scope_id") != scope_id
+            or proof.get("expected_set_ref") != check_domain_inputs["expected_set_ref"]
+            or proof.get("phase") != assessment.get("phase")
+            or proof.get("profile_sha256") != profile_inputs.get("profile_sha256")
+            or proof.get("universe_ref") != inputs["universe_ref"]
+        ):
+            raise RequiredAssessmentError(code)
+        _internal_ref(proof.get("proof_ref"), code)
+        _evidence_ref(proof.get("issuer_ref"), code)
+        _evidence_ref(proof.get("verification_ref"), code)
+    if "universe_source_verification" in inputs:
+        code = "assessment_universe_source_invalid"
+        proof = inputs["universe_source_verification"]
+        profile_inputs = inputs.get("profile")
+        if (
+            not isinstance(proof, dict)
+            or not isinstance(profile_inputs, dict)
+            or proof.get("status") != "verified"
+            or proof.get("universe_ref") != inputs["universe_ref"]
+            or proof.get("profile_sha256") != profile_inputs.get("profile_sha256")
+            or proof.get("scope_id") != scope_id
+            or proof.get("expected_set_ref") != check_domain_inputs["expected_set_ref"]
+        ):
+            raise RequiredAssessmentError(code)
+        _evidence_ref(proof.get("issuer_ref"), code)
+        _evidence_ref(proof.get("verification_ref"), code)
     if inputs.get("universe_status") not in UNIVERSE_STATUSES:
         raise RequiredAssessmentError("assessment_inputs_invalid")
     _flag(inputs.get("contract_sample"), "assessment_inputs_invalid")
@@ -3086,10 +3289,28 @@ def validate_assessment(assessment):
             raise RequiredAssessmentError("assessment_verification_inconsistent")
         if authority_inputs.get("revoked_at") is not None:
             raise RequiredAssessmentError("assessment_verification_inconsistent")
+        approved_at = _datetime(
+            authority_inputs.get("approved_at"), "assessment_inputs_invalid"
+        )
+        effective_at = _datetime(
+            authority_inputs.get("effective_at"), "assessment_inputs_invalid"
+        )
+        authority_evaluated_at = _datetime(
+            authority_inputs.get("evaluated_at"), "assessment_inputs_invalid"
+        )
+        valid_from = _optional_datetime(
+            authority_inputs.get("valid_from"), "assessment_inputs_invalid"
+        )
         valid_until = _optional_datetime(
             authority_inputs.get("valid_until"), "assessment_inputs_invalid"
         )
-        if valid_until is not None and evaluated_at > valid_until:
+        if (
+            evaluated_at < approved_at
+            or evaluated_at < effective_at
+            or evaluated_at < authority_evaluated_at
+            or (valid_from is not None and evaluated_at < valid_from)
+            or (valid_until is not None and evaluated_at > valid_until)
+        ):
             raise RequiredAssessmentError("assessment_verification_inconsistent")
     facts_good = (
         verification["authority"]["status"] == "verified"

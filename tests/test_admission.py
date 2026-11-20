@@ -744,9 +744,18 @@ def test_t1a_unrelated_bad_observation_does_not_contaminate_selected_witness():
     bad_result = native(status="failed")
     bad_report = report_for(bad_result)
     bad_report_ref = report_ref_for(bad_report)
-    # Same Job/Run/Attempt labels as the selected observation, but an
-    # independent Report and Job Receipt.
-    bad_job_receipt = job_receipt_for(bad_report_ref)
+    # Unverified/untrusted observation from a separate job/attempt and report
+    # must not contaminate an independently verified selected witness.
+    untrusted_issuer = {
+        "name": "untrusted-observer",
+        "version": "1",
+        "sha256": "9" * 64,
+    }
+    bad_job_receipt = {
+        **job_receipt_for(bad_report_ref, issuer=untrusted_issuer),
+        "job_ref": "job-other",
+        "attempt_ref": "attempt/0",
+    }
     evidence = compact_evidence(bad_result, bad_report_ref, bad_job_receipt)
     updated = with_observed(receipt, evidence)
     result = admit_evidence(
@@ -761,6 +770,67 @@ def test_t1a_unrelated_bad_observation_does_not_contaminate_selected_witness():
     assert entry["origin_status"] == "verified"
     assert entry["observed_diagnostics"]
     assert result["summary"]["admitted"] == 1
+
+
+def test_t1a_new014_same_attempt_independent_report_verified_failure_blocks_admission():
+    projection, receipt, report, job_receipt = setup()
+    failed_result = native(status="failed")
+    failed_report = report_for(failed_result)
+    failed_report_ref = report_ref_for(failed_report)
+    # Same (job_ref, run_ref, attempt_ref) with an independent verified Report
+    # and Job Receipt carrying an authenticated Native failure must block.
+    failed_job_receipt = job_receipt_for(failed_report_ref)
+    evidence = compact_evidence(failed_result, failed_report_ref, failed_job_receipt)
+    updated = with_observed(receipt, evidence)
+    result = admit_evidence(
+        projection,
+        updated,
+        reports=[report, failed_report],
+        job_receipts=[job_receipt, failed_job_receipt],
+        policy=policy_for(),
+    )
+    entry = result["entries"][0]
+    assert entry["admitted"] is False
+    assert entry["status"] == "unsatisfied"
+    assert entry["obligation_status"] == "unsatisfied"
+    assert "same_attempt_authenticated_failure" in entry["reasons"]
+    assert "native_failed" in entry["reasons"]
+    assert result["summary"]["admitted"] == 0
+    assert len(result["remaining_work"]) == 1
+    assert result["remaining_work"][0]["reason"] == "same_attempt_authenticated_failure"
+
+
+def test_t1a_new014_different_attempt_verified_failure_preserved_for_gate_projection():
+    projection, receipt, report, job_receipt = setup()
+    failed_result = native(status="failed")
+    failed_report = report_for(failed_result)
+    failed_report_ref = report_ref_for(failed_report)
+    # Prior attempt (attempt/0) failed with verified issuer; current attempt/1
+    # passed. T1-a keeps the attempt/1 selected witness while preserving the
+    # verified failure in facts/diagnostics for #61 R1 adjudication.
+    failed_job_receipt = {
+        **job_receipt_for(failed_report_ref),
+        "attempt_ref": "attempt/0",
+    }
+    evidence = compact_evidence(failed_result, failed_report_ref, failed_job_receipt)
+    updated = with_observed(receipt, evidence)
+    result = admit_evidence(
+        projection,
+        updated,
+        reports=[report, failed_report],
+        job_receipts=[job_receipt, failed_job_receipt],
+        policy=policy_for(),
+    )
+    entry = result["entries"][0]
+    assert entry["admitted"] is True
+    assert "same_attempt_authenticated_failure" not in entry["reasons"]
+    assert "native_failed" in entry["reasons"]
+    assert any(
+        fact["status"] == "failed"
+        and fact["integrity_status"] == "verified"
+        and fact["issuer_status"] == "verified"
+        for fact in entry["observed_diagnostics"]
+    )
 
 
 def test_t1a_shared_report_contamination_blocks_selected_witness():

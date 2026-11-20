@@ -480,6 +480,19 @@ def _same_observed_scope(left, right):
     return bool(left_receipt and left_receipt == right.get("job_receipt_ref"))
 
 
+def _same_execution_attempt(left, right):
+    for field in ("run_ref", "attempt_ref", "job_ref"):
+        left_value = left.get(field)
+        right_value = right.get(field)
+        if (
+            not isinstance(left_value, str)
+            or not left_value
+            or left_value != right_value
+        ):
+            return False
+    return True
+
+
 def _entry_admission_v2(
     entry,
     *,
@@ -612,6 +625,22 @@ def _entry_admission_v2(
         for bad in bad_facts
         if bad is not selected
     )
+    authenticated_failed = [
+        fact
+        for fact in facts
+        if fact.get("integrity_status") == "verified"
+        and fact.get("issuer_status") == "verified"
+        and fact.get("status") == "failed"
+    ]
+    same_attempt_failed = any(
+        (
+            _same_observed_scope(selected, failed)
+            or _same_execution_attempt(selected, failed)
+        )
+        for selected in selected_facts
+        for failed in authenticated_failed
+        if failed is not selected
+    )
     selected_raw = [raw_by_id[item] for item in selected_ids if raw_by_id.get(item)]
     decision = None
     decision_reason = None
@@ -643,6 +672,7 @@ def _entry_admission_v2(
         and bool(selected_ids)
         and selected_clean
         and not contaminated
+        and not same_attempt_failed
         and decision_ok
         and all(fact.get("status") == "passed" for fact in selected_facts)
     )
@@ -675,6 +705,7 @@ def _entry_admission_v2(
             and fact.get("status") == "failed"
             for fact in facts
         )
+        or same_attempt_failed
         or any(
             fact.get("implementation_status") == "unapproved" for fact in selected_facts
         )
@@ -697,6 +728,8 @@ def _entry_admission_v2(
         reasons.append(f"receipt_status_{entry.get('binding_status')}")
     if not selected_ids:
         reasons.append("selected_witness_missing")
+    if same_attempt_failed:
+        reasons.append("same_attempt_authenticated_failure")
     if any(
         fact.get("integrity_status") == "verified" and fact.get("status") == "failed"
         for fact in facts
@@ -1525,6 +1558,24 @@ def _reuse_coverage_entry(entry):
     }
 
 
+def _historical_candidate_sort_key(candidate, decision):
+    selected_ids = tuple(
+        sorted(
+            (decision.get("equivalence_basis") or {}).get("selected_result_ids") or ()
+        )
+    )
+    result_ids = tuple(
+        sorted(result["result_id"] for result in candidate.get("results") or ())
+    )
+    return (
+        candidate["historical_scope_id"],
+        candidate["historical_expected_check_ref"],
+        selected_ids,
+        result_ids,
+        _digest(candidate),
+    )
+
+
 def admit_historical_reuse(
     expected,
     *,
@@ -1710,10 +1761,7 @@ def admit_historical_reuse(
         ]
         if admitted:
             admitted.sort(
-                key=lambda item: (
-                    item[0]["historical_scope_id"],
-                    item[0]["historical_expected_check_ref"],
-                )
+                key=lambda item: _historical_candidate_sort_key(item[0], item[1])
             )
             candidate, decision = admitted[0]
             entries.append(
@@ -1751,8 +1799,7 @@ def admit_historical_reuse(
                 else 1
                 if item[1]["status"] == "rejected"
                 else 2,
-                item[0]["historical_scope_id"],
-                item[0]["historical_expected_check_ref"],
+                *_historical_candidate_sort_key(item[0], item[1]),
             ),
         )
         candidate, decision = ranked[0]
@@ -1926,13 +1973,17 @@ def bind_projection_authorization(current_authorization, evaluation):
     return authorization, ref
 
 
-def _gate_source_verification(source, authorization, evaluation, verify):
+def _gate_source_verification(
+    source, authorization, evaluation, verify, *, adjudications=None
+):
     if not callable(verify):
         raise AdmissionError("admission_source_authority_missing")
     source_ref = _digest(source)
     authorization_ref = _digest(
         {"authorization": authorization, "evaluation": evaluation}
     )
+    adjudications_list = list(adjudications or ())
+    adjudications_ref = _digest(adjudications_list) if adjudications_list else None
     context = {
         "source_admission": copy.deepcopy(source),
         "source_admission_ref": source_ref,
@@ -1942,6 +1993,9 @@ def _gate_source_verification(source, authorization, evaluation, verify):
         "scope_id": source["scope_id"],
         "expected_set_ref": source["expected_set_ref"],
     }
+    if adjudications_list:
+        context["adjudications"] = copy.deepcopy(adjudications_list)
+        context["adjudications_ref"] = adjudications_ref
     try:
         decision = verify(context)
     except (KeyError, TypeError, ValueError, RuntimeError):
@@ -1950,10 +2004,14 @@ def _gate_source_verification(source, authorization, evaluation, verify):
         decision.get("status") != "verified"
         or decision.get("source_admission_ref") != source_ref
         or decision.get("current_authorization_ref") != authorization_ref
+        or (
+            adjudications_ref is not None
+            and decision.get("adjudications_ref") != adjudications_ref
+        )
     ):
         raise AdmissionError("admission_source_authority_unverified")
     code = "admission_source_authority_unverified"
-    return {
+    record = {
         "status": "verified",
         "source_kind": source["kind"],
         "source_admission_ref": source_ref,
@@ -1967,6 +2025,9 @@ def _gate_source_verification(source, authorization, evaluation, verify):
             _evidence_ref(decision.get("verification_ref"), code)
         ),
     }
+    if adjudications_ref is not None:
+        record["adjudications_ref"] = adjudications_ref
+    return record
 
 
 def project_t1_t2_gate_admission(
@@ -1977,6 +2038,7 @@ def project_t1_t2_gate_admission(
     current_authorization,
     source_authority,
     receipt=None,
+    adjudications=(),
     contract_sample=False,
     ref_scope_id=None,
 ):
@@ -2049,8 +2111,18 @@ def project_t1_t2_gate_admission(
         receipt_entries = {row["expected_check_ref"]: row for row in receipt["entries"]}
         observations_reconciled = receipt["all_observations_reconciled"]
 
+    if not isinstance(adjudications, (list, tuple)) or any(
+        not isinstance(item, dict) for item in adjudications
+    ):
+        raise AdmissionError("admission_projection_adjudications_invalid")
+    normalized_adjudications = copy.deepcopy(list(adjudications))
+
     verification = _gate_source_verification(
-        source, authorization, evaluation, source_authority
+        source,
+        authorization,
+        evaluation,
+        source_authority,
+        adjudications=normalized_adjudications,
     )
 
     source_entries = source.get("entries")
@@ -2192,18 +2264,22 @@ def project_t1_t2_gate_admission(
             if not isinstance(facts, list):
                 raise AdmissionError("admission_projection_result_invalid")
             selected = {}
+            parsed_facts = []
             for fact in facts:
                 if not isinstance(fact, dict):
                     raise AdmissionError("admission_projection_result_invalid")
                 result_id = _projection_ref(
                     fact.get("result_id"), "admission_projection_result_invalid"
                 )
+                parsed_facts.append((result_id, fact))
                 if fact.get("selected") is True:
                     if result_id in selected:
                         raise AdmissionError("admission_projection_result_invalid")
                     selected[result_id] = fact
-                elif (
-                    fact.get("integrity_status") == "verified"
+            for result_id, fact in parsed_facts:
+                if (
+                    fact.get("selected") is not True
+                    and fact.get("integrity_status") == "verified"
                     and fact.get("issuer_status") == "verified"
                 ):
                     nonselected_origins[result_id] = _gate_origin(
@@ -2211,10 +2287,14 @@ def project_t1_t2_gate_admission(
                     )
                 if (
                     fact.get("status") == "failed"
-                    and fact.get("selected") is True
                     and fact.get("integrity_status") == "verified"
                     and fact.get("issuer_status") == "verified"
                 ):
+                    same_attempt = fact.get("selected") is not True and any(
+                        _same_observed_scope(sel, fact)
+                        or _same_execution_attempt(sel, fact)
+                        for sel in selected.values()
+                    )
                     failures.setdefault(key, []).append(
                         {
                             "result_id": result_id,
@@ -2225,7 +2305,11 @@ def project_t1_t2_gate_admission(
                             ),
                             "applicable_to": copy.deepcopy(applicable_to),
                             "issued_at": None,
-                            "reason": "authenticated_native_failure",
+                            "reason": (
+                                "same_attempt_authenticated_failure"
+                                if same_attempt
+                                else "authenticated_native_failure"
+                            ),
                         }
                     )
             if admitted:
@@ -2325,7 +2409,7 @@ def project_t1_t2_gate_admission(
         "all_observations_reconciled": observations_reconciled,
         "accepted_coverage_by_instance": coverage,
         "authenticated_failures_by_instance": failures,
-        "adjudications": [],
+        "adjudications": normalized_adjudications,
         "remaining_work": remaining,
         "required_gate_ready": False,
         "required_gate_block_reason": "required_assessment_not_evaluated",

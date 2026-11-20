@@ -1137,3 +1137,23 @@ def test_validate_accepts_unchanged_valid_envelope():
         rar.validate_release_reconciliation(copy.deepcopy(validated))["status"]
         == "verified"
     )
+
+
+def test_new044_naive_evaluated_at_is_rejected_and_aware_offset_accepted():
+    assessment, _ = passed_assessment(contract_sample=False)
+    manifest = make_v1_manifest(mode="validation")
+    with pytest.raises(
+        rar.RequiredAssessmentReleaseError, match="release_evaluated_at_invalid"
+    ):
+        reconcile(
+            assessment,
+            manifest,
+            publish_context=publish_context(evaluated_at="2026-11-17T12:00:00"),
+        )
+
+    verified = reconcile(
+        assessment,
+        manifest,
+        publish_context=publish_context(evaluated_at="2026-11-17T20:00:00+08:00"),
+    )
+    assert verified["status"] == "verified"

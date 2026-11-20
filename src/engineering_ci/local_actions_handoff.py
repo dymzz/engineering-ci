@@ -107,9 +107,12 @@ def _datetime(value, code):
     try:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
     except ValueError as error:
         raise LocalActionsHandoffError(code) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise LocalActionsHandoffError(code)
+    return parsed
 
 
 def _optional_datetime(value, code):
@@ -205,6 +208,40 @@ def _normalize_execution_boundary(value):
 def _normalize_producer_authorization(value):
     if not isinstance(value, dict):
         raise LocalActionsHandoffError("handoff_producer_authorization_invalid")
+    raw_scope = value.get("scope")
+    if not isinstance(raw_scope, dict):
+        raise LocalActionsHandoffError("handoff_authorization_scope_invalid")
+    unknown_scope = set(raw_scope) - _CONSUMER_SCOPE_REQUIRED - _CONSUMER_SCOPE_OPTIONAL
+    if unknown_scope:
+        raise LocalActionsHandoffError("handoff_authorization_scope_invalid")
+    raw_check_ids = raw_scope.get("check_ids")
+    if not isinstance(raw_check_ids, (list, tuple)) or not raw_check_ids:
+        raise LocalActionsHandoffError("handoff_authorization_scope_invalid")
+    normalized_check_ids = []
+    for item in raw_check_ids:
+        check_id = _text(item, "handoff_authorization_scope_invalid")
+        if check_id not in normalized_check_ids:
+            normalized_check_ids.append(check_id)
+    phase = raw_scope.get("phase")
+    if phase is not None:
+        phase = _text(phase, "handoff_authorization_scope_invalid")
+    scope = {
+        "action": _text(
+            raw_scope.get("action"),
+            "handoff_authorization_scope_invalid",
+        ),
+        "target_ref": _text(
+            raw_scope.get("target_ref"),
+            "handoff_authorization_scope_invalid",
+        ),
+        "phase": phase,
+        "check_ids": normalized_check_ids,
+    }
+    for key in _CONSUMER_SCOPE_OPTIONAL:
+        if raw_scope.get(key) is not None:
+            scope[key] = _text(
+                raw_scope.get(key), "handoff_authorization_scope_invalid"
+            )
     record = {
         "authority_ref": _evidence_ref(
             value.get("authority_ref"), "handoff_authority_ref_invalid"
@@ -212,18 +249,7 @@ def _normalize_producer_authorization(value):
         "producer_ref": _evidence_ref(
             value.get("producer_ref"), "handoff_producer_ref_invalid"
         ),
-        "scope": {
-            "action": _text(
-                (value.get("scope") or {}).get("action"),
-                "handoff_authorization_scope_invalid",
-            ),
-            "target_ref": _text(
-                (value.get("scope") or {}).get("target_ref"),
-                "handoff_authorization_scope_invalid",
-            ),
-            "phase": (value.get("scope") or {}).get("phase"),
-            "check_ids": list((value.get("scope") or {}).get("check_ids") or ()),
-        },
+        "scope": scope,
         "valid_from": _optional_datetime(
             value.get("valid_from"), "handoff_authorization_valid_from_invalid"
         ),
@@ -234,14 +260,6 @@ def _normalize_producer_authorization(value):
             value.get("revoked_at"), "handoff_authorization_revoked_at_invalid"
         ),
     }
-    if record["scope"]["phase"] is not None:
-        record["scope"]["phase"] = _text(
-            record["scope"]["phase"], "handoff_authorization_scope_invalid"
-        )
-    if not isinstance(record["scope"]["check_ids"], list):
-        raise LocalActionsHandoffError("handoff_authorization_scope_invalid")
-    for item in record["scope"]["check_ids"]:
-        _text(item, "handoff_authorization_scope_invalid")
     if (
         record["valid_from"] is not None
         and record["valid_until"] is not None
@@ -468,8 +486,8 @@ def _resolve_authenticated_execution_time(authority_result, package):
     return executed, None
 
 
-def _match_consumer_authorization(authorization, consumer_scope):
-    """Compare producer grant to the independent consumer scope.
+def _match_consumer_authorization(authorization, consumer_scope, payload=None):
+    """Compare producer grant and payload to the independent consumer scope.
 
     Returns ``(authorized_check_ids, remaining_work, blocking_reasons)``.
     """
@@ -482,6 +500,32 @@ def _match_consumer_authorization(authorization, consumer_scope):
     grant_phase = grant.get("phase")
     if grant_phase is None or grant_phase != consumer_scope["phase"]:
         blocking.append("producer_authorization_phase_mismatch")
+    for field in ("candidate_digest", "scope_id", "event_ref", "expected_set_ref"):
+        grant_value = grant.get(field)
+        if grant_value is not None and consumer_scope.get(field) != grant_value:
+            blocking.append(f"producer_authorization_{field}_mismatch")
+    if isinstance(payload, dict):
+        consumer_scope_id = consumer_scope.get("scope_id")
+        consumer_expected_set = consumer_scope.get("expected_set_ref")
+        for job_receipt in payload.get("job_receipts") or ():
+            if not isinstance(job_receipt, dict):
+                continue
+            receipt_scope = job_receipt.get("scope_id")
+            if (
+                consumer_scope_id is not None
+                and isinstance(receipt_scope, str)
+                and receipt_scope != consumer_scope_id
+                and "handoff_payload_scope_id_mismatch" not in blocking
+            ):
+                blocking.append("handoff_payload_scope_id_mismatch")
+            receipt_expected_set = job_receipt.get("expected_set_ref")
+            if (
+                consumer_expected_set is not None
+                and isinstance(receipt_expected_set, str)
+                and receipt_expected_set != consumer_expected_set
+                and "handoff_payload_expected_set_mismatch" not in blocking
+            ):
+                blocking.append("handoff_payload_expected_set_mismatch")
 
     grant_checks = set(grant["check_ids"])
     authorized = [
@@ -498,6 +542,21 @@ def _match_consumer_authorization(authorization, consumer_scope):
     if not authorized and not blocking:
         blocking.append("producer_authorization_checks_none_granted")
     return authorized, remaining_work, blocking
+
+
+def _accept_authorization_authority_decision(
+    decision, *, handoff_ref, consumer_scope_ref
+):
+    if decision is True:
+        return True
+    if not isinstance(decision, dict) or decision.get("accepted") is not True:
+        return False
+    if "handoff_ref" in decision and decision.get("handoff_ref") != handoff_ref:
+        return False
+    return not (
+        "consumer_scope_ref" in decision
+        and decision.get("consumer_scope_ref") != consumer_scope_ref
+    )
 
 
 def _authorization_record(authorization):
@@ -593,7 +652,7 @@ def verify_local_handoff(
 
     authorization = _normalize_producer_authorization(package["producer_authorization"])
     authorized_checks, remaining_work, scope_blocking = _match_consumer_authorization(
-        authorization, consumer
+        authorization, consumer, payload=package["payload"]
     )
     blocking.extend(scope_blocking)
 
@@ -612,17 +671,24 @@ def verify_local_handoff(
         if exec_reason is not None:
             blocking.append(exec_reason)
 
+    consumer_scope_ref = _digest(consumer)
     if authorization_authority is None:
         blocking.append("authorization_authority_missing")
     else:
         auth_context = {
             "package": package,
+            "handoff_ref": package["handoff_ref"],
             "consumer_scope": copy.deepcopy(consumer),
+            "consumer_scope_ref": consumer_scope_ref,
             "producer_authorization": _authorization_record(authorization),
             "evaluated_at": evaluated.isoformat(),
             "executed_at": executed_at.isoformat() if executed_at is not None else None,
         }
-        if authorization_authority(auth_context) is not True:
+        if not _accept_authorization_authority_decision(
+            authorization_authority(auth_context),
+            handoff_ref=package["handoff_ref"],
+            consumer_scope_ref=consumer_scope_ref,
+        ):
             blocking.append("authorization_authority_rejected")
 
     if executed_at is not None:
@@ -705,6 +771,23 @@ def verify_local_handoff(
             "source_digests": list(package["payload"]["source_digests"]),
         }
 
+    if provenance_authenticated:
+        effective_remaining = list(remaining_work)
+    else:
+        grant_checks = set(authorization["scope"]["check_ids"])
+        primary_block = blocking[0] if blocking else "handoff_unverified"
+        effective_remaining = [
+            {
+                "check_id": check_id,
+                "reason": (
+                    primary_block
+                    if check_id in grant_checks
+                    else "producer_authorization_check_not_granted"
+                ),
+            }
+            for check_id in consumer["check_ids"]
+        ]
+
     result = {
         "kind": HANDOFF_KIND,
         "schema_version": HANDOFF_VERSION,
@@ -722,7 +805,7 @@ def verify_local_handoff(
         "authorized_check_ids": (
             list(authorized_checks) if provenance_authenticated else []
         ),
-        "remaining_work": list(remaining_work),
+        "remaining_work": effective_remaining,
         "admitted_for_t1a": admitted_for_t1a,
         "materials": materials,
         "reasons": reasons,

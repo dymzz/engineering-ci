@@ -27,6 +27,7 @@ from test_required_assessment import (
     check_row,
     coverage,
     df02_source_authority,
+    historical_coverage,
     make_admission,
     make_entry,
     make_profile,
@@ -39,6 +40,8 @@ from test_required_assessment import (
 from engineering_ci import (
     admission,
     check_contract,
+    expected_checks,
+    local_actions_handoff,
     reconciliation,
     required_assessment,
 )
@@ -847,3 +850,687 @@ def test_issued_t2_projection_keeps_unknown_receipt_closure():
             ),
             authorization=current,
         )
+
+
+def _real_t1_with_extra_failure(*, failed_attempt_ref):
+    """Build real T1-a evidence with a selected PASS plus an independent verified FAIL."""
+    check = "tach"
+    obligation = "o/tach"
+    profile = make_profile(
+        declared_checks=[check],
+        obligations=[{"obligation_ref": obligation, "check_names": [check]}],
+    )
+    entry = make_entry(check, required_by=(obligation,), rule_ref=RULE_TACH)
+    expected = make_projection(profile, [entry])
+    universe = make_universe(
+        profile,
+        expected,
+        [check_obligation(obligation, [entry["expected_check_ref"]])],
+    )
+    definition = check_contract.definition_for(check)
+    passed_res = native_result(entry, status="passed")
+    failed_res = native_result(entry, status="failed", result_instance="failed-inst")
+
+    pass_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "reconciled",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [passed_res],
+            }
+        ],
+    }
+    fail_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "reconciled",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [failed_res],
+            }
+        ],
+    }
+    pass_report_ref = report_ref_for(pass_report)
+    fail_report_ref = report_ref_for(fail_report)
+    pass_job_receipt = {
+        "kind": reconciliation.JOB_RECEIPT_KIND,
+        "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+        "job_ref": "job/release",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "report_ref": copy.deepcopy(pass_report_ref),
+        "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
+        "verification_status": "upstream_verified",
+    }
+    fail_job_receipt = {
+        "kind": reconciliation.JOB_RECEIPT_KIND,
+        "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+        "job_ref": "job/release",
+        "run_ref": RUN_REF,
+        "attempt_ref": failed_attempt_ref,
+        "runner_ref": RUNNER_REF,
+        "report_ref": copy.deepcopy(fail_report_ref),
+        "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
+        "verification_status": "upstream_verified",
+    }
+    pass_obs = {
+        "job_ref": pass_job_receipt["job_ref"],
+        "run_ref": pass_job_receipt["run_ref"],
+        "attempt_ref": pass_job_receipt["attempt_ref"],
+        "runner_ref": pass_job_receipt["runner_ref"],
+        "report": pass_report,
+        "report_ref": copy.deepcopy(pass_report_ref),
+        "native_results": [passed_res],
+        "job_receipt": copy.deepcopy(pass_job_receipt),
+    }
+    route = {
+        "expected_check_ref": entry["expected_check_ref"],
+        "job_refs": ["job/release"],
+        "job_instances": [
+            {
+                "job_ref": "job/release",
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "attempt_eligibility": "eligible",
+                "qualification_ref": copy.deepcopy(ATTEMPT_QUALIFICATION_REF),
+                "report_ref": copy.deepcopy(pass_report_ref),
+            }
+        ],
+        "mapping_status": "routed",
+        "scheduler_ref": {"name": "controlled", "version": "1"},
+        "effective_config_ref": {"name": "fixture", "version": "1"},
+        "reason": None,
+    }
+    resolution = {
+        "expected_check_ref": entry["expected_check_ref"],
+        "rule_ref": copy.deepcopy(RULE_TACH),
+        "source_ref": copy.deepcopy(SOURCE),
+        "baseline_ref": None,
+        "rule_source_ref": copy.deepcopy(RULE_SOURCE_REF),
+        "source_receipt_ref": copy.deepcopy(SOURCE_RECEIPT_REF),
+    }
+    receipt = reconciliation.reconcile_expected_results(
+        expected,
+        routing=[route],
+        resolutions=[resolution],
+        observations=[pass_obs],
+    )
+    # Append the independent verified failed observation into receipt observed_results
+    # and rehash receipt_ref, mirroring NEW-014's multi-report observation shape.
+    updated_receipt = copy.deepcopy(receipt)
+    fail_evidence = {
+        "result_id": failed_res["result_id"],
+        "status": failed_res["status"],
+        "result_origin": failed_res["result_origin"],
+        "native_exit_code": failed_res.get("native_exit_code"),
+        "job_ref": fail_job_receipt["job_ref"],
+        "run_ref": fail_job_receipt["run_ref"],
+        "attempt_ref": fail_job_receipt["attempt_ref"],
+        "runner_ref": fail_job_receipt["runner_ref"],
+        "report_ref": copy.deepcopy(fail_report_ref),
+        "job_receipt_ref": reconciliation._digest(fail_job_receipt),
+        "report_status": None,
+        "report_reason": None,
+        "report_admissible": True,
+    }
+    updated_receipt["entries"][0]["observed_result_ids"].append(failed_res["result_id"])
+    updated_receipt["entries"][0]["observed_results"].append(fail_evidence)
+    updated_receipt.pop("receipt_ref")
+    updated_receipt["receipt_ref"] = reconciliation._digest(updated_receipt)
+
+    policy = {
+        "trusted_issuers": [copy.deepcopy(JOB_ISSUER_REF)],
+        "approved_implementations": [
+            {
+                "check_id": entry["check_id"],
+                "definition_version": definition.definition_version,
+                **IMPLEMENTATION,
+            }
+        ],
+    }
+    t1 = admission.admit_evidence(
+        expected,
+        updated_receipt,
+        reports=[pass_report, fail_report],
+        job_receipts=[pass_job_receipt, fail_job_receipt],
+        policy=policy,
+        authority=lambda ctx: (
+            ctx["issuer_ref"] == JOB_ISSUER_REF
+            and ctx["implementation"] == IMPLEMENTATION
+        ),
+        resolutions=[resolution],
+        resolution_authority=lambda ctx: (
+            ctx["resolution"]["source_receipt_ref"] == SOURCE_RECEIPT_REF
+        ),
+    )
+    return t1, universe, expected, entry, updated_receipt, failed_res["result_id"]
+
+
+def test_new014_same_attempt_verified_failure_blocks_t1_and_r1():
+    t1, universe, expected, entry, receipt, failed_id = _real_t1_with_extra_failure(
+        failed_attempt_ref=ATTEMPT_REF
+    )
+    assert t1["entries"][0]["admitted"] is False
+    assert "same_attempt_authenticated_failure" in t1["entries"][0]["reasons"]
+    assert len(t1["remaining_work"]) == 1
+
+    outcome = _assess(
+        t1,
+        universe,
+        expected,
+        receipt,
+        authority=df02_source_authority(t1, universe),
+    )
+    assert outcome["status"] == "blocked"
+    row = check_row(outcome, entry)
+    assert row["status"] == "unmet"
+    assert any(item["result_id"] == failed_id for item in row["authenticated_failures"])
+    required_assessment.validate_assessment(outcome)
+
+
+def test_new014_cross_attempt_verified_failure_requires_adjudication_for_r1():
+    t1, universe, expected, entry, receipt, failed_id = _real_t1_with_extra_failure(
+        failed_attempt_ref="attempt/0"
+    )
+    assert t1["entries"][0]["admitted"] is True
+
+    blocked = _assess(
+        t1,
+        universe,
+        expected,
+        receipt,
+        authority=df02_source_authority(t1, universe),
+    )
+    assert blocked["status"] == "blocked"
+    row = check_row(blocked, entry)
+    assert row["status"] == "unmet"
+    assert any(item["result_id"] == failed_id for item in row["authenticated_failures"])
+    required_assessment.validate_assessment(blocked)
+
+    adjudication = {
+        "scope_id": expected["scope_id"],
+        "expected_check_ref": entry["expected_check_ref"],
+        "applies_to_result_ids": [failed_id],
+        "disposition": "failure_superseded",
+        "authority_ref": {
+            "name": "retry-adjudication-authority",
+            "version": "1",
+            "sha256": "a" * 64,
+        },
+        "policy_ref": {
+            "name": "retry-policy",
+            "version": "1",
+            "sha256": "b" * 64,
+        },
+        "decided_at": "2026-11-16T00:50:00Z",
+        "valid_until": "2026-11-16T05:00:00Z",
+        "revoked_at": None,
+        "reason": "superseded_by_attempt_1_pass",
+    }
+
+    # Unauthenticated adjudication (authority does not echo adjudications_ref) is rejected.
+    with pytest.raises(
+        required_assessment.RequiredAssessmentError,
+        match="admission_source_authority_unverified",
+    ):
+        required_assessment.assess_required_obligations(
+            universe=universe,
+            expected=expected,
+            evaluated_at=EVALUATED_AT,
+            admission=t1,
+            receipt=receipt,
+            admission_source_authority=df02_source_authority(t1, universe),
+            admission_current_authorization=_df02_current_authorization(),
+            admission_adjudications=[adjudication],
+            admission_contract_sample=True,
+        )
+
+    def authority_with_adjudication(context):
+        base = df02_source_authority(t1, universe)(context)
+        return {**base, "adjudications_ref": context["adjudications_ref"]}
+
+    passed = required_assessment.assess_required_obligations(
+        universe=universe,
+        expected=expected,
+        evaluated_at=EVALUATED_AT,
+        admission=t1,
+        receipt=receipt,
+        admission_source_authority=authority_with_adjudication,
+        admission_current_authorization=_df02_current_authorization(),
+        admission_adjudications=[adjudication],
+        admission_contract_sample=True,
+    )
+    assert passed["status"] == "passed"
+    assert check_row(passed, entry)["status"] == "satisfied"
+    required_assessment.validate_assessment(passed)
+
+
+def test_t1b_to_t1a_to_r1_controlled_handoff_chain():
+    profile = make_profile(
+        declared_checks=["tach"],
+        obligations=[{"obligation_ref": "o/tach", "check_names": ["tach"]}],
+    )
+    entry = make_entry("tach", required_by=("o/tach",), rule_ref=RULE_TACH)
+    expected = make_projection(profile, [entry])
+    universe = make_universe(
+        profile,
+        expected,
+        [check_obligation("o/tach", [entry["expected_check_ref"]])],
+    )
+    definition = check_contract.definition_for("tach")
+    passed_res = native_result(entry, status="passed")
+    report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "reconciled",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [passed_res],
+            }
+        ],
+    }
+    report_ref = report_ref_for(report)
+    job_receipt = {
+        "kind": reconciliation.JOB_RECEIPT_KIND,
+        "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+        "job_ref": "job/local",
+        "run_ref": RUN_REF,
+        "attempt_ref": ATTEMPT_REF,
+        "runner_ref": RUNNER_REF,
+        "scope_id": expected["scope_id"],
+        "expected_set_ref": expected["expected_set_ref"],
+        "report_ref": copy.deepcopy(report_ref),
+        "issuer_ref": copy.deepcopy(JOB_ISSUER_REF),
+        "verification_status": "upstream_verified",
+    }
+    package = local_actions_handoff.build_local_handoff_package(
+        payload={
+            "reports": [report],
+            "job_receipts": [job_receipt],
+            "result_ids": [passed_res["result_id"]],
+            "source_digests": [SOURCE["content_digest"]],
+            "invocation_ref": "inv/local-1",
+            "event_payload_ref": "evt/local-1",
+        },
+        issuer_ref=JOB_ISSUER_REF,
+        execution_boundary={
+            "kind": "controlled_local_environment",
+            "collector_ref": {"name": "collector", "version": "1", "sha256": "c" * 64},
+            "controlled": True,
+            "self_reported": False,
+            "proof_ref": {"name": "attest", "version": "1", "sha256": "1" * 64},
+        },
+        producer_authorization={
+            "authority_ref": {"name": "grant", "version": "1", "sha256": "e" * 64},
+            "producer_ref": {"name": "local-cli", "version": "1", "sha256": "d" * 64},
+            "scope": {
+                "action": "publish",
+                "target_ref": "refs/heads/main",
+                "phase": "pre_publish",
+                "check_ids": [entry["check_id"]],
+                "scope_id": expected["scope_id"],
+                "expected_set_ref": expected["expected_set_ref"],
+            },
+            "valid_from": "2026-11-01T00:00:00Z",
+            "valid_until": "2026-12-01T00:00:00Z",
+            "revoked_at": None,
+        },
+        produced_at="2026-11-16T00:30:00Z",
+    )
+    verified = local_actions_handoff.verify_local_handoff(
+        package,
+        handoff_policy={
+            "allowed_issuers": [copy.deepcopy(JOB_ISSUER_REF)],
+            "allowed_execution_boundaries": ["controlled_local_environment"],
+        },
+        consumer_scope={
+            "action": "publish",
+            "target_ref": "refs/heads/main",
+            "phase": "pre_publish",
+            "check_ids": [entry["check_id"]],
+            "scope_id": expected["scope_id"],
+            "expected_set_ref": expected["expected_set_ref"],
+        },
+        issuer_authority=lambda _pkg: True,
+        execution_authority=lambda pkg: {
+            "accepted": True,
+            "executed_at": pkg["produced_at"],
+        },
+        authorization_authority=lambda ctx: {
+            "accepted": True,
+            "handoff_ref": ctx["handoff_ref"],
+            "consumer_scope_ref": ctx["consumer_scope_ref"],
+        },
+        evaluated_at=EVALUATED_AT,
+    )
+    assert verified["status"] == "verified"
+    assert verified["admitted_for_t1a"] is True
+    assert verified["remaining_work"] == []
+
+    # Feed verified T1-b raw materials through #66-C -> T1-a -> #61 R1.
+    handed_report = verified["materials"]["reports"][0]
+    handed_job_receipt = verified["materials"]["job_receipts"][0]
+    receipt = reconciliation.reconcile_expected_results(
+        expected,
+        routing=[
+            {
+                "expected_check_ref": entry["expected_check_ref"],
+                "job_refs": ["job/local"],
+                "job_instances": [
+                    {
+                        "job_ref": "job/local",
+                        "run_ref": RUN_REF,
+                        "attempt_ref": ATTEMPT_REF,
+                        "runner_ref": RUNNER_REF,
+                        "attempt_eligibility": "eligible",
+                        "qualification_ref": copy.deepcopy(ATTEMPT_QUALIFICATION_REF),
+                        "report_ref": copy.deepcopy(report_ref),
+                    }
+                ],
+                "mapping_status": "routed",
+                "scheduler_ref": {"name": "controlled", "version": "1"},
+                "effective_config_ref": {"name": "fixture", "version": "1"},
+                "reason": None,
+            }
+        ],
+        resolutions=[
+            {
+                "expected_check_ref": entry["expected_check_ref"],
+                "rule_ref": copy.deepcopy(RULE_TACH),
+                "source_ref": copy.deepcopy(SOURCE),
+                "baseline_ref": None,
+                "rule_source_ref": copy.deepcopy(RULE_SOURCE_REF),
+                "source_receipt_ref": copy.deepcopy(SOURCE_RECEIPT_REF),
+            }
+        ],
+        observations=[
+            {
+                "job_ref": "job/local",
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "report": handed_report,
+                "report_ref": copy.deepcopy(report_ref),
+                "native_results": [passed_res],
+                "job_receipt": handed_job_receipt,
+            }
+        ],
+    )
+    t1 = admission.admit_evidence(
+        expected,
+        receipt,
+        reports=verified["materials"]["reports"],
+        job_receipts=verified["materials"]["job_receipts"],
+        policy={
+            "trusted_issuers": [copy.deepcopy(JOB_ISSUER_REF)],
+            "approved_implementations": [
+                {
+                    "check_id": entry["check_id"],
+                    "definition_version": definition.definition_version,
+                    **IMPLEMENTATION,
+                }
+            ],
+        },
+        authority=lambda ctx: (
+            ctx["issuer_ref"] == JOB_ISSUER_REF
+            and ctx["implementation"] == IMPLEMENTATION
+        ),
+        resolutions=[
+            {
+                "expected_check_ref": entry["expected_check_ref"],
+                "rule_ref": copy.deepcopy(RULE_TACH),
+                "source_ref": copy.deepcopy(SOURCE),
+                "baseline_ref": None,
+                "rule_source_ref": copy.deepcopy(RULE_SOURCE_REF),
+                "source_receipt_ref": copy.deepcopy(SOURCE_RECEIPT_REF),
+            }
+        ],
+        resolution_authority=lambda ctx: (
+            ctx["resolution"]["source_receipt_ref"] == SOURCE_RECEIPT_REF
+        ),
+    )
+    outcome = _assess(
+        t1,
+        universe,
+        expected,
+        receipt,
+        authority=df02_source_authority(t1, universe),
+    )
+    assert outcome["status"] == "passed"
+    assert check_row(outcome, entry)["status"] == "satisfied"
+    required_assessment.validate_assessment(outcome)
+
+
+def test_dg01_authenticated_phase_and_universe_issuer_reach_r1_pass():
+    profile = make_profile(
+        phase="pre_publish",
+        declared_checks=["tach"],
+        obligations=[{"obligation_ref": "o/tach", "check_names": ["tach"]}],
+    )
+    entry = make_entry("tach", required_by=("o/tach",), rule_ref=RULE_TACH)
+    raw_expected = make_projection(profile, [entry])
+    # Simulate #66-B2 unverified phase projection (status=partial, reason=effective_profile_phase_unverified).
+    raw_expected["status"] = "partial"
+    raw_expected["reason"] = "effective_profile_phase_unverified"
+    raw_expected["consumer_completeness"] = "incomplete_profile"
+    raw_expected["definitions_status"] = "domain_complete"
+    raw_expected["applicability_status"] = "domain_complete"
+
+    # D-F01 invariant: incomplete domain must NOT be promoted to complete by phase authentication.
+    incomplete_profile = make_profile(
+        phase="pre_publish",
+        domain_complete=False,
+        declared_checks=["tach"],
+        obligations=[{"obligation_ref": "o/tach", "check_names": ["tach"]}],
+    )
+    incomplete_expected = make_projection(incomplete_profile, [entry])
+    incomplete_expected["status"] = "partial"
+    incomplete_expected["reason"] = "effective_profile_phase_unverified"
+    incomplete_expected["consumer_completeness"] = "incomplete_profile"
+
+    def b2_phase_issuer(ctx):
+        return {
+            "status": "verified",
+            "scope_id": ctx["scope_id"],
+            "expected_set_ref": ctx["expected_set_ref"],
+            "phase": ctx["phase"],
+            "profile_sha256": ctx["profile_sha256"],
+            "issuer_ref": {"name": "phase-issuer", "version": "1", "sha256": "a" * 64},
+            "verification_ref": {
+                "name": "phase-proof",
+                "version": "1",
+                "sha256": "b" * 64,
+            },
+        }
+
+    still_partial = expected_checks.authenticate_phase_projection(
+        incomplete_expected, phase_authority=b2_phase_issuer
+    )
+    assert still_partial["phase_status"] == "verified"
+    assert still_partial["status"] == "partial"
+
+    # Complete domain + authenticated phase promotes cleanly to complete.
+    expected = expected_checks.authenticate_phase_projection(
+        raw_expected, phase_authority=b2_phase_issuer
+    )
+    assert expected["phase_status"] == "verified"
+    assert expected["status"] == "complete"
+    assert expected["consumer_completeness"] == "expected_domain_complete"
+
+    universe = make_universe(
+        profile,
+        expected,
+        [check_obligation("o/tach", [entry["expected_check_ref"]])],
+        phase="pre_publish",
+    )
+    adm = make_admission(
+        expected,
+        coverage_entries=[(entry, historical_coverage(expected, entry))],
+    )
+
+    # Without phase_authority in R1, even a phase_proof-bearing projection fails closed.
+    without_verifier = required_assessment.assess_required_obligations(
+        universe=universe,
+        expected=expected,
+        evaluated_at=EVALUATED_AT,
+        admission=adm,
+    )
+    assert without_verifier["status"] == "blocked"
+    assert (
+        "expected_phase_proof_unverified"
+        in without_verifier["verification"]["check_domain"]["reasons"]
+    )
+
+    def r1_phase_authority(ctx):
+        return {
+            "status": "verified",
+            "scope_id": ctx["scope_id"],
+            "expected_set_ref": ctx["expected_set_ref"],
+            "phase": ctx["phase"],
+            "profile_sha256": ctx["profile_sha256"],
+            "universe_ref": ctx["universe_ref"],
+            "proof_ref": ctx["proof_ref"],
+            "issuer_ref": {"name": "phase-issuer", "version": "1", "sha256": "a" * 64},
+            "verification_ref": {
+                "name": "r1-phase-check",
+                "version": "1",
+                "sha256": "c" * 64,
+            },
+        }
+
+    def r1_universe_authority(ctx):
+        return {
+            "status": "verified",
+            "universe_ref": ctx["universe_ref"],
+            "profile_sha256": ctx["profile_sha256"],
+            "scope_id": ctx["scope_id"],
+            "expected_set_ref": ctx["expected_set_ref"],
+            "issuer_ref": {
+                "name": "governance-issuer",
+                "version": "1",
+                "sha256": "d" * 64,
+            },
+            "verification_ref": {
+                "name": "closure-attest",
+                "version": "1",
+                "sha256": "e" * 64,
+            },
+        }
+
+    passed = required_assessment.assess_required_obligations(
+        universe=universe,
+        expected=expected,
+        evaluated_at=EVALUATED_AT,
+        admission=adm,
+        phase_authority=r1_phase_authority,
+        universe_authority=r1_universe_authority,
+    )
+    assert passed["status"] == "passed"
+    assert passed["inputs"]["phase_verification"]["status"] == "verified"
+    assert passed["inputs"]["universe_source_verification"]["status"] == "verified"
+    required_assessment.validate_assessment(passed)
+
+    # Rejected universe_authority blocks both authority and obligations_universe.
+    rejected_universe = required_assessment.assess_required_obligations(
+        universe=universe,
+        expected=expected,
+        evaluated_at=EVALUATED_AT,
+        admission=adm,
+        phase_authority=r1_phase_authority,
+        universe_authority=lambda _ctx: {"status": "rejected"},
+    )
+    assert rejected_universe["status"] == "blocked"
+    assert (
+        "universe_issuer_unverified"
+        in rejected_universe["verification"]["authority"]["reasons"]
+    )
+    assert (
+        "universe_issuer_unverified"
+        in rejected_universe["verification"]["obligations_universe"]["reasons"]
+    )
+
+
+def test_new031_new032_new026_r1_temporal_causality_and_serialized_validation():
+    profile = make_profile(
+        declared_checks=["tach"],
+        obligations=[{"obligation_ref": "o/tach", "check_names": ["tach"]}],
+    )
+    entry = make_entry("tach", required_by=("o/tach",), rule_ref=RULE_TACH)
+    expected = make_projection(profile, [entry])
+    adm = make_admission(
+        expected,
+        coverage_entries=[(entry, historical_coverage(expected, entry))],
+    )
+
+    # NEW-031: Universe evaluated after assessment time blocks.
+    future_eval_universe = make_universe(
+        profile,
+        expected,
+        [check_obligation("o/tach", [entry["expected_check_ref"]])],
+    )
+    future_eval_universe["evaluation"]["evaluated_at"] = "2026-11-16T02:00:00Z"
+    future_eval_universe.pop("universe_ref")
+    future_eval_universe["universe_ref"] = required_assessment._digest(
+        future_eval_universe
+    )
+    new031 = required_assessment.assess_required_obligations(
+        universe=future_eval_universe,
+        expected=expected,
+        evaluated_at=EVALUATED_AT,
+        admission=adm,
+    )
+    assert new031["status"] == "blocked"
+    assert (
+        "universe_evaluated_after_assessment"
+        in new031["verification"]["authority"]["reasons"]
+    )
+
+    # NEW-032: Profile approved_at after assessment time blocks.
+    future_approved_universe = make_universe(
+        profile,
+        expected,
+        [check_obligation("o/tach", [entry["expected_check_ref"]])],
+    )
+    future_approved_universe["authority"]["approved_at"] = "2026-11-16T02:00:00Z"
+    future_approved_universe.pop("universe_ref")
+    future_approved_universe["universe_ref"] = required_assessment._digest(
+        future_approved_universe
+    )
+    new032 = required_assessment.assess_required_obligations(
+        universe=future_approved_universe,
+        expected=expected,
+        evaluated_at=EVALUATED_AT,
+        admission=adm,
+    )
+    assert new032["status"] == "blocked"
+    assert "profile_not_yet_approved" in new032["verification"]["authority"]["reasons"]
+
+    # NEW-026: Serialized passed assessment with tampered future authority time fails validate_assessment.
+    valid_universe = make_universe(
+        profile,
+        expected,
+        [check_obligation("o/tach", [entry["expected_check_ref"]])],
+    )
+    passed = required_assessment.assess_required_obligations(
+        universe=valid_universe,
+        expected=expected,
+        evaluated_at=EVALUATED_AT,
+        admission=adm,
+    )
+    assert passed["status"] == "passed"
+    for field in ("approved_at", "effective_at", "evaluated_at"):
+        tampered = copy.deepcopy(passed)
+        tampered["inputs"]["authority"][field] = "2026-11-16T09:00:00+00:00"
+        tampered.pop("assessment_ref")
+        tampered["assessment_ref"] = required_assessment._digest(tampered)
+        with pytest.raises(
+            required_assessment.RequiredAssessmentError,
+            match="assessment_verification_inconsistent",
+        ):
+            required_assessment.validate_assessment(tampered)
