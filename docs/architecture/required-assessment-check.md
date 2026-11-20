@@ -45,11 +45,17 @@ semantics against the serialized envelope (event / Run / Attempt / SHA /
 repository), not only commit+repository. Production success authorization
 also binds `event_name`, `target_binding` and optional `policy_ref`.
 
-Production publication carries the governed `target_binding.assessment_scope`
+Publication backed by an Assessment carries the governed
+`target_binding.assessment_scope`
 with `context`, `action`, `target`, `phase` and the `refs` pairs
 (`target_ref`, `ref_action`). Success must also carry a target tree matching
 the original Assessment. The trusted publisher supplies the expected scope
 from the governed event and target.
+
+When the Assessment is missing, the approved publisher can emit
+`completed/failure` without `assessment_scope`. The approval verifier still
+checks the exact event, Run/Attempt and target Ref and commit against its
+controlled source, including the tree where applicable.
 
 ## Conclusion rules
 
@@ -99,3 +105,5 @@ equal `assessment_ref` when an Assessment is present.
 authorization-gated success POST, forged evaluator refusal, target binding /
 SHA / event / Run mismatches, repository override rejection, missing
 Assessment failure, and skipped/neutral / forced-success refusals.
+`tests/test_required_assessment_publish.py` covers the authorized
+missing-Assessment POST from the standard Actions context.

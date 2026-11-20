@@ -92,6 +92,19 @@ def production_context(assessment=None, **changes):
     return scoped_context(assessment, **options)
 
 
+@pytest.fixture
+def missing_assessment_context():
+    return rap.publication_context_from_actions(
+        evaluator_ref=EVALUATOR_REF,
+        policy_ref=POLICY_REF,
+        job_name="required-assessment",
+        publisher_approval=publisher_approval(),
+        approval_authority=accept_approval,
+        execution_identity=execution_identity(),
+        environ=actions_env(),
+    )
+
+
 def test_parse_workflow_ref_requires_owner_repo_prefix():
     parsed = rap.parse_workflow_ref(REAL_WORKFLOW_REF)
     assert parsed["workflow_repository"] == "dymzz/engineering-ci"
@@ -306,6 +319,105 @@ def test_authorize_and_publish_failure_posts_when_publisher_verified():
     )
     assert result["id"] == 99
     assert github.posts == [("check-runs", "POST", publication["request"])]
+
+
+def test_authorized_missing_assessment_completes_as_failure(missing_assessment_context):
+    publication = rac.publication_for_missing_assessment(
+        missing_assessment_context, reason="assessment_artifact_missing"
+    )
+    github = RecordingGitHub()
+    assert "assessment_scope" not in publication["target_binding"]
+
+    def verify_publication(context):
+        assert context["github"] is github
+        assert context["approval"]["source_app_id"] == SOURCE_APP_ID
+        assert (
+            context["publication"]["publication_ref"] == publication["publication_ref"]
+        )
+        assert (
+            context["publication"]["target_binding"]
+            == missing_assessment_context["target_binding"]
+        )
+        return True
+
+    result = rap.authorize_and_publish(
+        publication,
+        publisher_approval=publisher_approval(),
+        approval_authority=verify_publication,
+        environ=actions_env(),
+        github=github,
+    )
+    assert result["status"] == "completed"
+    assert result["conclusion"] == "failure"
+    assert result["external_id"] is None
+    assert github.posts == [("check-runs", "POST", publication["request"])]
+
+
+@pytest.mark.parametrize(
+    "option,value,binding_key,error",
+    [
+        (None, None, None, "approval_authority_rejected"),
+        (
+            "event_name",
+            "push",
+            "event_name",
+            "publisher_identity_publication_event_name_mismatch",
+        ),
+        (
+            "repository",
+            "other/repo",
+            "repository",
+            "publisher_identity_publication_repository_mismatch",
+        ),
+        (
+            "head_sha",
+            "7" * 40,
+            "commit",
+            "publisher_identity_publication_head_sha_mismatch",
+        ),
+    ],
+)
+def test_missing_assessment_rejects_unapproved_publisher_or_target(
+    missing_assessment_context, option, value, binding_key, error
+):
+    authority = reject_approval
+    if option is not None:
+        missing_assessment_context[option] = value
+        missing_assessment_context["target_binding"][binding_key] = value
+        authority = accept_approval
+    publication = rac.publication_for_missing_assessment(
+        missing_assessment_context, reason="assessment_artifact_missing"
+    )
+    github = RecordingGitHub()
+    with pytest.raises(rap.RequiredAssessmentPublishError, match=error):
+        rap.authorize_and_publish(
+            publication,
+            publisher_approval=publisher_approval(),
+            approval_authority=authority,
+            environ=actions_env(),
+            github=github,
+        )
+    assert github.posts == []
+
+
+@pytest.mark.parametrize("build_assessment", [passed_assessment, blocked_assessment])
+def test_existing_assessment_requires_scope_even_with_publisher_approval(
+    build_assessment,
+):
+    publication = rac.build_check_publication(build_assessment(), production_context())
+    github = RecordingGitHub()
+    with pytest.raises(
+        rac.RequiredAssessmentCheckError, match="publication_assessment_scope_missing"
+    ):
+        rap.authorize_and_publish(
+            publication,
+            publisher_approval=publisher_approval(),
+            approval_authority=accept_approval,
+            execution_identity=execution_identity(),
+            environ=actions_env(),
+            github=github,
+        )
+    assert github.posts == []
 
 
 @pytest.mark.parametrize("build_assessment", [passed_assessment, blocked_assessment])

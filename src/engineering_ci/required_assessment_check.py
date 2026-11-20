@@ -758,8 +758,9 @@ def publish_check_run(
 ):
     """POST a production Required Check through native ``gh api``.
 
-    Both conclusions require an independently authorized publisher. Success
-    also requires the original PASS from a trusted Assessment reader.
+    Both conclusions require an independently authorized publisher and target.
+    Assessment-backed publications require the Assessment scope. Success also
+    requires the original PASS from a trusted Assessment reader.
     """
     validate_publication(publication)
     if repository is not None and repository != publication["repository"]:
@@ -784,7 +785,10 @@ def publish_check_run(
     if publication["trust_basis"] not in PRODUCTION_TRUST_BASES:
         raise RequiredAssessmentCheckError("publishing_trust_basis_not_production")
     target = publication["target_binding"]
-    if "assessment_scope" not in target:
+    if (
+        publication.get("assessment_ref") is not None
+        and "assessment_scope" not in target
+    ):
         raise RequiredAssessmentCheckError("publication_assessment_scope_missing")
     if publication["conclusion"] == "success":
         if target["tree"] is None:
