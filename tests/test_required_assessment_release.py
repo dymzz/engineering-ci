@@ -812,6 +812,68 @@ def test_phase_mismatch_is_rejected():
     assert "release_assessment_phase_mismatch" in result["reasons"]
 
 
+def test_future_r1_assessment_does_not_authorize():
+    assessment, _ = passed_assessment()
+    result = authorize(
+        assessment,
+        publish_context=publication_same_run_context(
+            evaluated_at="2026-11-10T12:00:00Z"
+        ),
+    )
+    assert result["status"] == "rejected"
+    assert result["release_authorized"] is False
+    assert "release_assessment_evaluated_in_future" in result["reasons"]
+
+
+@pytest.mark.parametrize(
+    "submitted,required,status,reason",
+    [
+        (None, None, False, "release_policy_check_bindings_missing"),
+        (None, "ruff_lint", False, "release_policy_check_bindings_mismatch"),
+        ("ruff_lint", None, False, "release_policy_check_bindings_mismatch"),
+        ("ruff_lint", "ruff_lint", True, None),
+        (
+            "core_coverage_threshold",
+            "core_coverage_threshold",
+            False,
+            "release_check_binding_manifest_not_required_passed",
+        ),
+    ],
+)
+def test_policy_controls_the_complete_manifest_check_bindings(
+    submitted, required, status, reason
+):
+    assessment, entry = passed_assessment()
+
+    def bindings(key):
+        return (
+            []
+            if key is None
+            else [
+                {
+                    "manifest_check_key": key,
+                    "expected_check_ref": entry["expected_check_ref"],
+                }
+            ]
+        )
+
+    def policy(context):
+        response = accept_policy(context)
+        if reason != "release_policy_check_bindings_missing":
+            response["required_check_bindings"] = bindings(required)
+        return response
+
+    result = authorize(
+        assessment,
+        check_bindings=bindings(submitted),
+        require_policy_check_bindings=True,
+        policy_snapshot_authority=policy,
+    )
+    assert result["release_authorized"] is status
+    if reason is not None:
+        assert reason in result["reasons"]
+
+
 def test_contract_sample_cannot_authorize_production_release():
     assessment, _ = passed_assessment(contract_sample=True)
     result = authorize(assessment, contract_sample=True)
