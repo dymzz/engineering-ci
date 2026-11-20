@@ -25,10 +25,10 @@ import hashlib
 import json
 import os
 import re
+from copy import deepcopy
 from datetime import UTC, datetime
 
 from . import required_assessment_check as rac
-from .github_cli import GitHub
 
 DEFAULT_PROTECTED_WORKFLOW_PATHS = frozenset(
     {
@@ -305,6 +305,12 @@ def normalize_publisher_approval(value, *, now=None):
         "valid_to": None if valid_to is None else valid_to.isoformat(),
         "approval_ref": None,
     }
+    if "source_app_id" in value:
+        record["source_app_id"] = value["source_app_id"]
+        if type(record["source_app_id"]) is not int or record["source_app_id"] <= 0:
+            raise RequiredAssessmentPublishError(
+                "publisher_approval_source_app_invalid"
+            )
     clock = now or datetime.now(UTC)
     if status == "revoked":
         raise RequiredAssessmentPublishError("publisher_approval_revoked")
@@ -391,6 +397,8 @@ def publication_context_from_actions(
     policy_ref=None,
     trust_basis="protected_workflow",
     target_binding_kind="event_head",
+    assessment_scope=None,
+    target_tree=None,
     details_url=None,
     allow_contract_sample_publication=False,
     allowed_workflow_paths=None,
@@ -455,7 +463,12 @@ def publication_context_from_actions(
             "event_name": identity["event_name"],
             "run_id": identity["run_id"],
             "run_attempt": identity["run_attempt"],
-            "tree": None,
+            "tree": target_tree,
+            **(
+                {"assessment_scope": assessment_scope}
+                if assessment_scope is not None
+                else {}
+            ),
         },
     }
 
@@ -467,6 +480,8 @@ def verify_publisher_identity(
     approval_authority,
     environ=None,
     allowed_workflow_paths=None,
+    allowed_events=None,
+    github=None,
     now=None,
 ):
     """Prove the live publisher may emit the official Check name.
@@ -480,6 +495,10 @@ def verify_publisher_identity(
     _require_workflow_allowed(
         identity, allowed_workflow_paths=allowed_workflow_paths, approval=approval
     )
+    if allowed_events is not None and identity["event_name"] not in frozenset(
+        allowed_events
+    ):
+        raise RequiredAssessmentPublishError("actions_event_unsupported")
     if not isinstance(publication, dict):
         raise RequiredAssessmentPublishError("publisher_identity_publication_invalid")
     if publication.get("check_name") != rac.CHECK_NAME:
@@ -506,7 +525,8 @@ def verify_publisher_identity(
         {
             "approval": approval,
             "runtime_identity": identity,
-            "publication": publication,
+            "publication": deepcopy(publication),
+            "github": github,
         },
     )
     return {"identity": identity, "approval": approval}
@@ -555,11 +575,15 @@ def workflow_publish_authority(
     if identity["event_name"] not in allowed_event_names:
         raise RequiredAssessmentPublishError("actions_event_unsupported")
 
-    def publish_authority(authorization, publication):
+    def publish_authority(authorization, publication, github):
         if not isinstance(authorization, dict) or not isinstance(publication, dict):
             raise RequiredAssessmentPublishError("publish_authority_inputs_invalid")
         if authorization.get("authority_ref") != approval["authority_ref"]:
             raise RequiredAssessmentPublishError("publish_authority_ref_mismatch")
+        if authorization.get("source_app_id") != approval.get("source_app_id"):
+            raise RequiredAssessmentPublishError(
+                "publish_authority_source_app_mismatch"
+            )
         for key in (
             "repository",
             "head_sha",
@@ -607,6 +631,16 @@ def workflow_publish_authority(
             raise RequiredAssessmentPublishError(
                 "publish_authority_policy_execution_mismatch"
             )
+        _verify_approval_authority(
+            approval_authority,
+            {
+                "approval": approval,
+                "runtime_identity": identity,
+                "publication": publication,
+                "execution_identity": execution,
+                "github": github,
+            },
+        )
         return True
 
     return publish_authority
@@ -619,6 +653,7 @@ def authorize_and_publish(
     approval_authority,
     environ=None,
     execution_identity=None,
+    assessment_authority=None,
     allowed_workflow_paths=None,
     allowed_events=None,
     github=None,
@@ -631,39 +666,56 @@ def authorize_and_publish(
     publisher approval. ``success`` additionally requires ``execution_identity``
     matching the verified approval and publication declarations.
     """
-    client = github or GitHub(publication["repository"])
+    rac.validate_publication(publication)
+    if allowed_events is not None:
+        allowed_events = frozenset(allowed_events)
     verified = verify_publisher_identity(
         publication,
         publisher_approval=publisher_approval,
         approval_authority=approval_authority,
         environ=environ,
         allowed_workflow_paths=allowed_workflow_paths,
-        now=now,
-    )
-    if publication.get("conclusion") != "success":
-        return rac.publish_check_run(
-            publication,
-            repository=repository,
-            github=client,
-        )
-    if execution_identity is None:
-        raise RequiredAssessmentPublishError("execution_identity_required")
-    authority = workflow_publish_authority(
-        publisher_approval=verified["approval"],
-        approval_authority=approval_authority,
-        execution_identity=execution_identity,
-        environ=environ,
-        allowed_workflow_paths=allowed_workflow_paths,
         allowed_events=allowed_events,
+        github=github,
         now=now,
     )
+    source_app_id = verified["approval"].get("source_app_id")
+    if source_app_id is None:
+        raise RequiredAssessmentPublishError("publisher_approval_source_app_missing")
+    approved_publication_ref = publication["publication_ref"]
+    if publication["conclusion"] == "success":
+        if execution_identity is None:
+            raise RequiredAssessmentPublishError("execution_identity_required")
+        authority = workflow_publish_authority(
+            publisher_approval=verified["approval"],
+            approval_authority=approval_authority,
+            execution_identity=execution_identity,
+            environ=environ,
+            allowed_workflow_paths=allowed_workflow_paths,
+            allowed_events=allowed_events,
+            now=now,
+        )
+    else:
+
+        def authority(authorization, candidate, client):
+            return (
+                candidate["publication_ref"] == approved_publication_ref
+                and client is github
+                and authorization["authority_ref"]
+                == verified["approval"]["authority_ref"]
+                and authorization["source_app_id"] == source_app_id
+            )
+
     authorization = rac.publishing_authorization_for(
-        publication, authority_ref=verified["approval"]["authority_ref"]
+        publication,
+        authority_ref=verified["approval"]["authority_ref"],
+        source_app_id=source_app_id,
     )
     return rac.publish_check_run(
         publication,
         publishing_authorization=authorization,
         publish_authority=authority,
+        assessment_authority=assessment_authority,
         repository=repository,
-        github=client,
+        github=github,
     )

@@ -10,6 +10,8 @@ from engineering_ci import required_assessment_protection as rap
 from engineering_ci.github_cli import ApiError
 from engineering_ci.required_assessment_check import CHECK_NAME
 
+SOURCE_APP_ID = 42
+
 
 class FakeGitHub:
     def __init__(self, routes):
@@ -62,10 +64,14 @@ def test_inspect_configured_via_branch_applicable_rules():
                         {
                             "type": "required_status_checks",
                             "parameters": {
+                                "strict_required_status_checks_policy": True,
                                 "required_status_checks": [
-                                    {"context": CHECK_NAME},
+                                    {
+                                        "context": CHECK_NAME,
+                                        "integration_id": SOURCE_APP_ID,
+                                    },
                                     {"context": "python-ci / checks"},
-                                ]
+                                ],
                             },
                         }
                     ],
@@ -73,10 +79,19 @@ def test_inspect_configured_via_branch_applicable_rules():
             }
         )
     )
-    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    observation = rap.inspect_server_protection(
+        "dymzz/engineering-ci", expected_source_app_id=SOURCE_APP_ID, github=github
+    )
     assert observation["enforcement"]["status"] == "configured"
     assert observation["configuration"]["required_assessment_in_branch_rules"] is True
     assert CHECK_NAME in observation["configuration"]["branch_rule_contexts"]
+    assert observation["configuration"]["branch_rule_checks"][0] == {
+        "context": CHECK_NAME,
+        "source_app_id": SOURCE_APP_ID,
+        "source_app_status": "pinned",
+        "strict": True,
+    }
+    assert "python-ci / checks" in observation["configuration"]["branch_rule_contexts"]
     rap.validate_protection_observation(observation)
 
 
@@ -123,20 +138,92 @@ def test_inspect_configured_via_branch_protection_contexts():
                         "required_status_checks": {
                             "strict": True,
                             "contexts": [CHECK_NAME],
-                            "checks": [{"context": CHECK_NAME, "app_id": -1}],
+                            "checks": [{"context": CHECK_NAME, "app_id": 42}],
                         }
                     },
                 )
             }
         )
     )
-    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    observation = rap.inspect_server_protection(
+        "dymzz/engineering-ci", expected_source_app_id=42, github=github
+    )
     assert observation["visibility"]["branch_protection"] == "readable"
     assert (
         observation["configuration"]["required_assessment_in_branch_protection"] is True
     )
     assert observation["enforcement"]["status"] == "configured"
     rap.validate_protection_observation(observation)
+
+
+@pytest.mark.parametrize(
+    "observed,expected,source_status,status",
+    [
+        (99, SOURCE_APP_ID, "mismatch", "misconfigured"),
+        (-1, SOURCE_APP_ID, "unpinned", "misconfigured"),
+        (None, SOURCE_APP_ID, "unpinned", "misconfigured"),
+        ("42", SOURCE_APP_ID, "not_verified", "not_verified"),
+        (SOURCE_APP_ID, None, "not_verified", "not_verified"),
+    ],
+)
+def test_inspect_same_name_requires_expected_source_app(
+    observed, expected, source_status, status
+):
+    required = {"contexts": [CHECK_NAME], "strict": False}
+    if observed is not None:
+        required["checks"] = [{"context": CHECK_NAME, "app_id": observed}]
+    github = FakeGitHub(
+        empty_protection_routes(
+            **{"branches/main/protection": (200, {"required_status_checks": required})}
+        )
+    )
+    observation = rap.inspect_server_protection(
+        "dymzz/engineering-ci", expected_source_app_id=expected, github=github
+    )
+    assert observation["enforcement"]["status"] == status
+    assert observation["enforcement"]["source_app_status"] == source_status
+    assert observation["enforcement"]["probe"] == "not_performed"
+    assert (
+        rap.validate_protection_observation(observation)["enforcement_status"] == status
+    )
+
+
+def test_mixed_sources_do_not_verify_even_if_one_matches():
+    github = FakeGitHub(
+        empty_protection_routes(
+            **{
+                "rules/branches/main?per_page=100&page=1": (
+                    200,
+                    [
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {
+                                "required_status_checks": [
+                                    {
+                                        "context": CHECK_NAME,
+                                        "integration_id": SOURCE_APP_ID,
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                ),
+                "branches/main/protection": (
+                    200,
+                    {
+                        "required_status_checks": {
+                            "checks": [{"context": CHECK_NAME, "app_id": 99}]
+                        }
+                    },
+                ),
+            }
+        )
+    )
+    observation = rap.inspect_server_protection(
+        "dymzz/engineering-ci", expected_source_app_id=SOURCE_APP_ID, github=github
+    )
+    assert observation["enforcement"]["status"] == "misconfigured"
+    assert observation["enforcement"]["source_app_status"] == "mismatch"
 
 
 def test_inspect_not_verified_when_branch_rules_and_protection_forbidden():
@@ -198,7 +285,11 @@ def test_inspect_configured_when_check_appears_on_later_page():
     page2 = [
         {
             "type": "required_status_checks",
-            "parameters": {"required_status_checks": [{"context": CHECK_NAME}]},
+            "parameters": {
+                "required_status_checks": [
+                    {"context": CHECK_NAME, "integration_id": 42}
+                ]
+            },
         }
     ]
     github = FakeGitHub(
@@ -209,7 +300,9 @@ def test_inspect_configured_when_check_appears_on_later_page():
             "branches/main/protection": (404, None),
         }
     )
-    observation = rap.inspect_server_protection("dymzz/engineering-ci", github=github)
+    observation = rap.inspect_server_protection(
+        "dymzz/engineering-ci", expected_source_app_id=42, github=github
+    )
     assert observation["configuration"]["branch_rules_complete"] is True
     assert observation["enforcement"]["status"] == "configured"
 

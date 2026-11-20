@@ -17,17 +17,19 @@ build_check_publication / publication_for_missing_assessment
         |
         +--> declarative envelope + request body (no GitHub I/O)
         |
-publish_check_run(..., publishing_authorization, publish_authority)
+publish_check_run(..., publishing_authorization, publish_authority,
+                  assessment_authority, github)
         |
         +--> production POST for CHECK_NAME only
-             success requires verified Provider/Workflow authorization
+             both conclusions require verified Provider/Workflow authorization
+             success also requires the original R1 PASS
 ```
 
 | Envelope | Check name | Production `publish_check_run` |
 | --- | --- | --- |
-| Live Assessment | `engineering-ci / required-assessment` | Allowed; `success` needs authorization |
+| Live Assessment | `engineering-ci / required-assessment` | Requires publisher authorization for either conclusion |
 | Contract sample | `engineering-ci / required-assessment (contract-sample)` | **Rejected** (zero POSTs) |
-| Missing Assessment | production name, `failure` | Allowed as completed failure |
+| Missing Assessment | production name, `failure` | Requires publisher authorization |
 
 ## Target binding
 
@@ -43,6 +45,18 @@ semantics against the serialized envelope (event / Run / Attempt / SHA /
 repository), not only commit+repository. Production success authorization
 also binds `event_name`, `target_binding` and optional `policy_ref`.
 
+Publication backed by an Assessment carries the governed
+`target_binding.assessment_scope`
+with `context`, `action`, `target`, `phase` and the `refs` pairs
+(`target_ref`, `ref_action`). Success must also carry a target tree matching
+the original Assessment. The trusted publisher supplies the expected scope
+from the governed event and target.
+
+When the Assessment is missing, the approved publisher can emit
+`completed/failure` without `assessment_scope`. The approval verifier still
+checks the exact event, Run/Attempt and target Ref and commit against its
+controlled source, including the tree where applicable.
+
 ## Conclusion rules
 
 | Assessment / context | Conclusion |
@@ -56,13 +70,18 @@ also binds `event_name`, `target_binding` and optional `policy_ref`.
 
 ## Production publish authorization
 
-`publish_check_run` for `conclusion=success` requires:
+`publish_check_run` requires `publishing_authorization` for the exact
+`publication_ref` and approved `source_app_id`. The trusted
+`publish_authority(authorization, publication, github)` must accept the
+publication and the supplied repository-scoped publishing client.
 
-1. `publishing_authorization` bound to the exact Assessment, Check name,
-   conclusion, repository, head SHA, Workflow ref/sha, Run/Attempt and
-   evaluator;
-2. `publish_authority(authorization, publication) is True` from the trusted
-   Provider/Workflow boundary.
+For success, `assessment_authority(assessment_ref, publication)` must retrieve
+the original Assessment from a trusted source. The publisher validates it as
+an R1 artifact, then rebuilds the expected publication and requires an exact
+match before POST. For either conclusion, GitHub's Check Run response must
+match the requested identity and approved App ID. That response is received
+after POST, so the publishing authority must verify which credentials the
+client will use before it authorizes the call.
 
 Forged `trust_basis="approved_evaluator"` metadata alone cannot POST. A
 disagreeing `repository=` override is rejected. `request.external_id` must
@@ -86,3 +105,5 @@ equal `assessment_ref` when an Assessment is present.
 authorization-gated success POST, forged evaluator refusal, target binding /
 SHA / event / Run mismatches, repository override rejection, missing
 Assessment failure, and skipped/neutral / forced-success refusals.
+`tests/test_required_assessment_publish.py` covers the authorized
+missing-Assessment POST from the standard Actions context.

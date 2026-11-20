@@ -38,6 +38,27 @@ AUTHORITY_REF = {
 }
 
 
+SOURCE_APP_ID = 42
+CANDIDATE = {"commit": "2" * 40, "tree": "3" * 40}
+
+
+class RecordingGitHub:
+    repository = "dymzz/engineering-ci"
+
+    def __init__(self, *, app_id=SOURCE_APP_ID):
+        self.posts = []
+        self.app_id = app_id
+
+    def __call__(self, path, method="GET", data=None):
+        self.posts.append((path, method, data))
+        return {
+            "id": 99,
+            "app": {"id": self.app_id},
+            **{key: data[key] for key in ("name", "head_sha", "status", "conclusion")},
+            "external_id": data.get("external_id"),
+        }
+
+
 def target_binding(**changes):
     binding = {
         "kind": "candidate_commit",
@@ -86,12 +107,30 @@ def publication_context(**changes):
     return context
 
 
-def accept_authority(authorization, publication):
+def accept_authority(authorization, publication, github):
     assert authorization["assessment_ref"] == publication["assessment_ref"]
     return True
 
 
-def reject_authority(authorization, publication):
+def publishing_claim(publication):
+    return rac.publishing_authorization_for(
+        publication, authority_ref=AUTHORITY_REF, source_app_id=SOURCE_APP_ID
+    )
+
+
+def scoped_context(assessment, **changes):
+    context = publication_context(**changes)
+    context["target_binding"].update(
+        tree=assessment["candidate"]["tree"],
+        assessment_scope={
+            key: copy.deepcopy(assessment[key])
+            for key in ("context", "action", "target", "phase", "refs")
+        },
+    )
+    return context
+
+
+def reject_authority(authorization, publication, github):
     return False
 
 
@@ -106,6 +145,7 @@ def passed_assessment(*, contract_sample=False, include_candidate=True):
         [obligation],
         contract_sample=contract_sample,
         include_candidate=include_candidate,
+        candidate=CANDIDATE,
     )
     admission = make_admission(
         projection,
@@ -126,6 +166,7 @@ def blocked_assessment():
         [obligation],
         authority_status="unverified",
         contract_sample=False,
+        candidate=CANDIDATE,
     )
     admission = make_admission(
         projection,
@@ -176,9 +217,7 @@ def test_untrusted_pr_path_cannot_mint_success():
         )
 
 
-def test_contract_sample_uses_non_required_name_and_cannot_production_post(
-    monkeypatch,
-):
+def test_contract_sample_uses_non_required_name_and_cannot_production_post():
     assessment = passed_assessment(contract_sample=True)
     assert assessment["inputs"]["contract_sample"] is True
 
@@ -203,33 +242,21 @@ def test_contract_sample_uses_non_required_name_and_cannot_production_post(
         in publication["publication_reasons"]
     )
 
-    posts = []
-
-    class FakeGitHub:
-        def __init__(self, repository):
-            posts.append(("init", repository))
-
-        def __call__(self, path, method="GET", data=None):
-            posts.append((path, method, data))
-            return {"id": 1, "name": rac.CHECK_NAME}
-
-    monkeypatch.setattr(rac, "GitHub", FakeGitHub)
+    github = RecordingGitHub()
     with pytest.raises(
         rac.RequiredAssessmentCheckError,
         match="production_publisher_rejects_non_production_check",
     ):
         rac.publish_check_run(
             publication,
-            publishing_authorization=rac.publishing_authorization_for(
-                {**publication, "check_name": rac.CHECK_NAME},
-                authority_ref=AUTHORITY_REF,
-            ),
+            publishing_authorization=publishing_claim(publication),
             publish_authority=accept_authority,
+            github=github,
         )
-    assert posts == []
+    assert github.posts == []
 
 
-def test_forged_approved_evaluator_cannot_post_production_success(monkeypatch):
+def test_forged_approved_evaluator_cannot_post_production_success():
     assessment = passed_assessment(contract_sample=False)
     publication = rac.build_check_publication(
         assessment, publication_context(trust_basis="approved_evaluator")
@@ -237,25 +264,15 @@ def test_forged_approved_evaluator_cannot_post_production_success(monkeypatch):
     assert publication["trust_basis"] == "approved_evaluator"
     assert publication["conclusion"] == "success"
 
-    posts = []
-
-    class FakeGitHub:
-        def __init__(self, repository):
-            posts.append(("init", repository))
-
-        def __call__(self, path, method="GET", data=None):
-            posts.append((path, method, data))
-            return {"id": 7, "name": rac.CHECK_NAME}
-
-    monkeypatch.setattr(rac, "GitHub", FakeGitHub)
+    github = RecordingGitHub()
 
     with pytest.raises(
         rac.RequiredAssessmentCheckError, match="publish_authority_missing"
     ):
-        rac.publish_check_run(publication)
-    assert posts == []
+        rac.publish_check_run(publication, github=github)
+    assert github.posts == []
 
-    forged = rac.publishing_authorization_for(publication, authority_ref=AUTHORITY_REF)
+    forged = publishing_claim(publication)
     with pytest.raises(
         rac.RequiredAssessmentCheckError, match="publishing_authorization_rejected"
     ):
@@ -263,39 +280,122 @@ def test_forged_approved_evaluator_cannot_post_production_success(monkeypatch):
             publication,
             publishing_authorization=forged,
             publish_authority=reject_authority,
+            github=github,
         )
-    assert posts == []
+    assert github.posts == []
 
 
-def test_authorized_production_success_posts_once(monkeypatch):
-    assessment = passed_assessment(contract_sample=False)
-    publication = rac.build_check_publication(assessment, publication_context())
-    captured = {}
+def test_authorized_production_success_posts_once():
+    assessment = passed_assessment()
+    publication = rac.build_check_publication(assessment, scoped_context(assessment))
+    github = RecordingGitHub()
 
-    class FakeGitHub:
-        def __init__(self, repository):
-            captured["repository"] = repository
+    def resolve_assessment(ref, candidate):
+        assert ref == assessment["assessment_ref"]
+        assert candidate["publication_ref"] == publication["publication_ref"]
+        return assessment
 
-        def __call__(self, path, method="GET", data=None):
-            captured["path"] = path
-            captured["method"] = method
-            captured["data"] = data
-            return {"id": 99, "name": rac.CHECK_NAME, "conclusion": "success"}
-
-    monkeypatch.setattr(rac, "GitHub", FakeGitHub)
     result = rac.publish_check_run(
         publication,
-        publishing_authorization=rac.publishing_authorization_for(
-            publication, authority_ref=AUTHORITY_REF
-        ),
+        publishing_authorization=publishing_claim(publication),
         publish_authority=accept_authority,
+        assessment_authority=resolve_assessment,
+        github=github,
     )
 
     assert result["id"] == 99
-    assert captured["repository"] == "dymzz/engineering-ci"
-    assert captured["path"] == "check-runs"
-    assert captured["method"] == "POST"
-    assert captured["data"] == publication["request"]
+    assert github.posts == [("check-runs", "POST", publication["request"])]
+
+
+def test_production_success_requires_original_assessment():
+    assessment = passed_assessment()
+    publication = rac.build_check_publication(assessment, scoped_context(assessment))
+    github = RecordingGitHub()
+    with pytest.raises(
+        rac.RequiredAssessmentCheckError, match="assessment_authority_missing"
+    ):
+        rac.publish_check_run(
+            publication,
+            publishing_authorization=publishing_claim(publication),
+            publish_authority=accept_authority,
+            github=github,
+        )
+    assert github.posts == []
+    # A self-digested success envelope cannot certify its own gate result.
+    publication["assessment_status"] = None
+    publication["publication_ref"] = rac._digest(
+        {key: value for key, value in publication.items() if key != "publication_ref"}
+    )
+    with pytest.raises(
+        rac.RequiredAssessmentCheckError, match="forced_success_refused"
+    ):
+        rac.validate_publication(publication)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("context", "delivery"),
+        ("action", "merge"),
+        ("target", "release"),
+        ("phase", "post_publish"),
+        ("refs", [{"target_ref": "refs/heads/other", "ref_action": "update"}]),
+        ("refs", [{"target_ref": "refs/heads/main", "ref_action": "delete"}]),
+    ],
+)
+def test_trusted_assessment_for_same_sha_cannot_supply_another_scope(field, value):
+    assessment = passed_assessment()
+    publication = rac.build_check_publication(assessment, scoped_context(assessment))
+    publication["target_binding"]["assessment_scope"][field] = value
+    publication["publication_ref"] = rac._digest(
+        {key: value for key, value in publication.items() if key != "publication_ref"}
+    )
+    assert rac.validate_publication(publication) is publication
+    github = RecordingGitHub()
+    with pytest.raises(
+        rac.RequiredAssessmentCheckError, match="publication_assessment_scope_mismatch"
+    ):
+        rac.publish_check_run(
+            publication,
+            publishing_authorization=publishing_claim(publication),
+            publish_authority=accept_authority,
+            assessment_authority=lambda ref, candidate: assessment,
+            github=github,
+        )
+    assert github.posts == []
+
+
+def test_production_failure_cannot_bypass_publisher_authority():
+    assessment = blocked_assessment()
+    context = scoped_context(assessment)
+    github = RecordingGitHub()
+    for publication in (
+        rac.build_check_publication(assessment, context),
+        rac.publication_for_missing_assessment(
+            context, reason="assessment_artifact_missing"
+        ),
+    ):
+        with pytest.raises(
+            rac.RequiredAssessmentCheckError, match="publish_authority_missing"
+        ):
+            rac.publish_check_run(publication, github=github)
+    assert github.posts == []
+
+
+def test_publisher_detects_wrong_source_app_in_github_response():
+    assessment = blocked_assessment()
+    publication = rac.build_check_publication(assessment, scoped_context(assessment))
+    github = RecordingGitHub(app_id=SOURCE_APP_ID + 1)
+    with pytest.raises(
+        rac.RequiredAssessmentCheckError, match="github_check_source_app_mismatch"
+    ):
+        rac.publish_check_run(
+            publication,
+            publishing_authorization=publishing_claim(publication),
+            publish_authority=accept_authority,
+            github=github,
+        )
+    assert len(github.posts) == 1
 
 
 def test_head_sha_must_match_assessment_candidate_commit():
@@ -374,26 +474,16 @@ def test_wrong_event_or_run_binding_is_rejected():
         )
 
 
-def test_repository_override_is_rejected(monkeypatch):
+def test_repository_override_is_rejected():
     assessment = blocked_assessment()
     publication = rac.build_check_publication(assessment, publication_context())
-    posts = []
-
-    class FakeGitHub:
-        def __init__(self, repository):
-            posts.append(repository)
-
-        def __call__(self, path, method="GET", data=None):
-            posts.append((path, method))
-            return {"id": 1}
-
-    monkeypatch.setattr(rac, "GitHub", FakeGitHub)
+    github = RecordingGitHub()
     with pytest.raises(
         rac.RequiredAssessmentCheckError,
         match="publication_repository_override_rejected",
     ):
-        rac.publish_check_run(publication, repository="other/repo")
-    assert posts == []
+        rac.publish_check_run(publication, repository="other/repo", github=github)
+    assert github.posts == []
 
 
 def test_missing_assessment_completes_as_failure_not_skipped():
@@ -500,9 +590,7 @@ def test_complete_current_run_assessment_builds_under_production_trust():
         ("run_attempt", 9, "publication_target_run_mismatch"),
     ],
 )
-def test_validate_publication_rejects_tampered_target_identity(
-    field, value, reason, monkeypatch
-):
+def test_validate_publication_rejects_tampered_target_identity(field, value, reason):
     assessment = passed_assessment(contract_sample=False)
     publication = rac.build_check_publication(assessment, publication_context())
     tampered = copy.deepcopy(publication)
@@ -517,23 +605,12 @@ def test_validate_publication_rejects_tampered_target_identity(
     with pytest.raises(rac.RequiredAssessmentCheckError, match=reason):
         rac.validate_publication(tampered)
 
-    posts = []
-
-    class FakeGitHub:
-        def __init__(self, repository):
-            posts.append(("init", repository))
-
-        def __call__(self, path, method="GET", data=None):
-            posts.append((path, method, data))
-            return {"id": 1}
-
-    monkeypatch.setattr(rac, "GitHub", FakeGitHub)
+    github = RecordingGitHub()
     with pytest.raises(rac.RequiredAssessmentCheckError, match=reason):
         rac.publish_check_run(
             tampered,
-            publishing_authorization=rac.publishing_authorization_for(
-                publication, authority_ref=AUTHORITY_REF
-            ),
+            publishing_authorization=publishing_claim(publication),
             publish_authority=accept_authority,
+            github=github,
         )
-    assert posts == []
+    assert github.posts == []
