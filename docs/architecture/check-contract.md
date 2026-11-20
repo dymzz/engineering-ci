@@ -165,8 +165,10 @@ reinterpreted):
   `pytest`, `weaver_registry`, `weaver_live`, `weaver_terminal`) start at
   version 1 with their declared tool requirements. Forwarding is version 2
   because its applicability and AST semantics were restored; its version 1
-  results remain readable but do not satisfy version 2. This is independent of
-  the Result data schema.
+  results remain readable but do not satisfy version 2. Actionlint and inline
+  ShellCheck use version 2 for their structured-output verdict; their version 1
+  results also remain readable but cannot satisfy version 2. This is independent
+  of the Result data schema.
 - A missing identity is `check_identity_missing`; a genuinely executed Check
   retains its original native status and diagnostics. The Host records
   `check_contract=identity_missing` and blocks the top-level Report as
@@ -264,9 +266,10 @@ no requirements is an internal ECI analysis and carries no tool evidence:
     Job or display name. An undeclared version/artifact may be recorded as
     observed evidence (for example a pinned Dagger tool).
 - The current definitions are version 2 for the five legacy tool-bound hygiene
-  Checks (`docs`, `tach`, `tach_external`, `vulture`, `whitespace`), and version
-  1 for `forwarding`/`source` plus the newly registered test/Weaver Checks
-  (`unittest`, `pytest`, `weaver_registry`, `weaver_live`, `weaver_terminal`).
+  Checks (`docs`, `tach`, `tach_external`, `vulture`, `whitespace`), as well as
+  `forwarding`, `actionlint` and `workflow_shellcheck`. The `source` and
+  test/Weaver Checks (`unittest`, `pytest`, `weaver_registry`, `weaver_live`,
+  `weaver_terminal`) use version 1.
   Weaver requirements pin `tool_id="weaver"`,
   `tool_id_source="eci_pinned_asset"`, version and Linux asset SHA-256 directly
   from `weaver_tool.py`. Version 1 definitions of the five legacy hygiene Checks

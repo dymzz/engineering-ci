@@ -623,10 +623,12 @@ def split_actionlint_diagnostics(findings: list[dict]) -> tuple[list[dict], list
     return workflow_only, shellcheck_only
 
 
-def _actionlint_facts(stdout: str, raw: str):
+def _actionlint_facts(stdout: str, raw: str, *, json_format: bool = False):
     candidate = raw if raw.strip() else stdout
     stripped = candidate.lstrip()
-    if stripped.startswith("["):
+    if json_format or stripped.startswith("["):
+        if not stripped:
+            return [], None, None, ["actionlint produced no JSON output"]
         try:
             parsed = json.loads(stripped)
         except ValueError:
@@ -652,7 +654,7 @@ def _actionlint_facts(stdout: str, raw: str):
             )
         return findings, {"format": "actionlint-json", "items": parsed}, None, []
     findings = []
-    for line in stdout.splitlines():
+    for line in candidate.splitlines():
         match = _ACTIONLINT_LINE.match(line.strip())
         if not match:
             continue
@@ -666,7 +668,12 @@ def _actionlint_facts(stdout: str, raw: str):
                 "message": match.group("message"),
             }
         )
-    return findings, None, None, []
+    limitations = (
+        ["actionlint text output contains no recognizable diagnostics"]
+        if candidate.strip() and not findings
+        else []
+    )
+    return findings, None, None, limitations
 
 
 def _shellcheck_facts(stdout: str, raw: str):
@@ -814,7 +821,9 @@ FACTS = {
 
 def _classify_actionlint(exit_code, findings, envelope, limitations) -> tuple[str, str]:
     if limitations:
-        return "failure", "actionlint_execution_error"
+        return "failure", "actionlint_output_invalid"
+    if exit_code == 0 and findings:
+        return "failure", "actionlint_exit_status_inconsistent"
     if exit_code == 0 and not findings:
         return "clean", "no_workflow_problems"
     if exit_code == 1 and findings:
@@ -930,15 +939,21 @@ def script_report(
     tool = policy["tool"]
     if tool not in CLASSIFIERS:
         raise ValueError(f"Unknown script-analysis tool: {tool}")
-    raw_source = (
-        native_raw
-        if native_raw
-        else (stdout if tool in {"shellcheck", "zizmor"} else "")
+    actionlint_json = tool == "actionlint" and policy.get("json_format", False)
+    raw_source = native_raw or (
+        stdout if tool in {"shellcheck", "zizmor"} or actionlint_json else ""
     )
     truncated = len(raw_source.encode("utf-8")) > MAX_NATIVE_BYTES
-    findings, envelope, observed, limitations = FACTS[tool](
-        stdout, "" if truncated else native_raw
-    )
+    if actionlint_json and truncated:
+        findings, envelope, observed, limitations = [], None, None, []
+    elif tool == "actionlint":
+        findings, envelope, observed, limitations = _actionlint_facts(
+            stdout, "" if truncated else native_raw, json_format=actionlint_json
+        )
+    else:
+        findings, envelope, observed, limitations = FACTS[tool](
+            stdout, "" if truncated else native_raw
+        )
     if truncated:
         limitations = [*limitations, "native structured output exceeds the 1 MiB limit"]
     outcome, reason = CLASSIFIERS[tool](exit_code, findings, envelope, limitations)
@@ -1886,7 +1901,7 @@ def run_workflow_script_suite(
                 completed.returncode,
                 stdout=raw_stdout,
                 stderr=raw_stderr,
-                native_raw=raw_stdout if raw_stdout.lstrip().startswith("[") else "",
+                native_raw=raw_stdout,
             )
             logical_findings(rep, locations)
             res = {
@@ -2032,6 +2047,10 @@ def run_workflow_script_suite(
                         rep = indep_run["report"]
                 if rep is not None:
                     status = _report_to_status(rep, "workflow_problems_reported")
+                    # The process exited successfully, but its output does not
+                    # establish a verdict. Preserve both facts in the Result.
+                    if status == "failed" and rep["exit_code"] == 0:
+                        status = "unknown"
                     reported_findings = (
                         rep["actionlint_findings"]
                         if rep["actionlint_findings"]
@@ -2046,6 +2065,8 @@ def run_workflow_script_suite(
                         "stdout": rep["stdout"],
                         "stderr": rep["stderr"],
                         "findings": reported_findings,
+                        "limitations": rep["limitations"],
+                        "native_truncated": rep["native_truncated"],
                         "actionlint_findings": rep["actionlint_findings"],
                         "shellcheck_findings": rep["shellcheck_findings"],
                         "shellcheck_enabled": rep["shellcheck_enabled"],
@@ -2167,8 +2188,14 @@ def run_workflow_script_suite(
                         al_rep["findings"]
                     )
                     if inline_findings:
-                        inline_status = "failed"
-                        inline_reason = "shellcheck_findings"
+                        inline_status = (
+                            "unknown" if al_rep["exit_code"] == 0 else "failed"
+                        )
+                        inline_reason = (
+                            "actionlint_exit_status_inconsistent"
+                            if inline_status == "unknown"
+                            else "shellcheck_findings"
+                        )
                         inline_exit_code = al_rep["exit_code"]
                         inline_exe = al_run["executable"]
                     elif al_dbg.get("disabled"):
@@ -2177,11 +2204,14 @@ def run_workflow_script_suite(
                         inline_exit_code = None
                         inline_exe = None
                     elif al_rep["outcome"] != "clean":
-                        # actionlint exited non-zero without inline shellcheck findings:
-                        # fail closed as not_executed rather than fabricating pass or
-                        # borrowing another tool's failure exit code.
+                        # An unusable actionlint verdict without inline findings
+                        # cannot establish an independent ShellCheck verdict.
                         inline_status = "not_executed"
-                        inline_reason = "actionlint_failed_without_shellcheck_verdict"
+                        inline_reason = (
+                            al_rep["reason"]
+                            if al_rep["reason"] == "actionlint_output_invalid"
+                            else "actionlint_failed_without_shellcheck_verdict"
+                        )
                         inline_exit_code = None
                         inline_exe = None
                     elif not al_dbg.get("rule_ran"):
@@ -2208,6 +2238,8 @@ def run_workflow_script_suite(
                         "stdout": al_rep["stdout"],
                         "stderr": al_rep["stderr"],
                         "findings": inline_findings[:MAX_FINDINGS],
+                        "limitations": al_rep["limitations"],
+                        "native_truncated": al_rep["native_truncated"],
                         "native_json": al_rep["native_json"],
                         "executable": inline_exe,
                         "tool_version": sc_ver if inline_exe else None,

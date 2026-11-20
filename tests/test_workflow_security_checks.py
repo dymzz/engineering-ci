@@ -257,6 +257,143 @@ class _CountingRunner:
         return hygiene._run(argv_list, cwd, data)
 
 
+def test_actionlint_unparseable_json_keeps_native_exit_and_cannot_satisfy_expected(
+    tmp_path,
+):
+    from test_reconciliation import make_observation, make_routing
+
+    relative = ".github/workflows/ci.yml"
+    repo, _ = _init_repo(
+        tmp_path,
+        checks=("actionlint",),
+        workflows={relative: CLEAN_ZIZMOR_WORKFLOW},
+    )
+    plan_doc, _ = _build_plan_and_expected(repo, [relative], snapshot="commit")
+    raw = "unrecognized native output\n"
+    stderr = "native diagnostic\n"
+    runner = _CountingRunner(
+        overrides={
+            (lambda argv: "-version" in argv and "actionlint" in " ".join(argv)): (
+                lambda argv: subprocess.CompletedProcess(
+                    argv, 0, f"{workflow_analysis.ACTIONLINT_VERSION}\n", ""
+                )
+            ),
+            (lambda argv: "-format" in argv and "actionlint" in " ".join(argv)): (
+                lambda argv: subprocess.CompletedProcess(argv, 0, raw, stderr)
+            ),
+        }
+    )
+    resolution = execution.build_source_resolution(plan_doc, "actionlint", root=repo)
+    report = execution.execute(plan_doc, root=repo, runner=runner)
+    assert report["status"] == "blocked", report
+    assert report["reason"] == "actionlint_output_invalid"
+    check = next(item for item in report["checks"] if item["name"] == "actionlint")
+    assert check["status"] == "unknown"
+    assert check["reason"] == "actionlint_output_invalid"
+    assert check["exit_code"] == 0
+    assert check["check_contract"]["status"] == "valid"
+    native = check["native_result"]
+    check_contract.validate_result(native)
+    assert native["status"] == "unknown"
+    assert native["native_exit_code"] == 0
+    assert native["evidence"]["stdout"] == raw
+    assert native["evidence"]["stderr"] == stderr
+    assert native["evidence"]["limitations"]
+    assert native["source_ref"] == resolution["source_ref"]
+    assert any(ref.get("path") == relative for ref in native["input_refs"])
+    assert check["native_satisfaction"]["status"] == "unsatisfied"
+    assert check["native_satisfaction"]["selected_result_ids"] == []
+
+    expected = plan_doc["expected_checks"]
+    expected_entry = next(
+        item for item in expected["checks"] if item["name"] == "actionlint"
+    )
+    observation = make_observation(
+        "job-1", (), runner_ref=native["runner_ref"], report=report
+    )
+    del observation["native_results"]
+    receipt = reconciliation.reconcile_expected_results(
+        expected,
+        routing=[make_routing(expected_entry, runner_ref=native["runner_ref"])],
+        resolutions=[resolution],
+        observations=[observation],
+    )
+    reconciliation.validate_receipt(receipt)
+    entry = next(item for item in receipt["entries"] if item["name"] == "actionlint")
+    assert entry["binding_status"] == "insufficient"
+    assert entry["reason"] == "result_not_passed"
+    assert entry["observed_result_ids"] == [native["result_id"]]
+    assert entry["selected_result_ids"] == []
+    assert entry["observed_results"][0]["run_ref"] == observation["run_ref"]
+    assert entry["observed_results"][0]["attempt_ref"] == observation["attempt_ref"]
+    assert entry["observed_results"][0]["report_ref"] == observation["report_ref"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason", "inline_status", "inline_exit"),
+    [
+        ("not JSON\n", "actionlint_output_invalid", "not_executed", None),
+        (
+            json.dumps(
+                [
+                    {
+                        "message": "SC2086: quote this value",
+                        "filepath": ".github/workflows/ci.yml",
+                        "line": 8,
+                        "column": 1,
+                        "kind": "shellcheck",
+                    }
+                ]
+            ),
+            "actionlint_exit_status_inconsistent",
+            "unknown",
+            0,
+        ),
+    ],
+)
+def test_invalid_actionlint_result_cannot_pass_inline_shellcheck(
+    tmp_path, raw, reason, inline_status, inline_exit
+):
+    relative = ".github/workflows/ci.yml"
+    repo, _ = _init_repo(
+        tmp_path,
+        checks=("actionlint", "workflow_shellcheck"),
+        workflows={relative: CLEAN_ZIZMOR_WORKFLOW},
+    )
+    plan_doc, _ = _build_plan_and_expected(repo, [relative])
+    debug = "[shellcheck] Run shellcheck for bash script:\n[Linter] shellcheck found 0 errors\n"
+    runner = _CountingRunner(
+        overrides={
+            (lambda argv: "-version" in argv and "actionlint" in " ".join(argv)): (
+                lambda argv: subprocess.CompletedProcess(
+                    argv, 0, f"{workflow_analysis.ACTIONLINT_VERSION}\n", ""
+                )
+            ),
+            (lambda argv: "--version" in argv and "shellcheck" in " ".join(argv)): (
+                lambda argv: subprocess.CompletedProcess(
+                    argv, 0, f"version: {workflow_analysis.SHELLCHECK_VERSION}\n", ""
+                )
+            ),
+            (lambda argv: "-format" in argv and "actionlint" in " ".join(argv)): (
+                lambda argv: subprocess.CompletedProcess(argv, 0, raw, debug)
+            ),
+        }
+    )
+    report = execution.execute(plan_doc, root=repo, runner=runner)
+    checks = {item["name"]: item for item in report["checks"]}
+    assert report["status"] == "blocked"
+    assert checks["actionlint"]["status"] == "unknown"
+    assert checks["actionlint"]["reason"] == reason
+    assert checks["actionlint"]["native_result"]["native_exit_code"] == 0
+    inline = checks["workflow_shellcheck"]
+    assert inline["status"] == inline_status
+    assert inline["reason"] == reason
+    assert inline["native_result"]["status"] == inline_status
+    assert inline["native_result"]["native_exit_code"] == inline_exit
+    assert inline["actionlint_exit_code"] == 0
+    assert inline["native_satisfaction"]["selected_result_ids"] == []
+
+
 def _write_policy_state(tmp_path: Path, rules: list[dict], *, now: dt.datetime):
     from test_security_policy import NOW as POLICY_NOW
     from test_security_policy import policy_document, receive
