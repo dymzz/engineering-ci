@@ -144,6 +144,20 @@ the missing records.
 
 ## PR #141 Producer Artifact Handoff and Independent Source Resolution (#86 → #66)
 
+**Acceptance status (2026-11-20): DELIVERED / ACCEPTED for the PR #141
+#86 → #66 generated File/Directory handoff slice.** The targeted
+implementation, Host positive/negative matrix, and reported actual Dagger
+Engine `v1.0.0-beta.16` run and results below were reviewed and accepted;
+[GitHub Actions #44713410255](https://github.com/dymzz/engineering-ci/actions/runs/44713410255)
+passed 4/4 jobs. This is the final scoped acceptance record; it is not a
+requirement to re-run the same Engine case or to upload an additional raw
+Bundle for PR #141. The recorded SHA values are reported execution evidence,
+not a claim that an independent GitHub-hosted raw Bundle was archived.
+Historical PR #90 R3 archiving notes above concern that **separate historical
+revision** and are not conditions on this PR #141 acceptance. Remaining Issue
+#86/#66 obligations below are outside this completed slice.
+
+
 Real Dagger Engine `v1.0.0-beta.16` (`image://registry.dagger.io/engine:v1.0.0-beta.16`)
 integration verification for [PR #141](https://github.com/dymzz/engineering-ci/pull/141)
 ([#86](https://github.com/dymzz/engineering-ci/issues/86) →
