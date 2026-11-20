@@ -2,14 +2,19 @@
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ROOT / ".dagger/src/engineering_ci_module"
 
 sys_path = ROOT / "src"
-import sys
 
 if str(sys_path) not in sys.path:
     sys.path.insert(0, str(sys_path))
@@ -577,6 +582,214 @@ class ShellCheckConfigAndActionlintDebugTests(unittest.TestCase):
         args = script.actionlint_arguments(pol)
         self.assertIn("-debug", args)
         self.assertIn("-format", args)
+
+
+class MultiScriptWindowsArgumentTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.workspace = self.tmp / "ws"
+        (self.workspace / "scripts").mkdir(parents=True)
+        self.first = self.workspace / "scripts" / "first.ps1"
+        self.second = self.workspace / "scripts" / "second.psm1"
+        self.first.write_text("Write-Host 'one'\n", encoding="utf-8")
+        self.second.write_text("gci .\n", encoding="utf-8")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_invoke_arguments_repeats_dash_path_for_multiple_scripts(self):
+        policy = powershell.paths_policy(["scripts"])
+        selected = powershell.select_scripts(self.workspace, policy["paths"])
+        self.assertEqual(len(selected), 2)
+        module_root = self.tmp / "pssa" / powershell.PSSCRIPTANALYZER_VERSION
+        args = powershell.invoke_arguments(ROOT, module_root, policy, selected)
+        path_indices = [idx for idx, item in enumerate(args) if item == "-Path"]
+        self.assertEqual(len(path_indices), 2)
+        self.assertEqual(
+            [args[idx + 1] for idx in path_indices],
+            [str(selected[0]), str(selected[1])],
+        )
+        # Ensure no bare extra script path trails after a single -Path flag.
+        second_pos = path_indices[1]
+        self.assertEqual(len(args), second_pos + 2)
+
+    def test_analyse_multi_script_preserves_native_diagnostics_and_repeated_path(self):
+        policy = powershell.paths_policy(["scripts"])
+        module_root = self.tmp / "pssa" / powershell.PSSCRIPTANALYZER_VERSION
+        seen_args = []
+
+        def fake_run(arguments, cwd, timeout):
+            seen_args.extend(arguments)
+            lines = [
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "status": "ok",
+                        "files_scanned": 2,
+                        "psscriptanalyzer_version": powershell.PSSCRIPTANALYZER_VERSION,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "rule": "PSAvoidUsingWriteHost",
+                        "severity": "Warning",
+                        "message": "Avoid Write-Host",
+                        "script": "first.ps1",
+                        "line": 1,
+                        "column": 1,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "rule": "PSAvoidUsingCmdletAliases",
+                        "severity": "Warning",
+                        "message": "'gci' is an alias of 'Get-ChildItem'.",
+                        "script": "second.psm1",
+                        "line": 1,
+                        "column": 1,
+                    }
+                ),
+            ]
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout="\n".join(lines) + "\n", stderr=""
+            )
+
+        with (
+            patch.object(
+                powershell, "prepare_module", return_value=(module_root, "cached")
+            ),
+            patch.object(powershell, "_run_powershell", side_effect=fake_run),
+        ):
+            report = powershell.analyse(self.workspace, ROOT, policy)
+
+        self.assertEqual(seen_args.count("-Path"), 2)
+        self.assertEqual(report["files_scanned"], 2)
+        self.assertEqual(report["outcome"], "findings")
+        self.assertEqual(report["diagnostic_count"], 2)
+        self.assertEqual(
+            [item["script"] for item in report["diagnostics"]],
+            ["first.ps1", "second.psm1"],
+        )
+
+    def test_real_pwsh_powershell_invoke_accepts_repeated_path_and_rejects_untagged_arg(
+        self,
+    ):
+        pwsh_bin = shutil.which("pwsh") or shutil.which("pwsh.exe")
+        if not pwsh_bin:
+            if os.name == "nt":
+                self.fail("Expected pwsh on Windows runner/host")
+            self.skipTest("pwsh unavailable in non-Windows container")
+
+        # Stage a local stub PSScriptAnalyzer 1.9.0 module outside the workspace
+        # to exercise real pwsh parameter parsing and JSONL emission end-to-end.
+        stub_mod = self.tmp / "stub" / "PSScriptAnalyzer" / "1.9.0"
+        stub_mod.mkdir(parents=True)
+        (stub_mod / "PSScriptAnalyzer.psd1").write_text(
+            "@{\n"
+            "  RootModule = 'PSScriptAnalyzer.psm1'\n"
+            f"  ModuleVersion = '{powershell.PSSCRIPTANALYZER_VERSION}'\n"
+            "  GUID = '11111111-1111-1111-1111-111111111111'\n"
+            "  FunctionsToExport = @('Invoke-ScriptAnalyzer')\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (stub_mod / "PSScriptAnalyzer.psm1").write_text(
+            "function Invoke-ScriptAnalyzer {\n"
+            "  param([string]$Path, [string]$Settings, [string]$Severity)\n"
+            "  $name = Split-Path -Leaf $Path\n"
+            "  [PSCustomObject]@{\n"
+            "    RuleName = 'PSAvoidUsingWriteHost'\n"
+            "    Severity = 'Warning'\n"
+            '    Message = "Finding for $name"\n'
+            "    ScriptName = $name\n"
+            "    Line = 1\n"
+            "    Column = 1\n"
+            "  }\n"
+            "}\n"
+            "Export-ModuleMember -Function Invoke-ScriptAnalyzer\n",
+            encoding="utf-8",
+        )
+
+        # Positive: powershell.main with comma-separated multi-script paths uses
+        # repeatable -Path via real pwsh -> both files scanned and reported.
+        out_dir = self.tmp / "bundle"
+        with patch.object(
+            powershell, "prepare_module", return_value=(stub_mod, "cached")
+        ):
+            exit_code = powershell.main(
+                [
+                    "--mode",
+                    "enforce",
+                    "--workspace",
+                    str(self.workspace),
+                    "--helper-root",
+                    str(ROOT),
+                    "--paths",
+                    "scripts/first.ps1, scripts/second.psm1",
+                    "--out",
+                    str(out_dir),
+                ]
+            )
+        self.assertEqual(exit_code, 1)
+        report = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["outcome"], "findings")
+        self.assertEqual(report["files_scanned"], 2)
+        self.assertEqual(report["diagnostic_count"], 2)
+        self.assertEqual(
+            sorted(item["script"] for item in report["diagnostics"]),
+            ["first.ps1", "second.psm1"],
+        )
+
+        # Negative 1: passing a second bare script path after single -Path must fail
+        # loudly at parameter binding instead of misparsing.
+        invoke_ps1 = str(powershell.invocation_script(ROOT))
+        legacy_bad = subprocess.run(
+            [
+                pwsh_bin,
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                invoke_ps1,
+                "-ModuleRoot",
+                str(stub_mod),
+                "-Version",
+                powershell.PSSCRIPTANALYZER_VERSION,
+                "-Path",
+                str(self.first),
+                str(self.second),
+            ],
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(legacy_bad.returncode, 3)
+        bad_env = json.loads(legacy_bad.stdout.splitlines()[0])
+        self.assertEqual(bad_env["status"], "error")
+        self.assertIn("Unknown argument", bad_env["error"])
+
+        # Negative 2: dangling -Path without value fails cleanly instead of indexing past args.
+        dangling = subprocess.run(
+            [
+                pwsh_bin,
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                invoke_ps1,
+                "-ModuleRoot",
+                str(stub_mod),
+                "-Version",
+                powershell.PSSCRIPTANALYZER_VERSION,
+                "-Path",
+            ],
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(dangling.returncode, 3)
+        dangling_env = json.loads(dangling.stdout.splitlines()[0])
+        self.assertIn("Missing value for -Path", dangling_env["error"])
 
 
 if __name__ == "__main__":

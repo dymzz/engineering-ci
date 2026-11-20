@@ -37,13 +37,33 @@ $settings = ''
 $severity = ''
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
-        '-Version' { $version = $args[++$i]; continue }
-        '-ModuleRoot' { $moduleRoot = $args[++$i]; continue }
-        '-Path' { $paths.Add($args[++$i]); continue }
-        '-Settings' { $settings = $args[++$i]; continue }
-        '-Severity' { $severity = $args[++$i]; continue }
+        '-Version' {
+            if ($i + 1 -ge $args.Count) { Write-Failure 'Missing value for -Version'; exit 3 }
+            $version = $args[++$i]; continue
+        }
+        '-ModuleRoot' {
+            if ($i + 1 -ge $args.Count) { Write-Failure 'Missing value for -ModuleRoot'; exit 3 }
+            $moduleRoot = $args[++$i]; continue
+        }
+        '-Path' {
+            if ($i + 1 -ge $args.Count) { Write-Failure 'Missing value for -Path'; exit 3 }
+            $paths.Add($args[++$i]); continue
+        }
+        '-Settings' {
+            if ($i + 1 -ge $args.Count) { Write-Failure 'Missing value for -Settings'; exit 3 }
+            $settings = $args[++$i]; continue
+        }
+        '-Severity' {
+            if ($i + 1 -ge $args.Count) { Write-Failure 'Missing value for -Severity'; exit 3 }
+            $severity = $args[++$i]; continue
+        }
         default { Write-Failure "Unknown argument: $($args[$i])"; exit 3 }
     }
+}
+
+if ($paths.Count -eq 0) {
+    Write-Failure 'At least one -Path is required'
+    exit 3
 }
 
 # Import from the explicit directory rather than PSModulePath so the resolved

@@ -209,9 +209,12 @@ route the Python scanners and actionlint use. actionlint itself does use it:
 The Windows job checks out the consumer repository and a pinned engineering-ci
 helper, moves the helper out of the workspace so only the consumer's own
 scripts are reachable, and runs
-`python -m engineering_ci.workflow_actions powershell`. It publishes a Job
-Summary and uploads `report.json` and `summary.md`; uploading evidence never
-changes the check result.
+`python -m engineering_ci.workflow_actions powershell`. When multiple `.ps1`/`.psm1`
+scripts match `--paths`, `powershell_analysis.invoke_arguments()` passes repeated
+`-Path <file>` pairs matching `powershell_invoke.ps1`'s single-value repeatable
+`-Path` parameter contract (failing closed if an option value is missing or an
+unknown argument appears). It publishes a Job Summary and uploads `report.json`
+and `summary.md`; uploading evidence never changes the check result.
 
 ## Distinguishing the signals
 

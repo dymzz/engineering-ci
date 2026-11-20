@@ -159,7 +159,7 @@ jobs:
           base_commit_ok="false"
           if [[ -n "$base_sha" && "$base_sha" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
             base_commit_ok="true"
-            git diff --name-only "${base_sha}...${HEAD_SHA}" > "$changed_file"
+            git -c core.quotePath=false diff -z --no-renames --name-only "${base_sha}...${HEAD_SHA}" > "$changed_file"
           fi
           uv run --locked --no-dev python -m engineering_ci.cli dagger-telemetry a1-scope \
             --changed-files-file "$changed_file" \

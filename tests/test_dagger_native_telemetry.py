@@ -6,6 +6,7 @@ import copy
 import gzip
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1564,6 +1565,226 @@ class OtlpReceiverTests(unittest.TestCase):
         self.assertEqual(art["export_attribution_status"], "ambiguous")
         self.assertEqual(art["export_attribution_basis"], "multiple_cause_targets")
         self.assertFalse(art["artifact_binding_verified"])
+
+
+class A1LiveScopeGitPathEdgeTests(unittest.TestCase):
+    def test_hidden_dot_paths_and_dot_slash_prefixes_keep_leading_dots(self) -> None:
+        for raw_path in (
+            ".dagger/src/engineering_ci_module/main.py",
+            "./.dagger/src/engineering_ci_module/main.py",
+            ".github/workflows/ci.yml",
+            "./.github/workflows/ci.yml",
+        ):
+            with self.subTest(raw_path=raw_path):
+                decision = dt.select_a1_capture_scope([raw_path])
+                self.assertTrue(decision["run_live_capture"], decision)
+                self.assertTrue(decision["matched_paths"][0].startswith("."), decision)
+
+        non_sensitive_hidden = dt.select_a1_capture_scope(
+            ["./.github/workflows/other.yml"]
+        )
+        self.assertFalse(non_sensitive_hidden["run_live_capture"])
+        self.assertEqual(
+            non_sensitive_hidden["inspected_changed_paths"],
+            [".github/workflows/other.yml"],
+        )
+
+    def test_unescapes_git_c_quoted_unicode_and_reads_nul_delimited_paths(
+        self,
+    ) -> None:
+        quoted = r'".dagger/\346\265\213\350\257\225.py"'
+        decision = dt.select_a1_capture_scope([quoted])
+        self.assertTrue(decision["run_live_capture"])
+        self.assertEqual(decision["matched_paths"], [".dagger/测试.py"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            changed_nul = Path(tmpdir) / "changed.nul"
+            changed_nul.write_bytes(
+                b".dagger/\xe6\xb5\x8b\xe8\xaf\x95.py\x00docs/notes.md\x00"
+            )
+            gh_out = Path(tmpdir) / "github_output.txt"
+            exit_code = dt.main(
+                [
+                    "a1-scope",
+                    "--changed-files-file",
+                    str(changed_nul),
+                    "--github-output",
+                    str(gh_out),
+                ]
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertIn("run_live_capture=true", gh_out.read_text(encoding="utf-8"))
+
+    def test_real_git_diff_handles_hidden_unicode_and_rename_from_sensitive_dir(
+        self,
+    ) -> None:
+        def git(repo: Path, *args: str) -> bytes:
+            proc = subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+            )
+            return proc.stdout
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+            git(repo, "init", "-q")
+            git(repo, "config", "user.name", "ECI Test")
+            git(repo, "config", "user.email", "eci@example.invalid")
+
+            (repo / ".dagger" / "src").mkdir(parents=True)
+            (repo / ".github" / "workflows").mkdir(parents=True)
+            (repo / "docs").mkdir()
+            (repo / ".dagger" / "src" / "tool.py").write_text(
+                "X = 1\n", encoding="utf-8"
+            )
+            (repo / ".github" / "workflows" / "ci.yml").write_text(
+                "name: CI\n", encoding="utf-8"
+            )
+            (repo / "docs" / "readme.md").write_text("base\n", encoding="utf-8")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "base")
+            base_sha = git(repo, "rev-parse", "HEAD").decode("utf-8").strip()
+
+            # 1. Hidden dot path edit (.dagger/...):
+            (repo / ".dagger" / "src" / "tool.py").write_text(
+                "X = 2\n", encoding="utf-8"
+            )
+            git(repo, "add", ".dagger/src/tool.py")
+            git(repo, "commit", "-q", "-m", "edit hidden dagger file")
+            hidden_sha = git(repo, "rev-parse", "HEAD").decode("utf-8").strip()
+            hidden_file = Path(tmpdir) / "hidden.bin"
+            hidden_file.write_bytes(
+                git(
+                    repo,
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "-z",
+                    "--no-renames",
+                    "--name-only",
+                    f"{base_sha}...{hidden_sha}",
+                )
+            )
+            out_hidden = Path(tmpdir) / "hidden.json"
+            self.assertEqual(
+                dt.main(
+                    [
+                        "a1-scope",
+                        "--changed-files-file",
+                        str(hidden_file),
+                        "--output",
+                        str(out_hidden),
+                    ]
+                ),
+                0,
+            )
+            self.assertTrue(
+                json.loads(out_hidden.read_text(encoding="utf-8"))["run_live_capture"]
+            )
+
+            # 2. Rename sensitive path -> non-sensitive dir:
+            #    legacy --name-only drops old path, while -c core.quotePath=false -z --no-renames retains it.
+            git(repo, "mv", ".dagger/src/tool.py", "docs/moved_tool.py")
+            git(repo, "commit", "-q", "-m", "move sensitive file to docs")
+            rename_sha = git(repo, "rev-parse", "HEAD").decode("utf-8").strip()
+            legacy_rename_paths = (
+                git(repo, "diff", "--name-only", f"{hidden_sha}...{rename_sha}")
+                .decode("utf-8")
+                .splitlines()
+            )
+            self.assertEqual(legacy_rename_paths, ["docs/moved_tool.py"])
+            self.assertFalse(
+                dt.select_a1_capture_scope(legacy_rename_paths)["run_live_capture"]
+            )
+            safe_rename_file = Path(tmpdir) / "rename.bin"
+            safe_rename_file.write_bytes(
+                git(
+                    repo,
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "-z",
+                    "--no-renames",
+                    "--name-only",
+                    f"{hidden_sha}...{rename_sha}",
+                )
+            )
+            out_rename = Path(tmpdir) / "rename.json"
+            self.assertEqual(
+                dt.main(
+                    [
+                        "a1-scope",
+                        "--changed-files-file",
+                        str(safe_rename_file),
+                        "--output",
+                        str(out_rename),
+                    ]
+                ),
+                0,
+            )
+            rename_decision = json.loads(out_rename.read_text(encoding="utf-8"))
+            self.assertTrue(rename_decision["run_live_capture"])
+            self.assertEqual(rename_decision["matched_paths"], [".dagger/src/tool.py"])
+
+            # 3. Non-ASCII Unicode path under .dagger/ (with both safe NUL and quoted diff):
+            uni_path = repo / ".dagger" / "测试.py"
+            uni_path.write_text("U = 1\n", encoding="utf-8")
+            git(repo, "add", ".dagger/测试.py")
+            git(repo, "commit", "-q", "-m", "unicode dagger path")
+            uni_sha = git(repo, "rev-parse", "HEAD").decode("utf-8").strip()
+            quoted_lines = (
+                git(
+                    repo,
+                    "-c",
+                    "core.quotePath=true",
+                    "diff",
+                    "--name-only",
+                    f"{rename_sha}...{uni_sha}",
+                )
+                .decode("utf-8")
+                .splitlines()
+            )
+            self.assertTrue(
+                dt.select_a1_capture_scope(quoted_lines)["run_live_capture"]
+            )
+            safe_uni_file = Path(tmpdir) / "unicode.bin"
+            safe_uni_file.write_bytes(
+                git(
+                    repo,
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "-z",
+                    "--no-renames",
+                    "--name-only",
+                    f"{rename_sha}...{uni_sha}",
+                )
+            )
+            out_uni = Path(tmpdir) / "unicode.json"
+            dt.main(
+                [
+                    "a1-scope",
+                    "--changed-files-file",
+                    str(safe_uni_file),
+                    "--output",
+                    str(out_uni),
+                ]
+            )
+            uni_decision = json.loads(out_uni.read_text(encoding="utf-8"))
+            self.assertTrue(uni_decision["run_live_capture"])
+            self.assertEqual(uni_decision["matched_paths"], [".dagger/测试.py"])
+
+    def test_ci_workflow_uses_safe_git_diff_for_a1_scope(self) -> None:
+        ci_yml = (
+            Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'git -c core.quotePath=false diff -z --no-renames --name-only "${base_sha}...${HEAD_SHA}"',
+            ci_yml,
+        )
 
 
 if __name__ == "__main__":
