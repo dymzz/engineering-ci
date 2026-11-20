@@ -4018,3 +4018,74 @@ def test_raw_execution_reports_carry_plan_authorization_for_reconciliation(repo)
         unauth_raw, report_ref_for(unauth_raw)
     )
     assert unauth_raw["checks"][0]["native_results"][0]["result_id"] in urej
+
+
+def test_directory_artifact_closure_emits_member_digests(tmp_path):
+    artifact_root = tmp_path / "artifacts"
+    (artifact_root / "docs" / "nested").mkdir(parents=True)
+    (artifact_root / "docs" / "empty_dir").mkdir(parents=True)
+    (artifact_root / "out").mkdir(parents=True)
+    gen_bytes = b"# Generated guide\n"
+    sub_bytes = b"nested-payload\n"
+    single_bytes = b"single-file\n"
+    (artifact_root / "docs" / "generated.md").write_bytes(gen_bytes)
+    (artifact_root / "docs" / "nested" / "sub.txt").write_bytes(sub_bytes)
+    (artifact_root / "out" / "single.txt").write_bytes(single_bytes)
+
+    expected_dir_sha = execution.artifact_directory_id(artifact_root / "docs")
+    dir_closure = execution.verify_artifact_output(
+        artifact_root,
+        {"kind": "directory", "path": "docs", "sha256": expected_dir_sha},
+    )
+    assert dir_closure["ok"] is True
+    assert dir_closure["sha256"] == expected_dir_sha
+    assert dir_closure["files"] == ["docs/generated.md", "docs/nested/sub.txt"]
+    assert dir_closure["file_digests"] == {
+        "docs/generated.md": hashlib.sha256(gen_bytes).hexdigest(),
+        "docs/nested/sub.txt": hashlib.sha256(sub_bytes).hexdigest(),
+    }
+
+    single_sha = hashlib.sha256(single_bytes).hexdigest()
+    file_closure = execution.verify_artifact_output(
+        artifact_root,
+        {"kind": "file", "path": "out/single.txt", "sha256": single_sha},
+    )
+    assert file_closure["ok"] is True
+    assert file_closure["file_digests"] == {"out/single.txt": single_sha}
+
+    ok, reason, edge_entry = execution.evaluate_edge(
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "check", "name": "docs"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {
+                "kind": "directory",
+                "path": "docs",
+                "sha256": expected_dir_sha,
+            },
+        },
+        {"status": "passed"},
+        artifact_root=artifact_root,
+    )
+    assert ok is True and reason is None
+    assert edge_entry["verified"] is True
+    assert edge_entry["materialized_files"] == [
+        "docs/generated.md",
+        "docs/nested/sub.txt",
+    ]
+    assert edge_entry["materialized_file_digests"] == dir_closure["file_digests"]
+
+    mismatch = execution.verify_artifact_output(
+        artifact_root,
+        {"kind": "directory", "path": "docs", "sha256": "0" * 64},
+    )
+    assert mismatch["ok"] is False
+    assert mismatch["reason"] == "data_artifact_digest_mismatch"
+    assert mismatch["file_digests"] == dir_closure["file_digests"]
+    missing = execution.verify_artifact_output(
+        artifact_root,
+        {"kind": "directory", "path": "missing_dir"},
+    )
+    assert missing["ok"] is False
+    assert missing["file_digests"] == {}

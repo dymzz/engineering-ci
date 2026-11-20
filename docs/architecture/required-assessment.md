@@ -56,8 +56,12 @@ attached external prerequisite results are independently verified via `#63` Job
 Receipt, Issuer, Implementation, `(run_ref, attempt_ref)`, repository Source
 identity (preserving non-overlapping Check closures while verifying shared
 `materialization_ref` or digest-checked `source_content_binding` per-path hashes
-across overlapping non-overlaid inputs and per-path `generated_input` overlay
-digests, plus identical snapshot/tree/commit invariants), Profile/Receipt scope,
+across overlapping non-overlaid inputs and member-verified `generated_input`
+overlays — `file` overlays by exact path digest and `directory` overlays strictly
+by `artifact_closure` (`verified=True`, matching consumer/producer identity,
+directory `sha256`, `materialized_files`, and per-member
+`materialized_file_digests` matching consumer `source_content_binding`), never
+waiving unmaterialized sibling paths under a directory prefix — plus identical snapshot/tree/commit invariants), Profile/Receipt scope,
 sibling Expected applicability/resolution checks, and scope-filtered receipt
 selection (permitting `#66-C`-compatible redundant `job_ref` observations of one
 Report/Issuer/Attempt/Attribution with preserved `observed_job_receipt_refs`,

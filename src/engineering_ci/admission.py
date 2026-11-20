@@ -649,34 +649,184 @@ def _normalize_sha256_hex(value):
     return text if _SHA256_RE.fullmatch(text) else None
 
 
+def _normalize_rel_path(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    norm = value.replace("\\", "/").strip("/")
+    if not norm or any(part in {".", "..", ""} for part in norm.split("/")):
+        return None
+    return norm
+
+
 def _generated_overlays(raw_result):
     overlays = []
     for ref in raw_result.get("input_refs") or ():
         if not isinstance(ref, dict) or ref.get("kind") != "generated_input":
             continue
-        raw_path = ref.get("path")
+        norm = _normalize_rel_path(ref.get("path"))
         sha_hex = _normalize_sha256_hex(ref.get("sha256"))
-        if not isinstance(raw_path, str) or not raw_path.strip() or sha_hex is None:
-            return None
-        norm = raw_path.replace("\\", "/").strip("/")
         kind = ref.get("input_kind") or "file"
-        if not norm or kind not in {"file", "directory"}:
+        producer_ref = ref.get("producer_ref")
+        if (
+            norm is None
+            or sha_hex is None
+            or kind not in {"file", "directory"}
+            or (producer_ref is not None and not isinstance(producer_ref, dict))
+        ):
             return None
-        overlays.append({"path": norm, "input_kind": kind, "sha256": sha_hex})
+        overlays.append(
+            {
+                "path": norm,
+                "input_kind": kind,
+                "sha256": sha_hex,
+                "producer_ref": producer_ref,
+            }
+        )
     return overlays
 
 
-def _covering_overlays(rel_path, overlays):
-    norm = str(rel_path).replace("\\", "/").strip("/")
-    hits = []
+def _dependent_consumer_refs(dependent_raw, dep_report):
+    owners = []
+    dep_id = dependent_raw.get("result_id") if isinstance(dependent_raw, dict) else None
+    if isinstance(dep_report, dict) and dep_id:
+        for item in dep_report.get("checks") or ():
+            if not isinstance(item, dict):
+                continue
+            candidates = []
+            if isinstance(item.get("native_result"), dict):
+                candidates.append(item["native_result"])
+            candidates.extend(
+                res
+                for res in (item.get("native_results") or ())
+                if isinstance(res, dict)
+            )
+            if any(res.get("result_id") == dep_id for res in candidates):
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    ref = {"kind": "check", "name": name}
+                    if ref not in owners:
+                        owners.append(ref)
+        tests_entry = dep_report.get("tests")
+        if isinstance(tests_entry, dict):
+            candidates = []
+            if isinstance(tests_entry.get("native_result"), dict):
+                candidates.append(tests_entry["native_result"])
+            candidates.extend(
+                res
+                for res in (tests_entry.get("native_results") or ())
+                if isinstance(res, dict)
+            )
+            if any(res.get("result_id") == dep_id for res in candidates):
+                ref = {"kind": "tests"}
+                if ref not in owners:
+                    owners.append(ref)
+    if owners:
+        return owners
+    check_id = (
+        (dependent_raw.get("check") or {}).get("check_id")
+        if isinstance(dependent_raw, dict)
+        else None
+    )
+    if isinstance(check_id, str) and check_id:
+        return [{"kind": "check", "name": check_id}]
+    return []
+
+
+def _validate_directory_closure_entry(closure, overlay, dep_paths):
+    if closure.get("verified") is not True:
+        return None
+    output_ref = closure.get("output_ref") or {}
+    if _normalize_sha256_hex(closure.get("sha256")) != overlay["sha256"]:
+        return None
+    out_sha = output_ref.get("sha256")
+    if out_sha is not None and _normalize_sha256_hex(out_sha) != overlay["sha256"]:
+        return None
+    raw_files = closure.get("materialized_files")
+    raw_digests = closure.get("materialized_file_digests")
+    if not isinstance(raw_files, (list, tuple)) or not isinstance(raw_digests, dict):
+        return None
+    prefix = overlay["path"] + "/"
+    norm_files = []
+    for item in raw_files:
+        norm = _normalize_rel_path(item)
+        if norm is None or not norm.startswith(prefix):
+            return None
+        norm_files.append(norm)
+    member_map = {}
+    for raw_key, raw_digest in raw_digests.items():
+        norm = _normalize_rel_path(raw_key)
+        sha_hex = _normalize_sha256_hex(raw_digest)
+        if norm is None or sha_hex is None or not norm.startswith(prefix):
+            return None
+        if norm in member_map and member_map[norm] != sha_hex:
+            return None
+        member_map[norm] = sha_hex
+    if set(norm_files) != set(member_map.keys()):
+        return None
+    for path, sha_hex in member_map.items():
+        if path in dep_paths and dep_paths[path] != sha_hex:
+            return None
+    return member_map
+
+
+def _directory_overlay_members(overlays, dependent_raw, dep_report, dep_paths):
+    dir_overlays = [ov for ov in overlays if ov["input_kind"] == "directory"]
+    if not dir_overlays:
+        return True, {}
+    if dep_paths is None or not isinstance(dep_report, dict):
+        return False, {}
+    closures = dep_report.get("artifact_closure")
+    if not isinstance(closures, (list, tuple)) or not closures:
+        return False, {}
+    consumer_refs = _dependent_consumer_refs(dependent_raw, dep_report)
+    if not consumer_refs:
+        return False, {}
+    member_digests = {}
+    for ov in dir_overlays:
+        matches = []
+        for closure in closures:
+            if not isinstance(closure, dict):
+                continue
+            output_ref = closure.get("output_ref")
+            if (
+                not isinstance(output_ref, dict)
+                or output_ref.get("kind") != "directory"
+                or _normalize_rel_path(output_ref.get("path")) != ov["path"]
+            ):
+                continue
+            if closure.get("consumer_ref") not in consumer_refs:
+                continue
+            if (
+                ov["producer_ref"] is not None
+                and closure.get("producer_ref") != ov["producer_ref"]
+            ):
+                continue
+            matches.append(closure)
+        if not matches:
+            return False, {}
+        for closure in matches:
+            member_map = _validate_directory_closure_entry(closure, ov, dep_paths)
+            if member_map is None:
+                return False, {}
+            for path, sha_hex in member_map.items():
+                member_digests.setdefault(path, set()).add(sha_hex)
+    return True, member_digests
+
+
+def _covered_overlay_digests(rel_path, overlays, dir_member_digests):
+    norm = _normalize_rel_path(rel_path)
+    if norm is None:
+        return set(), False
+    digests = set()
+    covered = False
     for item in overlays:
-        ov = item["path"]
-        if item["input_kind"] == "file":
-            if norm == ov or ov.startswith(norm + "/"):
-                hits.append(item)
-        elif norm == ov or norm.startswith(ov + "/") or ov.startswith(norm + "/"):
-            hits.append(item)
-    return hits
+        if item["input_kind"] == "file" and item["path"] == norm:
+            digests.add(item["sha256"])
+            covered = True
+    if norm in dir_member_digests:
+        digests.update(dir_member_digests[norm])
+        covered = True
+    return digests, covered
 
 
 def _verified_path_digests(raw_result, report=None):
@@ -743,9 +893,17 @@ def _prerequisite_source_mismatch(
        must hold.
     2. Paths covered by validated ``generated_input`` entries in
        ``dependent_raw["input_refs"]`` are excluded from equal-byte requirement
-       ONLY for the specific covered paths, and exact ``file`` overlays must
-       agree with verified consumer path digests when present (or re-hash to
-       ``dep_src["content_digest"]`` when closing the full consumer scope).
+       ONLY for the specific covered file members: exact ``file`` overlays
+       must agree with verified consumer path digests when present (or re-hash
+       to ``dep_src["content_digest"]`` when closing the full consumer scope);
+       ``directory`` overlays NEVER waive arbitrary paths by directory prefix
+       and instead exempt ONLY exact members proven via an authenticated
+       verified ``artifact_closure`` entry (``verified is True``, matching
+       directory ``sha256``, consumer/producer identity, ``materialized_files``,
+       and ``materialized_file_digests`` agreeing with verified consumer
+       ``source_content_binding`` digests). Unproven directory overlays or
+       paths under a directory prefix omitted from ``materialized_files``
+       fail closed or stay in ``uncovered_overlap``.
     3. Overlapping paths not covered by a valid ``generated_input`` overlay
        (``uncovered_overlap``) MUST agree on bytes: identical closures via
        ``content_digest``, full closures via matching ``content_digest`` and
@@ -785,6 +943,11 @@ def _prerequisite_source_mismatch(
     dep_state, dep_paths = _verified_path_digests(dependent_raw, dep_report)
     if prereq_state == "invalid" or dep_state == "invalid":
         return True
+    dir_ok, dir_member_digests = _directory_overlay_members(
+        overlays, dependent_raw, dep_report, dep_paths
+    )
+    if not dir_ok:
+        return True
 
     prereq_scope = sorted(
         {
@@ -796,47 +959,46 @@ def _prerequisite_source_mismatch(
         {str(p).replace("\\", "/") for p in (dep_src.get("verified_input_scope") or ())}
     )
     overlap = sorted(set(prereq_scope) & set(dep_scope))
-    overlaid_overlap = [p for p in overlap if _covering_overlays(p, overlays)]
-    uncovered_overlap = [p for p in overlap if not _covering_overlays(p, overlays)]
+    overlaid_overlap = [
+        p
+        for p in overlap
+        if _covered_overlay_digests(p, overlays, dir_member_digests)[1]
+    ]
+    uncovered_overlap = [
+        p
+        for p in overlap
+        if not _covered_overlay_digests(p, overlays, dir_member_digests)[1]
+    ]
 
     for path in overlaid_overlap:
-        hits = [
-            ov
-            for ov in _covering_overlays(path, overlays)
-            if ov["input_kind"] == "file" and ov["path"] == path
-        ]
-        if hits:
-            if len({ov["sha256"] for ov in hits}) > 1:
+        digests, _ = _covered_overlay_digests(path, overlays, dir_member_digests)
+        if len(digests) != 1:
+            return True
+        expected_sha = next(iter(digests))
+        if dep_paths is not None:
+            if dep_paths.get(path) != expected_sha:
                 return True
-            if dep_paths is not None:
-                if dep_paths.get(path) != hits[0]["sha256"]:
-                    return True
-            elif all(
-                any(
-                    ov["input_kind"] == "file" and ov["path"] == item
-                    for ov in _covering_overlays(item, overlays)
+        elif not dir_member_digests and all(
+            len(_covered_overlay_digests(item, overlays, dir_member_digests)[0]) == 1
+            for item in dep_scope
+        ):
+            entries = {
+                item: next(
+                    iter(
+                        _covered_overlay_digests(item, overlays, dir_member_digests)[0]
+                    )
                 )
                 for item in dep_scope
-            ):
-                entries = {
-                    item: next(
-                        ov["sha256"]
-                        for ov in _covering_overlays(item, overlays)
-                        if ov["input_kind"] == "file" and ov["path"] == item
-                    )
-                    for item in dep_scope
-                }
-                expected_digest = hashlib.sha256(
-                    json.dumps(entries, sort_keys=True, separators=(",", ":")).encode(
-                        "utf-8"
-                    )
-                ).hexdigest()
-                if expected_digest != _normalize_sha256_hex(
-                    dep_src.get("content_digest")
-                ):
-                    return True
-            else:
+            }
+            expected_digest = hashlib.sha256(
+                json.dumps(entries, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if expected_digest != _normalize_sha256_hex(dep_src.get("content_digest")):
                 return True
+        else:
+            return True
 
     if prereq_scope == dep_scope and not overlaid_overlap:
         if prereq_src.get("content_digest") != dep_src.get("content_digest"):

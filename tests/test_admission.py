@@ -1586,6 +1586,7 @@ def _prereq_multi_receipt_fixture(
     prereq_binding=None,
     dep_binding=None,
     dep_extra_inputs=(),
+    dep_artifact_closures=None,
     receipt_specs=(),
     alt_prereq_reports=(),
     trusted_issuers=None,
@@ -1658,6 +1659,8 @@ def _prereq_multi_receipt_fixture(
     report = report_for(dependent)
     if dep_binding is not None:
         report["checks"][0]["source_content_binding"] = copy.deepcopy(dep_binding)
+    if dep_artifact_closures is not None:
+        report["artifact_closure"] = copy.deepcopy(dep_artifact_closures)
     report_ref = report_ref_for(report)
     job_receipt = job_receipt_for(report_ref)
     resolution = {
@@ -2058,3 +2061,194 @@ def test_t1a_new014_overlapping_closure_byte_consistency_and_generated_overlay()
     )
     assert entry_gen["admitted"] is True
     assert res_gen["remaining_work"] == []
+
+
+def test_prerequisite_directory_overlay_requires_verified_member_digests():
+    shared_sha = "4" * 64
+    drifted_sha = "5" * 64
+    gen_sha = "7" * 64
+    new_shared_sha = "8" * 64
+    dir_sha = "9" * 64
+    producer_ref = {"kind": "prerequisite_action", "name": "gen-docs"}
+    consumer_ref = {"kind": "check", "name": "reconciled"}
+    dir_overlay = {
+        "kind": "generated_input",
+        "input_kind": "directory",
+        "producer_ref": producer_ref,
+        "path": "docs/",
+        "sha256": dir_sha,
+    }
+
+    def dir_closure(
+        *,
+        verified=True,
+        sha=dir_sha,
+        files=("docs/generated.md",),
+        digests=None,
+        consumer=consumer_ref,
+        producer=producer_ref,
+    ):
+        entry = {
+            "producer_ref": copy.deepcopy(producer),
+            "consumer_ref": copy.deepcopy(consumer),
+            "output_ref": {"kind": "directory", "path": "docs", "sha256": dir_sha},
+            "verified": verified,
+            "reason": None if verified else "data_artifact_digest_mismatch",
+            "sha256": sha,
+            "materialized_files": list(files),
+        }
+        if digests is not None:
+            entry["materialized_file_digests"] = dict(digests)
+        return [entry]
+
+    # 1. Directory overlay docs/ generates docs/generated.md ONLY; docs/shared.md drifted
+    #    between prereq & dep -> NOT waived by docs/ prefix -> REJECTED!
+    p_s1, p_b1 = _bound_source(
+        {
+            "ci-hygiene.toml": "1" * 64,
+            "docs/shared.md": shared_sha,
+            "docs/only.md": "a" * 64,
+        },
+        actual="worktree",
+    )
+    d_s1, d_b1 = _bound_source(
+        {
+            "ci-hygiene.toml": "1" * 64,
+            "docs/shared.md": drifted_sha,
+            "docs/generated.md": gen_sha,
+            "src/app.py": "b" * 64,
+        },
+        actual="dagger_directory",
+    )
+    _r1, e1, _, _ = _prereq_multi_receipt_fixture(
+        prereq_source=p_s1,
+        dep_source=d_s1,
+        prereq_binding=p_b1,
+        dep_binding=d_b1,
+        dep_extra_inputs=(dir_overlay,),
+        dep_artifact_closures=dir_closure(
+            files=("docs/generated.md",),
+            digests={"docs/generated.md": gen_sha},
+        ),
+        receipt_specs=[{"job_ref": "job-prereq"}],
+    )
+    assert e1["admitted"] is False
+    assert "prerequisite_result_scope_mismatch" in e1["reasons"]
+
+    # 2. Same setup where docs/shared.md did NOT drift -> docs/shared.md stays in
+    #    uncovered_overlap and matches -> ADMITTED.
+    d_s2, d_b2 = _bound_source(
+        {
+            "ci-hygiene.toml": "1" * 64,
+            "docs/shared.md": shared_sha,
+            "docs/generated.md": gen_sha,
+            "src/app.py": "b" * 64,
+        },
+        actual="dagger_directory",
+    )
+    res2, e2, _, _ = _prereq_multi_receipt_fixture(
+        prereq_source=p_s1,
+        dep_source=d_s2,
+        prereq_binding=p_b1,
+        dep_binding=d_b2,
+        dep_extra_inputs=(dir_overlay,),
+        dep_artifact_closures=dir_closure(
+            files=("docs/generated.md",),
+            digests={"docs/generated.md": gen_sha},
+        ),
+        receipt_specs=[{"job_ref": "job-prereq"}],
+    )
+    assert e2["admitted"] is True
+    assert res2["remaining_work"] == []
+
+    # 3. Producer genuinely overwrote docs/shared.md inside docs/ -> verified
+    #    materialized_files + materialized_file_digests matches dep_paths -> ADMITTED.
+    d_s3, d_b3 = _bound_source(
+        {
+            "ci-hygiene.toml": "1" * 64,
+            "docs/shared.md": new_shared_sha,
+            "docs/generated.md": gen_sha,
+            "src/app.py": "b" * 64,
+        },
+        actual="dagger_directory",
+    )
+    res3, e3, _, _ = _prereq_multi_receipt_fixture(
+        prereq_source=p_s1,
+        dep_source=d_s3,
+        prereq_binding=p_b1,
+        dep_binding=d_b3,
+        dep_extra_inputs=(dir_overlay,),
+        dep_artifact_closures=dir_closure(
+            files=("docs/generated.md", "docs/shared.md"),
+            digests={"docs/generated.md": gen_sha, "docs/shared.md": new_shared_sha},
+        ),
+        receipt_specs=[{"job_ref": "job-prereq"}],
+    )
+    assert e3["admitted"] is True
+    assert res3["remaining_work"] == []
+
+    # 4. Unproven / broken directory overlay closures MUST fail closed even if sha256 matches:
+    bad_closures = [
+        None,
+        dir_closure(
+            verified=False,
+            files=("docs/generated.md", "docs/shared.md"),
+            digests={"docs/generated.md": gen_sha, "docs/shared.md": new_shared_sha},
+        ),
+        dir_closure(
+            sha="f" * 64,
+            files=("docs/generated.md", "docs/shared.md"),
+            digests={"docs/generated.md": gen_sha, "docs/shared.md": new_shared_sha},
+        ),
+        dir_closure(files=("docs/generated.md", "docs/shared.md"), digests=None),
+        dir_closure(
+            files=("docs/generated.md", "docs/shared.md"),
+            digests={"docs/generated.md": gen_sha, "docs/shared.md": "0" * 64},
+        ),
+        dir_closure(
+            files=("docs/generated.md", "docs/shared.md"),
+            digests={"docs/generated.md": gen_sha},
+        ),
+        dir_closure(
+            files=("docs/generated.md", "docs/shared.md"),
+            digests={"docs/generated.md": gen_sha, "docs/shared.md": new_shared_sha},
+            consumer={"kind": "check", "name": "other"},
+        ),
+        dir_closure(
+            files=("docs/generated.md", "docs/shared.md"),
+            digests={"docs/generated.md": gen_sha, "docs/shared.md": new_shared_sha},
+            producer={"kind": "prerequisite_action", "name": "other"},
+        ),
+        dir_closure(
+            files=("docs/generated.md", "other/shared.md"),
+            digests={"docs/generated.md": gen_sha, "other/shared.md": new_shared_sha},
+        ),
+    ]
+    for bad_closure in bad_closures:
+        _rb, eb, _, _ = _prereq_multi_receipt_fixture(
+            prereq_source=p_s1,
+            dep_source=d_s3,
+            prereq_binding=p_b1,
+            dep_binding=d_b3,
+            dep_extra_inputs=(dir_overlay,),
+            dep_artifact_closures=bad_closure,
+            receipt_specs=[{"job_ref": "job-prereq"}],
+        )
+        assert eb["admitted"] is False
+        assert "prerequisite_result_scope_mismatch" in eb["reasons"]
+
+    # 5. Missing dep source_content_binding with directory overlay MUST fail closed:
+    _rnb, enb, _, _ = _prereq_multi_receipt_fixture(
+        prereq_source=p_s1,
+        dep_source=d_s2,
+        prereq_binding=p_b1,
+        dep_binding=None,
+        dep_extra_inputs=(dir_overlay,),
+        dep_artifact_closures=dir_closure(
+            files=("docs/generated.md",),
+            digests={"docs/generated.md": gen_sha},
+        ),
+        receipt_specs=[{"job_ref": "job-prereq"}],
+    )
+    assert enb["admitted"] is False
+    assert "prerequisite_result_scope_mismatch" in enb["reasons"]

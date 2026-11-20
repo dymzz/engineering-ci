@@ -40,6 +40,7 @@ from test_required_assessment import (
 from engineering_ci import (
     admission,
     check_contract,
+    execution,
     expected_checks,
     local_actions_handoff,
     reconciliation,
@@ -2647,7 +2648,9 @@ def test_new014_p2a_p2b_multi_receipt_conflict_and_cross_source_across_r1():
         required_assessment.validate_assessment(r1_c)
 
 
-def _overlap_e2e_chain(*, prereq_paths, dep_paths, dep_extra_inputs=()):
+def _overlap_e2e_chain(
+    *, prereq_paths, dep_paths, dep_extra_inputs=(), dep_artifact_closures=None
+):
     profile = make_profile(
         declared_checks=["tach"],
         obligations=[{"obligation_ref": "o/tach", "check_names": ["tach"]}],
@@ -2747,6 +2750,8 @@ def _overlap_e2e_chain(*, prereq_paths, dep_paths, dep_extra_inputs=()):
             }
         ],
     }
+    if dep_artifact_closures is not None:
+        tach_report["artifact_closure"] = copy.deepcopy(dep_artifact_closures)
     tach_report_ref = report_ref_for(tach_report)
     tach_jr = {
         "kind": reconciliation.JOB_RECEIPT_KIND,
@@ -2955,3 +2960,207 @@ def test_new014_p1_overlapping_path_consistency_and_generated_overlay_across_r1(
     )
     assert r1_g["status"] == "passed"
     required_assessment.validate_assessment(r1_g)
+
+
+def test_new014_p1_directory_overlay_member_proof_across_r1(tmp_path):
+    # Real execution.build_consumer_view + evaluate_edge + generated_input_refs for
+    # a Directory artifact `docs/` containing only `docs/generated.md`.
+    base_repo = tmp_path / "repo"
+    (base_repo / "docs").mkdir(parents=True)
+    (base_repo / "src").mkdir(parents=True)
+    shared_path = base_repo / "docs" / "shared.md"
+    only_path = base_repo / "docs" / "only.md"
+    cfg_path = base_repo / "ci-hygiene.toml"
+    app_path = base_repo / "src" / "app.py"
+    shared_path.write_text("shared v1\n", encoding="utf-8")
+    only_path.write_text("only docs\n", encoding="utf-8")
+    cfg_path.write_text("strict = true\n", encoding="utf-8")
+    app_path.write_text("X = 1\n", encoding="utf-8")
+
+    shared_digest = check_contract.file_digest(shared_path)
+    only_digest = check_contract.file_digest(only_path)
+    cfg_digest = check_contract.file_digest(cfg_path)
+    app_digest = check_contract.file_digest(app_path)
+
+    art_dir_only = tmp_path / "art-gen-only"
+    (art_dir_only / "docs").mkdir(parents=True)
+    gen_file = art_dir_only / "docs" / "generated.md"
+    gen_file.write_text("# generated guide\n", encoding="utf-8")
+    dir_only_sha = execution.artifact_directory_id(art_dir_only / "docs")
+    edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": "gen-docs"},
+        "consumer_ref": {"kind": "check", "name": "tach"},
+        "dependency_kind": "data",
+        "requires_pass": True,
+        "output_ref": {"kind": "directory", "path": "docs", "sha256": dir_only_sha},
+    }
+    ok_edge, reason_edge, closure_only = execution.evaluate_edge(
+        edge, {"status": "passed"}, artifact_root=art_dir_only
+    )
+    assert ok_edge is True and reason_edge is None
+    temp_only, consumer_only = execution.build_consumer_view(
+        base_repo, [(art_dir_only, "docs", "directory")]
+    )
+    try:
+        gen_digest = check_contract.file_digest(consumer_only / "docs" / "generated.md")
+        consumer_only_shared_digest = check_contract.file_digest(
+            consumer_only / "docs" / "shared.md"
+        )
+    finally:
+        temp_only.cleanup()
+    assert closure_only["materialized_file_digests"] == {
+        "docs/generated.md": gen_digest
+    }
+    dir_refs_only = execution.generated_input_refs(
+        [closure_only], {"kind": "check", "name": "tach"}
+    )
+
+    prereq_base = {
+        "ci-hygiene.toml": cfg_digest,
+        "docs/shared.md": shared_digest,
+        "docs/only.md": only_digest,
+    }
+
+    # 1. Consumer docs/shared.md drifted while Producer docs/ ONLY materialized
+    #    docs/generated.md -> docs/shared.md stays uncovered and BLOCKS R1.
+    drifted_shared = tmp_path / "drifted.md"
+    drifted_shared.write_text("shared drifted!\n", encoding="utf-8")
+    drifted_digest = check_contract.file_digest(drifted_shared)
+    t1_d, proj_d, r1_d, sid_d, e_d = _overlap_e2e_chain(
+        prereq_paths=prereq_base,
+        dep_paths={
+            "ci-hygiene.toml": cfg_digest,
+            "docs/shared.md": drifted_digest,
+            "docs/generated.md": gen_digest,
+            "src/app.py": app_digest,
+        },
+        dep_extra_inputs=dir_refs_only,
+        dep_artifact_closures=[closure_only],
+    )
+    key_d = f"{sid_d}/{e_d['expected_check_ref']}"
+    assert t1_d["entries"][0]["admitted"] is False
+    assert "prerequisite_result_scope_mismatch" in t1_d["entries"][0]["reasons"]
+    assert (
+        proj_d["accepted_coverage_by_instance"][key_d]["admission_status"]
+        == "unverified"
+    )
+    assert proj_d["remaining_work"][0]["reason"] == "prerequisite_result_scope_mismatch"
+    assert r1_d["status"] == "blocked"
+    assert check_row(r1_d, e_d)["status"] == "unverified"
+
+    # 2. Same real consumer_view where docs/shared.md is unchanged -> PASSES across R1.
+    t1_ok, proj_ok, r1_ok, sid_ok, e_ok = _overlap_e2e_chain(
+        prereq_paths=prereq_base,
+        dep_paths={
+            "ci-hygiene.toml": cfg_digest,
+            "docs/shared.md": consumer_only_shared_digest,
+            "docs/generated.md": gen_digest,
+            "src/app.py": app_digest,
+        },
+        dep_extra_inputs=dir_refs_only,
+        dep_artifact_closures=[closure_only],
+    )
+    key_ok = f"{sid_ok}/{e_ok['expected_check_ref']}"
+    assert t1_ok["status"] == "admitted"
+    assert (
+        proj_ok["accepted_coverage_by_instance"][key_ok]["admission_status"]
+        == "admitted"
+    )
+    assert r1_ok["status"] == "passed"
+    required_assessment.validate_assessment(r1_ok)
+
+    # 3. Producer directory docs/ genuinely overwrites docs/shared.md -> real
+    #    evaluate_edge() + build_consumer_view() emits member digests -> PASSES R1.
+    art_dir_over = tmp_path / "art-over"
+    (art_dir_over / "docs").mkdir(parents=True)
+    (art_dir_over / "docs" / "generated.md").write_text(
+        "# generated guide\n", encoding="utf-8"
+    )
+    (art_dir_over / "docs" / "shared.md").write_text(
+        "generated shared replacement\n", encoding="utf-8"
+    )
+    dir_over_sha = execution.artifact_directory_id(art_dir_over / "docs")
+    ok_over, _, closure_over = execution.evaluate_edge(
+        {
+            **edge,
+            "output_ref": {"kind": "directory", "path": "docs", "sha256": dir_over_sha},
+        },
+        {"status": "passed"},
+        artifact_root=art_dir_over,
+    )
+    assert ok_over is True
+    temp_over, consumer_over = execution.build_consumer_view(
+        base_repo, [(art_dir_over, "docs", "directory")]
+    )
+    try:
+        new_shared_digest = check_contract.file_digest(
+            consumer_over / "docs" / "shared.md"
+        )
+    finally:
+        temp_over.cleanup()
+    assert new_shared_digest != shared_digest
+    dir_refs_over = execution.generated_input_refs(
+        [closure_over], {"kind": "check", "name": "tach"}
+    )
+    t1_ov, proj_ov, r1_ov, sid_ov, e_ov = _overlap_e2e_chain(
+        prereq_paths=prereq_base,
+        dep_paths={
+            "ci-hygiene.toml": cfg_digest,
+            "docs/shared.md": new_shared_digest,
+            "docs/generated.md": gen_digest,
+            "src/app.py": app_digest,
+        },
+        dep_extra_inputs=dir_refs_over,
+        dep_artifact_closures=[closure_over],
+    )
+    key_ov = f"{sid_ov}/{e_ov['expected_check_ref']}"
+    assert t1_ov["status"] == "admitted"
+    assert (
+        proj_ov["accepted_coverage_by_instance"][key_ov]["admission_status"]
+        == "admitted"
+    )
+    assert r1_ov["status"] == "passed"
+    required_assessment.validate_assessment(r1_ov)
+
+    # 4. Valid directory sha256 WITHOUT verified member proof or with verified=False /
+    #    wrong member digest MUST still fail closed across R1.
+    unproven_closures = [
+        None,
+        [{**closure_over, "verified": False}],
+        [
+            {
+                **closure_over,
+                "materialized_file_digests": {"docs/generated.md": gen_digest},
+            }
+        ],
+        [
+            {
+                **closure_over,
+                "materialized_file_digests": {
+                    "docs/generated.md": gen_digest,
+                    "docs/shared.md": "0" * 64,
+                },
+            }
+        ],
+    ]
+    for bad_closures in unproven_closures:
+        t1_b, proj_b, r1_b, sid_b, e_b = _overlap_e2e_chain(
+            prereq_paths=prereq_base,
+            dep_paths={
+                "ci-hygiene.toml": cfg_digest,
+                "docs/shared.md": new_shared_digest,
+                "docs/generated.md": gen_digest,
+                "src/app.py": app_digest,
+            },
+            dep_extra_inputs=dir_refs_over,
+            dep_artifact_closures=bad_closures,
+        )
+        key_b = f"{sid_b}/{e_b['expected_check_ref']}"
+        assert t1_b["entries"][0]["admitted"] is False
+        assert "prerequisite_result_scope_mismatch" in t1_b["entries"][0]["reasons"]
+        assert (
+            proj_b["accepted_coverage_by_instance"][key_b]["admission_status"]
+            == "unverified"
+        )
+        assert r1_b["status"] == "blocked"
+        required_assessment.validate_assessment(r1_b)

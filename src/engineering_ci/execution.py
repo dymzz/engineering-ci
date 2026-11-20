@@ -1492,6 +1492,7 @@ def verify_artifact_output(artifact_root, output_ref):
         "expected_sha256": expected,
         "sha256": None,
         "files": [],
+        "file_digests": {},
         "materialized_objects": [],
     }
     if artifact_root is None:
@@ -1512,18 +1513,22 @@ def verify_artifact_output(artifact_root, output_ref):
             return {**base_result, "ok": False, "reason": "data_artifact_type_mismatch"}
         digest = check_contract.file_digest(target)
         files = [Path(rel).as_posix()]
+        file_digests = {files[0]: digest}
         objects = [{"kind": "file", "path": rel}]
     else:
         if not target.is_dir():
             return {**base_result, "ok": False, "reason": "data_artifact_type_mismatch"}
         files = []
+        file_digests = {}
         for entry in sorted(
             target.rglob("*"), key=lambda item: item.relative_to(target).as_posix()
         ):
             if entry.is_symlink():
                 return {**base_result, "ok": False, "reason": "data_artifact_symlink"}
             if entry.is_file():
-                files.append(entry.relative_to(root_path).as_posix())
+                rel_entry = entry.relative_to(root_path).as_posix()
+                files.append(rel_entry)
+                file_digests[rel_entry] = check_contract.file_digest(entry)
         digest = artifact_directory_id(target)
         objects = [{"kind": "directory", "path": rel}]
     if expected is not None and digest != expected:
@@ -1533,6 +1538,7 @@ def verify_artifact_output(artifact_root, output_ref):
             "reason": "data_artifact_digest_mismatch",
             "sha256": digest,
             "files": files,
+            "file_digests": file_digests,
         }
     return {
         **base_result,
@@ -1540,6 +1546,7 @@ def verify_artifact_output(artifact_root, output_ref):
         "reason": None,
         "sha256": digest,
         "files": files,
+        "file_digests": file_digests,
         "materialized_objects": objects,
     }
 
@@ -1734,6 +1741,7 @@ def evaluate_edge(edge, producer_result, *, artifact_root=None):
             "reason": closure["reason"],
             "sha256": closure["sha256"],
             "materialized_files": closure["files"],
+            "materialized_file_digests": dict(closure.get("file_digests") or {}),
             "materialized_objects": closure.get("materialized_objects", []),
         }
         if not closure["ok"]:
