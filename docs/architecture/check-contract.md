@@ -163,8 +163,10 @@ reinterpreted):
   `vulture`, `whitespace`) are version 2 while keeping version 1 readable as
   the pre-tool contract; newly registered tool-bound Checks (`unittest`,
   `pytest`, `weaver_registry`, `weaver_live`, `weaver_terminal`) start at
-  version 1 with their declared tool requirements. This is independent of the
-  Result data schema.
+  version 1 with their declared tool requirements. Forwarding is version 2
+  because its applicability and AST semantics were restored; its version 1
+  results remain readable but do not satisfy version 2. This is independent of
+  the Result data schema.
 - A missing identity is `check_identity_missing`; a genuinely executed Check
   retains its original native status and diagnostics. The Host records
   `check_contract=identity_missing` and blocks the top-level Report as

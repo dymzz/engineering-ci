@@ -73,9 +73,9 @@ def test_builtin_definitions_declare_their_real_native_tools():
         assert [
             item.alternatives[0].access_id for item in definition.tool_requirements
         ] == [access]
-    for name in ("forwarding", "source"):
+    for name, version in (("forwarding", 2), ("source", 1)):
         definition = check_contract.definition_for(name)
-        assert definition.definition_version == 1
+        assert definition.definition_version == version
         assert definition.tool_requirements == ()
 
 

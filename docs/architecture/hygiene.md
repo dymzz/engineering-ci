@@ -49,7 +49,7 @@ repository-relative; no Knowledge directory (`data/catalog/**`,
 | Check | Runs when | Pass | Failure |
 | --- | --- | --- | --- |
 | `whitespace` | Always | `git diff --check <base>` exits 0 | Nonzero; whitespace diagnostics retained |
-| `forwarding` | A changed file under `forwarding.source_prefix` exists | No module became a pure re-export | Base content unreadable or module unparsable |
+| `forwarding` | A changed Python module under `forwarding.source_prefix` exists, excluding `__init__.py` | No module became a pure re-export | Base content unreadable or module unparsable |
 | `docs` | Documents changed, a path was deleted, or `--full` | Lychee exits 0 for the active affected documents | Lychee missing, broken links, other native failure |
 | `vulture` | Code changed (src/scripts/tests or tach/pyproject) | Exit 0, or exit in `advisory_exit_codes` (status `advisory`) | Other exit or missing tool |
 | `tach` | Code changed | `tach check` exits 0 | Config missing, check fails, tool missing |
@@ -59,8 +59,13 @@ repository-relative; no Knowledge directory (`data/catalog/**`,
   documents for `--full`/deletions); docs excluded by the consumer are not
   silently checked or reported as covered.
 - `forwarding` reports changed `src` modules that became pure re-exports while
-  the base version was substantive. This is an advisory review item, matching
-  the original native diagnostic; it does not fail the run.
+  the Base had at least one module-level AST statement and was not already a
+  pure re-export. This is an advisory review item, matching
+  the original native diagnostic; it does not fail the run. An import-only
+  module may also assign or annotate `__all__`; package `__init__.py` files and
+  modules whose base has no AST statements are excluded. Forwarding definition
+  version 2 restores these original migration semantics; version 1 remains
+  readable but cannot satisfy the version 2 Check.
 - Forwarding proves the Git worktree context and the base Commit and Tree before
   classifying a path as new. A listed but unavailable Blob fails the Internal
   check. Its observation records the Git probe command, exit code, diagnostics,
@@ -152,18 +157,17 @@ Result handoff, or #63 Trusted Admission has been delivered.
 
 [PR #139](https://github.com/dymzz/engineering-ci/pull/139) is the separate
 #66 Forwarding AST migration-semantics change: `__all__` assignment handling,
-package `__init__.py` exclusion, Base AST substance, and Check Definition v2.
-It is not a prerequisite to #132's completed Git Source slice. Integrate #139
-against the merged #132 code, retaining both sets of behavior after resolving
-conflicts and running targeted combined verification. Until that integration,
-the Forwarding AST implementation below reflects the #132 merged baseline,
-not the pending #139 semantics.
+package `__init__.py` exclusion, nonempty Base AST comparison, and Check Definition v2.
+It is not a prerequisite to #132's completed Git Source slice. PR #139 combines
+the restored AST semantics with the merged #132 Source behavior; their combined
+paths require targeted verification before acceptance.
 
 
 The Host path reads the Base Commit and Tree in the checkout's Git context.
 It uses exact Tree membership to distinguish a new path from an existing path
-whose Blob is unreadable. A substantive module that becomes a pure re-export
-produces an advisory. The Host also uses the existing Plan Source checks for
+whose Blob is unreadable. A Base module containing at least one module-level
+AST statement, and not already a pure re-export, produces an advisory when it
+becomes a pure re-export. The Host also uses the existing Plan Source checks for
 Index, Commit and Push snapshots before running the selected checks.
 
 For an immutable snapshot, applicability uses exact membership in the target
@@ -253,7 +257,8 @@ the container execution origin. Preserve both facts when handing off results.
 For the selected route, verify the Candidate/Directory/Ref and Baseline,
 the input bytes or the authenticated Native Result, its actual Origin, and the
 required Report/Artifact, #66-C and #63 consumption. Exercise an advisory for
-a substantive Base, a passing comparison for an already-forwarding Base,
+a Base with a nonempty module-level AST that was not already a pure re-export,
+a passing comparison for an already-forwarding Base,
 and rejection of a mismatched binding. Check that native failure propagates
 to the dependent Check or gate. The accepted Host failure Receipt can supply
 the Host evidence for that case.

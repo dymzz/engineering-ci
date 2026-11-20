@@ -361,7 +361,9 @@ def test_forwarding_execution_compares_committed_blob_bytes(repo):
 def test_forwarding_execution_missing_blob_is_source_failure(repo):
     path, base = repo
     relative = "src/pkg/sub.py"
-    (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
+    (path / relative).write_text(
+        "from .other import VALUE\n__all__ = ['VALUE']\n", encoding="utf-8"
+    )
     tree = run(path, "rev-parse", "--verify", f"{base}^{{commit}}^{{tree}}").strip()
     oid = _tree_blob(path, tree, relative)
     config_path = path / "ci-hygiene.toml"
@@ -479,7 +481,9 @@ def test_forwarding_does_not_trust_forged_deleted_path(repo, snapshot):
 
     path, base = repo
     relative = "src/pkg/sub.py"
-    (path / relative).write_text("from .other import VALUE\n", encoding="utf-8")
+    (path / relative).write_text(
+        "from .other import VALUE\n__all__ = ['VALUE']\n", encoding="utf-8"
+    )
     selection_path = path / "ci-selection.toml"
     selection_path.write_text(
         'schema_version = 1\nchecks = ["hygiene"]\n', encoding="utf-8"
@@ -743,7 +747,7 @@ def test_forwarding_selected_link_checks_target_source(
     elif target_kind == "internal":
         target = "target.py"
         (source.parent / target).write_text(
-            "from .other import VALUE\n", encoding="utf-8"
+            "from .other import VALUE\n__all__ = ['VALUE']\n", encoding="utf-8"
         )
     else:
         target = "missing.py"
@@ -1013,7 +1017,7 @@ def test_forwarding_commit_internal_link_binds_both_git_objects(repo, monkeypatc
     path, base = repo
     relative = "src/pkg/sub.py"
     target = "src/pkg/other.py"
-    target_bytes = b"from .sub import VALUE\n"
+    target_bytes = b"from .sub import VALUE\n__all__: list[str] = ['VALUE']\n"
     (path / target).write_bytes(target_bytes)
     (path / relative).unlink()
     _source_symlink(path / relative, "other.py")

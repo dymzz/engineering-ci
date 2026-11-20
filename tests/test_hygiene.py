@@ -469,6 +469,74 @@ def test_forwarding_tree_query_failure_is_explicit(repo):
     assert check["executable"] == "git"
 
 
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("from .other import VALUE\n__all__ = ['VALUE']\n", True),
+        ("from .other import VALUE\n__all__: list[str] = ['VALUE']\n", True),
+        ("from .other import VALUE\n__all__ = __all__ = ['VALUE']\n", True),
+        ("from .other import VALUE\n__all__ = ALIAS = ['VALUE']\n", False),
+        ("from .other import VALUE\n__all__ += ['VALUE']\n", False),
+        ("import other\n__all__ = ['other']\n", False),
+        ("from .other import VALUE\nVALUE = 1\n", False),
+    ],
+)
+def test_pure_reexport_retains_original_export_list_semantics(content, expected):
+    assert hygiene._pure_reexport(content) is expected
+
+
+@pytest.mark.parametrize(
+    "export_list", ["__all__ = ['VALUE']", "__all__: list[str] = ['VALUE']"]
+)
+def test_forwarding_with_export_list_reports_original_advisory(repo, export_list):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text(
+        f"from .other import VALUE\n{export_list}\n", encoding="utf-8"
+    )
+    result = report(path, base, checks=("forwarding",))
+    assert by_name(result)["forwarding"]["status"] == "advisory"
+    assert "src/pkg/sub.py" in by_name(result)["forwarding"]["findings"][0]
+
+
+@pytest.mark.parametrize(
+    ("previous", "expected"),
+    [
+        ("", "passed"),
+        ("# no statements\n", "passed"),
+        ('"""A module docstring."""\n', "advisory"),
+        ("from .other import VALUE\n__all__ = ['VALUE']\n", "passed"),
+        ("VALUE = 1\n", "advisory"),
+    ],
+)
+def test_forwarding_compares_original_base_substance(repo, previous, expected):
+    path, _ = repo
+    source = path / "src/pkg/sub.py"
+    source.write_text(previous, encoding="utf-8")
+    run(path, "add", "--", "src/pkg/sub.py")
+    run(path, "commit", "--allow-empty", "-qm", "set comparison base")
+    base = run(path, "rev-parse", "HEAD").strip()
+    source.write_text("from .other import VALUE\n", encoding="utf-8")
+    result = report(path, base, checks=("forwarding",))
+    assert by_name(result)["forwarding"]["status"] == expected
+
+
+def test_forwarding_excludes_package_initializers_from_scope_and_execution(repo):
+    path, _ = repo
+    initializer = path / "src/pkg/__init__.py"
+    initializer.write_text("VALUE = 1\n", encoding="utf-8")
+    run(path, "add", "--", "src/pkg/__init__.py")
+    run(path, "commit", "-qm", "set package initializer base")
+    base = run(path, "rev-parse", "HEAD").strip()
+    initializer.write_text("from .other import VALUE\n", encoding="utf-8")
+    change = changes(path, base)
+    value = config(path, ("forwarding",))
+    scope = hygiene.check_applicability(change, value, root=path)["forwarding"]
+    assert scope["status"] == "not_applicable"
+    assert scope["inputs"] == []
+    result = hygiene.run(change, value, root=path, runner=FakeRunner())
+    assert by_name(result)["forwarding"]["status"] == "not_applicable"
+
+
 def test_report_records_git_identity_and_changes(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
