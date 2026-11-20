@@ -250,9 +250,13 @@ authority evidence.
    Tag, Release or asset mutation, including asset recovery. Require
    `status=verified`, `release_authorized is True` and
    `contract_sample is False` with the native and independent evidence
-   above. Check existing Draft and immutable Final Release evidence
-   against the currently authorized identity. Propagate refusal through
-   the actual `workflow_actions` output and exit status.
+   above. Draft recovery requires current authorization and validation
+   of the saved Manifest against its original Run and Attempt. Continue
+   to verify historical final Release identity and the saved Manifest
+   on the read side. Policy expiry or revocation changes eligibility for
+   future writes or promotion and preserves the recorded publication
+   fact. Propagate write refusal through the actual `workflow_actions`
+   output and exit status.
 4. Exercise authorized first publish and recovery with a recording API.
    Require zero writes for absent or blocked R1, expired/revoked/wrong
    scope policy, Manifest substitution, wrong Artifact ID/digest/Attempt
@@ -277,14 +281,29 @@ authority evidence.
    and authorized Due Window, including any approval of specific late
    evidence or a historical reevaluation. Preserve prior results and
    pair-level `lifecycle_all_phases_passed=false`.
-3. Exercise the production read-side handoff in
-   `release.verification.published` and `cli.release.inspect`. Record
-   which post-stage status reaches the release inspection result while
-   retaining the publication fact. Where policy designates an existing
-   Promotion or Disposition action, verify its actual input and decision
-   at that action's authorization boundary. Pending/blocked evidence
-   must remain visible and convey no progression grant. Record a
-   disposition as executed only when its consumer returns a receipt.
+3. Apply the existing governed Profile or Policy to select the destination
+   for each duty. Record the actual entry point and outcome for the
+   applicable duties.
+   - **Release inspection** uses `release.verification.published` and
+     `cli.release.inspect`. Record the historical Release identity and
+     current post-stage status independently. This receipt proves that
+     the read-side consumer received and exposed the result.
+   - **Promotion** consumes the result at the specific promotion write
+     boundary designated by the Policy. When the obligation blocks
+     progression, require that consumer's refusal and zero promotion
+     writes. Pending or blocked evidence conveys no progression grant.
+   - **Notification or reevaluation** uses the action named by the
+     Profile. For notification retain the destination and native action
+     receipt. For reevaluation retain the triggering input and the
+     resulting evaluation Run/Attempt or governed receipt. A
+     `disposition` value records a requested outcome. An execution
+     receipt establishes that the action occurred.
+
+   The repository currently exposes the Release inspection entry points.
+   A governed production Profile and its selected Promotion,
+   Notification or Reevaluation destinations are still needed for
+   those duties. Leave a disposition unverified until its actual
+   consumer and result can be identified.
 4. Require original Run/Attempt and consumer evidence for a valid
    same-candidate trigger. Exercise missing or forged event, mismatched
    Attempt/Artifact/Ref/Candidate, future Trigger, reversed chronology,
