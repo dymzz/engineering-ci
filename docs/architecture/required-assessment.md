@@ -39,23 +39,31 @@ Required coverage per instance.
 `admission_source_authority` and `admission_current_authorization` (plus
 optional `admission_adjudications`, which must be attested by
 `admission_source_authority` via `adjudications_ref`). It invokes the #63
-issuer using the validated evaluation context. Every integrity- and
-issuer-verified `failed` Native Result in T1-a is projected into
-`authenticated_failures_by_instance` (even when unselected): a verified failure
-sharing the same `(run_ref, attempt_ref, job_ref)` as a selected witness blocks
-T1-a admission (`same_attempt_authenticated_failure`) and enters
-`remaining_work`, while a verified failure from a different attempt blocks R1
-as `unmet` until covered by an authenticated adjudication. T2 candidate
-selection uses a deterministic total order over scope, expected check ref,
-result IDs and candidate digest. T1-b `verify_local_handoff()` validates
-producer `check_ids` as a strict non-empty string sequence before
-normalization, enforces timezone-aware ISO timestamps (aligned with R4), binds
-optional grant/payload scope identities, and retains every consumer check in
-`remaining_work` whenever provenance is unauthenticated or rejected. Existing
-direct Gate inputs keep the legacy trust boundary. The integration tests invoke
-the #66-B2 / #63 / #61 producer APIs with controlled authority decisions;
-production issuer trust roots and server-side Required Rulesets remain
-deployment/integration work.
+issuer using the validated evaluation context. Check-level and Report-level
+observation independence is preserved in T1-a and Gate Projection: an unrelated
+failed diagnostic observation in an independent Report and independent Job
+Receipt for the same execution attempt remains in `observed_diagnostics` /
+`nonselected_origins` without contaminating an independently verified selected
+witness, and different Checks in the same Job/Attempt (`tach` PASS + `vulture`
+FAIL) are evaluated independently per `(scope_id, expected_check_ref)`.
+Conversely, a verified `failed` Native Result blocks T1-a admission and enters
+`remaining_work` and `authenticated_failures_by_instance` whenever it is the
+terminal failure of that Check (`not admitted`), shares the same Report or Job
+Receipt (`shared_report_authenticated_failure`) with the selected witness, or
+fails a consumed prerequisite result or report `blocked_by` dependency
+(`prerequisite_result_failed`); and a verified failure for the same
+`(scope_id, expected_check_ref)` from a different attempt/run is projected into
+`authenticated_failures_by_instance` so R1 blocks the instance as `unmet` until
+covered by an authenticated retry adjudication. T2 candidate selection uses a
+deterministic total order over scope, expected check ref, result IDs and
+candidate digest. T1-b `verify_local_handoff()` validates producer `check_ids`
+as a strict non-empty string sequence before normalization, enforces
+timezone-aware ISO timestamps (aligned with R4), binds optional grant/payload
+scope identities, and retains every consumer check in `remaining_work` whenever
+provenance is unauthenticated or rejected. Existing direct Gate inputs keep the
+legacy trust boundary. The integration tests invoke the #66-B2 / #63 / #61
+producer APIs with controlled authority decisions; production issuer trust roots
+and server-side Required Rulesets remain deployment/integration work.
 
 
 ## Position
@@ -208,13 +216,25 @@ the Profile phase) and `phase_status`. R1 consumes that status:
   authority, rule and conflict gaps are never cleared). R1 still refuses a bare
   self-reported `phase_status="verified"` string without `phase_proof` and an
   independent `phase_authority` verifier (`expected_phase_proof_unverified`).
-  When `phase_authority` (and optionally `universe_authority`) returns a
-  structured verified decision matching the exact scope, expected set, phase,
-  profile SHA-256, universe ref and proof ref, R1 accepts the Check Domain and
-  records `inputs.phase_verification` (and
-  `inputs.universe_source_verification`), which `validate_assessment()`
-  re-validates alongside authority temporal causality (`approved_at`,
-  `effective_at`, `evaluated_at`, `valid_from`, `valid_until`).
+  When `phase_authority` returns a structured verified decision matching the
+  exact scope, expected set, phase, profile SHA-256, universe ref and proof ref,
+  R1 accepts the Check Domain and records `inputs.phase_verification`. For
+  non-sample Required evaluations (`contract_sample=False`), R1 also requires an
+  independent `universe_authority` (validated via
+  `required_assessment.authenticate_obligations_universe()` /
+  `assess_required_obligations(..., universe_authority=...)`) binding the exact
+  `universe_ref`, `profile_ref`, `profile_revision`, `approval_source`,
+  `profile_sha256`, `approval_digest`, `authority_source_ref`,
+  `governance_domain.closure_ref`, `scope_id` and `expected_set_ref` onto
+  `inputs.universe_source_verification`; without a verified
+  `universe_source_verification` (or when governance/delegation closure,
+  authority window, revocation or profile binding fails), non-sample
+  `verification.authority` and `verification.obligations_universe` fail closed
+  as `unverified` (`universe_issuer_authority_missing` /
+  `universe_source_unverified`) and `validate_assessment()` rejects any
+  non-sample `passed` or `verified` claim lacking
+  `inputs.universe_source_verification` alongside authority temporal causality
+  (`approved_at`, `effective_at`, `evaluated_at`, `valid_from`, `valid_until`).
 - A no-Phase Profile uses `phase_status="not_applicable"` (or omits the field);
   its complete Check Domain remains legal.
 

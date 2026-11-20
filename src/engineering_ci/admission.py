@@ -480,17 +480,106 @@ def _same_observed_scope(left, right):
     return bool(left_receipt and left_receipt == right.get("job_receipt_ref"))
 
 
-def _same_execution_attempt(left, right):
-    for field in ("run_ref", "attempt_ref", "job_ref"):
-        left_value = left.get(field)
-        right_value = right.get(field)
-        if (
-            not isinstance(left_value, str)
-            or not left_value
-            or left_value != right_value
-        ):
-            return False
-    return True
+def _blocked_by_names(check):
+    if not isinstance(check, dict):
+        return set()
+    blocked_by = check.get("blocked_by")
+    deps = (
+        [blocked_by]
+        if isinstance(blocked_by, str)
+        else list(blocked_by)
+        if isinstance(blocked_by, list)
+        else []
+    )
+    names = set()
+    for dep in deps:
+        if isinstance(dep, str) and dep:
+            names.add(dep)
+        elif isinstance(dep, dict):
+            ref = dep.get("producer_ref")
+            if (
+                isinstance(ref, dict)
+                and isinstance(ref.get("name"), str)
+                and ref["name"]
+            ):
+                names.add(ref["name"])
+            if isinstance(dep.get("name"), str) and dep["name"]:
+                names.add(dep["name"])
+            if isinstance(dep.get("check_id"), str) and dep["check_id"]:
+                names.add(dep["check_id"])
+    return names
+
+
+def _consumed_prerequisite_failed(selected_facts, selected_raw, facts_by_id, reports):
+    consumed_ids = set()
+    for raw in selected_raw:
+        if isinstance(raw, dict):
+            consumed_ids.update(
+                item
+                for item in check_contract._consumed_result_ids(raw)
+                if isinstance(item, str) and item
+            )
+    for prereq_id in consumed_ids:
+        fact = facts_by_id.get(prereq_id)
+        if fact is not None:
+            if (
+                fact.get("origin_status") != "verified"
+                or fact.get("implementation_status") != "approved"
+                or fact.get("status") != "passed"
+            ):
+                return True
+            continue
+        found_passing = False
+        for report in reports.values():
+            parent = _parent_check(report, prereq_id)
+            if parent is None:
+                continue
+            if parent.get("status") in {"failed", "not_executed"}:
+                return True
+            native_items = parent.get("native_results")
+            if native_items is None and isinstance(parent.get("native_result"), dict):
+                native_items = [parent["native_result"]]
+            for candidate in native_items or ():
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("result_id") == prereq_id
+                ):
+                    if candidate.get("status") != "passed":
+                        return True
+                    found_passing = True
+        if not found_passing:
+            return True
+
+    failed_check_identifiers = set()
+    for report in reports.values():
+        for check in report.get("checks") or ():
+            if not isinstance(check, dict):
+                continue
+            native_items = check.get("native_results")
+            if native_items is None and isinstance(check.get("native_result"), dict):
+                native_items = [check["native_result"]]
+            has_failed_native = any(
+                isinstance(item, dict)
+                and item.get("status") in {"failed", "not_executed"}
+                for item in (native_items or ())
+            )
+            if check.get("status") in {"failed", "not_executed"} or has_failed_native:
+                if isinstance(check.get("name"), str) and check["name"]:
+                    failed_check_identifiers.add(check["name"])
+                if isinstance(check.get("check_id"), str) and check["check_id"]:
+                    failed_check_identifiers.add(check["check_id"])
+
+    if failed_check_identifiers:
+        for fact in selected_facts:
+            report_ref = fact.get("report_ref") or {}
+            sha = report_ref.get("sha256")
+            report = reports.get("sha256:" + sha) if isinstance(sha, str) else None
+            if report is None:
+                continue
+            parent = _parent_check(report, fact.get("result_id"))
+            if _blocked_by_names(parent) & failed_check_identifiers:
+                return True
+    return False
 
 
 def _entry_admission_v2(
@@ -632,16 +721,21 @@ def _entry_admission_v2(
         and fact.get("issuer_status") == "verified"
         and fact.get("status") == "failed"
     ]
-    same_attempt_failed = any(
-        (
-            _same_observed_scope(selected, failed)
-            or _same_execution_attempt(selected, failed)
-        )
+    shared_scope_failed = any(
+        _same_observed_scope(selected, failed)
         for selected in selected_facts
         for failed in authenticated_failed
         if failed is not selected
     )
     selected_raw = [raw_by_id[item] for item in selected_ids if raw_by_id.get(item)]
+    facts_by_id = {
+        fact["result_id"]: fact
+        for fact in facts
+        if isinstance(fact.get("result_id"), str)
+    }
+    prerequisite_failed = bool(selected_facts) and _consumed_prerequisite_failed(
+        selected_facts, selected_raw, facts_by_id, reports
+    )
     decision = None
     decision_reason = None
     if selected_ids and len(selected_raw) == len(selected_ids):
@@ -672,7 +766,8 @@ def _entry_admission_v2(
         and bool(selected_ids)
         and selected_clean
         and not contaminated
-        and not same_attempt_failed
+        and not shared_scope_failed
+        and not prerequisite_failed
         and decision_ok
         and all(fact.get("status") == "passed" for fact in selected_facts)
     )
@@ -705,7 +800,8 @@ def _entry_admission_v2(
             and fact.get("status") == "failed"
             for fact in facts
         )
-        or same_attempt_failed
+        or shared_scope_failed
+        or prerequisite_failed
         or any(
             fact.get("implementation_status") == "unapproved" for fact in selected_facts
         )
@@ -728,8 +824,10 @@ def _entry_admission_v2(
         reasons.append(f"receipt_status_{entry.get('binding_status')}")
     if not selected_ids:
         reasons.append("selected_witness_missing")
-    if same_attempt_failed:
-        reasons.append("same_attempt_authenticated_failure")
+    if shared_scope_failed:
+        reasons.append("shared_report_authenticated_failure")
+    if prerequisite_failed:
+        reasons.append("prerequisite_result_failed")
     if any(
         fact.get("integrity_status") == "verified" and fact.get("status") == "failed"
         for fact in facts
@@ -2290,28 +2388,37 @@ def project_t1_t2_gate_admission(
                     and fact.get("integrity_status") == "verified"
                     and fact.get("issuer_status") == "verified"
                 ):
-                    same_attempt = fact.get("selected") is not True and any(
-                        _same_observed_scope(sel, fact)
-                        or _same_execution_attempt(sel, fact)
+                    shared_scope = fact.get("selected") is not True and any(
+                        _same_observed_scope(sel, fact) for sel in selected.values()
+                    )
+                    cross_attempt = fact.get("selected") is not True and any(
+                        (sel.get("run_ref"), sel.get("attempt_ref"))
+                        != (fact.get("run_ref"), fact.get("attempt_ref"))
                         for sel in selected.values()
                     )
-                    failures.setdefault(key, []).append(
-                        {
-                            "result_id": result_id,
-                            "failure_kind": "native_failure",
-                            "native_status": "failed",
-                            "origin_trace": _gate_origin(
-                                fact, "admission_projection_origin_invalid"
-                            ),
-                            "applicable_to": copy.deepcopy(applicable_to),
-                            "issued_at": None,
-                            "reason": (
-                                "same_attempt_authenticated_failure"
-                                if same_attempt
-                                else "authenticated_native_failure"
-                            ),
-                        }
-                    )
+                    if (
+                        fact.get("selected") is True
+                        or not admitted
+                        or shared_scope
+                        or cross_attempt
+                    ):
+                        failures.setdefault(key, []).append(
+                            {
+                                "result_id": result_id,
+                                "failure_kind": "native_failure",
+                                "native_status": "failed",
+                                "origin_trace": _gate_origin(
+                                    fact, "admission_projection_origin_invalid"
+                                ),
+                                "applicable_to": copy.deepcopy(applicable_to),
+                                "issued_at": None,
+                                "reason": (
+                                    "shared_report_authenticated_failure"
+                                    if shared_scope
+                                    else "authenticated_native_failure"
+                                ),
+                            }
+                        )
             if admitted:
                 if (
                     not ids

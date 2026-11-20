@@ -786,8 +786,35 @@ def make_receipt(projection, entry, *, status="passed"):
     return receipt, result["result_id"]
 
 
+def universe_authority_for():
+    def verify(context):
+        return {
+            "status": "verified",
+            "universe_ref": context["universe_ref"],
+            "profile_ref": context["profile"]["profile_ref"],
+            "profile_revision": context["profile"]["profile_revision"],
+            "approval_source": context["profile"]["approval_source"],
+            "profile_sha256": context["profile_sha256"],
+            "approval_digest": context["profile"]["approval_digest"],
+            "authority_source_ref": context["authority"]["source_ref"],
+            "closure_ref": context["governance_domain"]["closure_ref"],
+            "scope_id": context["scope_id"],
+            "expected_set_ref": context["expected_set_ref"],
+            "issuer_ref": copy.deepcopy(AUTHORITY_REF),
+            "verification_ref": copy.deepcopy(CLOSURE_REF),
+        }
+
+    return verify
+
+
 def assess(universe, projection, **kwargs):
     kwargs.setdefault("evaluated_at", EVALUATED_AT)
+    if (
+        isinstance(universe, dict)
+        and universe.get("contract_sample") is False
+        and "universe_authority" not in kwargs
+    ):
+        kwargs["universe_authority"] = universe_authority_for()
     return required_assessment.assess_required_obligations(
         universe=universe,
         expected=projection,

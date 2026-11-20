@@ -744,18 +744,7 @@ def test_t1a_unrelated_bad_observation_does_not_contaminate_selected_witness():
     bad_result = native(status="failed")
     bad_report = report_for(bad_result)
     bad_report_ref = report_ref_for(bad_report)
-    # Unverified/untrusted observation from a separate job/attempt and report
-    # must not contaminate an independently verified selected witness.
-    untrusted_issuer = {
-        "name": "untrusted-observer",
-        "version": "1",
-        "sha256": "9" * 64,
-    }
-    bad_job_receipt = {
-        **job_receipt_for(bad_report_ref, issuer=untrusted_issuer),
-        "job_ref": "job-other",
-        "attempt_ref": "attempt/0",
-    }
+    bad_job_receipt = job_receipt_for(bad_report_ref)
     evidence = compact_evidence(bad_result, bad_report_ref, bad_job_receipt)
     updated = with_observed(receipt, evidence)
     result = admit_evidence(
@@ -772,32 +761,217 @@ def test_t1a_unrelated_bad_observation_does_not_contaminate_selected_witness():
     assert result["summary"]["admitted"] == 1
 
 
-def test_t1a_new014_same_attempt_independent_report_verified_failure_blocks_admission():
-    projection, receipt, report, job_receipt = setup()
-    failed_result = native(status="failed")
-    failed_report = report_for(failed_result)
-    failed_report_ref = report_ref_for(failed_report)
-    # Same (job_ref, run_ref, attempt_ref) with an independent verified Report
-    # and Job Receipt carrying an authenticated Native failure must block.
-    failed_job_receipt = job_receipt_for(failed_report_ref)
-    evidence = compact_evidence(failed_result, failed_report_ref, failed_job_receipt)
-    updated = with_observed(receipt, evidence)
+def test_t1a_new014_shared_report_verified_failure_blocks_selected_witness():
+    entry = make_entry()
+    projection = make_projection(entry)
+    passed_result = native(status="passed", source=STRONG_SOURCE)
+    failed_result = native(status="failed", source=STRONG_SOURCE)
+    shared_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "reconciled",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [passed_result, failed_result],
+            }
+        ],
+    }
+    shared_report_ref = report_ref_for(shared_report)
+    shared_job_receipt = job_receipt_for(shared_report_ref)
+    receipt = reconciliation.reconcile_expected_results(
+        projection,
+        routing=[routing_for(entry)],
+        resolutions=[resolution_for(entry)],
+        observations=[
+            {
+                "job_ref": "job-1",
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "report": shared_report,
+                "report_ref": copy.deepcopy(shared_report_ref),
+                "native_results": [passed_result, failed_result],
+                "job_receipt": copy.deepcopy(shared_job_receipt),
+            }
+        ],
+    )
     result = admit_evidence(
         projection,
-        updated,
-        reports=[report, failed_report],
-        job_receipts=[job_receipt, failed_job_receipt],
+        receipt,
+        reports=[shared_report],
+        job_receipts=[shared_job_receipt],
         policy=policy_for(),
     )
-    entry = result["entries"][0]
-    assert entry["admitted"] is False
-    assert entry["status"] == "unsatisfied"
-    assert entry["obligation_status"] == "unsatisfied"
-    assert "same_attempt_authenticated_failure" in entry["reasons"]
-    assert "native_failed" in entry["reasons"]
+    entry_result = result["entries"][0]
+    assert entry_result["admitted"] is False
+    assert entry_result["status"] == "unsatisfied"
+    assert entry_result["obligation_status"] == "unsatisfied"
+    assert "shared_report_authenticated_failure" in entry_result["reasons"]
+    assert "native_failed" in entry_result["reasons"]
     assert result["summary"]["admitted"] == 0
     assert len(result["remaining_work"]) == 1
-    assert result["remaining_work"][0]["reason"] == "same_attempt_authenticated_failure"
+    assert (
+        result["remaining_work"][0]["reason"] == "shared_report_authenticated_failure"
+    )
+
+
+def test_t1a_new014_prerequisite_failure_blocks_dependent_check():
+    prereq_failed = native(status="failed", source=STRONG_SOURCE)
+    prereq_report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "docs-inventory",
+                "status": "failed",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [prereq_failed],
+            }
+        ],
+    }
+    prereq_input = [{"kind": "check_result", "result_id": prereq_failed["result_id"]}]
+    entry = make_entry(source=STRONG_SOURCE, input_refs=prereq_input)
+    projection = make_projection(entry, source=STRONG_SOURCE)
+    definition = check_contract.definition_for("tach")
+    dependent_pass = check_contract.native_result(
+        definition,
+        source=copy.deepcopy(STRONG_SOURCE),
+        status="passed",
+        result_origin="host",
+        result_instance="run-1",
+        native_exit_code=0,
+        evidence={"stdout": ""},
+        rule_ref=copy.deepcopy(RULE_TACH),
+        input_refs=copy.deepcopy(prereq_input),
+        runner_ref=RUNNER_REF,
+        profile_ref=None,
+        tool=check_contract.tool_ref("tach/check"),
+    )
+    report = report_for(dependent_pass)
+    report_ref = report_ref_for(report)
+    job_receipt = job_receipt_for(report_ref)
+    resolution = {
+        **resolution_for(entry),
+        "input_refs": copy.deepcopy(prereq_input),
+    }
+    receipt = reconciliation.reconcile_expected_results(
+        projection,
+        routing=[routing_for(entry)],
+        resolutions=[resolution],
+        observations=[observation_for(report, report_ref, job_receipt)],
+    )
+    assert receipt["entries"][0]["selected_result_ids"] == [dependent_pass["result_id"]]
+    result = admit_evidence(
+        projection,
+        receipt,
+        reports=[report, prereq_report],
+        job_receipts=[job_receipt],
+        policy=policy_for(),
+        resolutions=[resolution],
+    )
+    entry_result = result["entries"][0]
+    assert entry_result["admitted"] is False
+    assert entry_result["status"] == "unsatisfied"
+    assert entry_result["obligation_status"] == "unsatisfied"
+    assert "prerequisite_result_failed" in entry_result["reasons"]
+    assert len(result["remaining_work"]) == 1
+
+
+def test_t1a_new014_same_job_attempt_independent_checks_isolate_pass_and_fail():
+    tach_entry = make_entry("tach", rule_ref=RULE_TACH, source=STRONG_SOURCE)
+    vulture_entry = make_entry("vulture", rule_ref=RULE_VULTURE, source=STRONG_SOURCE)
+    projection = make_projection([tach_entry, vulture_entry], source=STRONG_SOURCE)
+    tach_pass = native(status="passed", source=STRONG_SOURCE, rule=RULE_TACH)
+    vulture_def = check_contract.definition_for("vulture")
+    vulture_fail = check_contract.native_result(
+        vulture_def,
+        source=copy.deepcopy(STRONG_SOURCE),
+        status="failed",
+        result_origin="host",
+        result_instance="run-1",
+        native_exit_code=1,
+        evidence={"stdout": "unused symbol"},
+        rule_ref=copy.deepcopy(RULE_VULTURE),
+        runner_ref=RUNNER_REF,
+        profile_ref=None,
+        tool=check_contract.tool_ref("vulture/dead-code"),
+    )
+    report = {
+        "kind": reconciliation.EXECUTION_REPORT_KIND,
+        "schema_version": 1,
+        "checks": [
+            {
+                "name": "tach",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [tach_pass],
+            },
+            {
+                "name": "vulture",
+                "verification_implementation": copy.deepcopy(IMPLEMENTATION),
+                "native_results": [vulture_fail],
+            },
+        ],
+    }
+    report_ref = report_ref_for(report)
+    job_receipt = job_receipt_for(report_ref)
+    resolutions = [
+        resolution_for(tach_entry),
+        {
+            **resolution_for(vulture_entry),
+            "rule_ref": copy.deepcopy(RULE_VULTURE),
+        },
+    ]
+    receipt = reconciliation.reconcile_expected_results(
+        projection,
+        routing=[routing_for(tach_entry), routing_for(vulture_entry)],
+        resolutions=resolutions,
+        observations=[
+            {
+                "job_ref": "job-1",
+                "run_ref": RUN_REF,
+                "attempt_ref": ATTEMPT_REF,
+                "runner_ref": RUNNER_REF,
+                "report": report,
+                "report_ref": copy.deepcopy(report_ref),
+                "native_results": [tach_pass, vulture_fail],
+                "job_receipt": copy.deepcopy(job_receipt),
+            }
+        ],
+    )
+    policy = {
+        "trusted_issuers": [copy.deepcopy(JOB_ISSUER)],
+        "approved_implementations": [
+            {
+                "check_id": tach_entry["check_id"],
+                "definition_version": tach_entry["definition_version"],
+                **IMPLEMENTATION,
+            },
+            {
+                "check_id": vulture_entry["check_id"],
+                "definition_version": vulture_entry["definition_version"],
+                **IMPLEMENTATION,
+            },
+        ],
+    }
+    result = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy,
+        resolutions=resolutions,
+    )
+    assert result["status"] == "partial"
+    by_name = {item["name"]: item for item in result["entries"]}
+    assert by_name["tach"]["admitted"] is True
+    assert by_name["tach"]["obligation_status"] == "satisfied"
+    assert by_name["vulture"]["admitted"] is False
+    assert by_name["vulture"]["obligation_status"] == "unsatisfied"
+    assert "native_failed" in by_name["vulture"]["reasons"]
+    assert [item["expected_check_ref"] for item in result["remaining_work"]] == [
+        vulture_entry["expected_check_ref"]
+    ]
 
 
 def test_t1a_new014_different_attempt_verified_failure_preserved_for_gate_projection():
@@ -823,7 +997,7 @@ def test_t1a_new014_different_attempt_verified_failure_preserved_for_gate_projec
     )
     entry = result["entries"][0]
     assert entry["admitted"] is True
-    assert "same_attempt_authenticated_failure" not in entry["reasons"]
+    assert "shared_report_authenticated_failure" not in entry["reasons"]
     assert "native_failed" in entry["reasons"]
     assert any(
         fact["status"] == "failed"
