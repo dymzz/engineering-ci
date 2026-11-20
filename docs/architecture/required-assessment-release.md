@@ -117,6 +117,26 @@ Consumers must not derive permission to publish from `status=verified`,
 serialization edge remains a nonblocking follow-up observation under #61,
 not evidence of a demonstrated production publication bypass.
 
+## Write-side consumer
+
+The existing `workflow_actions release publish` path passes the Actions Run
+and Attempt to `release.publishing.publish_release`. Before mutating a Tag,
+Release or asset, the publisher resolves current R1, Profile Artifact
+obligations and their independent policy authorities through the protected
+caller's `release_authority`. It runs R4 with the native publication Provider
+on the exact publication Manifest and verifies the resulting authorization.
+The existing Workflow supplies a same-Run, same-Attempt publication
+Manifest. Cross-Run validation handoff remains an R4 contract and cannot
+replace this Workflow's publication evidence.
+
+The authority must be wired by an independently governed caller with
+the original R1 and policy sources. The default Actions invocation
+currently has no such binding and refuses writes before any mutation.
+A read-only probe of an already-final Release verifies its original
+immutable evidence without requesting new write authorization. Recovering
+a Draft requires current authorization and checks the saved Manifest's
+original Attempt and currently required Artifact names and digests.
+
 ## Native execution evidence and remaining integration scope
 
 The real [validation-only Run 44455217421](https://github.com/dymzz/engineering-ci/actions/runs/44455217421)

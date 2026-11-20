@@ -7,7 +7,7 @@ import argparse
 import sys
 
 
-def main(argv=None):
+def main(argv=None, *, release_authority=None):
     args = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -19,6 +19,9 @@ def main(argv=None):
     operation = parser.parse_args(args[:1]).operation
     if operation == "release":
         from .release.publishing import main as invoke
+
+        if release_authority is not None:
+            return invoke(args[1:], release_authority=release_authority)
     elif operation == "manifest":
         from .release.manifest import main as invoke
     elif operation == "powershell":

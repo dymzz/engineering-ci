@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..github_cli import ApiError, GitHub
@@ -188,12 +190,77 @@ def release_url(release, repository):
     return actual
 
 
-def publish_release(api, tag, head, manifest, path):
-    from .manifest import write
+def _require_write_authorization(api, manifest, context, release_authority):
+    from .. import required_assessment_release as r4
+
+    if release_authority is None:
+        raise ValueError("release_publication_authority_missing")
+    if not callable(release_authority):
+        raise TypeError("release_publication_authority_invalid")
+    inputs = release_authority(deepcopy(context), deepcopy(manifest))
+    if not isinstance(inputs, dict) or set(inputs) - {
+        "assessment",
+        "policy_snapshot_authority",
+        "artifact_obligations",
+        "artifact_obligation_authority",
+        "check_bindings",
+    }:
+        raise ValueError("release_publication_authority_inputs_invalid")
+    if inputs.get("assessment") is None:
+        raise ValueError("release_publication_assessment_missing")
+    envelope = r4.reconcile_release_assessment(
+        inputs["assessment"],
+        manifest,
+        publish_context=context,
+        policy_snapshot_authority=inputs.get("policy_snapshot_authority"),
+        artifact_obligations=inputs.get("artifact_obligations"),
+        artifact_obligation_authority=inputs.get("artifact_obligation_authority"),
+        check_bindings=inputs.get("check_bindings"),
+        manifest_provider_authority=r4.manifest_provider_from_publication(api),
+    )
+    r4.require_reconciliation_manifest(
+        envelope,
+        manifest,
+        repository=context["repository"],
+        tag=context["tag"],
+        head=context["head_sha"],
+    )
+    if (
+        envelope["status"] != "verified"
+        or envelope["release_authorized"] is not True
+        or envelope["contract_sample"] is not False
+    ):
+        reasons = ", ".join(envelope["reasons"]) or envelope["status"]
+        raise ValueError(f"release_publication_not_authorized: {reasons}")
+    return envelope
+
+
+def publish_release(
+    api,
+    tag,
+    head,
+    manifest,
+    path,
+    *,
+    run_id=None,
+    run_attempt=None,
+    release_authority=None,
+):
+    """Publish with fresh R4 evidence from the protected caller.
+
+    The authority resolves the original R1 assessment and governed policy and
+    artifact inputs for this exact request. The native Provider is read here.
+    """
+    from .manifest import validate, write
 
     repository = manifest["repository"]
-    # Validate identity and original Actions results before any publication write.
-    published_evidence(api, manifest, repository, tag, head)
+    validate(manifest, repository, tag, head)
+    if (
+        manifest["mode"] != "publication"
+        or manifest["result"] != "passed"
+        or not manifest["tools"]
+    ):
+        raise ValueError("Publication requires complete passed evidence")
     proposed = json.loads(json.dumps(manifest))
     release = candidate(api, tag, head, True)
     if release is not None and not release["draft"]:
@@ -204,6 +271,29 @@ def publish_release(api, tag, head, manifest, path):
             raise ValueError("Existing final Release lacks matching Manifest")
         published_evidence(api, saved, repository, tag, head)
         return release["html_url"], "already-published"
+    workflow = manifest["workflow"]
+    if (
+        type(run_id) is not int
+        or type(run_attempt) is not int
+        or (run_id, run_attempt) != (workflow["run_id"], workflow["run_attempt"])
+    ):
+        raise ValueError("release_publication_run_attempt_mismatch")
+    authorization = _require_write_authorization(
+        api,
+        manifest,
+        {
+            "repository": repository,
+            "tag": tag,
+            "head_sha": head,
+            "mode": "publication",
+            "phase": "pre_publish",
+            "manifest_binding": "same_run",
+            "run_id": run_id,
+            "run_attempt": run_attempt,
+            "evaluated_at": datetime.now(UTC).isoformat(),
+        },
+        release_authority,
+    )
     if tag_commit(api, tag) is None:
         # Create-only API: never PATCH, force-push, or rewrite an existing tag.
         try:
@@ -242,6 +332,12 @@ def publish_release(api, tag, head, manifest, path):
         if saved["release"]["release_url"] != release_url(release, repository):
             raise ValueError("Draft Manifest Release URL mismatch")
         published_evidence(api, saved, repository, tag, head)
+        recorded = {item["name"] for item in saved["artifacts"] if item.get("digest")}
+        if any(
+            item["name"] not in recorded
+            for item in authorization["artifact_obligations"]["items"]
+        ):
+            raise ValueError("release_draft_required_artifact_missing")
     live = candidate(api, tag, head, True)
     if live is None or live["id"] != release["id"] or live.get("draft") is not True:
         raise ValueError("Draft changed before final publication")
@@ -311,7 +407,7 @@ def require_evidence(directory):
     ET.fromstring((directory / "core/core-coverage.xml").read_text(encoding="utf-8"))
 
 
-def main(argv=None):
+def main(argv=None, *, release_authority=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "evidence", "verify", "publish"))
     parser.add_argument("--directory", type=Path)
@@ -407,6 +503,9 @@ def main(argv=None):
                 head,
                 value,
                 args.manifest,
+                run_id=int(os.environ["GITHUB_RUN_ID"]),
+                run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                release_authority=release_authority,
             )
         print(json.dumps(result))
         summary = os.environ.get("GITHUB_STEP_SUMMARY")

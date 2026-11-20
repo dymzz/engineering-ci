@@ -11,9 +11,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_release_manifest import IDS, ManifestGitHub, make_manifest, publish
+import pytest
+from test_release_manifest import (
+    IDS,
+    ManifestGitHub,
+    make_manifest,
+    publication_inputs,
+    publish,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
+from engineering_ci import workflow_actions
 from engineering_ci.release import publishing as release
 
 HEAD, OTHER = "a" * 40, "b" * 40
@@ -130,6 +138,141 @@ def needs():
     }
     result["candidate"]["outputs"] = {"sha": HEAD}
     return result
+
+
+@pytest.mark.parametrize(
+    "condition,diagnostic",
+    [
+        ("missing_authority", "release_publication_authority_missing"),
+        ("missing_assessment", "release_publication_assessment_missing"),
+        ("blocked_assessment", "release_assessment_blocked"),
+        ("sample", "contract_sample_inputs_not_production_release"),
+        ("expired", "policy_snapshot_expired"),
+        ("revoked", "policy_snapshot_revoked"),
+        ("wrong_scope", "release_assessment_scope_mismatch"),
+        ("wrong_attempt", "release_publication_run_attempt_mismatch"),
+        ("wrong_artifact_id", "release_provider_authority_rejected"),
+        ("wrong_digest", "release_provider_authority_rejected"),
+        ("unavailable_step", "release_provider_evidence_unavailable"),
+        ("validation", "Publication requires complete passed evidence"),
+        ("wrong_handoff", "release_publication_authority_inputs_invalid"),
+    ],
+)
+def test_current_r4_refusals_never_write(condition, diagnostic, monkeypatch):
+    from test_required_assessment_release import blocked_assessment, passed_assessment
+
+    api = FakeGitHub()
+    value = make_manifest(
+        api, mode="validation" if condition == "validation" else "publication"
+    )
+    if condition == "wrong_artifact_id":
+        (job_id, step), (name, artifact_id) = next(
+            (key, item)
+            for key, item in api.upload_ids.items()
+            if item[0] == "pytest-report"
+        )
+        api.upload_ids[job_id, step] = (name, artifact_id + 400)
+    if condition == "wrong_digest":
+        value["artifacts"][0]["digest"] = "sha256:" + "e" * 64
+    if condition == "unavailable_step":
+
+        def unavailable(*_):
+            raise release.ApiError(403)
+
+        monkeypatch.setattr(api, "job_step_log", unavailable)
+
+    def authority(context, manifest):
+        inputs = publication_inputs(context, manifest)
+        if condition == "missing_assessment":
+            inputs.pop("assessment")
+        elif condition == "blocked_assessment":
+            inputs["assessment"] = blocked_assessment()
+        elif condition == "sample":
+            inputs["assessment"], _ = passed_assessment(
+                candidate_commit=HEAD, contract_sample=True
+            )
+        elif condition in {"expired", "revoked"}:
+            inputs["policy_snapshot_authority"] = lambda _: {
+                "accepted": False,
+                "status": condition,
+            }
+        elif condition == "wrong_scope":
+            resolve = inputs["policy_snapshot_authority"]
+
+            def wrong(proof):
+                result = resolve(proof)
+                result["assessment_scope"]["refs"] = [
+                    {"target_ref": "refs/heads/other", "ref_action": "update"},
+                ]
+                return result
+
+            inputs["policy_snapshot_authority"] = wrong
+        elif condition == "wrong_handoff":
+            inputs["publish_context"] = {
+                "manifest_binding": "validation_to_publication"
+            }
+        return inputs
+
+    with pytest.raises(ValueError, match=diagnostic):
+        publish(
+            api,
+            value,
+            authority=None if condition == "missing_authority" else authority,
+            attempt=2 if condition == "wrong_attempt" else 1,
+        )
+    assert api.writes == []
+
+
+@pytest.mark.parametrize("authorized", [False, True])
+def test_workflow_publish_enforces_current_r4(
+    authorized, tmp_path, monkeypatch, capsys
+):
+    api = FakeGitHub()
+    path = tmp_path / "release-manifest.json"
+    path.write_text(json.dumps(make_manifest(api)), encoding="utf-8")
+    state = needs()
+    state["verified"] = {"result": "success"}
+    for key, value in environment(
+        GITHUB_REPOSITORY="example/ci",
+        GITHUB_RUN_ID="123",
+        GITHUB_RUN_ATTEMPT="1",
+        RELEASE_NEEDS=json.dumps(state),
+    ).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(release, "checked_version", lambda: TAG[1:])
+    monkeypatch.setattr(release.subprocess, "check_output", lambda *_, **__: HEAD)
+    monkeypatch.setattr(release, "GitHub", lambda _: api)
+    code = workflow_actions.main(
+        ["release", "publish", "--manifest", str(path)],
+        release_authority=publication_inputs if authorized else None,
+    )
+    output = capsys.readouterr()
+    if authorized:
+        assert code == 0
+        assert json.loads(output.out)["status"] == "published"
+        assert [call[1] for call in api.writes] == ["POST", "POST", "POST", "PATCH"]
+    else:
+        assert code == 1
+        assert "release_publication_authority_missing" in output.err
+        assert api.writes == []
+
+
+def test_draft_starter_recovery_requires_fresh_r4():
+    api = FakeGitHub(tag=HEAD)
+    api.published = {
+        "id": 10,
+        "url": "https://api.github.com/repos/example/ci/releases/10",
+        "tag_name": TAG,
+        "html_url": "https://github.com/example/ci/releases/tag/" + TAG,
+        "draft": True,
+        "prerelease": False,
+    }
+    api.starter = True
+    with pytest.raises(ValueError, match="release_publication_authority_missing"):
+        publish(api, authority=None)
+    assert api.starter is True
+    assert api.writes == []
 
 
 class ManualReleaseTests(unittest.TestCase):
@@ -521,7 +664,7 @@ class ManualReleaseTests(unittest.TestCase):
             },
             ids=fresh_ids,
         )
-        publish(api, fresh)
+        publish(api, fresh, attempt=2)
         self.assertEqual([c[0] for c in api.writes], ["releases/10"])
         self.assertEqual(api.saved, saved)
         self.assertEqual(api.saved["workflow"]["run_attempt"], 1)

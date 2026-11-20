@@ -141,7 +141,33 @@ def make_manifest(api=None, mode="publication", source=None, ids=None):
     )
 
 
-def publish(api, value=None):
+def publication_inputs(context, _manifest):
+    from test_required_assessment_release import (
+        accept,
+        accept_policy,
+        complete_artifact_obligations,
+        passed_assessment,
+    )
+
+    assert context["repository"] == REPOSITORY
+    assert context["head_sha"] == HEAD
+    assert context["tag"] == TAG
+    assessment, _ = passed_assessment(candidate_commit=HEAD)
+
+    def policy(proof):
+        reference = accept_policy(proof)
+        reference["assessment_scope"]["candidate"] = {"commit": HEAD}
+        return reference
+
+    return {
+        "assessment": assessment,
+        "policy_snapshot_authority": policy,
+        "artifact_obligations": complete_artifact_obligations("pytest-report"),
+        "artifact_obligation_authority": accept,
+    }
+
+
+def publish(api, value=None, *, authority=publication_inputs, run_id=123, attempt=1):
     with tempfile.TemporaryDirectory() as temp:
         return release.publish_release(
             api,
@@ -149,6 +175,9 @@ def publish(api, value=None):
             HEAD,
             make_manifest(api) if value is None else value,
             Path(temp) / "release-manifest.json",
+            run_id=run_id,
+            run_attempt=attempt,
+            release_authority=authority,
         )
 
 

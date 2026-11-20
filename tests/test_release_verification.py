@@ -9,7 +9,13 @@ import zipfile
 
 import pytest
 from test_manual_release import FakeGitHub
-from test_release_manifest import HEAD, REPOSITORY, TAG, make_manifest
+from test_release_manifest import (
+    HEAD,
+    REPOSITORY,
+    TAG,
+    make_manifest,
+    publication_inputs,
+)
 
 from engineering_ci.cli import release as cli
 from engineering_ci.github_cli import ApiError, GitHub
@@ -264,7 +270,14 @@ def test_published_evidence_keeps_original_attempt_after_run_retry(
     api = History()
     value = make_manifest(api, mode="publication")
     publishing.publish_release(
-        api, TAG, HEAD, value, tmp_path / "release-manifest.json"
+        api,
+        TAG,
+        HEAD,
+        value,
+        tmp_path / "release-manifest.json",
+        run_id=123,
+        run_attempt=1,
+        release_authority=publication_inputs,
     )
     api.original = dict(api.run)
     api.run.update(run_attempt=2, conclusion=latest_conclusion)
