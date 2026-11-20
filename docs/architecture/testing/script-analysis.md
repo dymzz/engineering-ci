@@ -83,18 +83,26 @@ When the host runner supplies `produced_artifacts_dir` (or Dagger `PlanExecution
 exports `artifacts`), verified Data-edge Files and Directories are retained under
 `produced/<kind>/<name>/<rel>` with re-verified SHA-256 digests and recorded in
 `report["producer_artifact_handoff"]` bound to the Plan digest, Git event and
-candidate, Producer/Consumer/Output Ref, and Run/Attempt identity when supplied.
+candidate, Producer/Consumer/Output Ref, original Prerequisite Result and
+Artifact Closure digests, and Run/Attempt identity when supplied.
 After temporary execution directories are cleaned up, `build_source_resolution()`
 (and the non-raising `evaluate_source_resolution()` helper for `#66-C`
 reconciliation) requires `producer_artifact_handoff`, `producer_artifacts_dir`,
 and runtime `"producer_artifact"` authorization via `producer_artifact_authority`
-or `workflow_source_authority`. It independently re-reads and verifies the
-retained File/Directory bytes, reconstructs the Consumer View via
-`build_consumer_view()`, establishes `check_input_closure` on verified immutable
-snapshots while keeping `changed_paths` (`expected_source_scope_insufficient`)
-on open `worktree` workflow scans, and separates missing/unverified proof
-(`unknown`) from tampered/mismatched/truncated evidence (`insufficient`) without
-erasing native PASS/FAIL results or tainting adjacent Checks without Data edges.
+(for example `producer_artifact_authority_from_execution()`) or
+`workflow_source_authority`. Verification validates internal Producer execution
+consistency (`type`, `status`, integer `exit_code == 0`, `reason is None`,
+`execution_ref`, and original Prerequisite/Closure digests) and rejects omitted
+or mismatched `expected_run_ref`/`expected_attempt_ref` (or
+`execution_context_identity`) whenever the Handoff or consuming Job context
+carries a Run/Attempt while keeping identity-free local execution working. It
+independently re-reads and verifies the retained File/Directory bytes,
+reconstructs the Consumer View via `build_consumer_view()`, establishes
+`check_input_closure` on verified immutable snapshots while keeping
+`changed_paths` (`expected_source_scope_insufficient`) on open `worktree`
+workflow scans, and separates missing/unverified proof (`unknown`) from
+tampered/mismatched/truncated evidence (`insufficient`) without erasing native
+PASS/FAIL results or tainting adjacent Checks without Data edges.
 See [#86](https://github.com/dymzz/engineering-ci/issues/86) and
 [#66](https://github.com/dymzz/engineering-ci/issues/66).
 

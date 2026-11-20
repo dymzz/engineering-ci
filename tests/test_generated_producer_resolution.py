@@ -77,16 +77,33 @@ def _artifact_authority(
     return authorize
 
 
-def _reconcile_one(plan, name, native, resolution, *, expected_entry=None):
+def _reconcile_one(
+    plan,
+    name,
+    native,
+    resolution,
+    *,
+    expected_entry=None,
+    run_ref=None,
+    attempt_ref=None,
+):
     expected = plan["expected_checks"]
     entry = expected_entry or next(
         item for item in expected["checks"] if item["name"] == name
     )
+    routing_kw = {}
+    obs_kw = {}
+    if run_ref is not None:
+        routing_kw["run_ref"] = run_ref
+        obs_kw["run_ref"] = run_ref
+    if attempt_ref is not None:
+        routing_kw["attempt_ref"] = attempt_ref
+        obs_kw["attempt_ref"] = attempt_ref
     receipt = reconciliation.reconcile_expected_results(
         expected,
-        routing=[make_routing(entry)],
+        routing=[make_routing(entry, **routing_kw)],
         resolutions=[resolution] if resolution is not None else [],
-        observations=[make_observation("job-1", [native])],
+        observations=[make_observation("job-1", [native], **obs_kw)],
     )
     return next(item for item in receipt["entries"] if item["name"] == name)
 
@@ -280,10 +297,11 @@ def test_generated_file_and_directory_producer_e2e_reconciles_matched(
     assert (retained_dir / "sub/helper.sh").is_file()
     assert (retained_dir / "empty_subdir").is_dir()
 
-    authority = _artifact_authority(
+    authority = execution.producer_artifact_authority_from_execution(
         plan,
-        bundle_dir,
-        {"shellcheck", "actionlint"},
+        report,
+        bundle_root=bundle_dir,
+        allowed_checks={"shellcheck", "actionlint"},
         expected_run_ref="run-86",
         expected_attempt_ref="1",
     )
@@ -318,7 +336,14 @@ def test_generated_file_and_directory_producer_e2e_reconciles_matched(
         assert resolution["source_ref"] == native["source_ref"]
         assert resolution["producer_artifact_handoff_id"] == handoff["handoff_digest"]
 
-        reconciled = _reconcile_one(plan, check_name, native, resolution)
+        reconciled = _reconcile_one(
+            plan,
+            check_name,
+            native,
+            resolution,
+            run_ref="run-86",
+            attempt_ref="1",
+        )
         assert reconciled["resolved_expected_ref"] is not None, reconciled
         if expected_native == "passed":
             assert reconciled["binding_status"] == "matched", reconciled
@@ -734,16 +759,8 @@ def test_negative_producer_handoff_cases_fail_closed_preserving_native_status(
     handoff = report["producer_artifact_handoff"]
     auth = _artifact_authority(plan, bundle_dir, {"shellcheck", "actionlint"})
     target_plan = plan
-    exp_run = (
-        "run-86"
-        if mutation in {"missing_attempt_when_required", "wrong_attempt"}
-        else None
-    )
-    exp_attempt = (
-        "1"
-        if mutation == "missing_attempt_when_required"
-        else ("2" if mutation == "wrong_attempt" else None)
-    )
+    exp_run = "run-86"
+    exp_attempt = "2" if mutation == "wrong_attempt" else "1"
     prod_base = bundle_dir / "produced/prerequisite_action/generate"
 
     if mutation == "none_handoff":
@@ -906,3 +923,232 @@ output_ref = {{ kind = "file", path = "{gen_file}", sha256 = "{"0" * 64}" }}
     al_rec = _reconcile_one(plan, "actionlint", al_native, al_res)
     assert al_rec["binding_status"] == "matched"
     assert al_rec["native_status"] == "passed"
+
+
+def test_p1_producer_execution_inconsistent_and_rehashed_claim_cannot_mint_authority(
+    tmp_path,
+):
+    setup = _setup_file_and_dir_producer_repo(
+        tmp_path,
+        snapshot="commit",
+        shell_findings=False,
+        include_generated_workflow=False,
+        checks=("shellcheck",),
+    )
+    root, plan = setup["root"], setup["plan"]
+    bundle_dir = tmp_path / "retained_bundle"
+    report = execution.execute(plan, root=root, produced_artifacts_dir=bundle_dir)
+    assert report["status"] == "passed", report
+    native = next(
+        row["native_result"] for row in report["checks"] if row["name"] == "shellcheck"
+    )
+    handoff = report["producer_artifact_handoff"]
+
+    # Legitimate real successful Producer + execution-grounded authority reaches matched.
+    grounded_auth = execution.producer_artifact_authority_from_execution(
+        plan, report, bundle_root=bundle_dir, allowed_checks={"shellcheck"}
+    )
+    ok_res = execution.source_resolution_receipt(
+        plan,
+        "shellcheck",
+        root=root,
+        producer_artifact_handoff=handoff,
+        producer_artifacts_dir=bundle_dir,
+        producer_artifact_authority=grounded_auth,
+    )
+    ok_rec = _reconcile_one(plan, "shellcheck", native, ok_res)
+    assert ok_rec["binding_status"] == "matched", ok_rec
+    assert ok_rec["native_status"] == "passed"
+
+    # Directed negative 1: unchanged correct retained bytes + rehashed Handoff claiming
+    # status='passed' with nonzero native process exit_code=1 MUST fail closed even if
+    # an overly broad authority callback returns True.
+    for bad_fields in (
+        {"exit_code": 1},
+        {"exit_code": None},
+        {"exit_code": True},
+        {"type": "git_commit_present"},
+        {"reason": "prerequisite_command_failed"},
+    ):
+        forged = json.loads(json.dumps(handoff))
+        for item in forged["artifacts"]:
+            item["producer_execution"].update(bad_fields)
+        for item in forged["producer_executions"]:
+            item.update(bad_fields)
+        forged = _re_sign_handoff(forged)
+
+        ev = execution.evaluate_source_resolution(
+            plan,
+            "shellcheck",
+            root=root,
+            producer_artifact_handoff=forged,
+            producer_artifacts_dir=bundle_dir,
+            producer_artifact_authority=lambda req: True,
+        )
+        assert ev["resolution_status"] == "contradicted", (bad_fields, ev)
+        assert ev["reason"] == "producer_execution_inconsistent", (bad_fields, ev)
+        rec = _reconcile_one(plan, "shellcheck", native, ev)
+        assert rec["binding_status"] == "insufficient", (bad_fields, rec)
+        assert rec["reason"] == "producer_execution_inconsistent"
+        assert rec["native_status"] == "passed"
+
+    # Directed negative 2: rehashing a modified internally-consistent producer claim
+    # (exit_code=0, altered prerequisite_result_sha256 / closure_sha256) cannot mint
+    # original execution authority.
+    for tamper in ("prereq_sha", "closure_sha"):
+        rehashed = json.loads(json.dumps(handoff))
+        if tamper == "prereq_sha":
+            fake_sha = "sha256:" + ("a" * 64)
+            for item in rehashed["artifacts"]:
+                item["producer_execution"]["prerequisite_result_sha256"] = fake_sha
+            for item in rehashed["producer_executions"]:
+                item["prerequisite_result_sha256"] = fake_sha
+        else:
+            for item in rehashed["artifacts"]:
+                item["closure_sha256"] = "sha256:" + ("b" * 64)
+        rehashed = _re_sign_handoff(rehashed)
+
+        ev = execution.evaluate_source_resolution(
+            plan,
+            "shellcheck",
+            root=root,
+            producer_artifact_handoff=rehashed,
+            producer_artifacts_dir=bundle_dir,
+            producer_artifact_authority=grounded_auth,
+        )
+        assert ev["resolution_status"] == "unverified", (tamper, ev)
+        assert ev["reason"] == "producer_artifact_authority_unverified", (tamper, ev)
+        rec = _reconcile_one(plan, "shellcheck", native, ev)
+        assert rec["binding_status"] == "unknown", (tamper, rec)
+        assert rec["reason"] == "producer_artifact_authority_unverified"
+        assert rec["native_status"] == "passed"
+
+
+def test_p1_bound_run_attempt_rejects_omission_and_cross_attempt_while_preserving_local_and_same_attempt(
+    tmp_path,
+):
+    setup = _setup_file_and_dir_producer_repo(
+        tmp_path,
+        snapshot="commit",
+        shell_findings=False,
+        include_generated_workflow=False,
+        checks=("shellcheck",),
+    )
+    root, plan = setup["root"], setup["plan"]
+
+    # 1. Identity-free local execution positive still works when no Run/Attempt exists.
+    bundle_local = tmp_path / "bundle_local"
+    rep_local = execution.execute(plan, root=root, produced_artifacts_dir=bundle_local)
+    assert rep_local["status"] == "passed", rep_local
+    native_local = next(
+        row["native_result"]
+        for row in rep_local["checks"]
+        if row["name"] == "shellcheck"
+    )
+    auth_local = execution.producer_artifact_authority_from_execution(
+        plan, rep_local, bundle_root=bundle_local, allowed_checks={"shellcheck"}
+    )
+    res_local = execution.build_source_resolution(
+        plan,
+        "shellcheck",
+        root=root,
+        producer_artifact_handoff=rep_local["producer_artifact_handoff"],
+        producer_artifacts_dir=bundle_local,
+        producer_artifact_authority=auth_local,
+    )
+    rec_local = _reconcile_one(plan, "shellcheck", native_local, res_local)
+    assert rec_local["binding_status"] == "matched", rec_local
+
+    # 2. Bound consuming Attempt must reject an identity-free local Handoff.
+    ev_bound_on_local = execution.evaluate_source_resolution(
+        plan,
+        "shellcheck",
+        root=root,
+        producer_artifact_handoff=rep_local["producer_artifact_handoff"],
+        producer_artifacts_dir=bundle_local,
+        producer_artifact_authority=auth_local,
+        execution_context_identity={"run_ref": "run-99", "attempt_ref": "2"},
+    )
+    assert ev_bound_on_local["resolution_status"] == "unverified", ev_bound_on_local
+    assert ev_bound_on_local["reason"] == "producer_handoff_attempt_unverified"
+
+    # 3. Same-Attempt positive via trusted execution_context_identity reaches matched.
+    bundle_a1 = tmp_path / "bundle_a1"
+    rep_a1 = execution.execute(
+        plan,
+        root=root,
+        produced_artifacts_dir=bundle_a1,
+        run_ref="run-99",
+        attempt_ref="1",
+    )
+    assert rep_a1["status"] == "passed", rep_a1
+    native_a1 = next(
+        row["native_result"] for row in rep_a1["checks"] if row["name"] == "shellcheck"
+    )
+    handoff_a1 = rep_a1["producer_artifact_handoff"]
+    auth_a1 = execution.producer_artifact_authority_from_execution(
+        plan,
+        rep_a1,
+        bundle_root=bundle_a1,
+        allowed_checks={"shellcheck"},
+        expected_run_ref="run-99",
+        expected_attempt_ref="1",
+    )
+    res_a1 = execution.build_source_resolution(
+        plan,
+        "shellcheck",
+        root=root,
+        producer_artifact_handoff=handoff_a1,
+        producer_artifacts_dir=bundle_a1,
+        producer_artifact_authority=auth_a1,
+        execution_context_identity={"run_ref": "run-99", "attempt_ref": "1"},
+    )
+    assert res_a1["producer_execution_identity"]["run_ref"] == "run-99"
+    assert res_a1["producer_execution_identity"]["attempt_ref"] == "1"
+    rec_same = _reconcile_one(
+        plan,
+        "shellcheck",
+        native_a1,
+        res_a1,
+        run_ref="run-99",
+        attempt_ref="1",
+    )
+    assert rec_same["binding_status"] == "matched", rec_same
+
+    # 4. Directed negative: Handoff already carries Run/Attempt (run-99 / attempt 1),
+    # caller omits expected_run_ref / expected_attempt_ref -> must NOT silently accept.
+    ev_omitted = execution.evaluate_source_resolution(
+        plan,
+        "shellcheck",
+        root=root,
+        producer_artifact_handoff=handoff_a1,
+        producer_artifacts_dir=bundle_a1,
+        producer_artifact_authority=lambda req: True,
+    )
+    assert ev_omitted["resolution_status"] == "unverified", ev_omitted
+    assert ev_omitted["reason"] == "producer_handoff_attempt_unverified"
+    rec_omitted = _reconcile_one(
+        plan,
+        "shellcheck",
+        native_a1,
+        ev_omitted,
+        run_ref="run-99",
+        attempt_ref="2",
+    )
+    assert rec_omitted["binding_status"] == "unknown", rec_omitted
+    assert rec_omitted["reason"] == "producer_handoff_attempt_unverified"
+    assert rec_omitted["native_status"] == "passed"
+
+    # 5. Directed negative: Attempt-1 verified Resolution reconciled against Attempt-2
+    # Job Observation -> #66-C rejects cross-Attempt reuse cleanly.
+    rec_cross = _reconcile_one(
+        plan,
+        "shellcheck",
+        native_a1,
+        res_a1,
+        run_ref="run-99",
+        attempt_ref="2",
+    )
+    assert rec_cross["binding_status"] == "insufficient", rec_cross
+    assert rec_cross["reason"] == "producer_handoff_attempt_mismatch"
+    assert rec_cross["native_status"] == "passed"

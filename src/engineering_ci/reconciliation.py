@@ -728,6 +728,9 @@ def _normalize_resolutions(resolutions, expected_refs):
             "contradicted",
         }:
             raise ReconciliationError("resolution_status_invalid")
+        prod_ident = item.get("producer_execution_identity")
+        if prod_ident is not None and not isinstance(prod_ident, dict):
+            raise ReconciliationError("resolution_producer_identity_invalid")
         normalized[ref] = dict(item)
     return normalized
 
@@ -1564,6 +1567,61 @@ def _reconcile_entry(
         return output
     output["resolved_expected"] = strict
     output["resolved_expected_ref"] = _digest(strict)
+
+    producer_ident = (resolution or {}).get("producer_execution_identity")
+    if isinstance(producer_ident, dict):
+        p_run = producer_ident.get("run_ref")
+        p_attempt = producer_ident.get("attempt_ref")
+        if p_run is not None or p_attempt is not None:
+            attempt_bound = []
+            for result, observation in candidates:
+                obs_run = observation.get("run_ref")
+                obs_attempt = observation.get("attempt_ref")
+                if obs_run == p_run and obs_attempt == p_attempt:
+                    attempt_bound.append((result, observation))
+                    continue
+                output["rejected_results"].append(
+                    {
+                        "result_id": result["result_id"],
+                        "reason": (
+                            "producer_handoff_attempt_unverified"
+                            if not obs_run or not obs_attempt
+                            else "producer_handoff_attempt_mismatch"
+                        ),
+                        "job_ref": observation["job_ref"],
+                        "run_ref": obs_run,
+                        "attempt_ref": obs_attempt,
+                    }
+                )
+            if not attempt_bound:
+                rej_reasons = {
+                    item["reason"]
+                    for item in output["rejected_results"]
+                    if item["reason"]
+                    in {
+                        "producer_handoff_attempt_unverified",
+                        "producer_handoff_attempt_mismatch",
+                    }
+                }
+                fail_reason = (
+                    "producer_handoff_attempt_mismatch"
+                    if "producer_handoff_attempt_mismatch" in rej_reasons
+                    else "producer_handoff_attempt_unverified"
+                )
+                fail_status = (
+                    "insufficient"
+                    if fail_reason == "producer_handoff_attempt_mismatch"
+                    else "unknown"
+                )
+                output.update(
+                    binding_status=fail_status,
+                    reason=fail_reason,
+                    unknown_fields=(
+                        _unknown_fields(fail_reason) if fail_status == "unknown" else []
+                    ),
+                )
+                return output
+            candidates = attempt_bound
 
     expected_profile = entry.get("profile_ref")
     if expected_profile is not None:

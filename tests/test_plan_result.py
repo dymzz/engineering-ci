@@ -2612,18 +2612,14 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
         exported / "produced/prerequisite_action/generate" / gen_dir / "empty_subdir"
     ).is_dir()
 
-    plan_ref = execution._canonical_sha256(plan_doc)
-    event = execution._plan_event_identity(plan_doc)
-    candidate = execution._plan_candidate_identity(plan_doc)
-
-    def authority(request):
-        return (
-            request["kind"] == "producer_artifact"
-            and request["plan_ref"] == plan_ref
-            and request["event"] == event
-            and request["check"] == "shellcheck"
-            and request["source"].get("candidate") == candidate
-        )
+    authority = execution.producer_artifact_authority_from_execution(
+        plan_doc,
+        report,
+        bundle_root=exported,
+        allowed_checks={"shellcheck"},
+        expected_run_ref="dag-run",
+        expected_attempt_ref="3",
+    )
 
     resolution = execution.build_source_resolution(
         plan_doc,
@@ -2636,6 +2632,8 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
         expected_attempt_ref="3",
     )
     assert resolution["producer_artifact_handoff_id"] == handoff["handoff_digest"]
+    assert resolution["producer_execution_identity"]["run_ref"] == "dag-run"
+    assert resolution["producer_execution_identity"]["attempt_ref"] == "3"
     assert {
         (ref["kind"], ref["input_kind"], ref["path"])
         for ref in resolution["input_refs"]
@@ -2644,6 +2642,17 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
         ("generated_input", "file", gen_file),
         ("generated_input", "directory", gen_dir),
     }
+
+    omitted_attempt = execution.evaluate_source_resolution(
+        plan_doc,
+        "shellcheck",
+        root=repo,
+        producer_artifact_handoff=handoff,
+        producer_artifacts_dir=exported,
+        producer_artifact_authority=authority,
+    )
+    assert omitted_attempt["resolution_status"] == "unverified"
+    assert omitted_attempt["reason"] == "producer_handoff_attempt_unverified"
 
     (
         exported / "produced/prerequisite_action/generate" / gen_dir / "empty_subdir"

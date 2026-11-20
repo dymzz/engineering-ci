@@ -2020,22 +2020,43 @@ def retain_closure_artifacts(artifact_root, bundle_root, closure_records):
     return retained
 
 
-def _producer_execution_summary(producer_ref, result):
+def _producer_execution_summary(
+    producer_ref, result, *, execution_identity=None, execution_context=None
+):
+    exec_ref = (
+        execution_identity.get("execution_ref")
+        if isinstance(execution_identity, dict)
+        else None
+    )
     if not isinstance(result, dict):
         return {
             "kind": producer_ref.get("kind"),
             "name": producer_ref.get("name"),
             "status": "not_executed",
             "reason": "producer_execution_not_verified",
+            "execution_context": execution_context,
+            "execution_ref": exec_ref,
+            "prerequisite_result_sha256": None,
         }
-    return {
+    p_type = result.get("type")
+    result_origin = result.get("result_origin")
+    if result_origin is None and p_type == "command":
+        result_origin = "host_subprocess"
+    summary = {
         "kind": producer_ref.get("kind"),
         "name": producer_ref.get("name"),
-        "type": result.get("type"),
+        "type": p_type,
         "status": result.get("status", "not_executed"),
         "exit_code": result.get("exit_code"),
         "reason": result.get("reason"),
+        "execution_context": result.get("execution_context") or execution_context,
+        "result_origin": result_origin,
+        "execution_ref": exec_ref,
+        "prerequisite_result_sha256": _canonical_sha256(result),
     }
+    if isinstance(result.get("artifact_ref"), dict):
+        summary["artifact_ref"] = dict(result["artifact_ref"])
+    return summary
 
 
 def build_producer_artifact_handoff(
@@ -2047,7 +2068,7 @@ def build_producer_artifact_handoff(
     execution_context="host",
     retention_metadata=None,
 ):
-    """Build the signed-digest #86 Producer Artifact Handoff over retained outputs."""
+    """Build the self-consistent #86 Producer Artifact Handoff over retained outputs."""
     prereq_by_name = {
         item.get("name"): item
         for item in prerequisite_results or ()
@@ -2066,12 +2087,16 @@ def build_producer_artifact_handoff(
         if not isinstance(meta, dict):
             continue
         p_exec = _producer_execution_summary(
-            p_ref, prereq_by_name.get(p_ref.get("name"))
+            p_ref,
+            prereq_by_name.get(p_ref.get("name")),
+            execution_identity=execution_identity,
+            execution_context=execution_context,
         )
         artifacts.append(
             {
                 "producer_ref": dict(p_ref),
                 "producer_execution": p_exec,
+                "closure_sha256": _canonical_sha256(rec),
                 "consumer_ref": dict(c_ref),
                 "output_ref": dict(o_ref),
                 "kind": o_ref.get("kind"),
@@ -2104,6 +2129,8 @@ def build_producer_artifact_handoff(
         _producer_execution_summary(
             {"kind": "prerequisite_action", "name": name},
             prereq_by_name[name],
+            execution_identity=execution_identity,
+            execution_context=execution_context,
         )
         for name in sorted(prereq_by_name)
     ]
@@ -2124,12 +2151,139 @@ def build_producer_artifact_handoff(
     return {**payload, "handoff_digest": _canonical_sha256(payload)}
 
 
+def _is_prefixed_sha256(value):
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and _is_hex64(value.removeprefix("sha256:"))
+    )
+
+
+def _resolve_expected_run_attempt(
+    expected_run_ref, expected_attempt_ref, execution_context_identity
+):
+    ctx_run = None
+    ctx_attempt = None
+    if execution_context_identity is not None:
+        if not isinstance(execution_context_identity, dict):
+            raise ExecutionError("producer_handoff_attempt_unverified")
+        ctx_run = execution_context_identity.get("run_ref") or None
+        ctx_attempt = execution_context_identity.get("attempt_ref") or None
+        if bool(ctx_run) != bool(ctx_attempt):
+            raise ExecutionError("producer_handoff_attempt_unverified")
+    if bool(expected_run_ref) != bool(expected_attempt_ref):
+        raise ExecutionError("producer_handoff_attempt_unverified")
+    if expected_run_ref and ctx_run and expected_run_ref != ctx_run:
+        raise ExecutionError("producer_handoff_attempt_mismatch")
+    if expected_attempt_ref and ctx_attempt and expected_attempt_ref != ctx_attempt:
+        raise ExecutionError("producer_handoff_attempt_mismatch")
+    return (expected_run_ref or ctx_run or None), (
+        expected_attempt_ref or ctx_attempt or None
+    )
+
+
+def producer_artifact_authority_from_execution(
+    plan,
+    report,
+    *,
+    bundle_root,
+    allowed_checks=None,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
+):
+    """Build a runtime ``producer_artifact`` authority bound to original Execution facts.
+
+    Uses only trusted Plan, original Prerequisite Results, Artifact Closure,
+    Execution Identity, and retained bundle root; never reads ``report['checks']``
+    or NativeResult self-reported inputs.
+    """
+    plan_ref = _canonical_sha256(plan)
+    expected_event = _plan_event_identity(plan)
+    expected_candidate = _plan_candidate_identity(plan)
+    resolved_bundle = Path(bundle_root).resolve()
+    prereq_digests = {}
+    for item in (report or {}).get("prerequisites") or ():
+        if (
+            isinstance(item, dict)
+            and item.get("name")
+            and item.get("status") == "passed"
+            and type(item.get("exit_code")) is int
+            and item.get("exit_code") == 0
+            and item.get("reason") is None
+        ):
+            prereq_digests[item["name"]] = _canonical_sha256(item)
+    closure_digests = {}
+    for rec in (report or {}).get("artifact_closure") or ():
+        if isinstance(rec, dict) and rec.get("verified"):
+            key = _edge_retention_key(
+                rec.get("producer_ref"), rec.get("consumer_ref"), rec.get("output_ref")
+            )
+            closure_digests[key] = _canonical_sha256(rec)
+    trusted_handoff_id = ((report or {}).get("producer_artifact_handoff") or {}).get(
+        "handoff_digest"
+    )
+    trusted_exec_ident = (report or {}).get("execution_identity")
+    trusted_exec_context = (report or {}).get("execution_context")
+
+    def authorize(request):
+        if request.get("kind") != "producer_artifact":
+            return False
+        if (
+            request.get("plan_ref") != plan_ref
+            or request.get("event") != expected_event
+        ):
+            return False
+        if allowed_checks is not None and request.get("check") not in allowed_checks:
+            return False
+        src = request.get("source")
+        if not isinstance(src, dict):
+            return False
+        if not trusted_handoff_id or src.get("handoff_id") != trusted_handoff_id:
+            return False
+        if src.get("candidate") != expected_candidate:
+            return False
+        if src.get("execution_identity") != trusted_exec_ident:
+            return False
+        if (
+            trusted_exec_context is not None
+            and src.get("execution_context") != trusted_exec_context
+        ):
+            return False
+        p_ref = src.get("producer_ref") or {}
+        p_name = p_ref.get("name")
+        if not p_name or src.get("prerequisite_result_sha256") != prereq_digests.get(
+            p_name
+        ):
+            return False
+        edge_key = _edge_retention_key(
+            p_ref, src.get("consumer_ref"), src.get("output_ref")
+        )
+        if src.get("closure_sha256") != closure_digests.get(edge_key):
+            return False
+        if (expected_run_ref is not None or expected_attempt_ref is not None) and (
+            src.get("expected_run_ref") != expected_run_ref
+            or src.get("expected_attempt_ref") != expected_attempt_ref
+        ):
+            return False
+        try:
+            return (
+                Path(src["resolved_bundle_root"])
+                .resolve()
+                .is_relative_to(resolved_bundle)
+            )
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+
+    return authorize
+
+
 def _validate_handoff_envelope(
     plan,
     handoff,
     *,
     expected_run_ref=None,
     expected_attempt_ref=None,
+    execution_context_identity=None,
 ):
     if not isinstance(handoff, dict):
         raise ExecutionError("producer_handoff_invalid")
@@ -2149,30 +2303,26 @@ def _validate_handoff_envelope(
         raise ExecutionError("producer_handoff_candidate_mismatch")
     if handoff.get("plan_ref") != _canonical_sha256(plan):
         raise ExecutionError("producer_handoff_plan_mismatch")
+    exp_run, exp_attempt = _resolve_expected_run_attempt(
+        expected_run_ref, expected_attempt_ref, execution_context_identity
+    )
     ident = handoff.get("execution_identity")
     if ident is not None and not isinstance(ident, dict):
         raise ExecutionError("producer_handoff_invalid")
-    if isinstance(ident, dict) and bool(ident.get("run_ref")) != bool(
-        ident.get("attempt_ref")
-    ):
+    h_run = ident.get("run_ref") if isinstance(ident, dict) else None
+    h_attempt = ident.get("attempt_ref") if isinstance(ident, dict) else None
+    if bool(h_run) != bool(h_attempt):
         raise ExecutionError("producer_handoff_attempt_unverified")
-    if expected_run_ref is not None or expected_attempt_ref is not None:
-        if (
-            not isinstance(ident, dict)
-            or not ident.get("run_ref")
-            or not ident.get("attempt_ref")
-        ):
+    if h_run or h_attempt:
+        if not exp_run or not exp_attempt:
             raise ExecutionError("producer_handoff_attempt_unverified")
-        if (
-            expected_run_ref is not None and ident.get("run_ref") != expected_run_ref
-        ) or (
-            expected_attempt_ref is not None
-            and ident.get("attempt_ref") != expected_attempt_ref
-        ):
+        if h_run != exp_run or h_attempt != exp_attempt:
             raise ExecutionError("producer_handoff_attempt_mismatch")
+    elif exp_run or exp_attempt:
+        raise ExecutionError("producer_handoff_attempt_unverified")
     if not isinstance(handoff.get("artifacts"), list):
         raise ExecutionError("producer_handoff_invalid")
-    return body
+    return body, exp_run, exp_attempt
 
 
 def _match_handoff_record(edge, handoff):
@@ -2229,21 +2379,83 @@ def _match_handoff_record(edge, handoff):
     raise ExecutionError("producer_handoff_missing")
 
 
-def _verify_retained_bundle_artifact(
-    record, edge, *, bundle_root, check_name, authority, handoff
-):
+def _validate_producer_execution_claim(plan, edge, record, handoff):
     p_exec = record.get("producer_execution")
     if not isinstance(p_exec, dict):
-        raise ExecutionError("producer_execution_not_verified")
-    p_status = p_exec.get("status")
-    if p_status == "failed":
-        raise ExecutionError("producer_execution_failed")
-    if p_status != "passed":
         raise ExecutionError("producer_execution_not_verified")
     if p_exec.get("kind") != edge["producer_ref"].get("kind") or p_exec.get(
         "name"
     ) != edge["producer_ref"].get("name"):
         raise ExecutionError("producer_handoff_producer_mismatch")
+    p_status = p_exec.get("status")
+    if p_status == "failed":
+        raise ExecutionError("producer_execution_failed")
+    if p_status != "passed":
+        raise ExecutionError("producer_execution_not_verified")
+
+    p_type = p_exec.get("type")
+    declared = _prerequisite_actions(plan, None).get(edge["producer_ref"].get("name"))
+    if isinstance(declared, dict) and declared.get("type"):
+        if p_type != declared.get("type"):
+            raise ExecutionError("producer_execution_inconsistent")
+    elif p_type not in {"command", "dagger_command", "git_commit_present"}:
+        raise ExecutionError("producer_execution_inconsistent")
+
+    exit_code = p_exec.get("exit_code")
+    if type(exit_code) is not int or exit_code != 0:
+        raise ExecutionError("producer_execution_inconsistent")
+    if p_exec.get("reason") is not None:
+        raise ExecutionError("producer_execution_inconsistent")
+
+    ident = handoff.get("execution_identity")
+    if (
+        isinstance(ident, dict)
+        and ident.get("execution_ref")
+        and p_exec.get("execution_ref") != ident.get("execution_ref")
+    ):
+        raise ExecutionError("producer_execution_inconsistent")
+    h_ctx = handoff.get("execution_context")
+    if h_ctx is not None and p_exec.get("execution_context") not in {None, h_ctx}:
+        raise ExecutionError("producer_execution_inconsistent")
+
+    prereq_sha = p_exec.get("prerequisite_result_sha256")
+    if prereq_sha is None:
+        raise ExecutionError("producer_execution_not_verified")
+    if not _is_prefixed_sha256(prereq_sha):
+        raise ExecutionError("producer_execution_inconsistent")
+
+    closure_sha = record.get("closure_sha256")
+    if closure_sha is None:
+        raise ExecutionError("producer_execution_not_verified")
+    if not _is_prefixed_sha256(closure_sha):
+        raise ExecutionError("producer_execution_inconsistent")
+
+    for entry in handoff.get("producer_executions") or ():
+        if (
+            isinstance(entry, dict)
+            and entry.get("kind") == edge["producer_ref"].get("kind")
+            and entry.get("name") == edge["producer_ref"].get("name")
+            and entry != p_exec
+        ):
+            raise ExecutionError("producer_execution_inconsistent")
+    return p_exec, prereq_sha, closure_sha
+
+
+def _verify_retained_bundle_artifact(
+    plan,
+    record,
+    edge,
+    *,
+    bundle_root,
+    check_name,
+    authority,
+    handoff,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
+):
+    p_exec, prereq_sha, closure_sha = _validate_producer_execution_claim(
+        plan, edge, record, handoff
+    )
 
     retention = record.get("retention")
     if not isinstance(retention, dict):
@@ -2284,7 +2496,9 @@ def _verify_retained_bundle_artifact(
     claim = {
         "handoff_id": handoff.get("handoff_digest"),
         "producer_ref": record["producer_ref"],
-        "producer_execution": p_exec,
+        "producer_execution": dict(p_exec),
+        "prerequisite_result_sha256": prereq_sha,
+        "closure_sha256": closure_sha,
         "consumer_ref": record["consumer_ref"],
         "output_ref": o_ref,
         "kind": kind,
@@ -2293,7 +2507,10 @@ def _verify_retained_bundle_artifact(
         "bundle_path": expected_bundle_path,
         "resolved_bundle_root": str(bundle_producer_root),
         "candidate": handoff.get("candidate"),
+        "execution_context": handoff.get("execution_context"),
         "execution_identity": handoff.get("execution_identity"),
+        "expected_run_ref": expected_run_ref,
+        "expected_attempt_ref": expected_attempt_ref,
     }
     if not authority("producer_artifact", check_name, claim):
         raise ExecutionError("producer_artifact_authority_unverified")
@@ -2364,6 +2581,7 @@ def verify_producer_artifact_handoff(
     authority=None,
     expected_run_ref=None,
     expected_attempt_ref=None,
+    execution_context_identity=None,
 ):
     """Independently verify #86 retained File/Directory artifacts for one Consumer Check."""
     edges = [
@@ -2375,11 +2593,12 @@ def verify_producer_artifact_handoff(
         return None
     if handoff is None or producer_artifacts_dir is None:
         raise ExecutionError("source_resolution_generated_inputs_unproven")
-    _validate_handoff_envelope(
+    _, resolved_run_ref, resolved_attempt_ref = _validate_handoff_envelope(
         plan,
         handoff,
         expected_run_ref=expected_run_ref,
         expected_attempt_ref=expected_attempt_ref,
+        execution_context_identity=execution_context_identity,
     )
     closures = []
     artifact_tuples = []
@@ -2388,12 +2607,15 @@ def verify_producer_artifact_handoff(
     for edge in edges:
         record = _match_handoff_record(edge, handoff)
         verified = _verify_retained_bundle_artifact(
+            plan,
             record,
             edge,
             bundle_root=producer_artifacts_dir,
             check_name=check_name,
             authority=authority,
             handoff=handoff,
+            expected_run_ref=resolved_run_ref,
+            expected_attempt_ref=resolved_attempt_ref,
         )
         p_root = str(verified["producer_root"])
         rel = verified["rel"]
@@ -4543,6 +4765,7 @@ def build_source_resolution(
     producer_artifact_authority=None,
     expected_run_ref=None,
     expected_attempt_ref=None,
+    execution_context_identity=None,
 ):
     """Independently build a #66-C Source/Rule/Baseline resolution item from Plan + disk/ODB.
 
@@ -4589,6 +4812,7 @@ def build_source_resolution(
         authority=artifact_auth,
         expected_run_ref=expected_run_ref,
         expected_attempt_ref=expected_attempt_ref,
+        execution_context_identity=execution_context_identity,
     )
     gen_refs = (
         list(handoff_verified["generated_input_refs"])
@@ -4761,10 +4985,20 @@ def build_source_resolution(
         }
         if workflow_check or gen_refs:
             receipt_payload["input_refs"] = input_refs
+        producer_exec_ident = None
         if handoff_verified is not None:
+            p_ident = handoff_verified.get("execution_identity")
+            if isinstance(p_ident, dict):
+                producer_exec_ident = {
+                    "execution_ref": p_ident.get("execution_ref"),
+                    "run_ref": p_ident.get("run_ref"),
+                    "attempt_ref": p_ident.get("attempt_ref"),
+                }
             receipt_payload["producer_artifact_handoff_id"] = handoff_verified[
                 "handoff_id"
             ]
+            if producer_exec_ident is not None:
+                receipt_payload["producer_execution_identity"] = producer_exec_ident
         receipt_sha = hashlib.sha256(
             json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode(
                 "utf-8"
@@ -4793,6 +5027,8 @@ def build_source_resolution(
         }
         if handoff_verified is not None:
             item["producer_artifact_handoff_id"] = handoff_verified["handoff_id"]
+            if producer_exec_ident is not None:
+                item["producer_execution_identity"] = producer_exec_ident
         if resolved_profile is not None:
             item["profile_ref"] = resolved_profile
         changed_binding = git.get("content_binding") or {}
@@ -4845,6 +5081,7 @@ def source_resolution_receipt(
     producer_artifact_authority=None,
     expected_run_ref=None,
     expected_attempt_ref=None,
+    execution_context_identity=None,
 ):
     """Independent #66-C resolution builder (alias to build_source_resolution; ignores NativeResult)."""
     return build_source_resolution(
@@ -4864,6 +5101,7 @@ def source_resolution_receipt(
         producer_artifact_authority=producer_artifact_authority,
         expected_run_ref=expected_run_ref,
         expected_attempt_ref=expected_attempt_ref,
+        execution_context_identity=execution_context_identity,
     )
 
 
@@ -4885,6 +5123,7 @@ def evaluate_source_resolution(
     producer_artifact_authority=None,
     expected_run_ref=None,
     expected_attempt_ref=None,
+    execution_context_identity=None,
 ):
     """Resolve a Check for #66-C reconciliation, distinguishing unverified vs contradicted."""
     check_name = (
@@ -4922,6 +5161,7 @@ def evaluate_source_resolution(
             producer_artifact_authority=producer_artifact_authority,
             expected_run_ref=expected_run_ref,
             expected_attempt_ref=expected_attempt_ref,
+            execution_context_identity=execution_context_identity,
         )
     except ExecutionError as error:
         return {
