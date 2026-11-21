@@ -3,7 +3,7 @@
 Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) stream C (O2/O3).
 
-> **2026-11-21 现行决策（[Issue #75](https://github.com/dymzz/engineering-ci/issues/75)）**：GitHub Attempt API 提供真实终态、结论和 Job Facts，不提供可由观察时间推算的标准 Pipeline End。默认后置生产采用 `terminal_event`，只记录 Producer 自己的终态观察事件，缺失真实 End 时 `root_emission=not_emitted`、`time_precision=unproven`；Task Spans 与原始 API Witness 保留。**禁止**把 `updated_at`、最后 Job End、后置观察时间、主观预算或估算 Duration 写成真实 Pipeline Root End，禁止为了 #52B Terminal 正例继续建设 GitHub Workflow 结束时间估算。Dagger 原生 Span 的起止仅属于自身 Function/Check 范围。实现见 [PR #150](https://github.com/dymzz/engineering-ci/pull/150)（截至本次文档修订仍为待合并 PR）；旧模式现存源码只是历史/兼容路径，并非新开发授权。
+> **2026-11-21 设计裁决与实际运行状态（[#75](https://github.com/dymzz/engineering-ci/issues/75)）**：GitHub Attempt API 证明终态、结论及真实 Job 事实，却不能从 `updated_at`、Job End、观察时间或任意误差预算推算完整 Pipeline End。**目标**为 [Draft PR #150](https://github.com/dymzz/engineering-ci/pull/150) 的 `terminal_event`、合法 Task Spans 与 `root_emission=not_emitted` / `time_precision=unproven`；**当前 main** 的 `cicd-telemetry-post-run.yml` 仍以 `--end-time-mode observed_upper_bound` 运行，CLI 的此路径仍是当前代码事实，尚未完成目标切换。旧模式不是新设计授权，但不能将当前生产事实误标为“仅历史兼容”。[#152](https://github.com/dymzz/engineering-ci/issues/152) 将用非 Workflow 的真实受控 Provider 替换整个旧后置入口，保留历史 Witness 的原证明范围。Dagger Function/Check Span 只证明自身边界。
 
 ## Producer decision
 
@@ -33,9 +33,9 @@ Inputs (first → second slice):
 | Explicit supplied Pipeline start/end | Owner-controlled instrumentation or external mapping | Only valid for a full Pipeline Root when evidence proves its origin and scope. A syntactically exact input does not itself prove authenticity |
 | Dagger Function/Check start/end | Dagger Engine native spans | Valid only for their own Dagger operation, not the enclosing GitHub Workflow |
 
-**Default post-run production route:** `--end-time-mode terminal_event` in [PR #150](https://github.com/dymzz/engineering-ci/pull/150). It validates the exact Attempt `completed` state and `conclusion` through GitHub API, records a correlated terminal LogRecord at the observer's own event time, and retains original native timestamps in the raw API witness. It emits **no guessed Pipeline Root**, no estimated interval or duration grant. Task spans keep their real Job bounds. Without proven Pipeline end, `time_precision=unproven`, `root_emission=not_emitted`, and Terminal Root coverage is not verified.
+**Approved target post-run route (not yet deployed on `main`):** `--end-time-mode terminal_event` in [PR #150](https://github.com/dymzz/engineering-ci/pull/150). It validates the exact Attempt `completed` state and `conclusion` through GitHub API, records a correlated terminal LogRecord at the observer's own event time, and retains original native timestamps in the raw API witness. It emits **no guessed Pipeline Root**, no estimated interval or duration grant. Task spans keep their real Job bounds. Without proven Pipeline end, `time_precision=unproven`, `root_emission=not_emitted`, and Terminal Root coverage is not verified.
 
-**Legacy route (`observed_upper_bound` / `--max-end-uncertainty-ns`):** Earlier versions stored a conditional interval and could emit an approximate Root if an explicit budget was supplied. This behavior is recorded here only to interpret historical artifacts and any still-present code paths. It is **not** the default implementation target, an acceptable replacement for a true GitHub Workflow End, or a way to satisfy #52B/#74 Terminal by fabricating a Root. A provenance tag such as `end_time_quality=observed_upper_bound` does not make an OTel Root's numeric end a real execution timestamp.
+**Current `main` observed-upper-bound implementation / legacy acceptance route (`observed_upper_bound` / `--max-end-uncertainty-ns`):** Earlier versions stored a conditional interval and could emit an approximate Root if an explicit budget was supplied. This behavior is recorded here only to interpret historical artifacts and any still-present code paths. It is **not** the default implementation target, an acceptable replacement for a true GitHub Workflow End, or a way to satisfy #52B/#74 Terminal by fabricating a Root. A provenance tag such as `end_time_quality=observed_upper_bound` does not make an OTel Root's numeric end a real execution timestamp.
 
 Coverage retains distinct `pipeline_terminal_covered` / `task_coverage`; the `expected_completed_jobs` inventory and `coverage.expected_trace` are reconstructed from independent Run/Attempt/Job witness. A withheld parent uses `parent_exported=false` and an explicit `withheld_parent_span` reference. Transport delivery, Weaver semantic PASS, Terminal correlation and #63 trusted admission remain separate facts. #52A Task-only may pass on valid Tasks without Root; #52B Root-dependent Terminal remains unverified until a genuine eligible Pipeline Root is available.
 
@@ -220,7 +220,7 @@ terminal PASS. Missing identity, terminal Run/Job results, required Task URL,
 or real timestamps yield `incomplete` / `partial` (exit 3 when nothing is
 emitted).
 
-Post-run entry: `.github/workflows/cicd-telemetry-post-run.yml` listens for
+**Current, to be retired by #152 (not the target Provider):** `.github/workflows/cicd-telemetry-post-run.yml` listens for
 `workflow_run` completion of `Engineering CI` (and supports
 `workflow_dispatch`). It reads the source Run via Attempt API using the event
 identity, never executes the source PR head, and uploads candidate/OTLP
