@@ -42,6 +42,10 @@ uv run --locked --no-sync lefthook validate
 uv run --locked --no-sync lefthook install
 ```
 
+已有 `core.hooksPath` 时，默认安装会返回 Lefthook 的冲突诊断，已有 Hook
+文件保持原字节。普通仓和它的 linked worktree 共享安装的 Git Hook，各次
+调用各自保留 Invocation。
+
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
 本仓运行原生暂存空白检查。受检树声明了 `ci-selection.toml` 和已绑定的
