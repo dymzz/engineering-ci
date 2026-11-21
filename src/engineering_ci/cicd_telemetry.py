@@ -26,9 +26,10 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import time_ns
 from urllib.parse import urlsplit
 
 SCHEMA_VERSION = 9
@@ -49,6 +50,7 @@ OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
 # The recorded precision is exact_input, which is not a verified GitHub timestamp.
 END_TIME_EXACT = "exact"
 END_TIME_OBSERVED_UPPER_BOUND = "observed_upper_bound"
+END_TIME_TERMINAL_EVENT = "terminal_event"
 END_TIME_UNPROVEN = "unproven"
 TIME_PRECISION_EXACT_INPUT = "exact_input"
 TIME_PRECISION_OBSERVED_UPPER_BOUND = END_TIME_OBSERVED_UPPER_BOUND
@@ -886,6 +888,8 @@ def produce(
     - default / exact: only emit SERVER Root when ``run_completed_at_ns`` is an
       explicit input. Recorded precision is ``exact_input``. That closed numeric
       bound is not a verified GitHub completion timestamp.
+    - ``terminal_event``: record a completed Attempt and its native conclusion.
+      The producer's event time is independent of the unknown Root end.
     - ``observed_upper_bound``: after Attempt ``run_status=completed``, record a
       constraint interval (last Job end or weak Run start, through the
       observation time). That interval is not a proven end. An approximate Root
@@ -897,6 +901,13 @@ def produce(
     ``finalizing`` windows. Missing windows stay ``not_observable``.
     ``include_run_entity_metrics`` defaults off (SemConv run-entity opt-in).
     """
+    if end_time_mode == END_TIME_TERMINAL_EVENT:
+        facts = replace(
+            facts,
+            run_started_at_ns=None,
+            run_completed_at_ns=None,
+            run_updated_at_ns=None,
+        )
     # Persisted producer identity predates the package move; it is not an import path.
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -1061,7 +1072,22 @@ def produce(
     # Numeric closure and native-source verification are separate facts.
     time_source_verified = False
     run_end_source = None
-    if run_result is None and facts.run_conclusion is not None:
+    if end_time_mode == END_TIME_TERMINAL_EVENT:
+        if source != "github_api" or not github_api_fetched:
+            reasons.append("terminal_status_unverified")
+        elif facts.run_status != "completed":
+            reasons.append("run_not_completed")
+        elif event_status is not None and event_status != facts.run_status:
+            reasons.append("event_api_status_conflict")
+        elif not facts.run_conclusion:
+            reasons.append("missing_run_terminal_result")
+        elif event_conclusion is not None and event_conclusion != facts.run_conclusion:
+            reasons.append("event_api_conclusion_conflict")
+        else:
+            report["terminal"]["terminal_confirmed"] = True
+            root_emission_reason = "run_completed_at_unproven"
+            reasons.append(root_emission_reason)
+    elif run_result is None and facts.run_conclusion is not None:
         reasons.append("unsupported_run_conclusion")
     elif facts.run_conclusion is None:
         reasons.append("missing_run_terminal_result")
@@ -2028,13 +2054,16 @@ def _attempt_terminal_log(report):
     facts = report.get("facts") or {}
     trace_id, span_id, _ = _stable_ids(facts.get("run_id"), facts.get("run_attempt"))
     resource = report.get("resource") or {}
+    event_only = terminal.get("time_precision") == TIME_PRECISION_UNPROVEN
     return [
         {
             "time_unix_nano": observed,
             "severity_number": 9,
             "severity_text": "INFO",
             "body": (
-                "GitHub Attempt terminal confirmed; "
+                f"GitHub Attempt completed: {terminal['conclusion']}"
+                if event_only
+                else "GitHub Attempt terminal confirmed; "
                 "pipeline end time is an unbound observation, not a span end"
             ),
             "source": "github_attempt_terminal",
@@ -2050,7 +2079,7 @@ def _attempt_terminal_log(report):
                 "parent_span_exported": False,
             },
             "trace_id": trace_id,
-            "span_id": span_id,
+            "span_id": None if event_only else span_id,
         }
     ]
 
@@ -2854,9 +2883,14 @@ def main(argv=None):
     )
     parser.add_argument(
         "--end-time-mode",
-        choices=[END_TIME_EXACT, END_TIME_OBSERVED_UPPER_BOUND],
+        choices=[
+            END_TIME_EXACT,
+            END_TIME_OBSERVED_UPPER_BOUND,
+            END_TIME_TERMINAL_EVENT,
+        ],
         help=(
-            "exact uses an explicit completed-at. observed_upper_bound records "
+            "terminal_event records the completed Attempt with the producer's "
+            "event time. exact uses an explicit completed-at. observed_upper_bound records "
             "a constraint interval and emits an approximate Root only when "
             "--max-end-uncertainty-ns covers that interval"
         ),
@@ -2904,6 +2938,11 @@ def main(argv=None):
     expected_job_stubs = None
     api_jobs_snapshot = None
     raw_api_witness = None
+    if args.end_time_mode == END_TIME_TERMINAL_EVENT:
+        if args.run_id is None:
+            parser.exit(2, "cicd-telemetry rejected: terminal_event_requires_run_id\n")
+        if args.terminal_observed_at or args.max_end_uncertainty_ns is not None:
+            parser.exit(2, "cicd-telemetry rejected: terminal_event_time_override\n")
     if args.facts is not None and args.run_id is not None:
         parser.exit(2, "cicd-telemetry rejected: facts_and_run_id_conflict\n")
     if args.facts is not None:
@@ -2950,8 +2989,11 @@ def main(argv=None):
         terminal_observed_at_ns = parse_time_ns(args.terminal_observed_at)
         if terminal_observed_at_ns is None:
             parser.exit(2, "cicd-telemetry rejected: terminal_observed_at_invalid\n")
-    elif args.end_time_mode == END_TIME_OBSERVED_UPPER_BOUND:
-        terminal_observed_at_ns = int(datetime.now(tz=UTC).timestamp() * 1_000_000_000)
+    elif args.end_time_mode in {
+        END_TIME_OBSERVED_UPPER_BOUND,
+        END_TIME_TERMINAL_EVENT,
+    }:
+        terminal_observed_at_ns = time_ns()
     else:
         terminal_observed_at_ns = None
     if args.max_end_uncertainty_ns is not None and args.max_end_uncertainty_ns < 0:

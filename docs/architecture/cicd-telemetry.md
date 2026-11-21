@@ -33,6 +33,17 @@ Inputs (first → second slice):
 Without a proven Run completed-at the producer reports
 `run_completed_at_unproven` (when `updated_at` is present) or
 `missing_run_timestamps` and does **not** emit an exact Pipeline Span end.
+The default post-run Workflow uses `--end-time-mode terminal_event`. The
+exact Attempt API supplies the completed state and native conclusion. The
+producer measures the time at which it records that event. The Candidate
+and correlated Attempt-terminal LogRecord preserve these facts, with
+`time_precision=unproven` for the Pipeline end, empty end bounds and
+`root_emission=not_emitted`. Workflow timestamps stay in the raw API witness.
+Task telemetry retains its own Job timestamps.
+A Pipeline Root requires instrumentation at the boundary that actually
+owns the measured execution. A Dagger Query or Function span describes
+that operation within the enclosing GitHub Attempt.
+
 With `--end-time-mode observed_upper_bound`, native Attempt API
 `run_status=completed` confirms the terminal and records a constraint interval:
 last completed Job end (or Run start when there are no Jobs) through the

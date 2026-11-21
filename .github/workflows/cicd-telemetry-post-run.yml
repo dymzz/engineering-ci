@@ -141,15 +141,15 @@ jobs:
             fi
           fi
           set +e
-          # Precision policy is explicit: no uncertainty budget, so a late
-          # observation is recorded and is not used as the Root span end.
-          printf '%s\n' 'mode=observed_upper_bound' 'max_end_uncertainty_ns=' \
+          # The Attempt API supplies the terminal status and conclusion.
+          # The producer records its own event time.
+          printf '%s\n' 'mode=terminal_event' \
             > artifacts/cicd-telemetry/end-time-policy.txt
           uv run --locked python -m engineering_ci.cicd_telemetry \
             --repository "${SOURCE_REPO}" \
             --run-id "${SOURCE_RUN_ID}" \
             --attempt "${SOURCE_ATTEMPT}" \
-            --end-time-mode observed_upper_bound \
+            --end-time-mode terminal_event \
             --output artifacts/cicd-telemetry/candidate.json \
             --otlp-json artifacts/cicd-telemetry/otel.json \
             --otlp-logs-json artifacts/cicd-telemetry/otel-logs.json \
