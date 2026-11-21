@@ -509,15 +509,23 @@ def _make_hygiene_runner(
             if isinstance(outcome.get("observation"), dict):
                 completed.observation = outcome["observation"]
             return completed
+        git_args = argv_list[1:]
+        reads_git = bool(git_args) and (
+            git_args[0] in _readonly_git
+            or (
+                git_args[1:3] == ["diff", "--check"]
+                and git_args[0].startswith("--attr-source=")
+                and hygiene._GIT_OID.fullmatch(git_args[0].split("=", 1)[1])
+            )
+        )
         if (
             tool_name == "git"
-            and len(argv_list) > 1
-            and argv_list[1] in _readonly_git
+            and reads_git
             and shutil.which(tool) is None
             and hasattr(module, "_run_git")
         ):
             outcome = asyncio.run_coroutine_threadsafe(
-                module._run_git(consumer_source, argv_list[1:]), loop
+                module._run_git(consumer_source, git_args), loop
             ).result()
             completed = subprocess.CompletedProcess(
                 argv_list,
