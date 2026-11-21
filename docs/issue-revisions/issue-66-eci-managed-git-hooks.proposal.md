@@ -93,13 +93,11 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 
 **实施裁定：一次设计公共接线，按实际仓库的适用工具矩阵成批实现，按执行类别集中验收；不采取一个工具一个 PR、一个全量 CI 验收，也不把全部候选默认配置成每次提交的 Required。** 已合并 ECI PR #67 的选择/Hygiene/CLI、ECI #52 的现有 Check/Actions/工具资产和原生 Dagger Checks 作为基线，先核对现有能力，只补实际缺口。
 
-### 6.1 单事件生命周期实现的决策条件
+### 6.1 已确定的 Hook 生命周期（不再选型）
 
-- **原生零逻辑 Hook（功能/成本对照，不是默认首选实施）**：Git 本身已经提供 pre-commit/pre-push 事件、`GIT_INDEX_FILE` 与 stdin；薄入口调用一次 ECI Hooks CLI，能够在最少额外安装依赖下复用已存在的 ECI Source/Selection/Check。它不需要在 ECI 重建“工具生命周期调度框架”。
-- **Lefthook（优先评估的成熟调度候选）**：适合真实需要独立只读工具并发、文件快速唤醒或成熟诊断的仓库；但 `glob`、`root`、`{staged_files}` 均非 Index/Push 真实字节证明，且多个 `use_stdin: true` 命令只有一个会收到完整 stdin。采用时，一个 ECI 入口独占 pre-push stdin，一次事件仅构建一次有来源的公共 Source/Plan，不由多个 ECI Profile 分别创建 worktree/重复 Tach。
-- **prek（替代比较项）**：不能与 Lefthook 双安装；需对固定版本的多 ref stdin、目标快照与现有 Hook 兼容性做相同事实核验，不能由工具宣传或默认行为推断。
-- **写入安全**：pre-commit 默认只读，任何工具通过路径读取的实际 staged 字节需由 #66 P0 闭合。Lefthook `stage_fixed` 或自动 `git add` 可能卷入未暂存工作树修改，不能作为默认自动修复模式；明确的 fix 命令另行执行并重新核验受检 Tree。
-- **不重复安装/调度**：已存在的 ECI/Tool Runtime 原生工具与 Check 结果继续消费；Hook 管理不成为二次下载器、二次任务图、重复 Report 解释器或缓存账本。单一事件能并发无冲突的原生 Checks，但真正 Data/PASS 计算依赖、局部失败及同次产物共享由 #86 Dagger DAG/现有执行机制负责。
+**当前唯一方案：Lefthook 2.2.2 + 已有 ECI Source/Check/Result API。** 固定版 Lefthook 负责安装与静态/条件/并行 Job 调度；ECI 通过现有 `hooks capture` 等接口接收真实 Git Event/Ref、Selection/Plan、Native Result 和 Receipt。后续任务是实际声明 `lefthook.yml`、真实调用与失败交接，不是比较 L1/L2/prek/薄 Hook 或建设新的 Hook Coordinator/安装器。安装冲突采用 Lefthook 本身支持的机制与显式用户选择处理。
+
+完整跨生态工具候选范围在 §6.2 继续保留，不以“无须自行调度”收缩任何实际适用的 Check。
 
 ### 6.2 全阶段工具候选目录及按仓库启用策略
 
