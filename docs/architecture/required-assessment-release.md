@@ -192,12 +192,22 @@ their GitHub SHA-256 values. Artifact `14648469807` came from Post-run
 for `44773475745/1`, and `14645279469` from `44769863530/1` for
 `44769458290/1`. Each recorded `end_time_uncertain`, zero SERVER
 spans, and no confirmed bundle delivery. The default Workflow supplies
-`observed_upper_bound` with no approved uncertainty budget. Its GitHub
-Attempt adapter does not assign an exact completion time. Terminal positive
-acceptance still needs a separately sourced authoritative end time or a
-governed observation budget and a matching live capture.
+`observed_upper_bound` with no uncertainty budget on those historical runs.
 [Post-run Workflow](../../.github/workflows/cicd-telemetry-post-run.yml) ·
 [GitHub Attempt adapter](../../src/engineering_ci/cicd_telemetry.py)
+
+For production, the GitHub Attempt supplies identity and terminal outcome.
+[#150](https://github.com/dymzz/engineering-ci/pull/150) records the completed
+state as a correlated event measured by the producer clock. The CLI on
+`44766709012/1` returned `success`, four Task spans and the same API witness
+digest listed above. The event has empty Pipeline end bounds and no Root.
+Workflow timestamps and observer intervals are excluded from Root timing.
+The verified Dagger trace archive for `44843103748/1` contains native start
+and end timestamps for the bound `EngineeringCi.lint` and
+`EngineeringCi.repositoryRuffTools` spans. They describe their own execution
+boundaries. A positive Pipeline Root requires instrumentation at the
+execution boundary that owns the Pipeline named by the Expected input.
+[Dagger Artifact](https://github.com/dymzz/engineering-ci/actions/runs/44843103748/artifacts/14681284052)
 
 Historical Release Run `39614205390/1` has successful `verified` and
 `publish` Jobs. Its current Actions Artifact listing returns zero entries.
@@ -233,7 +243,7 @@ native Provider evidence for validation mode.
 | Requirement and implementation owner | Producer and observed identity | Scope, time and evidence | Verifier and current evidence level | Final consumer and acceptance result |
 | --- | --- | --- | --- | --- |
 | [#75](https://github.com/dymzz/engineering-ci/issues/75) / [#74](https://github.com/dymzz/engineering-ci/issues/74), reuse #83/#84 | `cicd-telemetry-post-run.yml` and `cicd_telemetry`, Runs `44767235384/1` → `44766709012/1`, Artifact `14646306762` and the digests above | Four completed Jobs, four Task Spans, Root withheld, producer exit 0 and no observed Receiver ACK | Bytes and Task trace identity verified. Pinned Registry, applicable Native Live/Terminal result and required delivery await independent verification | #74 Native Checker into #52 Report. Real no-Root input confirmed. Need a genuine Task-only Native positive and a Terminal positive with an authorized Root and valid time quality |
-| [#52 D4](https://github.com/dymzz/engineering-ci/issues/52), [#66-C](https://github.com/dymzz/engineering-ci/issues/66) and [#63](https://github.com/dymzz/engineering-ci/issues/63), reuse #124 | Authorized #66-B2 Check Expected plus completed Run/Attempt and #74 Native Result | `scope_id`, `expected_check_ref`, current Profile/Phase, Rule/Source, Candidate and original capture inputs | Terminal Plan validation, #66-C Receipt and #63 Admission. [#145](https://github.com/dymzz/engineering-ci/pull/145) at `b72e620` fixes the Native Correlation handoff and passed its contract review | R1 per-check Coverage, Native FAIL and Remaining Work. The examined archives supply real no-Root inputs. A qualified native positive and authenticated handoff still need evidence |
+| [#52 D4](https://github.com/dymzz/engineering-ci/issues/52), [#66-C](https://github.com/dymzz/engineering-ci/issues/66) and [#63](https://github.com/dymzz/engineering-ci/issues/63), reuse #124 | Authorized #66-B2 Check Expected plus completed Run/Attempt and #74 Native Result | `scope_id`, `expected_check_ref`, current Profile/Phase, Rule/Source, Candidate and original capture inputs | Terminal Plan validation, #66-C Receipt and #63 Admission. [#145](https://github.com/dymzz/engineering-ci/pull/145) at `b72e620` fixes the Native Correlation handoff and passed its contract review | R1 per-check Coverage, Native FAIL and Remaining Work. The Attempt terminal event is verified as an observed outcome. Terminal B still needs the instrumented Pipeline Root for the authorized subject and authenticated admission |
 | [#61 R4](https://github.com/dymzz/engineering-ci/issues/61), E065/E066/E067/E072, reuse #121/#136 | Release Run `44843103748/1` provides the current candidate's validation Manifest. Publication needs current non-sample R1 and authorized Profile/Policy/Handoff | Repository/Tag/HEAD, action/target/ref/phase, approved validity, exact Manifest bytes, Run/Attempt/Job/upload Step and Artifact ID/digest | Native Provider verified the exact validation Manifest and original Artifacts. [Draft #147](https://github.com/dymzz/engineering-ci/pull/147) at `72408d6` checks the write request and any different retained Manifest under current authority. Controlled tests cover cross-Attempt recovery, future R1, required Check mappings and zero-write refusals | Release CLI consumed the same validation Run and returned `validated`. For publication, `workflow_actions release publish` → `publish_release` enforces R4 before mutation and records both reconciliation identities when recovering. The default Workflow lacks a protected `release_authority`. Authorized production writes and receipts remain unverified |
 | [#61 R5](https://github.com/dymzz/engineering-ci/issues/61), E068, reuse #123/#134 | Independently authenticated Run/Release/Artifact event, ordered Phase/Due authorities and two same-Candidate R1 assessments | Trigger occurrence and receipt, Run/Attempt, target/ref, Artifact digest when applicable, evaluation time and authorized due window | [Draft #148](https://github.com/dymzz/engineering-ci/pull/148) at `1904aa0` binds native publication as the occurrence and verifies receipt separately. Controlled tests cover delayed and forged receipt, refusal, due and late outcomes | The Draft consumes the pair in Release inspection and retains the historical publication. Governed live R1/Trigger inputs and any Policy-selected Promotion/Disposition receipt remain unverified |
 
@@ -253,8 +263,9 @@ controlled authorities.
    Task-only capture, retaining tool version, official Registry SHA,
    capture hash, actual Native exit, Findings, matched signals and Report.
    For Terminal, require a real completed Run with a unique correlated Root,
-   acceptable time provenance and Result. Exercise missing Root, wrong
-   Run/Attempt or Result and unusable clock bounds. Missing Root evidence
+   Result and timestamps from the Pipeline's own execution boundary.
+   Exercise missing Root, wrong Run/Attempt or Result, and a span with the
+   wrong execution scope. Missing Root evidence
    stays unverified or blocks the applicable Required obligation even if
    Native Live succeeds. For applicable delivery obligations retain the
    actual Receiver ACK and protocol and distinguish preparation, export,
