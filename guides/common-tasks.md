@@ -55,7 +55,7 @@ uv run --locked --no-sync lefthook install
 被过滤掉的必需检查和最终对账都会阻断提交。
 Git 须支持 `--attr-source` 和 `show-ref --exists`。
 要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
-`uv run --locked --no-sync engineering-ci hooks check pre-commit --json`。
+`uv run --locked --no-sync python -m engineering_ci.cli hooks check pre-commit --json`。
 
 配置推送检查时，在 `ci-selection.toml` 的 `[push].effective_profiles` 列出
 Ref 树内的策略文件，并用 `[[effective_profile]]` 分别登记适用动作的审批。
@@ -71,9 +71,9 @@ pre-push:
     - name: capture-refs
       use_stdin: true
       run: |
-        invocation=$(uv run --locked --no-sync engineering-ci hooks capture pre-push --framed-stdin) || exit $?
+        invocation=$(uv run --locked --no-sync python -m engineering_ci.cli hooks capture pre-push --framed-stdin) || exit $?
         ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-push-checks --no-auto-install || exit $?
-        uv run --locked --no-sync engineering-ci hooks consume pre-push --invocation-ref "$invocation"
+        uv run --locked --no-sync python -m engineering_ci.cli hooks consume pre-push --invocation-ref "$invocation"
 ```
 
 本仓的 `pre-push` 默认安装仍待实际 Scope/Profile。生产配置及启用状态由 #152 记录。

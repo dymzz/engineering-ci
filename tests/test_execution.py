@@ -1883,6 +1883,10 @@ def test_index_plan_checks_read_staged_bytes_across_check_families(tmp_path):
     assert outcome["exit_code"] == 0, outcome
     receipt = outcome["receipt"]
     reconciliation.validate_receipt(receipt)
+    assert receipt["trusted"] is False
+    assert receipt["required"] is False
+    assert receipt["evidence_admission"] == "not_evaluated"
+    assert receipt["required_gate"] == "not_evaluated"
     entries = {entry["name"]: entry for entry in receipt["entries"]}
     assert entries["whitespace"]["binding_status"] == "matched"
     assert entries["forwarding"]["binding_status"] == "matched"

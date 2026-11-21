@@ -1023,24 +1023,53 @@ async def _execute_dag(
                     and name in execution._WORKFLOW_SCRIPT_CHECKS
                 )
                 try:
-                    entry = await asyncio.to_thread(
-                        execution.run_host_check,
-                        verified_workflow_plan if use_verified_wf else host_plan,
-                        check_item,
-                        root=consumer_root,
-                        runner=runner,
-                        execution_context="dagger_export",
-                        run_instance=run_instance,
-                        artifact_paths=artifact_paths,
-                        generated_input_refs=generated_refs,
-                        shared_cache=None if fs_files else script_shared_cache,
-                        profile_ref=verified_profile,
-                        workflow_source_authority=(
-                            verified_workflow_authority if use_verified_wf else None
-                        ),
-                        _consumer_source_root=Path(directory) if fs_files else None,
-                        _consumer_generated_retained=bool(fs_files),
-                    )
+                    if raw_snapshot == "index":
+                        bound_ok, bind_reason, _ = (
+                            execution._verify_git_execution_binding(
+                                host_plan,
+                                Path(directory),
+                                execution_context="dagger_export",
+                            )
+                        )
+                    else:
+                        bound_ok, bind_reason = True, None
+                    if not bound_ok:
+                        entry = execution._decorate_checks(
+                            host_plan,
+                            [
+                                execution._blocked_consumer_entry(
+                                    name,
+                                    check_item.get("status"),
+                                    bind_reason,
+                                    [],
+                                )
+                            ],
+                            execution_context="dagger_export",
+                            run_instance=run_instance,
+                            root=consumer_root,
+                            profile_ref=verified_profile,
+                            artifact_paths=artifact_paths,
+                            base_root=Path(directory) if fs_files else None,
+                        )[0]
+                    else:
+                        entry = await asyncio.to_thread(
+                            execution.run_host_check,
+                            verified_workflow_plan if use_verified_wf else host_plan,
+                            check_item,
+                            root=consumer_root,
+                            runner=runner,
+                            execution_context="dagger_export",
+                            run_instance=run_instance,
+                            artifact_paths=artifact_paths,
+                            generated_input_refs=generated_refs,
+                            shared_cache=None if fs_files else script_shared_cache,
+                            profile_ref=verified_profile,
+                            workflow_source_authority=(
+                                verified_workflow_authority if use_verified_wf else None
+                            ),
+                            _consumer_source_root=Path(directory) if fs_files else None,
+                            _consumer_generated_retained=bool(fs_files),
+                        )
                 finally:
                     if temporary is not None:
                         temporary.cleanup()
@@ -1405,11 +1434,11 @@ async def execute(
     git = value.get("git") or {}
     source_tree_id = git.get("source_tree_id")
     execution_tree = git.get("execution_tree")
-    if git.get("snapshot") == "index" and (
-        not execution_tree
-        or git.get("index_tree") != execution_tree
-        or not source_tree_id
-    ):
+    index_tree = git.get("index_tree")
+    index_identity_conflict = (
+        index_tree is not None and index_tree != execution_tree
+    ) or (bool(source_tree_id) and (not execution_tree or index_tree != execution_tree))
+    if git.get("snapshot") == "index" and index_identity_conflict:
         return make_result(
             {
                 "plan_declaration_consistent": declaration_consistent,

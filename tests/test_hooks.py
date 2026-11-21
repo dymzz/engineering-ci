@@ -865,13 +865,50 @@ def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
         encoding="utf-8",
         check=False,
     )
-    assert blocked.returncode != 0
-    assert target.read_text(encoding="utf-8") == "working\n"
-    receipts = sorted(
-        (tmp_path / ".git" / "eci-hooks" / "invocations").glob("*.receipt")
+    blocked_diag = f"stdout:\n{blocked.stdout}\nstderr:\n{blocked.stderr}"
+    assert blocked.returncode != 0, blocked_diag
+    assert target.read_text(encoding="utf-8") == "working\n", blocked_diag
+    inv_dir = tmp_path / ".git" / "eci-hooks" / "invocations"
+    invocations = sorted(inv_dir.glob("*.json"))
+    plans = sorted(inv_dir.glob("*.plan"))
+    activations = sorted(inv_dir.glob("*.activation"))
+    executions = sorted(inv_dir.glob("*.execution"))
+    receipts = sorted(inv_dir.glob("*.receipt"))
+    assert len(invocations) == 1, blocked_diag
+    assert len(plans) == 1, blocked_diag
+    assert len(activations) == 1, blocked_diag
+    assert len(executions) == 1, blocked_diag
+    assert len(receipts) == 1, blocked_diag
+    assert (
+        len(
+            {
+                invocations[0].stem,
+                plans[0].stem,
+                activations[0].stem,
+                executions[0].stem,
+                receipts[0].stem,
+            }
+        )
+        == 1
     )
-    assert len(receipts) == 1
-    assert json.loads(receipts[0].read_text(encoding="utf-8"))["exit_code"] == 2
+    assert isinstance(json.loads(plans[0].read_text(encoding="utf-8")), dict)
+    assert isinstance(json.loads(activations[0].read_text(encoding="utf-8")), dict)
+    execution_payload = json.loads(executions[0].read_text(encoding="utf-8"))
+    assert isinstance(execution_payload, dict), execution_payload
+    assert execution_payload["report"]["exit_code"] == 2, execution_payload
+    assert execution_payload["report"]["check"]["exit_code"] == 2, execution_payload
+    receipt_payload = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert isinstance(receipt_payload, dict), receipt_payload
+    assert receipt_payload["exit_code"] == 2, f"{blocked_diag}\n{receipt_payload}"
+    if isinstance(receipt_payload.get("receipt"), dict):
+        assert receipt_payload["receipt"]["trusted"] is False
+        assert receipt_payload["receipt"]["required"] is False
+        assert receipt_payload["receipt"]["evidence_admission"] == "not_evaluated"
+    lefthook_text = (Path(__file__).parents[1] / "lefthook.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "python -m engineering_ci.cli hooks" in lefthook_text
+    assert "uv run --locked --no-sync engineering-ci hooks" not in lefthook_text
 
     target.write_text("staged\n", encoding="utf-8")
     git(tmp_path, "add", "a.txt")

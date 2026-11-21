@@ -2252,3 +2252,39 @@ def test_prerequisite_directory_overlay_requires_verified_member_digests():
     )
     assert enb["admitted"] is False
     assert "prerequisite_result_scope_mismatch" in enb["reasons"]
+
+
+def test_t1a_rejects_local_hook_job_receipt_under_external_issuer_policy():
+    local_issuer = {
+        "name": "engineering-ci.local-hook-job",
+        "version": "1",
+        "sha256": "c" * 64,
+    }
+    projection, receipt, report, job_receipt = setup(issuer=local_issuer)
+    assert job_receipt["verification_status"] == "upstream_verified"
+    result = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for(issuer=JOB_ISSUER),
+        authority=authority_for(issuer=JOB_ISSUER),
+    )
+    entry = result["entries"][0]
+    assert entry["origin_status"] == "rejected"
+    assert "authority_rejected" in entry["reasons"]
+    assert entry["admitted"] is False
+
+    # Even if the caller's authority callback is permissive, external trusted_issuers still rejects local-hook-job:
+    lax = admit_evidence(
+        projection,
+        receipt,
+        reports=[report],
+        job_receipts=[job_receipt],
+        policy=policy_for(issuer=JOB_ISSUER),
+        authority=lambda _ctx: True,
+    )
+    lax_entry = lax["entries"][0]
+    assert lax_entry["origin_status"] == "rejected"
+    assert "issuer_untrusted" in lax_entry["reasons"]
+    assert lax_entry["admitted"] is False

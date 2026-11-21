@@ -2742,3 +2742,224 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
     assert trunc_entry["binding_status"] == "insufficient"
     assert trunc_entry["reason"] == "producer_directory_truncated"
     assert trunc_entry["native_status"] == "passed"
+
+
+def test_dagger_index_separates_identity_only_from_source_bound_host_checks(
+    modules, tmp_path
+):
+    from engineering_ci import plan_contract
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    sources_text = (
+        'schema_version = 1\nmanifest = "data/catalog/manifest.json"\n'
+        'acquired_roots = ["data/acquired"]\n'
+        "exempt_paths = []\nenvironment_prefixes = []\n"
+        "require_text_unset = false\n"
+    )
+    acquired_bytes = b"v1\n"
+    manifest_text = (
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(acquired_bytes).hexdigest(),
+                    "size_bytes": len(acquired_bytes),
+                }
+            ]
+        )
+        + "\n"
+    )
+    src = tmp_path / "src"
+    raw_files = {
+        "ci-sources.toml": sources_text.encode("utf-8"),
+        "data/acquired/a.bin": acquired_bytes,
+        "data/catalog/manifest.json": manifest_text.encode("utf-8"),
+    }
+    for rel, raw in raw_files.items():
+        target = src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    verified_source_tree_id = real_selection.directory_content_id(src)
+    tree_hex = "a" * 40
+    base_plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=("tests.controlled",),
+        checks=("source",),
+    )
+    base_plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": tree_hex,
+        "index_tree": tree_hex,
+        "changed_paths": ["data/acquired/a.bin"],
+        "source_tree_id": None,
+    }
+    base_plan["check_scope"] = [
+        {
+            "name": "source",
+            "status": "selected",
+            "inputs": ["data/acquired/a.bin"],
+            "reason": "source inputs changed",
+        }
+    ]
+    base_plan["selection"]["check_scope"] = list(base_plan["check_scope"])
+
+    dag_plan = json.loads(json.dumps(base_plan))
+    dag_plan["selection"]["prerequisites"] = ["prep"]
+    dag_plan["prerequisite_actions"] = {
+        "prep": {
+            "type": "command",
+            "argv": [sys.executable, "-c", "pass"],
+        }
+    }
+    dag_plan["dependency_contract"] = plan_contract.graph_contract(
+        [
+            {
+                "producer_ref": {"kind": "prerequisite_action", "name": "prep"},
+                "consumer_ref": {"kind": "check", "name": "source"},
+                "dependency_kind": "pre_execution_pass",
+                "requires_pass": True,
+                "output_ref": None,
+                "source_binding_ref": "git",
+                "declaration_ref": _v2_decl("prep"),
+                "execution_phase": "pre_execution",
+                "resolution": "resolved",
+                "unresolved_reason": None,
+            }
+        ]
+    )
+
+    class SimpleNative(NativeDouble):
+        async def exit_code(self):
+            self.calls.append("tests")
+            return 0
+
+    for variant in (base_plan, dag_plan):
+        native = SimpleNative()
+        saved = asyncio.run(
+            collector.execute(
+                native,
+                MemoryFile(json.dumps(variant)),
+                MemoryDirectory(raw_files),
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+        report = json.loads(asyncio.run(saved.report()))
+        assert report["status"] == "blocked", (report.get("reason"), report)
+        assert report["exit_code"] == 5, report
+        assert report["reason"] == "dagger_export_index_source_unverified", report
+        assert report["source_tree_verified"] == "not_requested"
+        src_check = next(c for c in report["checks"] if c["name"] == "source")
+        assert src_check["status"] == "not_executed"
+        assert src_check["reason"] == "dagger_export_index_source_unverified"
+
+        verified = json.loads(json.dumps(variant))
+        verified["git"]["source_tree_id"] = verified_source_tree_id
+        native_ok = SimpleNative()
+        saved_ok = asyncio.run(
+            collector.execute(
+                native_ok,
+                MemoryFile(json.dumps(verified)),
+                MemoryDirectory(raw_files),
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+        ok_report = json.loads(asyncio.run(saved_ok.report()))
+        assert ok_report["status"] == "passed", (
+            ok_report.get("reason"),
+            ok_report.get("checks"),
+        )
+        assert ok_report["exit_code"] == 0, ok_report
+        assert ok_report["source_tree_verified"] == "verified"
+        src_ok = next(c for c in ok_report["checks"] if c["name"] == "source")
+        assert src_ok["status"] == "passed"
+
+
+def test_dagger_index_identity_conflicts_still_refuse_early(modules, tmp_path):
+    from engineering_ci import plan_contract
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    base = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"config_sha256": "a" * 64},
+        "git": {
+            "snapshot": "index",
+            "execution_tree": "a" * 40,
+            "index_tree": "b" * 40,
+            "source_tree_id": None,
+        },
+        "selection": {"tests": ["tests.controlled"]},
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+    native = NativeDouble()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(base)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "not_executed"
+    assert report["reason"] == "index_source_identity_mismatch"
+    assert report["exit_code"] == 2
+    assert native.calls == []
+
+    missing_exec = json.loads(json.dumps(base))
+    missing_exec["git"] = {
+        "snapshot": "index",
+        "execution_tree": None,
+        "index_tree": None,
+        "source_tree_id": "c" * 64,
+    }
+    saved_missing = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(missing_exec)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    rep_missing = json.loads(asyncio.run(saved_missing.report()))
+    assert rep_missing["status"] == "not_executed"
+    assert rep_missing["reason"] == "dagger_export_index_source_unverified"
+    assert rep_missing["exit_code"] == 4
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "ci-selection.toml").write_bytes(b"# clean\n")
+    wrong_id = json.loads(json.dumps(base))
+    wrong_id["git"] = {
+        "snapshot": "index",
+        "execution_tree": "a" * 40,
+        "index_tree": "a" * 40,
+        "source_tree_id": "sha256:" + "0" * 64,
+    }
+    assert wrong_id["git"]["source_tree_id"] != real_selection.directory_content_id(src)
+    saved_wrong = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(wrong_id)),
+            MemoryDirectory({"ci-selection.toml": "# clean\n"}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    rep_wrong = json.loads(asyncio.run(saved_wrong.report()))
+    assert rep_wrong["status"] == "not_executed"
+    assert rep_wrong["reason"] == "source_tree_mismatch"
+    assert rep_wrong["exit_code"] == 4
