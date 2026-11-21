@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -780,3 +781,113 @@ def test_cli_default_handoff_identifies_each_invocation(repo, tmp_path):
     assert second_ref.startswith("invocation:")
     assert first_ref != second_ref
     assert name_file.exists() and location_file.exists()
+
+
+def _git_sh_env():
+    repo_root = Path(__file__).parents[1].resolve()
+    env = {
+        **os.environ,
+        "UV_PROJECT": str(repo_root),
+        "PYTHONPATH": str(repo_root / "src"),
+    }
+    git_bin = shutil.which("git")
+    if git_bin:
+        git_root = Path(git_bin).resolve().parents[1]
+        extra = [
+            str(Path(sys.executable).resolve().parent),
+            str(git_root / "bin"),
+            str(git_root / "usr" / "bin"),
+        ]
+        env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "")])
+    return env
+
+
+def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
+    tmp_path,
+):
+    repo_root = Path(__file__).parents[1].resolve()
+    env = _git_sh_env()
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "config", "user.email", "hooks@example.invalid")
+    git(tmp_path, "config", "user.name", "Hooks Test")
+    (tmp_path / "lefthook.yml").write_bytes((repo_root / "lefthook.yml").read_bytes())
+
+    validate = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "validate"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert validate.returncode == 0, validate.stderr
+
+    dumped = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "dump"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert dumped.returncode == 0, dumped.stderr
+    assert "--no-stage-fixed" in dumped.stdout
+    assert "pre-commit-checks" in dumped.stdout
+
+    install = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "install", "pre-commit"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert install.returncode == 0, install.stderr
+    hook_file = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook_text = hook_file.read_text(encoding="utf-8")
+    assert "lefthook run pre-commit --no-stage-fixed" in hook_text
+    assert 'call_lefthook run "pre-commit" "$@"' in hook_text
+
+    target = tmp_path / "a.txt"
+    target.write_text("staged \n", encoding="utf-8")
+    git(tmp_path, "add", "a.txt")
+    target.write_text("working\n", encoding="utf-8")
+
+    blocked = subprocess.run(
+        ["git", "commit", "-m", "first commit blocked by staged whitespace"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert blocked.returncode != 0
+    assert target.read_text(encoding="utf-8") == "working\n"
+    receipts = sorted(
+        (tmp_path / ".git" / "eci-hooks" / "invocations").glob("*.receipt")
+    )
+    assert len(receipts) == 1
+    assert json.loads(receipts[0].read_text(encoding="utf-8"))["exit_code"] == 2
+
+    target.write_text("staged\n", encoding="utf-8")
+    git(tmp_path, "add", "a.txt")
+    staged_tree = git(tmp_path, "write-tree")
+    target.write_text("working \n", encoding="utf-8")
+
+    allowed = subprocess.run(
+        ["git", "commit", "-m", "first commit allowed despite dirty worktree"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert allowed.returncode == 0, allowed.stderr + allowed.stdout
+    assert target.read_text(encoding="utf-8") == "working \n"
+    assert git(tmp_path, "rev-parse", "HEAD^{tree}") == staged_tree
+    assert git(tmp_path, "show", "HEAD:a.txt") == "staged"

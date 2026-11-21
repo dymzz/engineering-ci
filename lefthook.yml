@@ -14,7 +14,7 @@ pre-commit:
     - name: capture-index
       run: |
         invocation=$(uv run --locked --no-sync engineering-ci hooks capture pre-commit) || exit $?
-        ECI_HOOK_INVOCATION_REF="$invocation" lefthook run pre-commit-checks --no-auto-install || exit $?
+        ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-commit-checks --no-auto-install --no-stage-fixed || exit $?
         uv run --locked --no-sync engineering-ci hooks consume pre-commit --invocation-ref "$invocation"
 
 pre-commit-checks:

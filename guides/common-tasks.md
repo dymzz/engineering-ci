@@ -72,7 +72,7 @@ pre-push:
       use_stdin: true
       run: |
         invocation=$(uv run --locked --no-sync engineering-ci hooks capture pre-push --framed-stdin) || exit $?
-        ECI_HOOK_INVOCATION_REF="$invocation" lefthook run pre-push-checks --no-auto-install || exit $?
+        ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-push-checks --no-auto-install || exit $?
         uv run --locked --no-sync engineering-ci hooks consume pre-push --invocation-ref "$invocation"
 ```
 

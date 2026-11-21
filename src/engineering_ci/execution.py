@@ -2871,6 +2871,10 @@ def _source_reference(plan, execution_context):
             scope = sorted(str(path) for path in paths)
         if not binding.get("unverified_paths"):
             content_digest = binding.get("digest")
+    elif isinstance(git.get("changed_paths"), (list, tuple)):
+        scope = sorted(
+            str(path) for path in git["changed_paths"] if isinstance(path, str) and path
+        )
     declared = git.get("execution_tree") or git.get("tree") or git.get("index_tree")
     if content_digest and scope:
         status = "content_digest"
@@ -3309,7 +3313,7 @@ def _prepare_source_snapshots(
                     or git.get("merge_tree")
                 )
                 git_root = selection._resolve_git_dir(base_path)
-                if git_root is None and snapshot != "index":
+                if git_root is None:
                     snapshots["workflow_materializations"] = {
                         name: _workflow_tree_materialization(
                             git, base_path, tree, name, workflow_authority
@@ -3440,7 +3444,7 @@ def _verified_check_source_ref(
         if workflow_materialization:
             if execution_context == "host":
                 actual = "materialized_directory"
-        elif snapshot == "index":
+        elif snapshot == "index" and execution_context == "host":
             exp_tree = declared
             if selection.index_source_refusal(
                 base_path, exp_tree, index_file=git.get("index_file")
@@ -5629,6 +5633,7 @@ def _decorate_checks(
     sources_config=None,
     artifact_paths=(),
     base_root=None,
+    index_offset=0,
 ):
     fallback_source = _source_reference(plan, execution_context)
     baseline = _baseline_reference(plan)
@@ -5643,7 +5648,7 @@ def _decorate_checks(
     authorized_names = {
         entry.get("name") for entry in _selected_checks(plan) if isinstance(entry, dict)
     }
-    for index, item in enumerate(checks):
+    for index, item in enumerate(checks, start=index_offset):
         name = item.get("name")
         item["execution_context"] = execution_context
         if "plan_authorized" not in item:
@@ -6306,7 +6311,7 @@ def _execute_with_dependencies(
                     framework=framework,
                     src_root=chosen.get("src_root", "src"),
                     expected_tree=test_expected_tree,
-                    index_tree=expected_tree
+                    index_tree=test_expected_tree
                     if plan["git"].get("snapshot") == "index"
                     else None,
                     index_file=plan["git"].get("index_file"),
@@ -6763,52 +6768,6 @@ def execute(
             report["coverage"]["scope"] = coverage_scope
         return report
 
-    exit_code = 0
-    if tests:
-        native = {}
-        test_expected_tree = (
-            expected_tree
-            if (
-                execution_context != "dagger_export"
-                and selection._resolve_git_dir(root) is not None
-            )
-            else None
-        )
-        exit_code = selection.run_tests(
-            tests,
-            root=root,
-            framework=framework,
-            src_root=chosen.get("src_root", "src"),
-            expected_tree=test_expected_tree,
-            index_tree=expected_tree
-            if plan["git"].get("snapshot") == "index"
-            else None,
-            index_file=plan["git"].get("index_file"),
-            junit_path=junit_path,
-            capture=native,
-        )
-        if native.get("source_refusal"):
-            report["status"] = "not_executed"
-            report["exit_code"] = 4
-            report["reason"] = native["source_refusal"]
-            report["tests"] = {
-                "status": "not_executed",
-                "exit_code": 4,
-                "source_refusal": native["source_refusal"],
-            }
-            return report
-        report["exit_code"] = exit_code
-        report["native_stdout"] = native.get("stdout", "")
-        report["native_stderr"] = native.get("stderr", "")
-        tests_status = "passed" if exit_code == 0 else "failed"
-        report["tests"] = {
-            "status": tests_status,
-            "exit_code": exit_code,
-            "observation": native,
-        }
-    else:
-        report["tests"] = {"status": "not_executed", "exit_code": 3}
-
     workflow_authority = _workflow_source_authorizer(plan, workflow_source_authority)
     source_snapshots = _prepare_source_snapshots(
         plan,
@@ -6846,7 +6805,65 @@ def execute(
     native_checks = [*hygiene_results, *workflow_script_results]
     if source_result is not None:
         native_checks.append(source_result)
-    covered = {item["name"] for item in native_checks}
+    decorated_native = _decorate_checks(
+        plan,
+        native_checks,
+        execution_context=execution_context,
+        run_instance=run_instance,
+        root=root,
+        profile_ref=profile_ref,
+        source_snapshots=source_snapshots,
+        hygiene_config=hygiene_config,
+        sources_config=sources_config,
+    )
+
+    exit_code = 0
+    if tests:
+        native = {}
+        test_expected_tree = (
+            expected_tree
+            if (
+                execution_context != "dagger_export"
+                and selection._resolve_git_dir(root) is not None
+            )
+            else None
+        )
+        exit_code = selection.run_tests(
+            tests,
+            root=root,
+            framework=framework,
+            src_root=chosen.get("src_root", "src"),
+            expected_tree=test_expected_tree,
+            index_tree=test_expected_tree
+            if plan["git"].get("snapshot") == "index"
+            else None,
+            index_file=plan["git"].get("index_file"),
+            junit_path=junit_path,
+            capture=native,
+        )
+        if native.get("source_refusal"):
+            report["status"] = "not_executed"
+            report["exit_code"] = 4
+            report["reason"] = native["source_refusal"]
+            report["tests"] = {
+                "status": "not_executed",
+                "exit_code": 4,
+                "source_refusal": native["source_refusal"],
+            }
+            return report
+        report["exit_code"] = exit_code
+        report["native_stdout"] = native.get("stdout", "")
+        report["native_stderr"] = native.get("stderr", "")
+        tests_status = "passed" if exit_code == 0 else "failed"
+        report["tests"] = {
+            "status": tests_status,
+            "exit_code": exit_code,
+            "observation": native,
+        }
+    else:
+        report["tests"] = {"status": "not_executed", "exit_code": 3}
+
+    covered = {item["name"] for item in decorated_native}
     if tests and report.get("tests", {}).get("observation"):
         # A framework Check observes the existing selected-tests invocation.
         covered.add(framework)
@@ -6860,17 +6877,23 @@ def execute(
         for item in selected
         if item.get("name") not in covered
     ]
-    report["checks"] = _decorate_checks(
-        plan,
-        native_checks + remaining,
-        execution_context=execution_context,
-        run_instance=run_instance,
-        root=root,
-        profile_ref=profile_ref,
-        source_snapshots=source_snapshots,
-        hygiene_config=hygiene_config,
-        sources_config=sources_config,
+    decorated_remaining = (
+        _decorate_checks(
+            plan,
+            remaining,
+            execution_context=execution_context,
+            run_instance=run_instance,
+            root=root,
+            profile_ref=profile_ref,
+            source_snapshots=source_snapshots,
+            hygiene_config=hygiene_config,
+            sources_config=sources_config,
+            index_offset=len(decorated_native),
+        )
+        if remaining
+        else []
     )
+    report["checks"] = decorated_native + decorated_remaining
     prereq_results, _ = _run_prerequisites(
         prerequisites,
         actions,

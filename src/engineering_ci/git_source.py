@@ -84,6 +84,7 @@ def materialized_tree(root, tree, *, head=None):
             GIT_CONFIG_GLOBAL=str(config),
             GIT_CONFIG_NOSYSTEM="1",
             GIT_ATTR_NOSYSTEM="1",
+            PYTHONDONTWRITEBYTECODE="1",
         )
         worktree = temporary / "source"
         worktree.mkdir()
@@ -100,6 +101,17 @@ def materialized_tree(root, tree, *, head=None):
         alternates.write_bytes(os.fsencode(Path(object_dir).as_posix()) + b"\n")
         if head is not None:
             _git(worktree, "update-ref", "--no-deref", "HEAD", head, env=env)
+        else:
+            branch = subprocess.run(
+                ["git", "symbolic-ref", "--quiet", "HEAD"],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                check=False,
+            )
+            ref = branch.stdout.decode("utf-8", errors="replace").strip()
+            if branch.returncode == 0 and ref.startswith("refs/heads/"):
+                _git(worktree, "symbolic-ref", "HEAD", ref, env=env)
         empty = _git(worktree, "mktree", env=env, data=b"").decode().strip()
         _git(worktree, "read-tree", tree, env=env)
         _git(

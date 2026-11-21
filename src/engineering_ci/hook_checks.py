@@ -637,11 +637,18 @@ def _make_plan(operation, payload, root):
             raise hooks.HookEventError("hook_effective_profile_required")
         profile = profiles[0]
         changes = selection.changeset(root, base="HEAD", mode="index")
+    chosen = selection.select(changes, config, root=root)
+    tach_validation = (
+        selection._tach_check(root, config, chosen.changeset)
+        if chosen.tests and not chosen.full_tests
+        else None
+    )
     return selection.plan(
-        selection.select(changes, config, root=root),
+        chosen,
         config=config,
         config_path=config_path,
         root=root,
+        tach_validation=tach_validation,
         effective_profile_path=profile,
     )
 

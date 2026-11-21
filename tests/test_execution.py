@@ -1751,6 +1751,238 @@ def test_dagger_index_binding_requires_matching_export(tmp_path):
     assert binding() == (False, "source_tree_mismatch", tree)
 
 
+def test_index_plan_checks_read_staged_bytes_across_check_families(tmp_path):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, git_source, hook_checks, hooks
+
+    path = tmp_path / "repository"
+    path.mkdir()
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "execution@example.invalid")
+    run(path, "config", "user.name", "Execution Test")
+    config_path = path / "ci-selection.toml"
+    base_selection = (
+        "schema_version = 1\n"
+        'framework = "unittest"\n'
+        'checks = ["hygiene", "source"]\n'
+        "strict_modules = false\n"
+        "coverage_required = false\n"
+        'ignored_files = ["ci-selection.toml", "ci-hygiene.toml", "ci-sources.toml", '
+        '"ci-effective-profile.json", "tach.toml"]\n'
+        "[check_scope]\n"
+        'source_prefixes = ["data/"]\n'
+        "[[non_code_rules]]\n"
+        'prefix = "data/"\n'
+        "tests = []\n"
+        'reason = "data input"\n'
+    )
+    config_path.write_text(base_selection, encoding="utf-8", newline="\n")
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace", "forwarding"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "ci-sources.toml").write_text(
+        "schema_version = 1\n"
+        'manifest = "data/catalog/manifest.json"\n'
+        'acquired_roots = ["data/acquired"]\n'
+        "exempt_paths = []\n"
+        "environment_prefixes = []\n"
+        "require_text_unset = false\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "data/acquired").mkdir(parents=True)
+    (path / "data/catalog").mkdir(parents=True)
+    (path / "data/acquired/a.bin").write_bytes(b"v1\n")
+    (path / "data/catalog/manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(b"v1\n").hexdigest(),
+                    "size_bytes": 3,
+                }
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src").mkdir()
+    (path / "src" / "other.py").write_text(
+        "VALUE = 1\n", encoding="utf-8", newline="\n"
+    )
+    target = path / "src" / "initial.py"
+    target.write_text("def compute():\n    return 1\n", encoding="utf-8", newline="\n")
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n'
+        '[[modules]]\npath = "initial"\ndepends_on = []\n'
+        '[[modules]]\npath = "other"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "initial baseline")
+
+    target.write_text("def compute():\n    return 2\n", encoding="utf-8", newline="\n")
+    names = ["whitespace", "forwarding", "source"]
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="multi-check-index",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=names,
+        required_obligations=[
+            {
+                "obligation_ref": f"req-{name}",
+                "check_names": [name],
+                "allow_inapplicable": True,
+            }
+            for name in names
+        ],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        domain_complete=True,
+        authority_verified=True,
+    )
+    config_path.write_text(base_selection, encoding="utf-8", newline="\n")
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(config_path.read_text(encoding="utf-8").encode("utf-8"))
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8", newline="\n"
+    )
+    run(path, "add", "-A")
+
+    # Mutate unstaged working tree with violations across whitespace, forwarding, source and unittest.
+    dirty_py = b"from other import VALUE as compute \n"
+    dirty_bin = b"corrupted-worktree-bytes\n"
+    target.write_bytes(dirty_py)
+    (path / "data/acquired/a.bin").write_bytes(dirty_bin)
+    (path / "ci-hygiene.toml").write_text("invalid working hygiene", encoding="utf-8")
+    (path / "ci-sources.toml").write_text("invalid working sources", encoding="utf-8")
+
+    event = hooks.capture_pre_commit(path)
+    invocation = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+    report = hook_checks.run_checks(path, binding)
+    assert report["status"] == "passed", report
+    checks = {entry["name"]: entry for entry in report["checks"]}
+    assert {name: checks[name]["status"] for name in ("whitespace", "forwarding")} == {
+        "whitespace": "passed",
+        "forwarding": "passed",
+    }
+    outcome = hook_checks.reconcile(path, binding)
+    assert outcome["exit_code"] == 0, outcome
+    receipt = outcome["receipt"]
+    reconciliation.validate_receipt(receipt)
+    entries = {entry["name"]: entry for entry in receipt["entries"]}
+    assert entries["whitespace"]["binding_status"] == "matched"
+    assert entries["forwarding"]["binding_status"] == "matched"
+    assert entries["source"]["binding_status"] == "not_applicable"
+    assert hook_checks.consume_index_result(path, binding)["exit_code"] == 0
+    assert target.read_bytes() == dirty_py
+    assert (path / "data/acquired/a.bin").read_bytes() == dirty_bin
+
+    # Also verify source check + selected tests + Dagger export execution read the staged Index bytes (Index=B),
+    # not the broken unstaged worktree bytes (Worktree=C).
+    (path / "data/acquired/a.bin").write_bytes(b"v2\n")
+    (path / "data/catalog/manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(b"v2\n").hexdigest(),
+                    "size_bytes": 3,
+                }
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "tests").mkdir()
+    test_file = path / "tests" / "test_initial.py"
+    test_file.write_text(
+        "import unittest\nfrom initial import compute\n\n\n"
+        "class InitialTest(unittest.TestCase):\n"
+        "    def test_compute(self):\n"
+        "        self.assertEqual(compute(), 2)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    config_path.write_text(
+        base_selection + '\n[module_tests]\n"initial" = ["tests.test_initial"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    run(
+        path,
+        "add",
+        "data/acquired/a.bin",
+        "data/catalog/manifest.json",
+        "tests/test_initial.py",
+        "ci-selection.toml",
+    )
+    (path / "data/acquired/a.bin").write_bytes(dirty_bin)
+    test_event = hooks.capture_pre_commit(path)
+    with git_source.materialized_tree(
+        path, test_event["index"]["tree"], head=test_event["head_commit"]
+    ) as (materialized, _):
+        cfg = selection.load_config(materialized / "ci-selection.toml")
+        cs = selection.changeset(materialized, base="HEAD", mode="index")
+        chosen = selection.select(cs, cfg, root=materialized)
+        test_plan = selection.plan(
+            chosen,
+            config=cfg,
+            config_path=materialized / "ci-selection.toml",
+            root=materialized,
+            tach_validation={
+                "status": "passed",
+                "tach_sha256": selection._digest(materialized / cfg.tach),
+                "source_tree": chosen.changeset.execution_tree or chosen.changeset.tree,
+            },
+        )
+        exported = tmp_path / "exported-index"
+        shutil.copytree(
+            materialized,
+            exported,
+            ignore=shutil.ignore_patterns(".git"),
+        )
+        host_test_report = execution.execute(test_plan, root=materialized)
+        assert host_test_report["status"] == "passed", host_test_report
+        assert host_test_report["tests"]["status"] == "passed"
+        host_checks = {entry["name"]: entry for entry in host_test_report["checks"]}
+        assert host_checks["whitespace"]["status"] == "passed"
+        assert host_checks["forwarding"]["status"] == "passed"
+        assert host_checks["source"]["status"] == "passed"
+    dagger_plan = json.loads(json.dumps(test_plan))
+    dagger_plan.pop("expected_checks", None)
+    dagger_plan["inputs"].pop("hygiene", None)
+    dagger_plan["check_scope"] = [
+        item
+        for item in dagger_plan["check_scope"]
+        if item.get("name") not in {"whitespace", "forwarding"}
+    ]
+    dagger_report = execution.execute(
+        dagger_plan,
+        root=exported,
+        execution_context="dagger_export",
+    )
+    assert dagger_report["status"] == "passed", dagger_report
+    assert dagger_report["tests"]["status"] == "passed"
+    dagger_checks = {entry["name"]: entry for entry in dagger_report["checks"]}
+    assert dagger_checks["source"]["status"] == "passed"
+    assert dagger_checks["unittest"]["status"] == "passed"
+
+
 def test_execute_refuses_stale_index_tree(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")

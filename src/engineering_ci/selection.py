@@ -1253,12 +1253,17 @@ def tree_content_id(root, tree):
         temporary = Path(temporary)
         index = temporary / "index"
         work = temporary / "work"
+        config = temporary / "gitconfig"
+        config.touch()
         work.mkdir()
         env = {
             **os.environ,
             "GIT_DIR": str(git_dir),
             "GIT_INDEX_FILE": str(index),
             "GIT_WORK_TREE": str(work),
+            "GIT_CONFIG_GLOBAL": str(config),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
         }
         read = subprocess.run(
             ["git", "read-tree", tree],
@@ -1270,7 +1275,7 @@ def tree_content_id(root, tree):
         if read.returncode != 0:
             return None
         checkout = subprocess.run(
-            ["git", "checkout-index", "-a", "-f"],
+            ["git", "-c", "core.autocrlf=false", "checkout-index", "-a", "-f"],
             cwd=work,
             env=env,
             capture_output=True,
@@ -4487,6 +4492,8 @@ def run_tests(
             print(f"execution refused: {refusal}", file=sys.stderr)
             return 4
     environment = dict(os.environ)
+    if expected_tree is not None or index_tree is not None:
+        environment.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     source = str((root / src_root).resolve())
     existing = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = source + (os.pathsep + existing if existing else "")
