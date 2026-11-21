@@ -3,6 +3,14 @@
 Local verification for [architecture/cicd-telemetry.md](../architecture/cicd-telemetry.md)
 and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 
+## 2026-11-21 current verification decision
+
+The accepted production goal is **true GitHub Attempt terminal facts**, not estimation of the Workflow's completed-at timestamp. [Issue #75](https://github.com/dymzz/engineering-ci/issues/75) is authoritative; [PR #150](https://github.com/dymzz/engineering-ci/pull/150) implements `terminal_event` on its branch (not yet merged at this evidence baseline). A completed Attempt with valid native Jobs can produce Task Spans and a correlated terminal LogRecord without a Pipeline Root. Assert `root_emission=not_emitted`, `time_precision=unproven`, no fabricated Pipeline end or duration; keep API Witness and real Job bounds. Dagger-native Function/Check spans remain valid only for their own execution scope.
+
+**Prohibited implementation direction:** treating `updated_at`, last Job end, post-run observation, guessed time intervals or invented `--max-end-uncertainty-ns` budgets as the GitHub Workflow's real Pipeline End, or reopening this route merely to get a #52B Terminal-positive result. #52A Task-only is independently valid; #52B requires a genuinely bound Pipeline Root and remains unverified otherwise. Reuse historical API/Receiver/Weaver evidence and verify only the actual new integration difference.
+
+The tables below include **legacy functional and historical test cases** for `observed_upper_bound` and approximate Root. Their presence records old behavior and regression boundaries; it **does not authorize default execution, new delivery tasks or Terminal acceptance** of approximate Pipeline End.
+
 ## Candidate records + API/OTLP JSON slice
 
 | Case | Input | Expected |
@@ -35,8 +43,8 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | OTLP/JSON flush failure | Unwritable path / no spans | exit 3; candidate claims `exported=false` |
 | Native API evidence (single Job) | Fixed Run `42821429094` Attempt 1 + `--job-id` | See [cicd-telemetry-evidence](./cicd-telemetry-evidence/README.md) |
 | Native API evidence (`all_completed`) | Same Run, no `--job-id`, 3 Task Spans | See [cicd-telemetry-evidence-all-completed](./cicd-telemetry-evidence-all-completed/README.md) |
-| Observed upper bound, no budget | API `run_status=completed` + observation ≥ Job ends | Interval recorded; Root not emitted; Tasks remain; `end_time_uncertain` |
-| Approximate Root | Same, plus `--max-end-uncertainty-ns` covering the interval | Root end is the observation; `duration_valid_for_metrics=false` |
+| Observed upper bound, no budget (legacy) | API `run_status=completed` + observation ≥ Job ends | Interval recorded; Root not emitted; Tasks remain; `end_time_uncertain` |
+| Approximate Root (legacy behavior, non-acceptance) | Historical explicit `--max-end-uncertainty-ns` mode | Records previous numeric behavior only; observer end **does not establish** GitHub Workflow completed-at or qualified Terminal Root |
 | Late observation | Upper bound far after the last Job, budget too small | No Root; no proven multi-hour Run duration |
 | Observed Root without API completed | `run_status=in_progress` even with conclusion | No Root; `run_not_completed` |
 | Event/API status conflict | event status ≠ Attempt API status | No Root / fetch refuse |
