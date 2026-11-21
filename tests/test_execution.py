@@ -1595,6 +1595,8 @@ def test_first_commit_index_report_and_reconciliation(
     assert checks["whitespace"]["native_result"]["baseline_ref"] == baseline
     assert expected["event_ref"]["base_tree"] == event["base_tree"]
 
+    with pytest.raises(hooks.HookEventError, match="hook_final_result_missing"):
+        hook_checks.consume_index_result(path, binding)
     outcome = hook_checks.reconcile(path, binding)
     receipt = outcome["receipt"]
     reconciliation.validate_receipt(receipt)
@@ -1607,6 +1609,9 @@ def test_first_commit_index_report_and_reconciliation(
         "git-odb-empty-tree"
     )
     assert reconciliation.hook_exit_code([receipt]) == (1 if native_exit else 0)
+    assert hook_checks.consume_index_result(path, binding)["exit_code"] == int(
+        bool(native_exit)
+    )
     assert bool(outcome["exit_code"]) == bool(native_exit)
     assert target.read_bytes() == working
 

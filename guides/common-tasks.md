@@ -51,7 +51,8 @@ uv run --locked --no-sync lefthook install
 本仓运行原生暂存空白检查。受检树声明了 `ci-selection.toml` 和已绑定的
 `ci-effective-profile.json` 或 `ci-effective-profile.toml` 时，准备 Job 从
 临时 Git checkout 加载暂存策略，Host Job 在同一 Tree 上执行 Plan，最终 Job
-保存真实 Report 的本地 Receipt。失败或缺失的必需结果会阻断提交。
+保存真实 Report 的本地 Receipt。外层 Job 消费本次最终结果。失败、缺失或
+被过滤掉的必需检查和最终对账都会阻断提交。
 Git 须支持 `--attr-source` 和 `show-ref --exists`。
 要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
 `uv run --locked --no-sync engineering-ci hooks check pre-commit --json`。

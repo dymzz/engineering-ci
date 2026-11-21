@@ -928,9 +928,11 @@ def main(argv=None):
     check.add_argument("--root", type=Path, default=Path("."))
     check.add_argument("--invocation-ref", help="Consume an existing pre-commit Event.")
     check.add_argument("--json", action="store_true")
-    for command in ("prepare", "run", "reconcile"):
+    for command in ("prepare", "run", "reconcile", "consume"):
         job = subparsers.add_parser(command)
-        job.add_argument("hook", choices=HOOKS)
+        job.add_argument(
+            "hook", choices=("pre-commit",) if command == "consume" else HOOKS
+        )
         job.add_argument("--root", type=Path, default=Path("."))
         job.add_argument("--invocation-ref", required=True)
         job.add_argument("--json", action="store_true")
@@ -961,7 +963,7 @@ def main(argv=None):
     capture.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        if args.command in ("prepare", "run", "reconcile"):
+        if args.command in ("prepare", "run", "reconcile", "consume"):
             from . import hook_checks
 
             binding = _load_invocation_ref(args.root, args.invocation_ref)
@@ -988,11 +990,12 @@ def main(argv=None):
                     "prepare": hook_checks.prepare,
                     "run": hook_checks.run_checks,
                     "reconcile": hook_checks.reconcile,
+                    "consume": hook_checks.consume_index_result,
                 }
                 outcome = handlers[args.command](args.root, binding)
             if args.json:
                 print(json.dumps(outcome, sort_keys=True))
-            elif args.command != "prepare" or outcome["exit_code"]:
+            elif args.command not in ("prepare", "consume") or outcome["exit_code"]:
                 hook_checks.print_result(outcome, binding.invocation_ref)
             return outcome["exit_code"]
         if args.command == "check":

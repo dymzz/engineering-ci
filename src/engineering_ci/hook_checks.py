@@ -419,10 +419,9 @@ def reconcile(root, binding):
     if prepared["plan"] is None:
         if report is None:
             raise hooks.HookEventError("hook_report_missing")
-        return {
-            "invocation_ref": binding.invocation_ref,
-            "exit_code": report["exit_code"],
-        }
+        outcome = {**_identity(binding), "exit_code": report["exit_code"]}
+        _artifact(binding, ".receipt", outcome)
+        return outcome
     receipt = _reconcile_plan(
         binding,
         prepared["plan"],
@@ -438,6 +437,31 @@ def reconcile(root, binding):
         "exit_code": (report or {}).get("exit_code")
         or reconciliation.hook_exit_code([receipt]),
     }
+
+
+def consume_index_result(root, binding):
+    """Require a final result even if Lefthook suppressed the reconciliation Job."""
+    prepared = _planned(root, binding)
+    receipt = _artifact(binding, ".receipt")
+    if receipt is None:
+        raise hooks.HookEventError("hook_final_result_missing")
+    if prepared["plan"] is None:
+        _recorded, report = _load_execution(binding, prepared)
+        if report is None or receipt != {
+            **_identity(binding),
+            "exit_code": report["exit_code"],
+        }:
+            raise hooks.HookEventError("hook_final_result_mismatch")
+        return receipt
+    reconciliation.validate_receipt(receipt)
+    expected = prepared["plan"]["expected_checks"]
+    if (
+        receipt.get("expected_invocation_ref") != binding.invocation_ref
+        or receipt.get("scope_id") != expected["scope_id"]
+        or receipt.get("expected_set_ref") != expected["expected_set_ref"]
+    ):
+        raise hooks.HookEventError("hook_final_result_mismatch")
+    return {"exit_code": reconciliation.hook_exit_code([receipt])}
 
 
 def _run_push_plan(root, plan, source, prepared, job_ref, operation):
