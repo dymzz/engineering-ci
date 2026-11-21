@@ -9,7 +9,7 @@ Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 
 | Object | Producer | Native facts |
 | --- | --- | --- |
-| Pipeline Run Span (only with owner-proven full execution bounds) | A producer that actually measures that Pipeline boundary; `engineering_ci.cicd_telemetry` may serialize verified supplied bounds | Workflow identity, Run/Attempt, conclusion and **independently proven** Pipeline start/end; no inferred GitHub API completion timestamp |
+| Pipeline Run Span (only with owner-proven full execution bounds) | A producer that actually measures that Pipeline boundary; `engineering_ci.cicd_telemetry` may serialize supplied numeric bounds in Candidate records, while keeping `time_source_verified=false` unless an independent time-source authority proves authenticity | Workflow identity, Run/Attempt, conclusion and **independently proven** Pipeline start/end; no inferred GitHub API completion timestamp |
 | Task Run Span | Same adapter from separate Job facts | Job id/name/**url**, **Job** conclusion, real start/end |
 | Dagger Function Trace | Dagger SDK only | Not owned here; do not re-instrument |
 
@@ -37,7 +37,15 @@ Inputs (first → second slice):
 
 **Current `main` observed-upper-bound implementation / legacy acceptance route (`observed_upper_bound` / `--max-end-uncertainty-ns`):** Earlier versions stored a conditional interval and could emit an approximate Root if an explicit budget was supplied. This behavior is recorded here only to interpret historical artifacts and any still-present code paths. It is **not** the default implementation target, an acceptable replacement for a true GitHub Workflow End, or a way to satisfy #52B/#74 Terminal by fabricating a Root. A provenance tag such as `end_time_quality=observed_upper_bound` does not make an OTel Root's numeric end a real execution timestamp.
 
-Coverage retains distinct `pipeline_terminal_covered` / `task_coverage`; the `expected_completed_jobs` inventory and `coverage.expected_trace` are reconstructed from independent Run/Attempt/Job witness. A withheld parent uses `parent_exported=false` and an explicit `withheld_parent_span` reference. Transport delivery, Weaver semantic PASS, Terminal correlation and #63 trusted admission remain separate facts. #52A Task-only may pass on valid Tasks without Root; #52B Root-dependent Terminal remains unverified until a genuine eligible Pipeline Root is available.
+Coverage retains distinct `pipeline_terminal_covered` / `task_coverage`; the `expected_completed_jobs` inventory and `coverage.expected_trace` are reconstructed from independent Run/Attempt/Job witness. `expected_completed_jobs[].expected_task_span_id` records the per-Job expected Task Span mapping, and a withheld parent uses `parent_exported=false` with its ID in `coverage.withheld_parent_span` (not a second list). These Candidate IDs and inventories support #52 correlation and diagnostics only; they are not #63 trusted admission.
+
+Current Candidate records (`terminal` and `terminal_provenance` in `engineering_ci.cicd_telemetry`) preserve distinct provenance and time-quality fields for existing evidence interpretation and downstream consumers:
+- `terminal_provenance.terminal_source`: the facts source actually consumed by the Producer (`github_api`, `mapping`, or `env`).
+- `end_time_source`: how the candidate end bound was obtained (`explicit_mapping`, `explicit_env`, `not_native`, or `terminal_observed_at`).
+- `time_precision` (`exact_input`, `observed_upper_bound`, or `unproven`) vs `time_source_verified`: numeric interval precision is independent of time-source authentication. Even when explicit Run end inputs (`run_completed_at` / `ENGINEERING_CI_RUN_COMPLETED_AT`) close the numeric bounds (`time_precision=exact_input`, `root_emission=explicit_end`), `engineering_ci.cicd_telemetry` sets `time_source_verified=false` because neither GitHub Attempt API `status=completed` nor caller-supplied timestamps prove an independently certified Provider completion instant.
+- `exact_run_duration`: indicates only that the numeric interval is closed by an explicit input (`time_precision == "exact_input"`), not that GitHub or an authorized Provider certified the completion timestamp. Schema 9 keeps these time-quality fields in Candidate `terminal` / `terminal_provenance` metadata rather than unregistered Span attributes.
+
+Transport delivery, Weaver semantic PASS, Terminal correlation and #63 trusted admission remain separate facts. #52A Task-only may pass on valid Tasks without Root; #52B Root-dependent Terminal remains unverified until a genuine eligible Pipeline Root with authenticated full-Pipeline bounds is available, and an estimated or approximate Root never receives #52B authorization.
 
 ### Expected Trace identity (`github-actions-attempt-sha256-v1`)
 
