@@ -193,6 +193,73 @@ def test_verify_checks_explicit_version_and_run_without_dispatching(
 
 
 @pytest.mark.parametrize(
+    "command,expected,exit_code",
+    [
+        ("validate", "validated", 0),
+        ("verify", "validated", 0),
+        ("publish", "unavailable", 1),
+    ],
+)
+def test_existing_tag_on_another_commit_does_not_block_candidate_validation(
+    command, expected, exit_code, monkeypatch, capsys
+):
+    api = API()
+    api.tag = "b" * 40
+    api.published = {"id": 10, "tag_name": TAG, "draft": False}
+    requests = []
+
+    def dispatch(client, target, mode, scenario):
+        assert client is api
+        requests.append((target, mode, scenario))
+        return 123
+
+    monkeypatch.setattr(cli, "GitHub", lambda _: api)
+    monkeypatch.setattr(cli, "dispatch", dispatch)
+    args = [command, "--version", "0.4.11", "--repo", REPOSITORY, "--json"]
+    if command == "validate":
+        args.extend(["--ref", "main"])
+    elif command == "verify":
+        args.extend(["--run", "123"])
+
+    assert cli.main(args) == exit_code
+    result = json.loads(capsys.readouterr().out)
+    assert result["result"] == expected
+    assert requests == (
+        [(identity(), "validate", "pass")] if command == "validate" else []
+    )
+    if expected == "validated":
+        assert result["validation"]["run_attempt"] == 1
+        assert result["publication"] == {"status": "not_published"}
+        assert any(path == "actions/artifacts/99/zip" for path, _, _ in api.calls)
+    else:
+        assert "Existing Release tag points to another commit" in result["reason"]
+    assert not api.writes
+
+
+def test_verify_reads_selected_validation_after_a_different_publication_run(
+    monkeypatch, capsys
+):
+    api = API()
+    api.tag = HEAD
+    api.published = {
+        "id": 10,
+        "tag_name": TAG,
+        "draft": False,
+        "prerelease": False,
+    }
+    api.saved = make_manifest(api, mode="publication")
+    api.saved["workflow"]["run_id"] = 321
+    monkeypatch.setattr(cli, "GitHub", lambda _: api)
+
+    assert cli.main(verify_args()) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["result"] == "validated"
+    assert result["validation"]["run_id"] == 123
+    assert result["publication"] == {"status": "not_published"}
+    assert not api.writes
+
+
+@pytest.mark.parametrize(
     "state,expected",
     [
         ("queued", "running"),
