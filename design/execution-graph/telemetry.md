@@ -15,7 +15,7 @@
 | ECI Verification Session | ECI 真正控制的验证范围 | 不将局部 Check 的 Parent 伪称完整 Provider Root |
 | CI Provider Workflow Attempt | GitHub/相应 Provider | 不用最后 Job End 或观察上界伪称精确结束时刻 |
 
-GitHub `workflow_run.completed` 后置观察取得的 `last_job_end <= run_end <= observation` 只是有条件的时间区间，不是硬编码 17～19 秒，不是确证的精确 Root。没有可信 Root 时 Task-only 语义仍可独立验收，Terminal Root 覆盖不能伪造成功。
+GitHub `workflow_run.completed` 后置事件只证明已观察到该 Attempt 的终态，不为标准 Pipeline Root 提供精确结束时间。`last_job_end`、`updated_at`、后置观察时刻及其推得的条件区间都不能升级为真实 Workflow End；不得靠无来源的误差预算或近似 Root 满足 #52B Terminal。[#75 当前裁决](https://github.com/dymzz/engineering-ci/issues/75) 的 `terminal_event` 保留真实 Attempt/Job/Task 和观察事件；没有拥有完整 Pipeline 生命边界的可信 Producer 时 Root 不发射，Task-only #52A 独立验收，#52B 保持未覆盖。Dagger 原生 Span 仅代表自身 Engine/Function/Check 的实际执行范围，不给 GitHub Pipeline 补造结束时间。
 
 ## 3. Trace 交接（拟议）
 - **Producer**：Dagger SDK/Engine 产出原生 Trace；ECI Caller 产出 Invocation/Check/Source/Result 引用；Provider 产出真实 Run/Attempt/Job 身份。
