@@ -4,7 +4,7 @@
 
 ## 1. 两条独立原生链路
 1. **Dagger Native Execution**：Engine/SDK 产生自身 Function、Container 与内部计算的 Traces/Spans；ECI 不重新生成或改写这些 Span。原生导出实际配置、协议、接收端和固定 `v1.0.0-beta.16` SDK 行为必须核实。
-2. **GitHub Provider CI/CD Telemetry**：#75 的 Run/Attempt/Job 原生 API 数据可形成候选 Pipeline/Task 记录；由 #74 的 Weaver 消费。此 Producer **不 instrument Dagger Functions**；GitHub Candidate、OTLP Transport、Receiver Observed、Weaver PASS、#63 Trusted 是独立事实。
+2. **当前 GitHub / 目标受控 Provider CI/CD Telemetry**：#75 的真实 GitHub Attempt/Job API 仍为旧候选 Task/Terminal 事实来源；#74 Weaver 独立消费。[#152](https://github.com/dymzz/engineering-ci/issues/152) 的非 Workflow Provider 则须生产自己拥有的 Run/Attempt/Task 与完整 Pipeline 生命周期（可能涉及多 Plan、Windows/Linux Job），不重写 Dagger Spans。Producer、OTLP、Receiver、Weaver、#63 Admission 各自独立。
 
 两条链路可以依据真实 Run、Check 和 Trace Context 关联，不能凭命令/时间猜父 Span。
 
@@ -13,9 +13,9 @@
 |---|---|---|
 | Dagger Invocation/Session | Dagger Engine | 不将其结束时间宣称 GitHub Workflow End |
 | ECI Verification Session | ECI 真正控制的验证范围 | 不将局部 Check 的 Parent 伪称完整 Provider Root |
-| CI Provider Workflow Attempt | GitHub/相应 Provider | 不用最后 Job End 或观察上界伪称精确结束时刻 |
+| CI Provider Pipeline Run/Attempt | 实际拥有整个 Pipeline 运行边界的 Provider；当前 GitHub API 只证明其真实 Attempt/Job 事实 | 不用单个 Plan、最后 Job End 或观察上界伪称整个 Pipeline 结束时刻 |
 
-GitHub `workflow_run.completed` 后置观察取得的 `last_job_end <= run_end <= observation` 只是有条件的时间区间，不是硬编码 17～19 秒，不是确证的精确 Root。没有可信 Root 时 Task-only 语义仍可独立验收，Terminal Root 覆盖不能伪造成功。
+GitHub `workflow_run.completed` 后置事件只证明已观察到该 Attempt 的终态，不为标准 Pipeline Root 提供精确结束时间。`last_job_end`、`updated_at`、后置观察时刻及其推得的条件区间都不能升级为真实 Workflow End；不得靠无来源的误差预算或近似 Root 满足 #52B Terminal。[#75 当前裁决](https://github.com/dymzz/engineering-ci/issues/75) 的 `terminal_event` 保留真实 Attempt/Job/Task 和观察事件；没有拥有完整 Pipeline 生命边界的可信 Producer 时 Root 不发射，Task-only #52A 独立验收，#52B 保持未覆盖。Dagger 原生 Span 仅代表自身 Engine/Function/Check 的实际执行范围，不给 GitHub Pipeline 补造结束时间。#152 只有在新 Provider 实际测量完整 Pipeline（全部适用 Plan 与跨平台 Task）时才可提供 #52B Root；#52A Task-only 与 #52B Root-dependent 分别验收。
 
 ## 3. Trace 交接（拟议）
 - **Producer**：Dagger SDK/Engine 产出原生 Trace；ECI Caller 产出 Invocation/Check/Source/Result 引用；Provider 产出真实 Run/Attempt/Job 身份。
@@ -28,7 +28,7 @@ GitHub `workflow_run.completed` 后置观察取得的 `last_job_end <= run_end <
 ## 4. CI/CD SemConv 与执行身份
 Dagger Function Span 并非自动符合 `cicd.pipeline.run.server` 等 CI/CD Semantic Conventions。只有实际生命周期和被检查语义符合官方固定 Registry，才能映射 Pipeline/Task。官方 SemConv 来源不能为匹配 ECI 本地 Checker 改写。
 
-#52 Task-only A 与后置 Root/Terminal B 分别保留覆盖、Matcher、Source Closure、时间来源和原生 Gate。完整 Task 集合须从独立 Run/Attempt/Job 来源判定；不能从被检 Capture 倒推 Expected。后置 B 不能阻断产生自身 Terminal 事实的原 Workflow。
+#52 Task-only A 与后置 Root/Terminal B 分别保留覆盖、Matcher、Source Closure、时间来源和原生 Gate。完整 Task 集合须从独立 Run/Attempt/Job 来源判定；不能从被检 Capture 倒推 Expected。后置 B 不能阻断产生自身 Terminal 事实的运行生命周期（当前 GitHub Workflow、未来 #152 受控 Pipeline），也不能反向成为自身完成前的 Required 条件。
 
 ## 5. 定向验收
 - 实际 Dagger Check 在固定 OTel 接收端产生 Trace，可与 Check/Result 关联；失败 Check 同样保留原生结果。

@@ -2,8 +2,11 @@
 
 Status: additive #66-C contract and first implementation slice
 (`engineering_ci.reconciliation`). It does not change Plan schema 2, the
-Execution Report schema, or any pre-execution Expected identity. Scheduler and
-Hook lifecycle remain #66/#72 work; this module consumes their evidence.
+Execution Report schema, or any pre-execution Expected identity. The current
+[#66 decision](https://github.com/dymzz/engineering-ci/issues/66) assigns Git Hook
+installation and scheduling to Lefthook 2.2.2, not to ECI's historical L2/
+Event Coordinator design. This module consumes **actually observed** activation,
+Report and Attempt evidence; it does not implement or authorize a scheduler.
 
 ## Position
 
@@ -60,6 +63,11 @@ resolutions=(), observations=())`
     "reason": null
   }
   ```
+
+  The JSON above is a contract **example**, not evidence that a Lefthook Job ran. The
+  `scheduler_ref` and `effective_config_ref` must be bound to the real effective
+  Lefthook configuration and invocation; a default literal `lefthook:2.2.2`
+  or `hook-job:1` does not prove scheduling, activation or source authority.
 
   `job_refs` are Job names; `job_instances` are the actually activated
   identities `(job_ref, run_ref, attempt_ref)`. A `routed` binding without

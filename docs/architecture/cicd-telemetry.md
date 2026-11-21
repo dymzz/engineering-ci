@@ -3,11 +3,13 @@
 Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) stream C (O2/O3).
 
+> **2026-11-21 设计裁决与实际运行状态（[#75](https://github.com/dymzz/engineering-ci/issues/75)）**：GitHub Attempt API 证明终态、结论及真实 Job 事实，却不能从 `updated_at`、Job End、观察时间或任意误差预算推算完整 Pipeline End。**目标**为 [Draft PR #150](https://github.com/dymzz/engineering-ci/pull/150) 的 `terminal_event`、合法 Task Spans 与 `root_emission=not_emitted` / `time_precision=unproven`；**当前 main** 的 `cicd-telemetry-post-run.yml` 仍以 `--end-time-mode observed_upper_bound` 运行，CLI 的此路径仍是当前代码事实，尚未完成目标切换。旧模式不是新设计授权，但不能将当前生产事实误标为“仅历史兼容”。[#152](https://github.com/dymzz/engineering-ci/issues/152) 将用非 Workflow 的真实受控 Provider 替换整个旧后置入口，保留历史 Witness 的原证明范围。Dagger Function/Check Span 只证明自身边界。
+
 ## Producer decision
 
 | Object | Producer | Native facts |
 | --- | --- | --- |
-| Pipeline Run Span | `engineering_ci.cicd_telemetry` from separate Run facts | Workflow name, Run ID, Attempt, **Run** conclusion, real start/end |
+| Pipeline Run Span (only with owner-proven full execution bounds) | A producer that actually measures that Pipeline boundary; `engineering_ci.cicd_telemetry` may serialize supplied numeric bounds in Candidate records, while keeping `time_source_verified=false` unless an independent time-source authority proves authenticity | Workflow identity, Run/Attempt, conclusion and **independently proven** Pipeline start/end; no inferred GitHub API completion timestamp |
 | Task Run Span | Same adapter from separate Job facts | Job id/name/**url**, **Job** conclusion, real start/end |
 | Dagger Function Trace | Dagger SDK only | Not owned here; do not re-instrument |
 
@@ -20,49 +22,30 @@ Inputs (first → second slice):
    `GET .../runs/{id}/attempts/{N}` plus that Attempt's paginated Jobs — never
    the latest Run view mixed with an older Attempt's Jobs.
 
-### Timestamps
+### Timestamps and actual terminal ownership (current)
 
-| Field | Source | Role |
+| Field | Source | Meaning |
 | --- | --- | --- |
-| Run start | GitHub `run_started_at` / explicit mapping | Exact Pipeline start when present |
-| Run end (explicit input) | Explicit `run_completed_at` / `ENGINEERING_CI_RUN_COMPLETED_AT` only | Closed numeric bounds (`time_precision=exact_input`). This is not a verified GitHub completion timestamp (`time_source_verified=false`) |
-| Terminal observed | Post-run `--terminal-observed-at` | Observation upper bound only (`time_precision=observed_upper_bound`, `end_time_source=terminal_observed_at`); never renamed to native `completed_at` |
-| Run `updated_at` | GitHub Workflow Run object update time | Provenance / estimate only (`run_updated_at_ns`); **not** a proven Attempt completed-at |
-| Job bounds | Job `started_at` / `completed_at` | Exact Task bounds |
+| Run/Attempt status and conclusion | Native GitHub Attempt API + independent witness | Terminal fact, not a precise Pipeline end-time |
+| Job `started_at` / `completed_at` | This Attempt's paginated GitHub Jobs | Native Job/Task bounds only |
+| Post-run observation timestamp | Producer's local event clock | Time when the terminal event was **recorded**, not when Workflow finished |
+| GitHub `updated_at` / `workflow_run.completed` | GitHub event / Workflow object | Original API/event metadata, not a proven completion-time instant |
+| Explicit supplied Pipeline start/end | Owner-controlled instrumentation or external mapping | Only valid for a full Pipeline Root when evidence proves its origin and scope. A syntactically exact input does not itself prove authenticity |
+| Dagger Function/Check start/end | Dagger Engine native spans | Valid only for their own Dagger operation, not the enclosing GitHub Workflow |
 
-Without a proven Run completed-at the producer reports
-`run_completed_at_unproven` (when `updated_at` is present) or
-`missing_run_timestamps` and does **not** emit an exact Pipeline Span end.
-With `--end-time-mode observed_upper_bound`, native Attempt API
-`run_status=completed` confirms the terminal and records a constraint interval:
-last completed Job end (or Run start when there are no Jobs) through the
-observation time. That interval is not a proven end. An approximate Root is
-emitted only when `--max-end-uncertainty-ns` is set and the uncertainty fits
-that budget; `duration_valid_for_metrics` stays false. A late observation does
-not become the standard Root end. Tasks and Job-terminal logs stay. A withheld Root is recorded as
-`terminal_check=not_verified` and, when an observation time exists, as one
-Attempt-terminal LogRecord. That log is not a Run duration, and it is not a
-Weaver result.
-Event hints are conflict-checked against the Attempt API and never substitute
-for API status. A Job start/end envelope is coverage metadata
-(`job_execution_envelope`), not `cicd.pipeline.run.duration`.
-Coverage records `pipeline_terminal_covered` separately from `task_coverage`,
-plus a machine-readable `expected_completed_jobs` inventory for #52 hand-off.
-`coverage.expected_trace` publishes the same Attempt's expected Trace ID and
-Pipeline Span ID. `parent_exported` is false when that parent span is withheld;
-the withheld id is `coverage.withheld_parent_span`, not a second list.
-`expected_completed_jobs[].expected_task_span_id` is the Job mapping.
-These IDs are not trusted admission.
-`terminal_provenance.terminal_source` is the facts source that was actually
-used (`github_api`, `mapping`, or `env`). `end_time_source` is
-`explicit_mapping`, `explicit_env`, `not_native`, or `terminal_observed_at`.
-`time_precision` (`exact_input` / `observed_upper_bound` / `unproven`) is
-independent of `time_source_verified`. The Attempt API `status=completed`
-does not prove an official run-completed timestamp, so
-`time_source_verified` stays false. Schema 9 keeps time quality in Candidate
-`terminal` / `terminal_provenance`, rather than unregistered Span attributes.
-`exact_run_duration` means the numeric interval is closed
-by an explicit input, not that GitHub certified the end instant.
+**Approved target post-run route (not yet deployed on `main`):** `--end-time-mode terminal_event` in [PR #150](https://github.com/dymzz/engineering-ci/pull/150). It validates the exact Attempt `completed` state and `conclusion` through GitHub API, records a correlated terminal LogRecord at the observer's own event time, and retains original native timestamps in the raw API witness. It emits **no guessed Pipeline Root**, no estimated interval or duration grant. Task spans keep their real Job bounds. Without proven Pipeline end, `time_precision=unproven`, `root_emission=not_emitted`, and Terminal Root coverage is not verified.
+
+**Current `main` observed-upper-bound implementation / legacy acceptance route (`observed_upper_bound` / `--max-end-uncertainty-ns`):** Earlier versions stored a conditional interval and could emit an approximate Root if an explicit budget was supplied. This behavior is recorded here only to interpret historical artifacts and any still-present code paths. It is **not** the default implementation target, an acceptable replacement for a true GitHub Workflow End, or a way to satisfy #52B/#74 Terminal by fabricating a Root. A provenance tag such as `end_time_quality=observed_upper_bound` does not make an OTel Root's numeric end a real execution timestamp.
+
+Coverage retains distinct `pipeline_terminal_covered` / `task_coverage`; the `expected_completed_jobs` inventory and `coverage.expected_trace` are reconstructed from independent Run/Attempt/Job witness. `expected_completed_jobs[].expected_task_span_id` records the per-Job expected Task Span mapping, and a withheld parent uses `parent_exported=false` with its ID in `coverage.withheld_parent_span` (not a second list). These Candidate IDs and inventories support #52 correlation and diagnostics only; they are not #63 trusted admission.
+
+Current Candidate records (`terminal` and `terminal_provenance` in `engineering_ci.cicd_telemetry`) preserve distinct provenance and time-quality fields for existing evidence interpretation and downstream consumers:
+- `terminal_provenance.terminal_source`: the facts source actually consumed by the Producer (`github_api`, `mapping`, or `env`).
+- `end_time_source`: how the candidate end bound was obtained (`explicit_mapping`, `explicit_env`, `not_native`, or `terminal_observed_at`).
+- `time_precision` (`exact_input`, `observed_upper_bound`, or `unproven`) vs `time_source_verified`: numeric interval precision is independent of time-source authentication. Even when explicit Run end inputs (`run_completed_at` / `ENGINEERING_CI_RUN_COMPLETED_AT`) close the numeric bounds (`time_precision=exact_input`, `root_emission=explicit_end`), `engineering_ci.cicd_telemetry` sets `time_source_verified=false` because neither GitHub Attempt API `status=completed` nor caller-supplied timestamps prove an independently certified Provider completion instant.
+- `exact_run_duration`: indicates only that the numeric interval is closed by an explicit input (`time_precision == "exact_input"`), not that GitHub or an authorized Provider certified the completion timestamp. Schema 9 keeps these time-quality fields in Candidate `terminal` / `terminal_provenance` metadata rather than unregistered Span attributes.
+
+Transport delivery, Weaver semantic PASS, Terminal correlation and #63 trusted admission remain separate facts. #52A Task-only may pass on valid Tasks without Root; #52B Root-dependent Terminal remains unverified until a genuine eligible Pipeline Root with authenticated full-Pipeline bounds is available, and an estimated or approximate Root never receives #52B authorization.
 
 ### Expected Trace identity (`github-actions-attempt-sha256-v1`)
 
@@ -245,7 +228,7 @@ terminal PASS. Missing identity, terminal Run/Job results, required Task URL,
 or real timestamps yield `incomplete` / `partial` (exit 3 when nothing is
 emitted).
 
-Post-run entry: `.github/workflows/cicd-telemetry-post-run.yml` listens for
+**Current, to be retired by #152 (not the target Provider):** `.github/workflows/cicd-telemetry-post-run.yml` listens for
 `workflow_run` completion of `Engineering CI` (and supports
 `workflow_dispatch`). It reads the source Run via Attempt API using the event
 identity, never executes the source PR head, and uploads candidate/OTLP

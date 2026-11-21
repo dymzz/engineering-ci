@@ -3,11 +3,19 @@
 Local verification for [architecture/cicd-telemetry.md](../architecture/cicd-telemetry.md)
 and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 
+## 2026-11-21 current verification decision
+
+The accepted target is **true GitHub Attempt terminal facts**, not an estimated Workflow completion timestamp. [#75](https://github.com/dymzz/engineering-ci/issues/75) is authoritative; Draft [PR #150](https://github.com/dymzz/engineering-ci/pull/150) implements `terminal_event` **on its branch only**. **Current `main` still runs `cicd-telemetry-post-run.yml` with `observed_upper_bound`; this is current behavior, not evidence that the approved target is deployed.** Native Job/Task spans, terminal LogRecord, independent API witness and `root_emission=not_emitted` / `time_precision=unproven` are the new target when full Pipeline End is not owner-proven. Dagger Function/Check timestamps remain scoped to the actual Dagger operation. Future #152 non-Workflow Producer must prove a whole Pipeline scope (possibly several Plans/platform Jobs) before claiming a Root.
+
+**Prohibited implementation direction:** treating `updated_at`, last Job end, post-run observation, guessed time intervals or invented `--max-end-uncertainty-ns` budgets as the GitHub Workflow's real Pipeline End, or reopening this route merely to get a #52B Terminal-positive result. #52A Task-only is independently valid; #52B requires a genuinely bound Pipeline Root and remains unverified otherwise. Reuse historical API/Receiver/Weaver evidence and verify only the actual new integration difference.
+
+The table below contains **historical contract tests and current-main legacy behavior** for `observed_upper_bound` and approximate Root. Those rows are not the new `terminal_event` acceptance criteria, and schema/shape-valid synthetic Root tests do not establish #52B production coverage.
+
 ## Candidate records + API/OTLP JSON slice
 
 | Case | Input | Expected |
 | --- | --- | --- |
-| Complete Run + Job + bounds | Separate run/job conclusions + timestamps + Task URL | `status=produced`, SERVER + INTERNAL spans, `evidence_class=candidate_record` |
+| Complete Run + Job + syntactically bounded input (historical producer contract) | Separate run/job conclusions + numeric timestamps + Task URL | `status=produced` and candidate SERVER + INTERNAL records in legacy contract; **not proof of an owner-measured full Pipeline Root** |
 | Job success / Run failure | Distinct conclusions | Pipeline `failure` (+ `error.type`), Task `success` |
 | Job success / Run in progress | Job terminal only | `partial`, Task span only |
 | Explicit null Run + Job success | Independent fields | No Pipeline terminal span |
@@ -35,14 +43,14 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 | OTLP/JSON flush failure | Unwritable path / no spans | exit 3; candidate claims `exported=false` |
 | Native API evidence (single Job) | Fixed Run `42821429094` Attempt 1 + `--job-id` | See [cicd-telemetry-evidence](./cicd-telemetry-evidence/README.md) |
 | Native API evidence (`all_completed`) | Same Run, no `--job-id`, 3 Task Spans | See [cicd-telemetry-evidence-all-completed](./cicd-telemetry-evidence-all-completed/README.md) |
-| Observed upper bound, no budget | API `run_status=completed` + observation ≥ Job ends | Interval recorded; Root not emitted; Tasks remain; `end_time_uncertain` |
-| Approximate Root | Same, plus `--max-end-uncertainty-ns` covering the interval | Root end is the observation; `duration_valid_for_metrics=false` |
+| Observed upper bound, no budget (legacy) | API `run_status=completed` + observation ≥ Job ends | Interval recorded; Root not emitted; Tasks remain; `end_time_uncertain` |
+| Approximate Root (legacy behavior, non-acceptance) | Historical explicit `--max-end-uncertainty-ns` mode | Records previous numeric behavior only; observer end **does not establish** GitHub Workflow completed-at or qualified Terminal Root |
 | Late observation | Upper bound far after the last Job, budget too small | No Root; no proven multi-hour Run duration |
 | Observed Root without API completed | `run_status=in_progress` even with conclusion | No Root; `run_not_completed` |
 | Event/API status conflict | event status ≠ Attempt API status | No Root / fetch refuse |
 | Observation before Job end | Observed timestamp `<` max Job `completed_at` | No Root; `terminal_observed_before_jobs` |
 | Expected Job inventory | stubs + omit/emit/not_selected | `coverage.expected_completed_jobs` machine-readable set |
-| Pipeline-only Root | Exact bounds, `completed_jobs_total=0`, empty tasks | `produced` with SERVER only; `task_coverage=empty` |
+| Pipeline-only Root (historical/synthetic) | Explicit bounded inputs, `completed_jobs_total=0`, empty tasks | Historical `produced`/SERVER shape only; #52B still requires independently qualified full Pipeline scope and true timestamps |
 | OTLP/gRPC ACK | `--otlp-endpoint` Export success, zero rejects | Per-signal `rpc_accepted` / `otlp_logs_rpc_accepted` / `otlp_metrics_rpc_accepted`; still not delivered |
 | OTLP/gRPC partial reject | `partial_success` rejects spans, log records, or datapoints | `otlp_grpc_partial_reject`; that signal's acceptance stays false |
 | Duration Histogram | Explicit phase interval | `cicd.pipeline.run.duration` Histogram in seconds for that state only |
