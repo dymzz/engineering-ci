@@ -410,12 +410,19 @@ def _publication_post_stage(api, release, value, authority):
     }
 
 
-def published(api, repository, tag, *, head=None, post_stage_authority=None):
+def published(
+    api, repository, tag, *, head=None, run_id=None, post_stage_authority=None
+):
+    """Read original publication evidence, optionally for one selected Run."""
     release = find_release(api, tag)
     if release is None:
         return None
     actual = tag_commit(api, tag)
-    if actual is None or head is not None and actual != head:
+    if actual is None:
+        raise ValueError("Existing Release tag points to another commit")
+    if head is not None and actual != head:
+        if run_id is not None:
+            return None
         raise ValueError("Existing Release tag points to another commit")
     if release.get("prerelease") or release.get("tag_name") != tag:
         raise ValueError("Existing Release identity differs from the final version")
@@ -430,6 +437,16 @@ def published(api, repository, tag, *, head=None, post_stage_authority=None):
     value = release_asset(api, release)
     if value is None:
         raise ValueError("Published Release lacks validation evidence")
+    if run_id is not None and isinstance(value, dict):
+        workflow = value.get("workflow")
+        if isinstance(workflow, dict):
+            original_run = workflow.get("run_id")
+            if (
+                type(original_run) is int
+                and original_run > 0
+                and original_run != run_id
+            ):
+                return None
     # A recovered Draft keeps the original verified attempt's immutable receipt.
     published_evidence(api, value, repository, tag, actual)
     if value["mode"] != "publication" or value["release"]["release_url"] != release_url(

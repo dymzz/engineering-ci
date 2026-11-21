@@ -21,16 +21,21 @@ def continuation(repo, version, run_id, command="wait"):
     return f"uv run --locked python scripts/release.py {command} --repo {repo} --version v{version} --run {run_id}"
 
 
-def inspect(api, repo, version, run_id, *, post_stage_authority=None):
+def inspect(
+    api, repo, version, run_id, *, validation_only=False, post_stage_authority=None
+):
     """Verify real evidence for this Run, including original published attempts."""
     identity = verification.run_target(api, repo, run_id, version)
-    publication = verification.published(
-        api,
-        repo,
-        identity["tag"],
-        head=identity["commit_sha"],
-        post_stage_authority=post_stage_authority,
-    )
+    publication = None
+    if not validation_only:
+        publication = verification.published(
+            api,
+            repo,
+            identity["tag"],
+            head=identity["commit_sha"],
+            run_id=run_id,
+            post_stage_authority=post_stage_authority,
+        )
     if publication and publication["status"] == "published":
         workflow = publication["manifest"]["workflow"]
         if workflow["run_id"] != run_id:
@@ -97,15 +102,17 @@ def main(argv=None, *, post_stage_authority=None):
             identity = verification.target(
                 api, args.ref or RELEASE_CONFIG["branch"], args.version
             )
-            existing = verification.published(
-                api, repo, identity["tag"], head=identity["commit_sha"]
-            )
-            if existing and existing["status"] == "published":
-                args.run = existing["manifest"]["workflow"]["run_id"]
-            else:
-                current = tag_commit(api, identity["tag"])
-                if current is not None and current != identity["commit_sha"]:
-                    raise ValueError("Tag conflict; refusing dispatch")
+            if args.command == "publish":
+                existing = verification.published(
+                    api, repo, identity["tag"], head=identity["commit_sha"]
+                )
+                if existing and existing["status"] == "published":
+                    args.run = existing["manifest"]["workflow"]["run_id"]
+                else:
+                    current = tag_commit(api, identity["tag"])
+                    if current is not None and current != identity["commit_sha"]:
+                        raise ValueError("Tag conflict; refusing dispatch")
+            if args.run is None:
                 value["commit_sha"] = identity["commit_sha"]
                 value["next_commands"] = [
                     f"gh run list --repo {repo} --workflow {RELEASE_CONFIG['workflow']} --commit {identity['commit_sha']}"
@@ -172,6 +179,7 @@ def main(argv=None, *, post_stage_authority=None):
                         repo,
                         args.version,
                         args.run,
+                        validation_only=args.command == "validate",
                         post_stage_authority=post_stage_authority,
                     )
                 )
@@ -186,6 +194,7 @@ def main(argv=None, *, post_stage_authority=None):
                     repo,
                     args.version,
                     args.run,
+                    validation_only=args.command == "validate",
                     post_stage_authority=post_stage_authority,
                 )
             )

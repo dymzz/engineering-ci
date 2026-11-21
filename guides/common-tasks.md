@@ -85,6 +85,8 @@ uv run --locked python scripts/release.py validate --repo dymzz/engineering-ci -
 ```
 
 它只运行非发布模式；`validated` 与 `published` 分别表示验证通过和正式发布通过。
+版本 Tag 已指向旧提交时，仍可验证该版本的当前候选；验证回执绑定选定分支的
+SHA、Run 与 Attempt。正式发布继续检查 Tag 与候选 SHA 一致。
 候选分支验证不能冒充合并后 main 的发布证据。
 
 ## 大阶段分支备份
