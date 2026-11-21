@@ -209,13 +209,32 @@ authority evidence.
 [Historical Release Run](https://github.com/dymzz/engineering-ci/actions/runs/39614205390) ·
 [v0.7.0 Release](https://github.com/dymzz/engineering-ci/releases/tag/v0.7.0)
 
+Current-candidate Release Run `44843103748/1` ran with `publish=false` at
+`a99efd5b59dde41de3ccea82c4d89c2b0e962669`. The `verified` Job succeeded
+and `publish` was skipped. The native read verified `release-manifest`
+Artifact `14681683214` from `verified` Job `136657199935`, upload Step 7
+(`Preserve validation Manifest`).
+The downloaded ZIP matched GitHub's SHA-256
+`f2e2a084e301a105e3494cd19fe6ab75c0b2e39dc213a7a92f6c0c867e2126fd`.
+The canonical Manifest v1 digest was
+`sha256:11f4e1dea85790308f8e67e08a3c1107b9a902a92f8fa418a9491b6ebb9a9a5c`.
+The native R4 adapter completed `verification.evidence` against the four
+original Artifacts and their upload Step identities and digests. The CLI with
+the explicit Run returned `validated` and `publication.status=not_published`.
+The existing `v0.7.0` Tag still points to `9d03ade4f2af89538c9a0362beae55c9a0835e18`.
+[#149](https://github.com/dymzz/engineering-ci/pull/149) separates validation
+of this candidate from the historical Release lookup. This Run establishes
+native Provider evidence for validation mode.
+[Validation Run](https://github.com/dymzz/engineering-ci/actions/runs/44843103748) ·
+[Manifest Artifact](https://github.com/dymzz/engineering-ci/actions/runs/44843103748/artifacts/14681683214)
+
 ### Producer, verifier and consumer evidence
 
 | Requirement and implementation owner | Producer and observed identity | Scope, time and evidence | Verifier and current evidence level | Final consumer and acceptance result |
 | --- | --- | --- | --- | --- |
 | [#75](https://github.com/dymzz/engineering-ci/issues/75) / [#74](https://github.com/dymzz/engineering-ci/issues/74), reuse #83/#84 | `cicd-telemetry-post-run.yml` and `cicd_telemetry`, Runs `44767235384/1` → `44766709012/1`, Artifact `14646306762` and the digests above | Four completed Jobs, four Task Spans, Root withheld, producer exit 0 and no observed Receiver ACK | Bytes and Task trace identity verified. Pinned Registry, applicable Native Live/Terminal result and required delivery await independent verification | #74 Native Checker into #52 Report. Real no-Root input confirmed. Need a genuine Task-only Native positive and a Terminal positive with an authorized Root and valid time quality |
 | [#52 D4](https://github.com/dymzz/engineering-ci/issues/52), [#66-C](https://github.com/dymzz/engineering-ci/issues/66) and [#63](https://github.com/dymzz/engineering-ci/issues/63), reuse #124 | Authorized #66-B2 Check Expected plus completed Run/Attempt and #74 Native Result | `scope_id`, `expected_check_ref`, current Profile/Phase, Rule/Source, Candidate and original capture inputs | Terminal Plan validation, #66-C Receipt and #63 Admission. [#145](https://github.com/dymzz/engineering-ci/pull/145) at `b72e620` fixes the Native Correlation handoff and passed its contract review | R1 per-check Coverage, Native FAIL and Remaining Work. The examined archives supply real no-Root inputs. A qualified native positive and authenticated handoff still need evidence |
-| [#61 R4](https://github.com/dymzz/engineering-ci/issues/61), E065/E066/E067/E072, reuse #121/#136 | Current non-sample R1 and authorized Profile/Policy/Handoff plus Release `verified` Job and native Provider | Repository/Tag/HEAD, action/target/ref/phase, approved validity, exact Manifest bytes, Run/Attempt/Job/upload Step and Artifact ID/digest | [Draft #147](https://github.com/dymzz/engineering-ci/pull/147) at `72408d6` checks the request and any different retained Manifest under current authority. Controlled tests cover cross-Attempt recovery, future R1, required Check mappings and zero-write refusals | `workflow_actions release publish` → `publish_release`. The code enforces R4 before mutation and records both reconciliation identities when recovering. The default Workflow lacks a protected `release_authority`. Authorized production writes and receipts remain unverified |
+| [#61 R4](https://github.com/dymzz/engineering-ci/issues/61), E065/E066/E067/E072, reuse #121/#136 | Release Run `44843103748/1` provides the current candidate's validation Manifest. Publication needs current non-sample R1 and authorized Profile/Policy/Handoff | Repository/Tag/HEAD, action/target/ref/phase, approved validity, exact Manifest bytes, Run/Attempt/Job/upload Step and Artifact ID/digest | Native Provider verified the exact validation Manifest and original Artifacts. [Draft #147](https://github.com/dymzz/engineering-ci/pull/147) at `72408d6` checks the write request and any different retained Manifest under current authority. Controlled tests cover cross-Attempt recovery, future R1, required Check mappings and zero-write refusals | Release CLI consumed the same validation Run and returned `validated`. For publication, `workflow_actions release publish` → `publish_release` enforces R4 before mutation and records both reconciliation identities when recovering. The default Workflow lacks a protected `release_authority`. Authorized production writes and receipts remain unverified |
 | [#61 R5](https://github.com/dymzz/engineering-ci/issues/61), E068, reuse #123/#134 | Independently authenticated Run/Release/Artifact event, ordered Phase/Due authorities and two same-Candidate R1 assessments | Trigger occurrence and receipt, Run/Attempt, target/ref, Artifact digest when applicable, evaluation time and authorized due window | [Draft #148](https://github.com/dymzz/engineering-ci/pull/148) at `1904aa0` binds native publication as the occurrence and verifies receipt separately. Controlled tests cover delayed and forged receipt, refusal, due and late outcomes | The Draft consumes the pair in Release inspection and retains the historical publication. Governed live R1/Trigger inputs and any Policy-selected Promotion/Disposition receipt remain unverified |
 
 On base `a99efd5`, the two code patches applied together and passed
