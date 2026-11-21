@@ -66,7 +66,8 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 
 | 责任 | 当前权威 / 已有资产 |
 | --- | --- |
-| Hook 公共生命周期与 Git Index/Push 实际对象、Source 物化、适用检查选择、生产方原生结果 | **ECI #66**；已有 `engineering_ci` CLI/Selection/Execution/Plan；#67/#70/#71/#73/#79/#88 已完成部分必须复用 |
+| Git Hook 文件的安装、状态诊断、卸载与 Job 调度 | **Lefthook**；通过原生安装和声明式 Job 配置管理 Hook 文件、过滤、分组、顺序与并行 |
+| 仓库 Hook 接线、Git Index/Push 实际对象、Source 物化、适用检查选择与原生结果交接 | **ECI #66**；复用已有 `engineering_ci` CLI/Selection/Execution/Plan 与 #67/#70/#71/#73/#79/#88 已交付部分 |
 | Native Check、工具资产、报告/Enforce；当前 Actions、目标 #152 受控 Provider 结果交接 | **ECI #52** 及既有 Tool Runtime/原生 Checks；新增具体扫描器不以 #66 Hook 交付为阻断前提 |
 | 真正的 Data/PASS 前置 Dagger DAG、产物闭包、同次 Result 共享 | **ECI #86** 消费 #66 Source/Prerequisite 生产事实；#66 不再发明一套 DAG |
 | 历史检查结果可信接纳、输入/范围有效覆盖和跨 Run 复用 | **ECI #63**；Hook 原生 PASS 不等于历史 Trusted |
@@ -79,7 +80,7 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 
 - **#66 P0 实际交付**：对有效的部分暂存 Index=B、默认 Index=A、Worktree=C，原生 Host/Dagger 工具必须实际读取 B 的目标字节与所需配置/依赖闭包；现有 `selection.index_source_refusal()` 拒绝不一致仅为未接通 Source 时的保护，不等于已经支持合法部分暂存。真正无法建立/核实受检 Source 时明确拒绝；无业务测试而有 Lychee/Sources 适用时仍按原 Check 合同运行。
 - **Git 事件适配：** pre-commit 保留原事件；pre-push 首次、多 ref、非 HEAD、强推、缺旧对象、删除远端 ref；同新 Tree 但不同 old→new 的输入不得误复用受影响检查。真实 Source、Plan、原生执行与 Check 覆盖逐项对应。
-- **Hook 生命周期：** Lefthook 原生安装/status/update/uninstall 行为及 ECI 接口，干净 Knowledge 与一个非 Knowledge 消费仓库；安装幂等、固定版本、第三方 Hook/`core.hooksPath` 共存、普通与 linked worktree、Windows/Unix 必要路径。记录真实选择依据；本地可绕过性与服务端 Required 分离。
+- **Hook 生命周期与交接：** 在干净 Knowledge 与一个非 Knowledge 消费仓库验证 Lefthook `install`、`check-install`、升级到获准版本及 `uninstall` 的实际行为。覆盖重复安装、固定版本、第三方 Hook/`core.hooksPath` 共存、普通与 linked worktree、Windows/Unix 必要路径。ECI 侧核对 Lefthook Job 消费的 Event、Source、原生检查结果和 Receipt。记录真实选择依据；本地可绕过性与服务端 Required 分离。
 - **Trigger/Analysis/Invalidation：** 改共享配置/工具规则/锁文件、改/删引用目标、Git 无变化但外部漏洞/链接状态失效，相关 Check 进入实际分析/失效处理，不相关语言工具或无依据的全部业务测试/wheel/fuzz 不启动。无法证实有效性时只对相关检查扩大/拒绝，不能凭未触发声称 PASS。
 - **结果/成本：** 只对新增或改变的事件/工具行为补正反场景；在同一 Source/Check/版本下复用有效 Tach/扫描结果，记录 native exit、范围、选测数、一次代表性时间分段与去重次数。Hook 成功不得冒充 #61 Required、#63 可信历史复用或 #86 DAG 闭环。
 
@@ -201,7 +202,7 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 | `engineering_ci.selection.ChangeSet` / `changeset_multi` | PR #100 已合并（merge `6c3123cd`）：逐 Ref new/delete/force Baseline、部分 Linked Worktree Source 拒绝及实际 Worktree/Tree 绑定已有实现 | Hook 真实 Event/Invocation 进入同一 Selector；剩余实际 Index/Commit/Push 受检字节闭包与跨入口验证 |
 | `engineering_ci.selection.Config` / `load_config` / `select()` | PR #100 已交付有效 Hygiene/Sources 配置与哈希、`tach_external` 及逐 Ref 配置来源绑定 | 按 Trigger/Analysis/Invalidation 准确表达共享锁、规则、版本、反向引用，不增加 Hook-only TOML |
 | `engineering_ci.selection.plan()` + `plan_contract` / Expected | PR #100 已结算 EffectiveProfile→Expected Schema v2 枚举、逐 Ref Expected 与来源/基线校验 | 仍缺 Hook Event→Expected 的运行时接线；不能把 unknown 升格为已验证 |
-| `engineering_ci.reconciliation.reconcile_expected_results()` | PR #104 已合并（merge `c430ef71`）：独立 Expected→Routing/Job/Attempt→Native Result 对账消费合同；校验 Execution Report digest/成员关系、Job Receipt 上游归属、Attempt eligibility；不承认自报 PASS | 真实 Job/Attempt Routing、Execution Report→Result、Job Receipt 的**上游生产与验证**；Hook 外层 Final Reconciliation 接线。若真实接线暴露公共接口不足，应修订该公共接口而非另建对账器 |
+| `engineering_ci.reconciliation.reconcile_expected_results()` | PR #104 已合并（merge `c430ef71`）：独立 Expected→Routing/Job/Attempt→Native Result 对账消费合同；校验 Execution Report digest/成员关系、Job Receipt 上游归属、Attempt eligibility；不承认自报 PASS | 真实 Job/Attempt Routing、Execution Report→Result、Job Receipt 的**上游生产与验证**。由 Lefthook 的最终 Job 调用现有 `reconcile_expected_results()`，在可控失败或过滤后消费同次 Invocation 的实际产物并保留失败退出。若真实接线暴露公共接口不足，应修订该公共接口而非另建对账器 |
 | `engineering_ci.execution._verify_execution_binding()` / `execute()` + Hygiene/Sources | PR #100 已合并：有效 Hygiene/Sources 配置、`tach_external`、Worktree/Tree 绑定与部分 Linked Worktree 拒绝；#70/#71 无业务测试执行与类型化前置保留 | 工具真实读取 Index/Commit/Push 目标字节；共同 Tach 子集许可，实际 Native Result/失败归因；Host/Dagger 一致 |
 | Dagger `execute_plan()`、Plan result sharing | PR #90 已合并（merge `bca1f12`）：原生 Plan DAG、Artifact Closure 与同次 Result Sharing；#88 提供待消费的 Plan 依赖/Source 身份引用 | Hook Event/Source 真实输入与执行接线仍归 #66；已交付 DAG/Closure 复用，缺陷在正确公共模块修复，不由 Hook 调度器重复实现 |
 | ECI #52/#63/#61 | 原生 Report/Enforce、历史可信接纳、最终 Required 分有权威职责 | Hook 只提供真实 Producer/Source/Check 事实，不制造平行 Gate/历史受信结果 |
