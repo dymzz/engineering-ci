@@ -142,6 +142,242 @@ documentation, third-party examples or controlled tests. An unreadable Step log 
 grant. Any production-readiness claim for this native Provider path requires
 successful observed access to the exact Job/Step/Artifact identity.
 
+## D-G04 production consumer acceptance
+
+The production status at `main@a99efd5` is `not_verified`. This baseline
+builds on the official Weaver Registry and Checker (#83), Schema 9 Producer
+(#84), Terminal Expected binding (#124), R4 Manifest and Provider contracts
+(#121/#136), and R5 pair and chronology contracts (#123/#134). The open
+[#82 Task-only A PR](https://github.com/dymzz/engineering-ci/pull/82) has
+its own acceptance. Terminal B, R4 and R5 can proceed independently of
+its merge. [D-G04 review](https://github.com/dymzz/engineering-ci/pull/144#pullrequestreview-5995833721)
+
+### Observed Runs and Artifact bytes
+
+Default-branch Post-run `44767235384/1` successfully uploaded Artifact
+`14646306762` (`cicd-telemetry-44766709012-1`). The GitHub connector
+downloaded the original ZIP and the computed SHA-256 matched GitHub's
+`4d8ad5a93dfaf6e93a0746caf91d537c08768b40016206803bf5809c13dc34d7`.
+The prior native `gh` HTTP 401 remains an observation about that client and
+credential. The readable ZIP contains the Candidate, API witness, OTLP
+traces and logs, CLI output, exit record and end-time policy.
+[Producer Run and Artifact](https://github.com/dymzz/engineering-ci/actions/runs/44767235384) ·
+[Source Run](https://github.com/dymzz/engineering-ci/actions/runs/44766709012)
+
+The archived Attempt and separately read GitHub Attempt 1 Jobs agree on
+the four completed, successful Jobs for source Run `44766709012` and HEAD
+`a99efd5b59dde41de3ccea82c4d89c2b0e962669`. The comparison matched each
+Job's ID, name, status, conclusion and SHA. The raw API witness matches its
+Candidate digest
+`4c7f21d10297c0bda83d499f1e8c14d28476acb9624920d694aea66a028ddf9c`.
+`reconcile_expected_trace` matched all four Task Span IDs and their trace
+and parent references against the independent Job IDs. The OTLP
+`otel.json` digest is
+`a9c0a4caa333ee69b87598746d32b10febce0de294fc22ea968e95f45ded3f67`.
+
+The archive records `producer.exit=0`, `status=partial`,
+`evidence_class=candidate_record` and `reason=end_time_uncertain`. The
+expected Pipeline Root is absent from `otel.json`. Terminal provenance
+records `root_emission=not_emitted` and `30,853,911,040 ns` uncertainty
+with an empty `max_end_uncertainty_ns` budget. Claims
+`github_authenticated`, `weaver_pass`, `bundle_delivery_complete`
+and `otlp_delivered` are false. This verifies a real no-Root input and
+Task trace identity. Native Weaver exit and findings, independent Issuer
+authentication, Receiver ACK and Terminal execution remain unverified.
+
+Four additional default-branch Post-run archives were readable and matched
+their GitHub SHA-256 values. Artifact `14648469807` came from Post-run
+`44775634689/1` for source `44775264598/1`, `14648877313` from
+`44775134954/1` for `44774736338/1`, `14648263310` from `44773808079/1`
+for `44773475745/1`, and `14645279469` from `44769863530/1` for
+`44769458290/1`. Each recorded `end_time_uncertain`, zero SERVER
+spans, and no confirmed bundle delivery. The default Workflow supplies
+`observed_upper_bound` with no uncertainty budget on those historical runs.
+[Post-run Workflow](../../.github/workflows/cicd-telemetry-post-run.yml) ·
+[GitHub Attempt adapter](../../src/engineering_ci/cicd_telemetry.py)
+
+For production, the GitHub Attempt supplies identity and terminal outcome.
+[#150](https://github.com/dymzz/engineering-ci/pull/150) records the completed
+state as a correlated event measured by the producer clock. The CLI on
+`44766709012/1` returned `success`, four Task spans and the same API witness
+digest listed above. The event has empty Pipeline end bounds and no Root.
+Workflow timestamps and observer intervals are excluded from Root timing.
+The verified Dagger trace archive for `44843103748/1` contains native start
+and end timestamps for the bound `EngineeringCi.lint` and
+`EngineeringCi.repositoryRuffTools` spans. They describe their own execution
+boundaries. A positive Pipeline Root requires instrumentation at the
+execution boundary that owns the Pipeline named by the Expected input.
+[Dagger Artifact](https://github.com/dymzz/engineering-ci/actions/runs/44843103748/artifacts/14681284052)
+
+Historical Release Run `39614205390/1` has successful `verified` and
+`publish` Jobs. Its current Actions Artifact listing returns zero entries.
+This establishes that the native Release path ran on that earlier candidate.
+The native Release API reports `v0.7.0` as Release ID `419641784`,
+published at `2026-10-21T14:12:08Z`, with Manifest asset `662727226`.
+A current candidate still needs its own native Provider and lifecycle
+authority evidence.
+[Historical Release Run](https://github.com/dymzz/engineering-ci/actions/runs/39614205390) ·
+[v0.7.0 Release](https://github.com/dymzz/engineering-ci/releases/tag/v0.7.0)
+
+Current-candidate Release Run `44843103748/1` ran with `publish=false` at
+`a99efd5b59dde41de3ccea82c4d89c2b0e962669`. The `verified` Job succeeded
+and `publish` was skipped. The native read verified `release-manifest`
+Artifact `14681683214` from `verified` Job `136657199935`, upload Step 7
+(`Preserve validation Manifest`).
+The downloaded ZIP matched GitHub's SHA-256
+`f2e2a084e301a105e3494cd19fe6ab75c0b2e39dc213a7a92f6c0c867e2126fd`.
+The canonical Manifest v1 digest was
+`sha256:11f4e1dea85790308f8e67e08a3c1107b9a902a92f8fa418a9491b6ebb9a9a5c`.
+The native R4 adapter completed `verification.evidence` against the four
+original Artifacts and their upload Step identities and digests. The CLI with
+the explicit Run returned `validated` and `publication.status=not_published`.
+The existing `v0.7.0` Tag still points to `9d03ade4f2af89538c9a0362beae55c9a0835e18`.
+[#149](https://github.com/dymzz/engineering-ci/pull/149) separates validation
+of this candidate from the historical Release lookup. This Run establishes
+native Provider evidence for validation mode.
+[Validation Run](https://github.com/dymzz/engineering-ci/actions/runs/44843103748) ·
+[Manifest Artifact](https://github.com/dymzz/engineering-ci/actions/runs/44843103748/artifacts/14681683214)
+
+### Producer, verifier and consumer evidence
+
+| Requirement and implementation owner | Producer and observed identity | Scope, time and evidence | Verifier and current evidence level | Final consumer and acceptance result |
+| --- | --- | --- | --- | --- |
+| [#75](https://github.com/dymzz/engineering-ci/issues/75) / [#74](https://github.com/dymzz/engineering-ci/issues/74), reuse #83/#84 | `cicd-telemetry-post-run.yml` and `cicd_telemetry`, Runs `44767235384/1` → `44766709012/1`, Artifact `14646306762` and the digests above | Four completed Jobs, four Task Spans, Root withheld, producer exit 0 and no observed Receiver ACK | Bytes and Task trace identity verified. Pinned Registry, applicable Native Live/Terminal result and required delivery await independent verification | #74 Native Checker into #52 Report. Real no-Root input confirmed. Need a genuine Task-only Native positive and a Terminal positive with an authorized Root and valid time quality |
+| [#52 D4](https://github.com/dymzz/engineering-ci/issues/52), [#66-C](https://github.com/dymzz/engineering-ci/issues/66) and [#63](https://github.com/dymzz/engineering-ci/issues/63), reuse #124 | Authorized #66-B2 Check Expected plus completed Run/Attempt and #74 Native Result | `scope_id`, `expected_check_ref`, current Profile/Phase, Rule/Source, Candidate and original capture inputs | Terminal Plan validation, #66-C Receipt and #63 Admission. [#145](https://github.com/dymzz/engineering-ci/pull/145) at `b72e620` fixes the Native Correlation handoff and passed its contract review | R1 per-check Coverage, Native FAIL and Remaining Work. The Attempt terminal event is verified as an observed outcome. Terminal B still needs the instrumented Pipeline Root for the authorized subject and authenticated admission |
+| [#61 R4](https://github.com/dymzz/engineering-ci/issues/61), E065/E066/E067/E072, reuse #121/#136 | Release Run `44843103748/1` provides the current candidate's validation Manifest. Publication needs current non-sample R1 and authorized Profile/Policy/Handoff | Repository/Tag/HEAD, action/target/ref/phase, approved validity, exact Manifest bytes, Run/Attempt/Job/upload Step and Artifact ID/digest | Native Provider verified the exact validation Manifest and original Artifacts. [Draft #147](https://github.com/dymzz/engineering-ci/pull/147) at `72408d6` checks the write request and any different retained Manifest under current authority. Controlled tests cover cross-Attempt recovery, future R1, required Check mappings and zero-write refusals | Release CLI consumed the same validation Run and returned `validated`. For publication, `workflow_actions release publish` → `publish_release` enforces R4 before mutation and records both reconciliation identities when recovering. The default Workflow lacks a protected `release_authority`. Authorized production writes and receipts remain unverified |
+| [#61 R5](https://github.com/dymzz/engineering-ci/issues/61), E068, reuse #123/#134 | Independently authenticated Run/Release/Artifact event, ordered Phase/Due authorities and two same-Candidate R1 assessments | Trigger occurrence and receipt, Run/Attempt, target/ref, Artifact digest when applicable, evaluation time and authorized due window | [Draft #148](https://github.com/dymzz/engineering-ci/pull/148) at `1904aa0` binds native publication as the occurrence and verifies receipt separately. Controlled tests cover delayed and forged receipt, refusal, due and late outcomes | The Draft consumes the pair in Release inspection and retains the historical publication. Governed live R1/Trigger inputs and any Policy-selected Promotion/Disposition receipt remain unverified |
+
+On base `a99efd5`, the two code patches applied together and passed
+237 targeted tests and 25 subtests. These tests use a recording API and
+controlled authorities.
+
+### Terminal Source and Expected handoff
+
+1. Use the original `workflow_run.completed` event or explicitly authorized
+   dispatch with GitHub Attempt and complete Jobs records. Keep the Producer
+   workflow identity separate from the source Run's Candidate SHA and bind
+   the original API pages, Candidate and Capture bytes. Obtain independent
+   authorization of GitHub source membership before forwarding a trusted
+   Receipt. The preserved no-Root Artifact remains the negative input.
+2. Exercise the existing pinned #74 Native Live against a legitimate
+   Task-only capture, retaining tool version, official Registry SHA,
+   capture hash, actual Native exit, Findings, matched signals and Report.
+   For Terminal, require a real completed Run with a unique correlated Root,
+   Result and timestamps from the Pipeline's own execution boundary.
+   Exercise missing Root, wrong Run/Attempt or Result, and a span with the
+   wrong execution scope. Missing Root evidence
+   stays unverified or blocks the applicable Required obligation even if
+   Native Live succeeds. For applicable delivery obligations retain the
+   actual Receiver ACK and protocol and distinguish preparation, export,
+   RPC acceptance and Receiver observation.
+3. Bind the pre-authorized #66-B2 `eci/weaver/terminal` Check Expected
+   through `terminal_expected` and `selection.post_completion_plan()` /
+   `validate_post_completion_binding()`. Pass the completed Run and
+   Capture/Registry/Config/Advice bytes as post-completion inputs.
+   Preserve independently governed Span Expectations as the Checker input.
+   Feed the actual Native Result to `reconciliation.reconcile_expected_results`,
+   then to #63 Issuer/Source/Implementation/Receipt admission and R1.
+   Assert that Native FAIL and missing inputs reach R1 per instance.
+   Future post-completion obligations leave the source Workflow free to
+   finish. A current Required obligation may depend on an already completed
+   historical Run when the authorized scope requires it.
+
+### R4 at the existing publication boundary
+
+1. In Release `verified` / `publish` and `release.publishing`, obtain the
+   same candidate's current non-sample R1, complete Profile Artifact
+   obligations, and independently verified Policy revision, scope,
+   approval and validity at publication time. Reuse the native
+   `manifest_provider_from_verification` / `manifest_provider_from_publication`
+   adapters. Preserve the exact Job/upload Step and Artifact ID/digest
+   evidence under the Manifest's Run and Attempt.
+2. Produce R4 with `reconcile_release_assessment`, using `same_run`
+   for the same Run/Attempt or a governed `validation_to_publication`
+   handoff for two distinct Run IDs. Validate with
+   `validate_release_reconciliation` and bind the exact Manifest and
+   Release identity with `require_reconciliation_manifest`. A validation
+   reconciliation may be verified with `release_authorized=false`.
+3. Consume the current authorization in `publish_release` before any
+   Tag, Release or asset mutation, including asset recovery. Require
+   `status=verified`, `release_authorized is True` and
+   `contract_sample is False` with the native and independent evidence
+   above. Draft recovery requires current authorization and validation
+   of the saved Manifest against its original Run and Attempt. Before
+   promoting a Draft that will retain a different Manifest, require
+   fresh R4 for that original identity and explicit authority linking
+   it to the current write request. Continue
+   to verify historical final Release identity and the saved Manifest
+   on the read side. Policy expiry or revocation changes eligibility for
+   future writes or promotion and preserves the recorded publication
+   fact. Propagate write refusal through the actual `workflow_actions`
+   output and exit status.
+4. Exercise authorized first publish and recovery with a recording API.
+   Require zero writes for absent or blocked R1, expired/revoked/wrong
+   scope policy, Manifest substitution, wrong Artifact ID/digest/Attempt
+   or upload Step, unavailable Provider, wrong Handoff, validation-only
+   and sample evidence. Production acceptance needs a separately approved
+   candidate, production credentials and the actual native receipts. A
+   validation-only Run proves the no-write route. A publication claim
+   requires an authorized publication receipt.
+   [Release Workflow](../../.github/workflows/release.yml) ·
+   [Publishing entry point](../../src/engineering_ci/release/publishing.py)
+
+### R5 at the existing Verification and Disposition boundary
+
+1. Bind the Trigger to the original completed Run, publication or Artifact
+   event and its independent authority. Verify event type, repository,
+   Run/Attempt, candidate SHA, target/ref, applicable Artifact ID and
+   digest, and observation time. Preserve native publication time as
+   the occurrence and authenticate any delayed receipt separately.
+   A post-run Workflow's own HEAD must
+   remain separate from the source HEAD.
+2. Use the exact Prior and Post R1 Assessments of the same Candidate and
+   governing Profile/Phase Order. Reconcile via `reconcile_post_stage`
+   and validate via `validate_post_stage`. Verify actual evaluation time
+   and authorized Due Window, including any approval of specific late
+   evidence or a historical reevaluation. Preserve prior results and
+   pair-level `lifecycle_all_phases_passed=false`.
+3. Apply the existing governed Profile or Policy to select the destination
+   for each duty. Record the actual entry point and outcome for the
+   applicable duties.
+   - **Release inspection** uses `release.verification.published` and
+     `cli.release.inspect`. Record the historical Release identity and
+     current post-stage status independently. This receipt proves that
+     the read-side consumer received and exposed the result.
+   - **Promotion** consumes the result at the specific promotion write
+     boundary designated by the Policy. When the obligation blocks
+     progression, require that consumer's refusal and zero promotion
+     writes. Pending or blocked evidence conveys no progression grant.
+   - **Notification or reevaluation** uses the action named by the
+     Profile. For notification retain the destination and native action
+     receipt. For reevaluation retain the triggering input and the
+     resulting evaluation Run/Attempt or governed receipt. A
+     `disposition` value records a requested outcome. An execution
+     receipt establishes that the action occurred.
+
+   The repository currently exposes the Release inspection entry points.
+   A governed production Profile and its selected Promotion,
+   Notification or Reevaluation destinations are still needed for
+   those duties. Leave a disposition unverified until its actual
+   consumer and result can be identified.
+4. Require original Run/Attempt and consumer evidence for a valid
+   same-candidate trigger. Exercise missing or forged event, mismatched
+   Attempt/Artifact/Ref/Candidate, future Trigger, reversed chronology,
+   unauthorized Phase, not-yet-due pending, overdue missing evidence,
+   accepted and rejected late evidence, post R1 failure and authorized
+   historical reevaluation. Check the consumer result and prior state in
+   each case. [R5 contract](required-assessment-post.md) ·
+   [Release Verification](../../src/engineering_ci/release/verification.py)
+
+Declare D-G04 end-to-end verified only with the scoped Terminal positive,
+current R4 authorization consumed before writes, and real R5 Trigger and
+Due decisions consumed by their destination. Record each implementation PR,
+exact commit, Run/Attempt, Artifact ID/digest, original native receipt and
+final verification, disposition or release result in the table. Keep open
+links `not_verified` and use `failed` for an observed native failure of
+the specific check. The [#125 evidence index](https://github.com/dymzz/engineering-ci/issues/125)
+tracks cross-chain acceptance.
+
 ## Artifact obligations
 
 Caller supplies an authorized Profile Artifact set:
