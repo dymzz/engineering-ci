@@ -106,8 +106,13 @@ resolutions=(), observations=())`
   Evidence references use `name`, `version`, and a raw 64-hex `sha256`. A
   resolution may not override a non-null rule or comparison baseline that the
   immutable Expected instance already declared: when its own `rule_ref` or
-  resolved `baseline_ref` is omitted, the Expected declaration stands; a
-  differing value is `insufficient`.
+  resolved Commit `baseline_ref` is omitted, the Expected declaration stands.
+  A differing value is `insufficient`.
+
+  A first-commit Index may use
+  `{"base_tree": "<Git empty tree OID>", "baseline_status": "unborn"}`.
+  The source resolver verifies the unborn branch and its Git empty tree.
+  The resolved baseline and its evidence reference are required for matching.
 
   The immutable Expected `input_refs` are a floor. Resolution `input_refs` may
   add native input evidence but may not omit or shrink an expected input
@@ -437,7 +442,7 @@ mistaking them for a full observation ledger.
    - **跨次历史复用 (`#63`)**：历史 Run 具有不同的 `event_ref`（如不同的 `head_ref`/`head_commit`/`base_ref`）或不同 `invocation_ref` 属于**正常跨 Run 前提**，不得仅因 `expected_event_ref` 不同就否决复用；`#63` 保留历史原始 `(run_ref, attempt_ref, runner_ref, result_origin, event_ref)` 溯源，独立验证以下 **语义等价要件**：
      - 同一 `check_id`、`definition_version` 与受批准的 `rule_ref` / `profile_ref`（含当前生效窗与策略许可）；
      - 静态闭合的 `source_ref`（`scope_kind` 为 `check_input_closure` / `full_input_closure`，实际被检输入闭包摘要/材质一致性且满足当前 Target 实例语义）；开放范围（`changed_paths`/`identity_only`，如 `vulture`/`source`）不得冒充全闭包等价复用；
-     - 若 Check 依赖对比基线或输入清单：实际消耗的 `baseline_ref.base_commit`、`tool` 版本/配置、`input_refs`、`coverage` 与环境约束必须完全等价。
+     - 若 Check 依赖对比基线或输入清单，实际消耗的 `baseline_ref`（基线 Commit 或首次提交的空 Tree）、`tool` 版本/配置、`input_refs`、`coverage` 与环境约束必须完全等价。
 
 ### 4. `#63` L2 消费投影合同样例
 

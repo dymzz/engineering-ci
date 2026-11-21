@@ -381,6 +381,12 @@ def _verify_git_execution_binding(plan, root, *, execution_context="host"):
         if execution_tree and index_tree and execution_tree != index_tree:
             return False, "index_source_identity_mismatch", execution_tree
         expected_tree = expected_tree or index_tree
+        if (
+            git.get("base_tree") is not None
+            and selection.unborn_index_base(root, base=git.get("base_ref"))
+            != git["base_tree"]
+        ):
+            return False, "index_unborn_baseline_stale", expected_tree
         refusal = selection.index_source_refusal(
             root, expected_tree, index_file=git.get("index_file")
         )
@@ -478,7 +484,8 @@ def _changeset_from_plan(plan, root, *, extra_paths=()):
         )
     )
     complete = (
-        bool(git.get("base_commit")) or git.get("ref_action") == "delete"
+        bool(git.get("base_commit") or git.get("base_tree"))
+        or git.get("ref_action") == "delete"
     ) and "changed_paths" in git
     return selection.ChangeSet(
         root=Path(root),
@@ -505,6 +512,7 @@ def _changeset_from_plan(plan, root, *, extra_paths=()):
         object_type=git.get("object_type"),
         force_push=bool(git.get("force_push", False)),
         baseline_status=git.get("baseline_status"),
+        base_tree=git.get("base_tree"),
     )
 
 
@@ -876,8 +884,11 @@ def _run_hygiene_checks(
         run_kwargs["code_prefixes"] = code_prefixes
     ws_before = None
     ws_err_before = None
+    ws_tree = changes.index_tree if changes.base_tree is not None else None
     if "whitespace" in checks:
-        ws_before, ws_err_before = _effective_git_whitespace_config(root, changes.paths)
+        ws_before, ws_err_before = _effective_git_whitespace_config(
+            root, changes.paths, tree=ws_tree
+        )
     report = hygiene.run(
         changes,
         run_config,
@@ -886,7 +897,9 @@ def _run_hygiene_checks(
     ws_after = None
     ws_err_after = None
     if "whitespace" in checks:
-        ws_after, ws_err_after = _effective_git_whitespace_config(root, changes.paths)
+        ws_after, ws_err_after = _effective_git_whitespace_config(
+            root, changes.paths, tree=ws_tree
+        )
     results = []
     seen = set()
     any_failed = report["status"] == "failed"
@@ -1356,6 +1369,7 @@ _EVENT_IDENTITY_FIELDS = (
     "merge_tree",
     "head_commit",
     "base_commit",
+    "base_tree",
     "remote_ref",
     "local_ref",
     "ref_action",
@@ -2872,8 +2886,9 @@ def _source_reference(plan, execution_context):
 
 def _baseline_reference(plan):
     git = plan["git"]
-    # Relative names alone are not immutable comparison inputs. The native
-    # whitespace/forwarding checks consume the resolved base_commit.
+    if check_contract.is_unborn_index_baseline(git):
+        return {"base_tree": git["base_tree"], "baseline_status": "unborn"}
+    # Relative names alone are not immutable comparison inputs.
     if not git.get("base_commit"):
         return None
     ref = {"base_commit": git["base_commit"]}
@@ -2919,7 +2934,17 @@ def _profile_reference(plan, *, root=None, execution_context=None, profile_ref=N
     except (OSError, selection.SelectionError):
         return None
 
-    ep_policy = sel_cfg.effective_profile_policy
+    if (
+        not isinstance(prof_input, dict)
+        or prof_input.get("authority_verified") is not True
+    ):
+        return None
+    try:
+        ep_policy = expected_checks._policy_approval(
+            sel_cfg.effective_profile_policy, prof_input.get("approval_digest")
+        )
+    except expected_checks.ExpectedError:
+        return None
     if not isinstance(ep_policy, dict) or not ep_policy:
         return None
     try:
@@ -2930,11 +2955,6 @@ def _profile_reference(plan, *, root=None, execution_context=None, profile_ref=N
     except (AttributeError, check_contract.CheckContractError):
         return None
 
-    if (
-        not isinstance(prof_input, dict)
-        or prof_input.get("authority_verified") is not True
-    ):
-        return None
     prof_sha = prof_input.get("profile_sha256")
     if (
         not isinstance(prof_sha, str)
@@ -3813,6 +3833,30 @@ def _pre_execution_check_item(scoped_plan, check_name):
     raise ExecutionError("pre_execution_check_scope_ambiguous_or_missing")
 
 
+def _git_baseline_source_ref(root, baseline, *, base_ref):
+    if check_contract.is_unborn_index_baseline(baseline):
+        tree = selection.unborn_index_base(root, base=base_ref)
+        if tree != baseline["base_tree"]:
+            return None
+        return {
+            "name": "git-odb-empty-tree",
+            "version": "1",
+            "sha256": hashlib.sha256(tree.encode()).hexdigest(),
+        }
+    commit = baseline.get("base_commit")
+    if not commit:
+        return None
+    odb_tree = selection._git(root, "rev-parse", "--verify", f"{commit}^{{tree}}")
+    tree = odb_tree.stdout.strip()
+    if odb_tree.returncode != 0 or not _is_git_oid(tree):
+        return None
+    return {
+        "name": "git-odb-commit",
+        "version": "1",
+        "sha256": hashlib.sha256(f"{commit}:{tree}".encode()).hexdigest(),
+    }
+
+
 def _resolve_pre_execution_baseline(
     scoped_plan,
     matched_expected,
@@ -3836,31 +3880,18 @@ def _resolve_pre_execution_baseline(
         needs_baseline or baseline is not None
     ):
         return baseline, None, f"pre_execution_baseline_{ref_baseline_status}"
-    if needs_baseline and (
-        not isinstance(baseline, dict) or not baseline.get("base_commit")
-    ):
-        return None, None, "pre_execution_baseline_missing"
-    if baseline is None:
-        return None, None, None
-    base_commit = str(baseline.get("base_commit") or "")
-    if not base_commit:
-        return (
-            baseline,
-            None,
-            "pre_execution_baseline_missing" if needs_baseline else None,
-        )
-    odb_tree = selection._git(
-        resolved_root, "rev-parse", "--verify", f"{base_commit}^{{tree}}"
+    has_baseline = isinstance(baseline, dict) and (
+        baseline.get("base_commit") or check_contract.is_unborn_index_baseline(baseline)
     )
-    tree_oid = odb_tree.stdout.strip()
-    if odb_tree.returncode != 0 or not _is_git_oid(tree_oid):
+    if not has_baseline:
+        if needs_baseline:
+            return None, None, "pre_execution_baseline_missing"
+        return baseline, None, None
+    baseline_source_ref = _git_baseline_source_ref(
+        resolved_root, baseline, base_ref=git.get("base_ref")
+    )
+    if baseline_source_ref is None:
         return baseline, None, "baseline_object_unavailable"
-    baseline_digest = hashlib.sha256(f"{base_commit}:{tree_oid}".encode()).hexdigest()
-    baseline_source_ref = {
-        "name": "git-odb-commit",
-        "version": "1",
-        "sha256": baseline_digest,
-    }
     return baseline, baseline_source_ref, None
 
 
@@ -4000,7 +4031,7 @@ def _active_tool_identities(definition, rule_ref):
     ]
 
 
-def _effective_whitespace_attributes(root_path, paths):
+def _effective_whitespace_attributes(root_path, paths, *, tree=None):
     """All final Git attributes per checked path via `git check-attr -a`.
 
     Uses Git itself so every attribute source (info/attributes, explicit or
@@ -4011,9 +4042,10 @@ def _effective_whitespace_attributes(root_path, paths):
     if not unique:
         return _canonical_sha256([]), None
     payload = b"".join(p.encode("utf-8") + b"\0" for p in unique)
+    attr_source = [f"--attr-source={tree}"] if tree is not None else []
     try:
         res = subprocess.run(
-            ["git", "check-attr", "-a", "-z", "--stdin"],
+            ["git", *attr_source, "check-attr", "-a", "-z", "--stdin"],
             cwd=root_path,
             input=payload,
             capture_output=True,
@@ -4044,7 +4076,7 @@ def _effective_whitespace_attributes(root_path, paths):
     return _canonical_sha256(sorted(effective)), None
 
 
-def _effective_git_whitespace_config(root, paths=()):
+def _effective_git_whitespace_config(root, paths=(), *, tree=None):
     if root is None:
         return None, "whitespace_config_unreadable"
     root_path = Path(root)
@@ -4100,7 +4132,9 @@ def _effective_git_whitespace_config(root, paths=()):
     else:
         return None, "whitespace_config_unreadable"
 
-    effective_attrs, attrs_err = _effective_whitespace_attributes(root_path, paths)
+    effective_attrs, attrs_err = _effective_whitespace_attributes(
+        root_path, paths, tree=tree
+    )
     if attrs_err is not None:
         return None, attrs_err
 
@@ -4289,13 +4323,15 @@ def build_pre_execution_source_proof(
 
     env_inputs = None
     if check_name == "whitespace":
+        changes = _changeset_from_plan(
+            scoped_plan,
+            resolved_root,
+            extra_paths=artifact_target_paths(verified_files),
+        )
         env_inputs, ws_err = _effective_git_whitespace_config(
             resolved_root,
-            _changeset_from_plan(
-                scoped_plan,
-                resolved_root,
-                extra_paths=artifact_target_paths(verified_files),
-            ).paths,
+            changes.paths,
+            tree=changes.index_tree if changes.base_tree is not None else None,
         )
         if ws_err is not None:
             return unverified(ws_err)
@@ -4533,7 +4569,13 @@ def compare_pre_execution_to_historical_result(pre_proof, historical_result):
     if pre_base is not None or hist_base is not None:
         if not isinstance(pre_base, dict) or not isinstance(hist_base, dict):
             return mismatch("baseline_mismatch")
-        for key in ("base_commit", "baseline_status", "ref_action", "head_commit"):
+        for key in (
+            "base_commit",
+            "base_tree",
+            "baseline_status",
+            "ref_action",
+            "head_commit",
+        ):
             if hist_base.get(key) != pre_base.get(key):
                 return mismatch("baseline_mismatch")
 
@@ -5103,21 +5145,12 @@ def build_source_resolution(
             if not current_changed.get("unverified_paths"):
                 item["changed_paths_content_digest"] = changed_digest
         if baseline is not None:
-            base_commit = str(baseline.get("base_commit") or "")
-            odb_tree = selection._git(
-                resolved_root, "rev-parse", "--verify", f"{base_commit}^{{tree}}"
+            baseline_source_ref = _git_baseline_source_ref(
+                resolved_root, baseline, base_ref=git.get("base_ref")
             )
-            tree_oid = odb_tree.stdout.strip()
-            if odb_tree.returncode != 0 or not _is_git_oid(tree_oid):
+            if baseline_source_ref is None:
                 raise ExecutionError("source_resolution_baseline_unproven")
-            baseline_digest = hashlib.sha256(
-                f"{base_commit}:{tree_oid}".encode()
-            ).hexdigest()
-            item["baseline_source_ref"] = {
-                "name": "git-odb-commit",
-                "version": "1",
-                "sha256": baseline_digest,
-            }
+            item["baseline_source_ref"] = baseline_source_ref
         return item
     finally:
         if temporary is not None:
@@ -5700,8 +5733,11 @@ def _decorate_checks(
             and item.get("git_whitespace_config") is None
             and not item.get("git_whitespace_config_drifted")
         ):
+            changes = _changeset_from_plan(plan, root)
             ws_cfg, ws_err = _effective_git_whitespace_config(
-                root, _changeset_from_plan(plan, root).paths
+                root,
+                changes.paths,
+                tree=changes.index_tree if changes.base_tree is not None else None,
             )
             if ws_err is None and ws_cfg is not None:
                 result_item = {**item, "git_whitespace_config": ws_cfg}
@@ -6657,6 +6693,7 @@ def execute(
         },
         "targets": list(tests),
         "framework": framework,
+        "checks": [],
         "junit": str(junit_path) if junit_path else None,
         "status": "not_executed",
         "exit_code": 3,

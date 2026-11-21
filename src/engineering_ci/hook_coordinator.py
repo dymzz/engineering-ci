@@ -39,16 +39,11 @@ COORDINATOR_ISSUER_NAME = "engineering-ci.hook.coordinator"
 COORDINATOR_ISSUER_VERSION = "1"
 DEFAULT_RUNNER_REF = "execution:host"
 DEFAULT_QUALIFICATION_NAME = "engineering-ci.hook.attempt-qualification"
-_CLOSED_SINGLE_COMPLETENESS = frozenset(
-    {"expected_domain_complete", "domain_complete_empty"}
-)
-_CLOSED_PER_REF_COMPLETENESS = frozenset(
-    {"per_ref", "expected_domain_complete", "domain_complete_empty"}
-)
 
 HOOK_EXIT_OK = 0
 HOOK_EXIT_RECONCILED_FAILURE = 1
 HOOK_EXIT_COORDINATOR_ERROR = 2
+InvocationBinding = hooks.InvocationBinding
 
 
 class HookCoordinatorError(ValueError):
@@ -98,18 +93,6 @@ def attempt_qualification_ref(*, run_ref, attempt_ref, invocation_ref):
         "version": "1",
         "sha256": _hex_digest(payload),
     }
-
-
-@dataclass(frozen=True)
-class InvocationBinding:
-    """Verified #102 Invocation plus its content-addressed Event."""
-
-    invocation_ref: str
-    event_payload_ref: str
-    event: dict
-    hook: str
-    invocation_path: Path
-    event_path: Path
 
 
 @dataclass
@@ -176,48 +159,11 @@ class RunBinding:
 
 
 def load_invocation_binding(path):
-    """Load one Invocation file and verify its Event content/reference linkage.
-
-    Returns the Invocation identity together with the verified Event. Same
-    ``event_payload_ref`` content may appear under many ``invocation_ref``
-    values; callers must never treat the payload digest as an execution id.
-    """
-    path = Path(path)
-    raw = path.read_bytes()
+    """Load the verified Invocation for the legacy entry point."""
     try:
-        invocation = json.loads(raw)
-    except ValueError:
-        raise HookCoordinatorError("invocation_payload_invalid") from None
-    if (
-        not isinstance(invocation, dict)
-        or hooks.canonical_event_bytes(invocation) != raw
-    ):
-        raise HookCoordinatorError("invocation_payload_invalid")
-    if (
-        invocation.get("kind") != hooks.INVOCATION_KIND
-        or invocation.get("schema_version") != hooks.INVOCATION_SCHEMA_VERSION
-    ):
-        raise HookCoordinatorError("invocation_payload_invalid")
-    expected_ref = f"invocation:{path.stem}"
-    if invocation.get("invocation_ref") != expected_ref:
-        raise HookCoordinatorError("invocation_ref_mismatch")
-    try:
-        event = hooks.load_invocation(path)
+        return hooks.load_invocation_binding(path)
     except hooks.HookEventError as error:
         raise HookCoordinatorError(error.code) from error
-    event_payload_ref = invocation.get("event_payload_ref")
-    if event_payload_ref != hooks.event_payload_ref(event):
-        raise HookCoordinatorError("invocation_event_mismatch")
-    git_dir = hooks._invocation_git_dir(path)
-    event_path = hooks._controlled_event_path(git_dir, invocation.get("event_file"))
-    return InvocationBinding(
-        invocation_ref=expected_ref,
-        event_payload_ref=event_payload_ref,
-        event=event,
-        hook=invocation.get("hook"),
-        invocation_path=path.resolve(),
-        event_path=event_path,
-    )
 
 
 def open_attempt(
@@ -960,43 +906,9 @@ def _iter_scopes(expected):
     yield None, expected
 
 
-_BLOCKING_ENTRY_STATUSES = frozenset({"missing", "unknown", "unrouted", "insufficient"})
-
-
 def hook_exit_code(receipts):
-    """Map Final Reconciliation Receipts to a Git Hook process exit code.
-
-    Exit 0 requires every scope Receipt ``status=matched`` (Expected
-    enumeration closed and every eligible entry matched/not_applicable) and
-    ``all_observations_reconciled``. A structurally matched but ``partial``
-    Expected is not enough to continue the Hook; #61/#63 remain unevaluated.
-    """
-    if not isinstance(receipts, list) or not receipts:
-        return HOOK_EXIT_RECONCILED_FAILURE
-    for receipt in receipts:
-        if not isinstance(receipt, dict):
-            return HOOK_EXIT_RECONCILED_FAILURE
-        if receipt.get("all_observations_reconciled") is not True:
-            return HOOK_EXIT_RECONCILED_FAILURE
-        if receipt.get("status") != "matched":
-            return HOOK_EXIT_RECONCILED_FAILURE
-        completeness = receipt.get("expected_completeness")
-        # Independent of receipt.status: complete+not_claimed must not exit 0.
-        per_ref_scope = receipt.get("ref") is not None
-        allowed = (
-            _CLOSED_PER_REF_COMPLETENESS
-            if per_ref_scope
-            else _CLOSED_SINGLE_COMPLETENESS
-        )
-        if completeness not in allowed:
-            return HOOK_EXIT_RECONCILED_FAILURE
-        for entry in receipt.get("entries") or ():
-            status = entry.get("binding_status")
-            if status in _BLOCKING_ENTRY_STATUSES:
-                return HOOK_EXIT_RECONCILED_FAILURE
-            if status not in {"matched", "not_applicable"}:
-                return HOOK_EXIT_RECONCILED_FAILURE
-    return HOOK_EXIT_OK
+    """Return the local receipt decision for the legacy entry point."""
+    return reconciliation.hook_exit_code(receipts)
 
 
 def finalize_invocation(

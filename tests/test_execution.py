@@ -1500,6 +1500,231 @@ require_text_unset = false
     assert report["checks"][0]["reason"] == "source_reconcile_failed"
 
 
+@pytest.mark.parametrize(
+    ("object_format", "content", "native_exit"),
+    [("sha1", b"VALUE = 1\n", 0), ("sha256", b"VALUE = 1 \n", 2)],
+)
+def test_first_commit_index_report_and_reconciliation(
+    tmp_path, object_format, content, native_exit
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    path = tmp_path / "repository"
+    path.mkdir()
+    run(path, "init", "-q", "-b", "main", f"--object-format={object_format}")
+    run(path, "config", "user.email", "execution@example.invalid")
+    run(path, "config", "user.name", "Execution Test")
+    config_path = path / "ci-selection.toml"
+    config_path.write_text(
+        'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
+        'ignored_files = ["ci-selection.toml", "ci-hygiene.toml", '
+        '"ci-effective-profile.json", "tach.toml"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace", "forwarding"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src").mkdir()
+    target = path / "src" / "initial.py"
+    target.write_bytes(content)
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n[[modules]]\npath = "initial"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    names = ["whitespace", "forwarding"]
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="initial-index",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=names,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]} for name in names
+        ],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        domain_complete=True,
+        authority_verified=True,
+    )
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(config_path.read_text(encoding="utf-8").encode("utf-8"))
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8"
+    )
+    run(path, "add", "-A")
+    event = hooks.capture_pre_commit(path)
+    invocation = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    changes = selection.changeset(path, base="HEAD", mode="index")
+    assert changes.complete and "src/initial.py" in changes.paths
+    assert changes.base_commit is None and changes.head_commit is None
+    assert changes.base_tree == event["base_tree"]
+    assert changes.execution_tree == event["index"]["tree"]
+    assert (
+        selection.changeset(path, base="refs/heads/missing", mode="index").error
+        == "head_unresolved"
+    )
+    working = b"VALUE = 2\n" if native_exit else b"VALUE = 2 \n"
+    target.write_bytes(working)
+    (path / "ci-hygiene.toml").write_text("invalid working config", encoding="utf-8")
+    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+    selected_plan = json.loads(
+        invocation.invocation_path.with_suffix(".plan").read_bytes()
+    )["plan"]
+    assert selected_plan["selection"]["status"] == "no_tests"
+    expected = selected_plan["expected_checks"]
+    report = hook_checks.run_checks(path, binding)
+    assert "checks" in report, report.get("reason")
+    checks = {entry["name"]: entry for entry in report["checks"]}
+    assert checks["whitespace"]["exit_code"] == native_exit
+    assert checks["forwarding"]["status"] == "passed"
+    assert report["status"] == ("failed" if native_exit else "passed")
+    baseline = {"base_tree": event["base_tree"], "baseline_status": "unborn"}
+    assert checks["whitespace"]["native_result"]["baseline_ref"] == baseline
+    assert expected["event_ref"]["base_tree"] == event["base_tree"]
+
+    outcome = hook_checks.reconcile(path, binding)
+    receipt = outcome["receipt"]
+    reconciliation.validate_receipt(receipt)
+    entries = {entry["name"]: entry for entry in receipt["entries"]}
+    assert entries["forwarding"]["binding_status"] == "matched"
+    assert entries["whitespace"]["binding_status"] == (
+        "insufficient" if native_exit else "matched"
+    )
+    assert entries["forwarding"]["evidence_refs"]["baseline_source_ref"]["name"] == (
+        "git-odb-empty-tree"
+    )
+    assert reconciliation.hook_exit_code([receipt]) == (1 if native_exit else 0)
+    assert bool(outcome["exit_code"]) == bool(native_exit)
+    assert target.read_bytes() == working
+
+    if not native_exit:
+        invalid_plan = json.loads(json.dumps(selected_plan))
+        invalid_plan["git"]["base_tree"] = changes.index_tree
+        assert execution.execute(invalid_plan, root=path)["reason"] == (
+            "index_unborn_baseline_invalid"
+        )
+        run(path, "commit", "-qm", "first commit")
+        assert execution.execute(selected_plan, root=path)["reason"] == (
+            "index_unborn_baseline_stale"
+        )
+
+
+def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    run(root, "init", "-q", "-b", "main")
+    run(root, "config", "user.email", "execution@example.invalid")
+    run(root, "config", "user.name", "Execution Test")
+    config = root / "ci-selection.toml"
+    selection_config = (
+        'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
+        '[push]\nnew_ref_baseline = "refs/heads/baseline"\n'
+    )
+    (root / "ci-hygiene.toml").write_bytes(
+        b'schema_version = 1\nchecks = ["whitespace"]\n'
+    )
+    (root / "src").mkdir()
+    source = root / "src" / "sample.py"
+    source.write_bytes(b"VALUE = 1\n")
+    (root / "tach.toml").write_bytes(
+        b'source_roots = ["src"]\n[[modules]]\npath = "sample"\ndepends_on = []\n'
+    )
+    approvals = []
+    profile_paths = []
+    for action, branch in (("create", "topic"), ("update", "main")):
+        target = f"refs/heads/{branch}"
+        profile = expected_checks.build_effective_profile(
+            profile_ref=check_contract.profile_ref("eci/local-push", "1.0.0"),
+            profile_revision=action,
+            approval_source="governance-signed",
+            effective_at="2026-11-16T00:00:00Z",
+            evaluated_at="2026-11-16T00:00:00Z",
+            context="push",
+            action=action,
+            target=target,
+            declared_checks=["whitespace"],
+            required_obligations=[
+                {
+                    "obligation_ref": "req-whitespace",
+                    "check_names": ["whitespace"],
+                    "target_refs": [target],
+                }
+            ],
+            domain_complete=True,
+            authority_verified=True,
+        )
+        config.write_bytes(selection_config.encode())
+        _attach_effective_profile_policy(config, profile)
+        approvals.append(
+            config.read_text(encoding="utf-8").split("[effective_profile]")[1]
+        )
+        filename = f"push-{action}.json"
+        (root / filename).write_text(json.dumps(profile), encoding="utf-8")
+        profile_paths.append(filename)
+    config.write_bytes(
+        (
+            selection_config
+            + "".join(f"\n[[effective_profile]]{part}" for part in approvals)
+        ).encode()
+    )
+    run(root, "add", "-A")
+    run(root, "commit", "-qm", "approved fixture policies")
+    baseline = run(root, "rev-parse", "HEAD").strip()
+    run(root, "branch", "baseline")
+    run(root, "switch", "-c", "topic")
+    source.write_bytes(b"VALUE = 2\n")
+    run(root, "add", "src/sample.py")
+    run(root, "commit", "-qm", "topic change")
+    topic = run(root, "rev-parse", "HEAD").strip()
+    run(root, "switch", "main")
+    source.write_bytes(b"VALUE = 3 \n")
+    run(root, "add", "src/sample.py")
+    run(root, "commit", "-qm", "main change")
+    head = run(root, "rev-parse", "HEAD").strip()
+    source.write_bytes(b"VALUE = 9\n")
+    event = hooks.capture_pre_push(
+        root,
+        "origin",
+        "remote repo",
+        f"refs/heads/topic {topic} refs/heads/topic {'0' * len(topic)}\n"
+        f"refs/heads/main {head} refs/heads/main {baseline}\n",
+    )
+    invocation = hooks.persist_event(root, event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    prepared = hook_checks.prepare_push(root, binding, effective_profiles=profile_paths)
+    assert prepared["exit_code"] == 0
+    assert [ref["after"] for ref in prepared["references"]] == [topic, head]
+    assert prepared["references"][0]["before"] == baseline
+    reports = hook_checks.run_push_checks(root, binding)["references"]
+    assert [ref["report"]["status"] for ref in reports] == ["passed", "failed"], [
+        ref["report"]["reason"] for ref in reports
+    ]
+    outcome = hook_checks.reconcile_push(root, binding)
+    assert outcome["exit_code"] != 0
+    assert [ref["receipt"]["status"] for ref in outcome["references"]] == [
+        "matched",
+        "partial",
+    ]
+    assert source.read_bytes() == b"VALUE = 9\n"
+
+
 def test_execute_refuses_stale_index_tree(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")

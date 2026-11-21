@@ -1013,7 +1013,12 @@ def derive_strict_expected(entry, resolved):
     expected_baseline = entry.get("baseline_ref")
     if isinstance(expected_baseline, dict):
         base_commit = expected_baseline.get("base_commit")
-        if base_commit is not None:
+        if check_contract.is_unborn_index_baseline(expected_baseline):
+            if resolved_baseline is None:
+                return None, "unknown", "expected_baseline_unresolved"
+            if resolved_baseline != expected_baseline:
+                return None, "insufficient", "expected_baseline_mismatch"
+        elif base_commit is not None:
             if resolved_baseline is None:
                 # The immutable Expected baseline stays authoritative when the
                 # resolution supplies no competing comparison envelope.
@@ -1942,6 +1947,38 @@ def reconcile_expected_results(
         )
     payload["receipt_ref"] = _digest(payload)
     return payload
+
+
+def hook_exit_code(receipts):
+    """Return the local exit for the receipts covering one Hook Invocation.
+
+    Callers supply the full set of scope receipts. Success requires complete
+    Expected enumeration and reconciled observations in every scope.
+    """
+    if not isinstance(receipts, list) or not receipts:
+        return 1
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            return 1
+        if (
+            receipt.get("status") != "matched"
+            or receipt.get("all_observations_reconciled") is not True
+        ):
+            return 1
+        completeness = receipt.get("expected_completeness")
+        closed = completeness in ("expected_domain_complete", "domain_complete_empty")
+        if not (
+            closed or (receipt.get("ref") is not None and completeness == "per_ref")
+        ):
+            return 1
+        entries = receipt.get("entries")
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, dict)
+            or entry.get("binding_status") not in ("matched", "not_applicable")
+            for entry in entries
+        ):
+            return 1
+    return 0
 
 
 def _result_id_list(value, code):

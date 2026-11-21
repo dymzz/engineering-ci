@@ -131,7 +131,7 @@ class Config:
     check_scope: CheckScopeConfig
     dependency_edges: tuple[dict, ...] = ()
     push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
-    effective_profile_policy: dict | None = None
+    effective_profile_policy: dict | list[dict] | None = None
     workflow_checks: WorkflowChecksConfig = field(default_factory=WorkflowChecksConfig)
 
 
@@ -162,6 +162,7 @@ class ChangeSet:
     force_push: bool = False
     baseline_status: str | None = None
     non_check_obligations: tuple[str, ...] = ()
+    base_tree: str | None = None
 
     @property
     def execution_tree(self):
@@ -496,7 +497,7 @@ def _parse_config_bytes(raw):
         new_ref_baseline=new_ref_base,
         target_baselines=target_bases,
     )
-    effective_profile_policy = _parse_effective_profile_policy(
+    effective_profile_policy = _parse_effective_profile_approvals(
         value.get("effective_profile")
     )
     return Config(
@@ -539,6 +540,17 @@ def load_config(path):
     except OSError:
         raise SelectionError("config_missing") from None
     return _parse_config_bytes(raw)
+
+
+def _parse_effective_profile_approvals(raw):
+    if not isinstance(raw, list):
+        return _parse_effective_profile_policy(raw)
+    if not raw or any(not isinstance(item, dict) for item in raw):
+        raise SelectionError("effective_profile_policy_invalid")
+    approvals = [_parse_effective_profile_policy(item) for item in raw]
+    if len({item["approval_digest"] for item in approvals}) != len(approvals):
+        raise SelectionError("effective_profile_policy_duplicate_approval")
+    return approvals
 
 
 def _parse_effective_profile_policy(raw):
@@ -895,7 +907,7 @@ def resolve_new_ref_baseline(
     return push_cfg.new_ref_baseline
 
 
-def _git(root, *args, env=None):
+def _git(root, *args, env=None, data=None):
     environment = {**os.environ, **env} if env else None
     try:
         return subprocess.run(
@@ -907,6 +919,7 @@ def _git(root, *args, env=None):
             errors="replace",
             check=False,
             env=environment,
+            input=data,
         )
     except FileNotFoundError:
         return subprocess.CompletedProcess(
@@ -1067,6 +1080,20 @@ def _parse_porcelain(data):
 def _tree_of(root, commit):
     result = _git(root, "rev-parse", "--verify", f"{commit}^{{tree}}")
     return result.stdout.strip() or None if result.returncode == 0 else None
+
+
+def unborn_index_base(root, *, base="HEAD"):
+    """Return Git's empty tree for the current unborn branch, if applicable."""
+    branch = _git(root, "symbolic-ref", "--quiet", "HEAD")
+    ref = branch.stdout.strip()
+    if branch.returncode or not ref.startswith("refs/heads/"):
+        return None
+    if base not in ("HEAD", ref):
+        return None
+    if _git(root, "show-ref", "--exists", ref).returncode != 2:
+        return None
+    empty = _git(root, "mktree", data="")
+    return (empty.stdout.strip() or None) if empty.returncode == 0 else None
 
 
 def worktree_content_binding(root, paths, *, require_files=False):
@@ -1630,7 +1657,12 @@ def changeset(
             new_ref_baseline=resolved_baseline,
         )
     head_commit = _resolve(root, head)
-    if head_commit is None:
+    base_tree = (
+        unborn_index_base(root, base=base)
+        if mode == "index" and head == "HEAD" and head_commit is None
+        else None
+    )
+    if head_commit is None and base_tree is None:
         return ChangeSet(
             root,
             base,
@@ -1644,10 +1676,13 @@ def changeset(
             "head_unresolved",
             snapshot=mode,
         )
-    tree = _tree_of(root, head_commit)
-    merge = _git(root, "merge-base", head_commit, base)
-    base_commit = merge.stdout.strip() if merge.returncode == 0 else None
-    if base_commit is None:
+    tree = None
+    base_commit = None
+    if head_commit is not None:
+        tree = _tree_of(root, head_commit)
+        merge = _git(root, "merge-base", head_commit, base)
+        base_commit = merge.stdout.strip() if merge.returncode == 0 else None
+    if base_commit is None and base_tree is None:
         return ChangeSet(
             root,
             base,
@@ -1686,29 +1721,28 @@ def changeset(
             deleted_paths=deleted,
         )
     if mode == "index":
+        baseline = base_commit or base_tree
         index_env = (
             {"GIT_INDEX_FILE": str(Path(index_file).resolve())}
             if index_file is not None
             else None
         )
+        write_tree = _git(root, "write-tree", env=index_env)
+        index_tree = write_tree.stdout.strip() if write_tree.returncode == 0 else None
+        comparison = (baseline, index_tree) if index_tree else ("--cached", baseline)
         diff = _git(
             root,
             "diff",
             "--no-renames",
             "--name-only",
             "-z",
-            "--cached",
-            base_commit,
+            *comparison,
+            "--",
             env=index_env,
-        )
-        index_tree = None
-        write_tree = _git(root, "write-tree", env=index_env)
-        index_tree = (
-            write_tree.stdout.strip() if write_tree.returncode == 0 else index_tree
         )
         paths = [path for path in diff.stdout.split("\0") if path]
         deleted = (
-            _diff_deleted_paths(root, "--cached", base_commit, env=index_env)
+            _diff_deleted_paths(root, *comparison, "--", env=index_env)
             if diff.returncode == 0
             else ()
         )
@@ -1744,6 +1778,8 @@ def changeset(
             else None,
             source_refusal=refusal,
             deleted_paths=deleted,
+            base_tree=base_tree,
+            baseline_status="unborn" if base_tree is not None else None,
         )
     if mode == "pr":
         base_tip = _resolve(root, base)
@@ -3941,6 +3977,11 @@ def plan(
             "base_ref": selection.changeset.base_ref,
             "head_ref": selection.changeset.head_ref,
             "base_commit": selection.changeset.base_commit,
+            **(
+                {"base_tree": selection.changeset.base_tree}
+                if selection.changeset.base_tree is not None
+                else {}
+            ),
             "base_tip": selection.changeset.base_tip,
             "head_commit": selection.changeset.head_commit,
             "tree": selection.changeset.tree,

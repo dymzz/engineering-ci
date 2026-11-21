@@ -34,21 +34,35 @@ gh pr view --json number,url,headRefOid
 
 ### Lefthook 本地入口
 
-在已按锁文件准备 Python 环境的 checkout 使用仓库固定的 Lefthook 版本。
+在 checkout 里从开发依赖锁文件安装和调用 Lefthook 2.2.2。
 
 ```sh
-uv tool install lefthook==2.2.2
-lefthook validate
-lefthook install
+uv sync --locked
+uv run --locked --no-sync lefthook validate
+uv run --locked --no-sync lefthook install
 ```
 
-`git commit` 触发 Git 原生暂存空白检查。ECI 用本次 Index 的 Tree 选择受检字节，
-再核对 Index 和基线是否变化。Git 须支持 `--attr-source` 和 `show-ref --exists`。
-要单独执行同一检查并记录新一次 Invocation 和原生结果，运行
+`git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
+再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
+本仓运行原生暂存空白检查。受检树声明了 `ci-selection.toml` 和已绑定的
+`ci-effective-profile.json` 或 `ci-effective-profile.toml` 时，准备 Job 从
+临时 Git checkout 加载暂存策略，Host Job 在同一 Tree 上执行 Plan，最终 Job
+保存真实 Report 的本地 Receipt。失败或缺失的必需结果会阻断提交。
+Git 须支持 `--attr-source` 和 `show-ref --exists`。
+要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
 `uv run --locked --no-sync engineering-ci hooks check pre-commit --json`。
 
-手动执行 `lefthook run verify --no-auto-install` 运行 Dagger 的 lint、格式、版本与锁文件检查和核心测试。
-这些检查各自保留原生结果并由 Lefthook 汇总退出。`lefthook uninstall` 退出本地安装。
+推送验证用独占 stdin 的 Lefthook Job 采集 Git 原始参数与有序 Ref，使用同一
+Invocation 调用 `hooks prepare pre-push`、`hooks run pre-push` 和
+`hooks reconcile pre-push`。前者通过可重复的 `--effective-profile` 指定要在受检
+Ref 树内查找的策略文件。各动作的审批可在 `ci-selection.toml` 用
+`[[effective_profile]]` 分别登记。新建 Ref 的比较基线由目标树里的 `[push]`
+策略提供。删除使用旧对象中的删除策略，保留删除义务和本地收据。
+本仓的 `pre-push` 仍处于隔离验收阶段，生产配置及启用状态由 #152 记录。
+
+`uv run --locked --no-sync lefthook run verify --no-auto-install` 运行 Dagger 的
+lint、格式、版本与锁文件检查和核心测试。各项保留原生结果，Lefthook 汇总退出。
+用 `uv run --locked --no-sync lefthook uninstall` 卸载本地 Hook。
 完整迁移与生效条件见 [#152](https://github.com/dymzz/engineering-ci/issues/152)。
 
 ### 审查与合并

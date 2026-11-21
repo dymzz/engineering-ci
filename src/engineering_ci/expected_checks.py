@@ -85,6 +85,8 @@ def _event_ref(changeset):
         event["force_push"] = True
     if getattr(changeset, "baseline_status", None) is not None:
         event["baseline_status"] = changeset.baseline_status
+    if getattr(changeset, "base_tree", None) is not None:
+        event["base_tree"] = changeset.base_tree
     return event
 
 
@@ -128,6 +130,8 @@ def _selection_rule_ref(config_digest):
 def _baseline_ref_for_changes(changeset):
     ref_action = getattr(changeset, "ref_action", None)
     baseline_status = getattr(changeset, "baseline_status", None)
+    if baseline_status == "unborn":
+        return {"base_tree": changeset.base_tree, "baseline_status": baseline_status}
     if ref_action in {"create", "delete", "force_update"} or baseline_status in {
         "policy",
         "not_applicable",
@@ -464,6 +468,13 @@ def _git_from_changeset(changeset):
     }
 
 
+def _scope_target(git):
+    if git.get("snapshot") == "push":
+        refs = git.get("references") or ()
+        return (refs[0].get("remote_ref") if refs else None) or git.get("head_ref")
+    return git.get("base_ref") or git.get("head_ref")
+
+
 def _match_profile_event(profile, git):
     snapshot = git.get("snapshot") or "worktree"
     refs = git.get("references") or []
@@ -471,14 +482,7 @@ def _match_profile_event(profile, git):
         expected_context = "push"
         if snapshot == "push":
             expected_actions = {git.get("ref_action") or "update"}
-            expected_targets = {
-                t
-                for t in (
-                    (refs[0].get("remote_ref") if refs else None)
-                    or git.get("head_ref"),
-                )
-                if t
-            }
+            expected_targets = {target} if (target := _scope_target(git)) else set()
         else:
             ref_actions = {r.get("ref_action") for r in refs if r.get("ref_action")}
             expected_actions = ref_actions if len(ref_actions) == 1 else {"multi"}
@@ -685,6 +689,20 @@ def validate_effective_profile(profile, *, git=None):
     return profile
 
 
+def _policy_approval(config_policy, approval_digest):
+    if not isinstance(config_policy, list):
+        return config_policy
+    matches = [
+        approval
+        for approval in config_policy
+        if isinstance(approval, dict)
+        and approval.get("approval_digest") == approval_digest
+    ]
+    if len(matches) != 1:
+        raise ExpectedError("effective_profile_authority_untrusted")
+    return matches[0]
+
+
 def _verify_profile_authority(
     profile,
     *,
@@ -695,6 +713,7 @@ def _verify_profile_authority(
 ):
     """Verify whether EffectiveProfile authority is proven against governed repository rules/policy."""
     binding = profile.get("approval_binding") or {}
+    config_policy = _policy_approval(config_policy, binding.get("approval_digest"))
     declared_domain = binding.get("declared_domain") or {}
     gov = profile.get("governed_rules")
     if gov is None and isinstance(declared_domain, dict):
@@ -1586,9 +1605,7 @@ def _derive_v2_from_profile(
         if hygiene_config is not None
         else frozenset(scope_by_name)
     )
-    target_ref = getattr(changeset, "base_ref", None) or getattr(
-        changeset, "head_ref", None
-    )
+    target_ref = _scope_target(_git_from_changeset(changeset))
     ref_action = getattr(changeset, "ref_action", None)
     is_multi = changeset.snapshot == "multi"
     ref_scopes = _multi_ref_scopes(changeset.references) if is_multi else None
@@ -3141,9 +3158,7 @@ def validate_projection(
             ):
                 raise ExpectedError("effective_profile_input_mismatch")
         is_multi = git.get("snapshot") == "multi"
-        target_ref = (
-            (git.get("base_ref") or git.get("head_ref")) if not is_multi else None
-        )
+        target_ref = _scope_target(git) if not is_multi else None
         ref_action = git.get("ref_action") if not is_multi else None
         ref_scopes = _multi_ref_scopes(git.get("references")) if is_multi else None
         (
@@ -3323,7 +3338,12 @@ def validate_projection(
     if snapshot != "multi":
         ref_action = git.get("ref_action")
         baseline_status = git.get("baseline_status")
-        if ref_action in {"create", "delete", "force_update"} or baseline_status in {
+        if baseline_status == "unborn":
+            expected_baseline = {
+                "base_tree": git.get("base_tree"),
+                "baseline_status": baseline_status,
+            }
+        elif ref_action in {"create", "delete", "force_update"} or baseline_status in {
             "policy",
             "not_applicable",
             "old_object_unavailable",
@@ -3364,9 +3384,14 @@ def validate_projection(
     event = expected.get("event_ref")
     if not isinstance(event, dict):
         raise ExpectedError("expected_event_invalid")
-    for key in ("base_ref", "head_ref", "base_commit", "head_commit"):
+    for key in ("base_ref", "head_ref", "base_commit", "head_commit", "base_tree"):
         if event.get(key) != git.get(key):
             raise ExpectedError("expected_event_mismatch")
+    if (
+        git.get("baseline_status") == "unborn"
+        and event.get("baseline_status") != "unborn"
+    ):
+        raise ExpectedError("expected_event_mismatch")
     expected_refs = sorted(
         (dict(item) for item in event.get("references", [])),
         key=_canon_key,

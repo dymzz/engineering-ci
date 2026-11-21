@@ -1,5 +1,7 @@
+import base64
 import concurrent.futures
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -82,15 +84,74 @@ def test_pre_commit_checks_captured_tree_with_partial_staging(
     staged_tree = git(repo, "write-tree")
     path.write_text(working, encoding="utf-8")
 
-    exit_code = hooks.main(["check", "pre-commit", "--root", str(repo), "--json"])
+    assert hooks.main(["capture", "pre-commit", "--root", str(repo)]) == 0
+    invocation_ref = capsys.readouterr().out.strip()
+    exit_code = hooks.main(
+        [
+            "check",
+            "pre-commit",
+            "--root",
+            str(repo),
+            "--invocation-ref",
+            invocation_ref,
+            "--json",
+        ]
+    )
     report = json.loads(capsys.readouterr().out)
 
     assert exit_code == report["exit_code"] == expected_exit
     assert report["check"]["exit_code"] == expected_exit
     assert report["source_status"] == "matched"
+    assert report["invocation_ref"] == invocation_ref
     assert report["event"]["index"]["tree"] == staged_tree
     assert hooks.load_invocation(report["invocation_path"]) == report["event"]
+    assert list(Path(report["invocation_path"]).parent.glob("*.json")) == [
+        Path(report["invocation_path"])
+    ]
     assert path.read_text(encoding="utf-8") == working
+
+
+def test_pre_commit_rejects_capture_when_staging_changes_before_the_check(repo):
+    path = repo / "a.txt"
+    path.write_text("captured\n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+    event = hooks.capture_pre_commit(repo)
+    reference = hooks.persist_event(repo, event)
+    path.write_text("new staging\n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+
+    report = hooks.check_pre_commit(repo, invocation_ref=reference.invocation_ref)
+
+    assert report["event"] == event
+    assert report["exit_code"] == 1
+    assert report["source_status"] == "stale"
+    assert report["reason"] == "index_changed_during_check"
+
+
+def test_pre_commit_does_not_recapture_an_unavailable_invocation(repo, capsys):
+    invocation_ref = "invocation:" + "0" * 32
+
+    exit_code = hooks.main(
+        ["check", "pre-commit", "--root", str(repo), "--invocation-ref", invocation_ref]
+    )
+
+    assert exit_code == 2
+    assert capsys.readouterr().err.strip() == "invocation_file_unavailable"
+    assert not (repo / ".git" / "eci-hooks").exists()
+
+
+def test_pre_commit_rejects_an_event_tree_different_from_the_actual_index(repo):
+    (repo / "a.txt").write_text("staged whitespace \n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+    event = hooks.capture_pre_commit(repo)
+    event["index"]["tree"] = event["base_tree"]
+    reference = hooks.persist_event(repo, event)
+
+    report = hooks.check_pre_commit(repo, invocation_ref=reference.invocation_ref)
+
+    assert report["check"]["exit_code"] == 0
+    assert report["source_status"] == "stale"
+    assert report["exit_code"] == 1
 
 
 def test_pre_commit_uses_git_attributes_from_staged_tree(repo):
@@ -104,6 +165,18 @@ def test_pre_commit_uses_git_attributes_from_staged_tree(repo):
 
     assert report["check"]["status"] == "passed"
     assert report["exit_code"] == 0
+
+
+def test_pre_commit_treats_tree_oid_as_revision_when_a_path_has_the_same_name(repo):
+    base_tree = git(repo, "rev-parse", "HEAD^{tree}")
+    (repo / base_tree).touch()
+    (repo / "a.txt").write_text("clean staged change\n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+
+    report = hooks.check_pre_commit(repo)
+
+    assert report["exit_code"] == 0, report["check"]
+    assert report["check"]["status"] == "passed"
 
 
 def test_pre_commit_checks_initial_index_against_empty_tree(tmp_path):
@@ -183,6 +256,34 @@ def test_capture_pre_push_preserves_args_and_redacts_location(repo):
         "update",
         "delete",
     ]
+
+
+def test_framed_pre_push_keeps_native_arguments_and_order(repo):
+    remote_name = "origin"
+    remote_location = "C:/a folder with ' quotes and $ signs/repo.git"
+    oid = git(repo, "rev-parse", "HEAD")
+    zero = "0" * 40
+    text = (
+        f"refs/heads/main {oid} refs/heads/main {zero}\n"
+        f"refs/heads/topic {oid} refs/heads/topic {zero}\n"
+    )
+    payload = b":".join(
+        (
+            b"ECI-PRE-PUSH",
+            base64.b64encode(remote_name.encode()),
+            base64.b64encode(remote_location.encode()),
+            text.encode(),
+        )
+    )
+    args = hooks._read_pre_push_frame(io.BytesIO(payload))
+    assert args == (remote_name, remote_location, text)
+    event = hooks.capture_pre_push(repo, *args)
+    assert [ref["local_ref"] for ref in event["refs"]] == [
+        "refs/heads/main",
+        "refs/heads/topic",
+    ]
+    with pytest.raises(hooks.HookEventError, match="pre_push_argument_frame_invalid"):
+        hooks._read_pre_push_frame(io.BytesIO(text.encode()))
 
 
 def test_capture_pre_push_redacts_credentialed_name_and_location(repo):

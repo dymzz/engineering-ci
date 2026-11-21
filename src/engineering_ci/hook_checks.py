@@ -1,0 +1,621 @@
+"""Source, execution and reconciliation for Lefthook jobs."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import sys
+from dataclasses import replace
+from functools import partial
+from pathlib import Path
+
+from . import execution, expected_checks, git_source, hooks, reconciliation, selection
+
+_SELECTION_CONFIG = "ci-selection.toml"
+_PROFILE_FILES = ("ci-effective-profile.json", "ci-effective-profile.toml")
+_JOB_REF = "check-index"
+_PUSH_JOB_REF = "check-push"
+_RUNNER_REF = "execution:host"
+_INAPPLICABLE = {"not_applicable", "no_tests", "no_changes"}
+
+
+def _artifact(binding, suffix, payload=None, *, exclusive=False):
+    path = binding.invocation_path.with_suffix(suffix)
+    if path.is_symlink() or path.resolve().parent != binding.invocation_path.parent:
+        raise hooks.HookEventError("hook_artifact_outside_invocation")
+    if payload is None:
+        if not path.is_file():
+            return None
+        try:
+            raw = path.read_bytes()
+            content = json.loads(raw)
+        except (OSError, ValueError):
+            raise hooks.HookEventError("hook_artifact_invalid") from None
+        if not isinstance(content, dict) or hooks.canonical_event_bytes(content) != raw:
+            raise hooks.HookEventError("hook_artifact_invalid")
+        return content
+    git_dir = hooks._invocation_git_dir(binding.invocation_path)
+    with hooks._capture_lock(git_dir):
+        raw = hooks.canonical_event_bytes(payload)
+        if path.exists():
+            if exclusive:
+                raise hooks.HookEventError("hook_job_already_activated")
+            if path.read_bytes() != raw:
+                raise hooks.HookEventError("hook_artifact_conflict")
+        else:
+            hooks._write_private_file(path, raw)
+    return None
+
+
+def _index_source(root, binding):
+    if binding.hook != "pre-commit":
+        raise hooks.HookEventError("invocation_hook_mismatch")
+    event = binding.event
+    index = hooks.resolve_index_path(event, root=root)
+    if not hooks._active_index_matches(root, index, event["index"]):
+        raise hooks.HookEventError("index_changed_during_check")
+    head = selection._resolve(root, "HEAD")
+    if head != event.get("head_commit") or hooks._pre_commit_base_tree(
+        root
+    ) != event.get("base_tree"):
+        raise hooks.HookEventError("pre_commit_base_changed_during_check")
+    return head
+
+
+def _invoke_worker(root, binding, operation, payload):
+    head = _index_source(root, binding)
+    result = _source_worker(
+        root, binding.event["index"]["tree"], head, operation, payload
+    )
+    _index_source(root, binding)
+    return result
+
+
+def _source_worker(root, tree, head, operation, payload):
+    with git_source.materialized_tree(root, tree, head=head) as (source, env):
+        result = subprocess.run(
+            [sys.executable, "-m", "engineering_ci.hook_checks", operation],
+            cwd=source,
+            env=env,
+            input=json.dumps(payload),
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+    if result.returncode != 0:
+        diagnostic = result.stderr.strip()
+        raise hooks.HookEventError(diagnostic or "hook_check_source_worker_failed")
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        raise hooks.HookEventError("hook_check_source_worker_output_invalid") from None
+
+
+def _identity(binding):
+    return {
+        "invocation_ref": binding.invocation_ref,
+        "event_payload_ref": binding.event_payload_ref,
+        "run_ref": f"hook-run:{binding.invocation_ref}",
+        "attempt_ref": f"hook-attempt:{binding.invocation_ref}",
+    }
+
+
+def _load_plan(binding):
+    prepared = _artifact(binding, ".plan")
+    if prepared is None:
+        raise hooks.HookEventError("hook_plan_missing")
+    if any(prepared.get(key) != value for key, value in _identity(binding).items()):
+        raise hooks.HookEventError("hook_plan_invocation_mismatch")
+    if "plan" not in prepared or prepared.get("plan_ref") != hooks._digest_bytes(
+        hooks.canonical_event_bytes(prepared["plan"])
+    ):
+        raise hooks.HookEventError("hook_plan_digest_mismatch")
+    return prepared
+
+
+def _planned(root, binding):
+    prepared = _load_plan(binding)
+    head = _index_source(root, binding)
+    plan = prepared["plan"]
+    if plan is not None:
+        if not isinstance(plan, dict):
+            raise hooks.HookEventError("hook_plan_invalid")
+        git = plan.get("git") or {}
+        tree = binding.event["index"]["tree"]
+        if (
+            git.get("snapshot") != "index"
+            or git.get("execution_tree") != tree
+            or git.get("head_commit") != head
+            or (head is None and git.get("base_tree") != binding.event["base_tree"])
+        ):
+            raise hooks.HookEventError("hook_plan_source_mismatch")
+    return prepared
+
+
+def prepare(root, binding):
+    _index_source(root, binding)
+    tree = binding.event["index"]["tree"]
+    baseline = binding.event["base_tree"]
+    config_names = (_SELECTION_CONFIG, *_PROFILE_FILES)
+    staged = hooks._git(root, "ls-tree", "--name-only", tree, "--", *config_names)
+    old = hooks._git(root, "ls-tree", "--name-only", baseline, "--", *config_names)
+    if staged.returncode or old.returncode:
+        raise hooks.HookEventError("hook_selection_config_tree_unavailable")
+    staged_names = set(staged.stdout.splitlines())
+    baseline_names = set(old.stdout.splitlines())
+    staged_profiles = staged_names.intersection(_PROFILE_FILES)
+    if not staged_profiles and baseline_names.intersection(_PROFILE_FILES):
+        raise hooks.HookEventError("hook_effective_profile_removed")
+    if staged_profiles and _SELECTION_CONFIG not in staged_names:
+        raise hooks.HookEventError("hook_selection_config_missing")
+    plan = _invoke_worker(root, binding, "plan", {}) if staged_profiles else None
+    prepared = {
+        **_identity(binding),
+        "plan": plan,
+        "plan_ref": hooks._digest_bytes(hooks.canonical_event_bytes(plan)),
+    }
+    _artifact(binding, ".plan", prepared)
+    return {"invocation_ref": binding.invocation_ref, "exit_code": 0}
+
+
+def prepare_push(root, binding, *, new_ref_baseline=None, effective_profiles=()):
+    """Prepare distinct Plans for the ordered Ref targets of an actual push."""
+    if binding.hook != "pre-push":
+        raise hooks.HookEventError("invocation_hook_mismatch")
+    refs = binding.event["refs"]
+    configured_refs = refs if new_ref_baseline else _push_ref_baselines(root, refs)
+    changes = selection.changeset_multi(
+        root, configured_refs, new_ref_baseline=new_ref_baseline
+    )
+    result = {
+        **_identity(binding),
+        "references": list(changes.references),
+        "status": "prepared" if changes.complete else "blocked",
+        "reason": changes.error,
+        "exit_code": int(not changes.complete),
+    }
+    if not refs:
+        result.update(status="not_applicable", reason="no_ref_updates", exit_code=0)
+    _artifact(binding, ".push-source", result)
+    if result["exit_code"] or not effective_profiles:
+        return result
+    plans = []
+    for reference in result["references"]:
+        tree, head = _push_checkout(root, reference)
+        plans.append(
+            _source_worker(
+                root,
+                tree,
+                head,
+                "plan-push",
+                {"reference": reference, "profiles": list(effective_profiles)},
+            )
+        )
+    _artifact(
+        binding,
+        ".plan",
+        {
+            **_identity(binding),
+            "plan": plans,
+            "plan_ref": hooks._digest_bytes(hooks.canonical_event_bytes(plans)),
+        },
+    )
+    return result
+
+
+def _push_ref_baselines(root, refs):
+    result = []
+    for ref in refs:
+        if ref["ref_action"] == "create":
+            head = selection._resolve(root, ref["after"])
+            data = (
+                selection._git_bytes(root, "show", f"{head}:{_SELECTION_CONFIG}")
+                if head
+                else None
+            )
+            if data is not None and data.returncode == 0:
+                baseline = selection.resolve_new_ref_baseline(
+                    selection._parse_config_bytes(data.stdout),
+                    remote_ref=ref["remote_ref"],
+                    local_ref=ref["local_ref"],
+                )
+                ref = {**ref, "new_ref_baseline": baseline}
+        result.append(ref)
+    return result
+
+
+def _push_checkout(root, ref):
+    if ref["ref_action"] == "delete":
+        # Only read policy files for a deletion. There is no execution target.
+        head = ref["before"]
+        tree = selection._tree_of(root, head) if head else None
+    else:
+        head, tree = ref["after"], ref["tree"]
+    if not head or not tree or selection._tree_of(root, head) != tree:
+        raise hooks.HookEventError("hook_push_source_unavailable")
+    return tree, head
+
+
+def _push_plans(root, binding):
+    prepared = _load_plan(binding)
+    source = _artifact(binding, ".push-source")
+    if source is None or any(
+        source.get(key) != value for key, value in _identity(binding).items()
+    ):
+        raise hooks.HookEventError("hook_push_source_invocation_mismatch")
+    plans, refs = prepared["plan"], source.get("references")
+    if not isinstance(plans, list) or not isinstance(refs, list) or source["exit_code"]:
+        raise hooks.HookEventError("hook_push_plan_source_invalid")
+    args = binding.event["refs"]
+    if len(plans) != len(refs) or len(refs) != len(args):
+        raise hooks.HookEventError("hook_push_plan_ref_count_mismatch")
+    # The immutable resolved create baseline replaces the mutable ref name when
+    # rechecking Source. Every other OID still comes from the original Git stdin.
+    current = selection.changeset_multi(
+        root,
+        [
+            {
+                **raw,
+                "new_ref_baseline": ref["before"]
+                if ref["ref_action"] == "create"
+                else None,
+            }
+            for raw, ref in zip(args, refs, strict=True)
+        ],
+    )
+    if list(current.references) != refs:
+        raise hooks.HookEventError("hook_push_source_mismatch")
+    for plan, ref in zip(plans, refs, strict=True):
+        if not isinstance(plan, dict):
+            raise hooks.HookEventError("hook_plan_invalid")
+        git = plan.get("git") or {}
+        if (
+            git.get("snapshot") != "push"
+            or git.get("references") != [ref]
+            or git.get("head_commit") != ref["after"]
+            or git.get("base_commit") != ref["before"]
+            or git.get("tree") != ref["tree"]
+            or git.get("execution_tree") != ref["tree"]
+            or git.get("ref_action") != ref["ref_action"]
+        ):
+            raise hooks.HookEventError("hook_push_plan_source_mismatch")
+    return prepared, refs
+
+
+def run_checks(root, binding):
+    prepared = _planned(root, binding)
+    _artifact(binding, ".activation", _identity(binding), exclusive=True)
+    if prepared["plan"] is None:
+        report = hooks.check_pre_commit(root, invocation_ref=binding.invocation_ref)
+    else:
+        report = _invoke_worker(root, binding, "execute", prepared)
+    _record_execution(binding, prepared, report)
+    return report
+
+
+def _record_execution(binding, prepared, report, *, suffix=".execution"):
+    _artifact(
+        binding,
+        suffix,
+        {
+            **_identity(binding),
+            "report": report,
+            "plan_ref": prepared["plan_ref"],
+            "report_digest": hooks._digest_bytes(hooks.canonical_event_bytes(report)),
+        },
+    )
+
+
+def _observe(plan, recorded, expected, report, job_ref, execution_suffix):
+    identity = report.get("execution_identity") or {}
+    if (
+        identity.get("run_ref") != recorded["run_ref"]
+        or identity.get("attempt_ref") != recorded["attempt_ref"]
+        or identity.get("execution_ref")
+        != f"execution:{recorded['invocation_ref']}:{execution_suffix}"
+        or (report.get("plan") or {}).get("git") != plan["git"]
+    ):
+        return None, None
+    _results, _rejections, report_ref = reconciliation.verify_execution_report(report)
+    attributed = {
+        "job_ref": job_ref,
+        "run_ref": recorded["run_ref"],
+        "attempt_ref": recorded["attempt_ref"],
+        "runner_ref": _RUNNER_REF,
+        "report_ref": report_ref,
+    }
+    scope = {
+        "invocation_ref": recorded["invocation_ref"],
+        "event_ref": expected["event_ref"],
+        "scope_id": expected["scope_id"],
+    }
+    issuer = {
+        "name": "engineering-ci.local-hook-job",
+        "version": "1",
+        "sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+    qualification = {
+        **issuer,
+        "sha256": hashlib.sha256(
+            hooks.canonical_event_bytes({**attributed, **scope})
+        ).hexdigest(),
+    }
+    route = {
+        **attributed,
+        **scope,
+        "attempt_eligibility": "eligible",
+        "qualification_ref": qualification,
+    }
+    observation = {
+        **attributed,
+        "report": report,
+        "job_receipt": {
+            **attributed,
+            **scope,
+            "kind": reconciliation.JOB_RECEIPT_KIND,
+            "schema_version": reconciliation.JOB_RECEIPT_SCHEMA_VERSION,
+            "issuer_ref": issuer,
+            "verification_status": "upstream_verified",
+            "expected_set_ref": expected["expected_set_ref"],
+        },
+    }
+    return route, observation
+
+
+def _load_execution(binding, prepared, *, suffix=".execution"):
+    recorded = _artifact(binding, suffix)
+    activated = _artifact(binding, ".activation")
+    if recorded is not None and activated != _identity(binding):
+        raise hooks.HookEventError("hook_report_activation_missing")
+    if recorded is not None and recorded.get("plan_ref") != prepared["plan_ref"]:
+        raise hooks.HookEventError("hook_report_plan_mismatch")
+    if recorded is not None and any(
+        recorded.get(key) != value for key, value in _identity(binding).items()
+    ):
+        raise hooks.HookEventError("hook_report_invocation_mismatch")
+    report = recorded.get("report") if recorded is not None else None
+    if recorded is not None and (
+        not isinstance(report, dict)
+        or recorded.get("report_digest")
+        != hooks._digest_bytes(hooks.canonical_event_bytes(report))
+    ):
+        raise hooks.HookEventError("hook_report_digest_mismatch")
+    return recorded, report
+
+
+def _reconcile_plan(
+    binding, plan, recorded, report, job_ref, resolve, *, execution_suffix=None
+):
+    expected = plan["expected_checks"]
+    route = observation = None
+    if report is not None:
+        route, observation = _observe(
+            plan, recorded, expected, report, job_ref, execution_suffix or job_ref
+        )
+    routing = [
+        {
+            "expected_check_ref": check["expected_check_ref"],
+            "mapping_status": "routed" if route is not None else "unrouted",
+            "job_refs": [job_ref] if route is not None else [],
+            "job_instances": [route] if route is not None else [],
+        }
+        for check in expected["checks"]
+    ]
+    receipt = reconciliation.reconcile_expected_results(
+        expected,
+        routing=routing,
+        resolutions=resolve() if observation is not None else [],
+        observations=[observation] if observation is not None else [],
+        invocation_ref=binding.invocation_ref,
+    )
+    reconciliation.validate_receipt(receipt)
+    return receipt
+
+
+def reconcile(root, binding):
+    prepared = _planned(root, binding)
+    recorded, report = _load_execution(binding, prepared)
+    if prepared["plan"] is None:
+        if report is None:
+            raise hooks.HookEventError("hook_report_missing")
+        return {
+            "invocation_ref": binding.invocation_ref,
+            "exit_code": report["exit_code"],
+        }
+    receipt = _reconcile_plan(
+        binding,
+        prepared["plan"],
+        recorded,
+        report,
+        _JOB_REF,
+        lambda: _invoke_worker(root, binding, "resolve", prepared),
+    )
+    _artifact(binding, ".receipt", receipt)
+    return {
+        "invocation_ref": binding.invocation_ref,
+        "receipt": receipt,
+        "exit_code": (report or {}).get("exit_code")
+        or reconciliation.hook_exit_code([receipt]),
+    }
+
+
+def _run_push_plan(root, plan, source, prepared, job_ref, operation):
+    tree, head = _push_checkout(root, source)
+    return _source_worker(
+        root,
+        tree,
+        head,
+        operation,
+        {**prepared, "plan": plan, "job_ref": job_ref},
+    )
+
+
+def _push_execution_suffix(index):
+    return f"{_PUSH_JOB_REF}:{index}"
+
+
+def _push_needs_execution(plan):
+    expected = plan["expected_checks"]
+    return expected["status"] != "complete" or any(
+        item["applicability"]["status"] not in _INAPPLICABLE
+        for item in expected["checks"]
+    )
+
+
+def run_push_checks(root, binding):
+    prepared, refs = _push_plans(root, binding)
+    _artifact(binding, ".activation", _identity(binding), exclusive=True)
+    reports = []
+    for index, (plan, source) in enumerate(zip(prepared["plan"], refs, strict=True)):
+        report = None
+        if source["ref_action"] != "delete" and _push_needs_execution(plan):
+            report = _run_push_plan(
+                root, plan, source, prepared, _push_execution_suffix(index), "execute"
+            )
+            _record_execution(binding, prepared, report, suffix=f".execution-{index}")
+        reports.append(report)
+    return {
+        "references": [
+            {"remote_ref": ref["remote_ref"], "report": report}
+            for ref, report in zip(refs, reports, strict=True)
+        ],
+        "exit_code": next((r["exit_code"] for r in reports if r and r["exit_code"]), 0),
+    }
+
+
+def reconcile_push(root, binding):
+    prepared, refs = _push_plans(root, binding)
+    reports = []
+    receipts = []
+    for index, (plan, source) in enumerate(zip(prepared["plan"], refs, strict=True)):
+        recorded, report = _load_execution(
+            binding, prepared, suffix=f".execution-{index}"
+        )
+        suffix = _push_execution_suffix(index)
+        receipt = _reconcile_plan(
+            binding,
+            plan,
+            recorded,
+            report,
+            _PUSH_JOB_REF,
+            partial(_run_push_plan, root, plan, source, prepared, suffix, "resolve"),
+            execution_suffix=suffix,
+        )
+        reports.append(report)
+        receipts.append(receipt)
+    _artifact(binding, ".receipt", {**_identity(binding), "receipts": receipts})
+    return {
+        "references": [
+            {"remote_ref": ref["remote_ref"], "receipt": receipt}
+            for ref, receipt in zip(refs, receipts, strict=True)
+        ],
+        "exit_code": next(
+            (r["exit_code"] for r in reports if r and r["exit_code"]),
+            reconciliation.hook_exit_code(receipts) if refs else 0,
+        ),
+    }
+
+
+def print_result(outcome, invocation_ref):
+    print(invocation_ref)
+    check = outcome.get("check")
+    if check is not None:
+        sys.stdout.write(check.get("stdout") or "")
+        sys.stderr.write(check.get("stderr") or "")
+    for check in outcome.get("checks") or ():
+        if check.get("status") in {"failed", "not_executed"}:
+            print(
+                f"{check['name']}: {check.get('reason') or check['status']}",
+                file=sys.stderr,
+            )
+            sys.stdout.write(check.get("stdout") or "")
+            sys.stderr.write(check.get("stderr") or "")
+    if outcome.get("reason") is not None:
+        print(outcome["reason"], file=sys.stderr)
+    for reference in outcome.get("references") or ():
+        if reference.get("error"):
+            print(f"{reference['remote_ref']}: {reference['error']}", file=sys.stderr)
+        if reference.get("report") is not None:
+            print_result(reference["report"], reference["remote_ref"])
+        if reference.get("receipt") is not None:
+            print(f"{reference['remote_ref']}: {reference['receipt']['status']}")
+    receipt = outcome.get("receipt")
+    if receipt is not None:
+        print(f"reconciliation: {receipt['status']}")
+
+
+def _matching_push_profile(root, changes, candidates):
+    profiles = []
+    for candidate in map(Path, candidates):
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise hooks.HookEventError("hook_push_profile_outside_source")
+        path = (root / candidate).resolve()
+        if not path.is_relative_to(root):
+            raise hooks.HookEventError("hook_push_profile_outside_source")
+        if not path.is_file():
+            continue
+        try:
+            expected_checks.load_effective_profile(
+                path, git=expected_checks._git_from_changeset(changes)
+            )
+        except expected_checks.ExpectedError as error:
+            if str(error) == "effective_profile_event_mismatch":
+                continue
+            raise
+        profiles.append(path)
+    if len(profiles) != 1:
+        raise hooks.HookEventError("hook_push_effective_profile_required")
+    return profiles[0]
+
+
+def _make_plan(operation, payload, root):
+    if operation == "plan-push":
+        ref = payload["reference"]
+        changes = replace(selection.ref_changeset(root, ref), references=(ref,))
+        profile = _matching_push_profile(root, changes, payload["profiles"])
+    else:
+        profiles = [root / name for name in _PROFILE_FILES if (root / name).is_file()]
+        if len(profiles) != 1:
+            raise hooks.HookEventError("hook_effective_profile_required")
+        profile = profiles[0]
+        changes = selection.changeset(root, base="HEAD", mode="index")
+    config_path = Path(_SELECTION_CONFIG)
+    config = selection.load_config(root / config_path)
+    return selection.plan(
+        selection.select(changes, config, root=root),
+        config=config,
+        config_path=config_path,
+        root=root,
+        effective_profile_path=profile,
+    )
+
+
+def _work(operation, payload, root):
+    if operation in {"plan", "plan-push"}:
+        return _make_plan(operation, payload, root)
+    plan = payload["plan"]
+    if operation == "execute":
+        return execution.execute(
+            plan,
+            root=root,
+            run_ref=payload["run_ref"],
+            attempt_ref=payload["attempt_ref"],
+            run_instance=f"{payload['invocation_ref']}:{payload.get('job_ref', _JOB_REF)}",
+        )
+    if operation != "resolve":
+        raise hooks.HookEventError("hook_source_worker_operation_invalid")
+    return [
+        execution.evaluate_source_resolution(plan, check, root=root)
+        for check in plan["expected_checks"]["checks"]
+        if check["applicability"]["status"] not in _INAPPLICABLE
+    ]
+
+
+if __name__ == "__main__":
+    try:
+        value = _work(sys.argv[1], json.load(sys.stdin), Path.cwd())
+    except (OSError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(2) from None
+    print(json.dumps(value, ensure_ascii=True))

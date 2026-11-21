@@ -1,9 +1,29 @@
 min_version: "2.2.2"
 
+# Keep pre-commit read-only and carry pre-push arguments in the native input stream.
+lefthook: >-
+  sh -c 'set -f; IFS=; case $2 in
+  pre-commit) exec uv run --locked --no-sync lefthook run pre-commit --no-stage-fixed ;;
+  pre-push) (printf ECI-PRE-PUSH:%s:%s: $(printf %s "$3" | base64 -w0) $(printf %s "$4" | base64 -w0); cat) |
+  uv run --locked --no-sync lefthook run pre-push $3 $4 ;;
+  *) exec uv run --locked --no-sync lefthook $1 $2 $3 $4 ;;
+  esac' lefthook
+
 pre-commit:
   jobs:
-    - name: staged-whitespace
-      run: uv run --locked --no-sync engineering-ci hooks check pre-commit
+    - name: capture-index
+      run: |
+        invocation=$(uv run --locked --no-sync engineering-ci hooks capture pre-commit) || exit $?
+        ECI_HOOK_INVOCATION_REF="$invocation" lefthook run pre-commit-checks --no-auto-install
+
+pre-commit-checks:
+  jobs:
+    - name: prepare-index-plan
+      run: uv run --locked --no-sync engineering-ci hooks prepare pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+    - name: check-index
+      run: uv run --locked --no-sync engineering-ci hooks run pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+    - name: reconcile-index
+      run: uv run --locked --no-sync engineering-ci hooks reconcile pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
 
 verify:
   parallel: true
