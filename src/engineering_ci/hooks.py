@@ -1,9 +1,8 @@
 """Git Hook event capture primitives.
 
-This module only captures the native Git event. It does not install hooks,
-dispatch jobs, or decide a Check verdict. A native pre-commit/pre-push entry
-may call :func:`capture_pre_push` or :func:`capture_pre_commit` once, persist the
-returned event, and hand the invocation reference to a dispatcher.
+The native hook captures and persists one Git event per invocation. Lefthook
+owns installation and scheduling. Hygiene supplies the native whitespace
+outcome for the captured pre-commit tree.
 
 Security boundaries:
 
@@ -42,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from engineering_ci import selection
+from engineering_ci import hygiene, selection
 
 HOOKS = ("pre-commit", "pre-push")
 EVENT_SCHEMA_VERSION = 2
@@ -74,7 +73,7 @@ class HookInvocation:
     invocation_path: Path
 
 
-def _git(root, *args, env=None):
+def _git(root, *args, env=None, data=None):
     return subprocess.run(
         ["git", *args],
         cwd=root,
@@ -84,6 +83,7 @@ def _git(root, *args, env=None):
         errors="replace",
         check=False,
         env=env,
+        input=data,
     )
 
 
@@ -752,9 +752,69 @@ def _read_remote_file(path, *, field):
     return value.rstrip("\r\n")
 
 
+def _pre_commit_base_tree(root):
+    head = _git(root, "rev-parse", "--verify", "--quiet", "HEAD^{tree}")
+    if head.returncode == 0:
+        return head.stdout.strip()
+    branch = _git(root, "symbolic-ref", "--quiet", "HEAD")
+    if branch.returncode or not branch.stdout.strip().startswith("refs/heads/"):
+        raise HookEventError("pre_commit_base_unavailable")
+    ref = _git(root, "show-ref", "--exists", branch.stdout.strip())
+    if ref.returncode != 2:
+        raise HookEventError("pre_commit_base_unavailable")
+    empty = _git(root, "mktree", data="")
+    if empty.returncode or not empty.stdout.strip():
+        raise HookEventError("pre_commit_base_unavailable")
+    return empty.stdout.strip()
+
+
+def _capture_details(event, reference):
+    return {
+        "event": event,
+        "path": str(reference.event_path),
+        "invocation_ref": reference.invocation_ref,
+        "event_payload_ref": reference.event_payload_ref,
+        "invocation_path": str(reference.invocation_path),
+    }
+
+
+def check_pre_commit(root):
+    """Check the exact staged tree and retain the native result for its event."""
+    base = _pre_commit_base_tree(root)
+    event = capture_pre_commit(root)
+    reference = persist_event(root, event)
+    index = resolve_index_path(event, root=root)
+    native = hygiene.check_git_whitespace(root, base=base, tree=event["index"]["tree"])
+    try:
+        index_matches = _digest_bytes(index.read_bytes()) == event["index"]["sha256"]
+    except OSError:
+        index_matches = False
+    try:
+        base_matches = _pre_commit_base_tree(root) == base
+    except HookEventError:
+        base_matches = False
+    reason = None
+    if not index_matches:
+        reason = "index_changed_during_check"
+    elif not base_matches:
+        reason = "pre_commit_base_changed_during_check"
+    return {
+        **_capture_details(event, reference),
+        "base_tree": base,
+        "check": native,
+        "source_status": "matched" if reason is None else "stale",
+        "reason": reason or native["reason"],
+        "exit_code": native["exit_code"] or (1 if reason is not None else 0),
+    }
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Capture Git Hook events")
+    parser = argparse.ArgumentParser(description="Capture and check Git Hook inputs")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    check = subparsers.add_parser("check")
+    check.add_argument("hook", choices=("pre-commit",))
+    check.add_argument("--root", type=Path, default=Path("."))
+    check.add_argument("--json", action="store_true")
     capture = subparsers.add_parser("capture")
     capture.add_argument("hook", choices=HOOKS)
     capture.add_argument("--root", default=".")
@@ -773,6 +833,17 @@ def main(argv=None):
     capture.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.command == "check":
+            report = check_pre_commit(args.root)
+            if args.json:
+                print(json.dumps(report, sort_keys=True))
+            else:
+                print(report["invocation_ref"])
+                sys.stdout.write(report["check"]["stdout"])
+                sys.stderr.write(report["check"]["stderr"])
+                if report["reason"] is not None:
+                    print(report["reason"], file=sys.stderr)
+            return report["exit_code"]
         if args.hook == "pre-push":
             remote_name = _read_remote_file(args.remote_name_file, field="remote_name")
             remote_location = _read_remote_file(
@@ -793,18 +864,7 @@ def main(argv=None):
         print(error.code, file=sys.stderr)
         return 2
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "event": event,
-                    "path": str(reference.event_path),
-                    "invocation_ref": reference.invocation_ref,
-                    "event_payload_ref": reference.event_payload_ref,
-                    "invocation_path": str(reference.invocation_path),
-                },
-                sort_keys=True,
-            )
-        )
+        print(json.dumps(_capture_details(event, reference), sort_keys=True))
     else:
         # The default handoff identifies this invocation, not merely its
         # reusable payload content. The Event path is available in --json.

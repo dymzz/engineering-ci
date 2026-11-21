@@ -38,8 +38,6 @@ DISPATCH_VERSION = 1
 COORDINATOR_ISSUER_NAME = "engineering-ci.hook.coordinator"
 COORDINATOR_ISSUER_VERSION = "1"
 DEFAULT_RUNNER_REF = "execution:host"
-DEFAULT_SCHEDULER_REF = {"name": "lefthook", "version": "2.2.2"}
-DEFAULT_CONFIG_REF = {"name": "hook-job", "version": "1"}
 DEFAULT_QUALIFICATION_NAME = "engineering-ci.hook.attempt-qualification"
 _CLOSED_SINGLE_COMPLETENESS = frozenset(
     {"expected_domain_complete", "domain_complete_empty"}
@@ -527,34 +525,18 @@ def verify_expected_matches_invocation(binding, expected):
 
 def report_ref_for(report):
     """Compute the content identity of one Execution Report."""
-    if not isinstance(report, dict):
-        raise HookCoordinatorError("execution_report_invalid")
-    if report.get("kind") != reconciliation.EXECUTION_REPORT_KIND:
-        raise HookCoordinatorError("execution_report_invalid")
-    schema_version = report.get("schema_version")
-    if type(schema_version) is not int or schema_version < 1:
-        raise HookCoordinatorError("execution_report_invalid")
-    digest = _digest(report).removeprefix("sha256:")
-    return {
-        "kind": reconciliation.EXECUTION_REPORT_KIND,
-        "schema_version": schema_version,
-        "sha256": digest,
-    }
+    try:
+        return reconciliation.execution_report_ref(report)
+    except reconciliation.ReconciliationError as error:
+        raise HookCoordinatorError(error.code) from error
 
 
 def verify_execution_report(report, report_ref=None):
     """Verify Report digest and extract Native Results via #104 rules."""
-    if report_ref is None:
-        report_ref = report_ref_for(report)
-    else:
-        expected = report_ref_for(report)
-        if report_ref != expected:
-            raise HookCoordinatorError("execution_report_digest_mismatch")
     try:
-        results, rejections = reconciliation._execution_report(report, report_ref)
+        return reconciliation.verify_execution_report(report, report_ref)
     except reconciliation.ReconciliationError as error:
         raise HookCoordinatorError(error.code) from error
-    return results, rejections, report_ref
 
 
 def _report_execution_attribution(report):
@@ -954,10 +936,8 @@ def build_routing(
         "job_refs": list(job_refs),
         "job_instances": instances,
         "mapping_status": mapping_status,
-        "scheduler_ref": copy.deepcopy(scheduler_ref or DEFAULT_SCHEDULER_REF),
-        "effective_config_ref": copy.deepcopy(
-            effective_config_ref or DEFAULT_CONFIG_REF
-        ),
+        "scheduler_ref": copy.deepcopy(scheduler_ref),
+        "effective_config_ref": copy.deepcopy(effective_config_ref),
         "reason": reason,
     }
 

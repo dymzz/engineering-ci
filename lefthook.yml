@@ -1,0 +1,18 @@
+min_version: "2.2.2"
+
+pre-commit:
+  jobs:
+    - name: staged-whitespace
+      run: uv run --locked --no-sync engineering-ci hooks check pre-commit
+
+verify:
+  parallel: true
+  jobs:
+    - name: lint
+      run: dagger check --engineering-ci --check=lint
+    - name: format
+      run: dagger check --engineering-ci --check=format-check
+    - name: metadata
+      run: dagger check --engineering-ci --check=version --check=lock
+    - name: core-tests
+      run: dagger check --engineering-ci --check=tests

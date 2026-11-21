@@ -394,6 +394,8 @@ def test_finalize_matched_invocation_exits_zero(selection_repo):
         coordinator.build_routing(entry["expected_check_ref"], run, ["job-1"])
         for entry in entries
     ]
+    assert all(item["scheduler_ref"] is None for item in routing)
+    assert all(item["effective_config_ref"] is None for item in routing)
     observation = coordinator.build_observation(
         run, "job-1", report, job_receipt=job_receipt
     )

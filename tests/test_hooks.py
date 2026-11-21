@@ -69,6 +69,78 @@ def repo(tmp_path):
     return root
 
 
+@pytest.mark.parametrize(
+    ("staged", "working", "expected_exit"),
+    [("staged \n", "working\n", 2), ("staged\n", "working \n", 0)],
+)
+def test_pre_commit_checks_captured_tree_with_partial_staging(
+    repo, capsys, staged, working, expected_exit
+):
+    path = repo / "a.txt"
+    path.write_text(staged, encoding="utf-8")
+    git(repo, "add", "a.txt")
+    staged_tree = git(repo, "write-tree")
+    path.write_text(working, encoding="utf-8")
+
+    exit_code = hooks.main(["check", "pre-commit", "--root", str(repo), "--json"])
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == report["exit_code"] == expected_exit
+    assert report["check"]["exit_code"] == expected_exit
+    assert report["source_status"] == "matched"
+    assert report["event"]["index"]["tree"] == staged_tree
+    assert hooks.load_invocation(report["invocation_path"]) == report["event"]
+    assert path.read_text(encoding="utf-8") == working
+
+
+def test_pre_commit_uses_git_attributes_from_staged_tree(repo):
+    attributes = repo / ".gitattributes"
+    attributes.write_text("*.txt whitespace=-blank-at-eol\n", encoding="utf-8")
+    (repo / "a.txt").write_text("staged \n", encoding="utf-8")
+    git(repo, "add", ".gitattributes", "a.txt")
+    attributes.write_text("*.txt whitespace=blank-at-eol\n", encoding="utf-8")
+
+    report = hooks.check_pre_commit(repo)
+
+    assert report["check"]["status"] == "passed"
+    assert report["exit_code"] == 0
+
+
+def test_pre_commit_checks_initial_index_against_empty_tree(tmp_path):
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("first \n", encoding="utf-8")
+    git(tmp_path, "add", "a.txt")
+
+    report = hooks.check_pre_commit(tmp_path)
+
+    assert report["source_status"] == "matched"
+    assert report["check"]["status"] == "failed"
+    assert "trailing whitespace" in report["check"]["stdout"]
+
+
+def test_pre_commit_blocks_index_change_even_after_clean_native_result(
+    repo, monkeypatch
+):
+    path = repo / "a.txt"
+    path.write_text("staged\n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+    native_check = hooks.hygiene.check_git_whitespace
+
+    def change_index_after_check(*args, **kwargs):
+        result = native_check(*args, **kwargs)
+        path.write_text("other staging\n", encoding="utf-8")
+        git(repo, "add", "a.txt")
+        return result
+
+    monkeypatch.setattr(hooks.hygiene, "check_git_whitespace", change_index_after_check)
+    report = hooks.check_pre_commit(repo)
+
+    assert report["check"]["exit_code"] == 0
+    assert report["source_status"] == "stale"
+    assert report["exit_code"] != 0
+    assert report["reason"] == "index_changed_during_check"
+
+
 def write_remote_file(path, value):
     path.write_text(value, encoding="utf-8")
     try:

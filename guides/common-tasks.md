@@ -32,6 +32,25 @@ gh pr view --json number,url,headRefOid
 若当前分支尚无 PR，再执行 `gh pr create --draft --fill`；已有 PR 不重复创建。
 提交信息与已合并 PR 供 GitHub 自动 Release Notes 使用，无需另造发布说明来源。
 
+### Lefthook 本地入口
+
+在已按锁文件准备 Python 环境的 checkout 使用仓库固定的 Lefthook 版本。
+
+```sh
+uv tool install lefthook==2.2.2
+lefthook validate
+lefthook install
+```
+
+`git commit` 触发 Git 原生暂存空白检查。ECI 用本次 Index 的 Tree 选择受检字节，
+再核对 Index 和基线是否变化。Git 须支持 `--attr-source` 和 `show-ref --exists`。
+要单独执行同一检查并记录新一次 Invocation 和原生结果，运行
+`uv run --locked --no-sync engineering-ci hooks check pre-commit --json`。
+
+手动执行 `lefthook run verify --no-auto-install` 运行 Dagger 的 lint、格式、版本与锁文件检查和核心测试。
+这些检查各自保留原生结果并由 Lefthook 汇总退出。`lefthook uninstall` 退出本地安装。
+完整迁移与生效条件见 [#152](https://github.com/dymzz/engineering-ci/issues/152)。
+
 ### 审查与合并
 
 在当前分支执行以下命令，取得当前 PR 的身份和真实检查：

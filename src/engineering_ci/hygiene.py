@@ -653,7 +653,21 @@ def _whitespace(changes, root, runner, paths=None):
     so characters like ``[ ]`` or ``*`` are never glob-expanded to match tracked
     files outside the declared Plan set while preserving ``git diff ...`` argv.
     """
-    argv = ["git", "diff", "--check", changes.base_commit]
+    return check_git_whitespace(
+        root, base=changes.base_commit, paths=paths, runner=runner
+    )
+
+
+def check_git_whitespace(root, *, base, tree=None, paths=None, runner=_run):
+    """Run the native whitespace check against the worktree or a fixed tree."""
+    argv = ["git"]
+    if tree is not None:
+        argv.append(f"--attr-source={tree}")
+    argv.extend(("diff", "--check"))
+    if tree is not None:
+        argv.extend(("--no-ext-diff", "--no-textconv", base, tree))
+    else:
+        argv.append(base)
     if paths is not None:
         if not paths:
             return _result("whitespace", "not_applicable", reason="no_changed_paths")

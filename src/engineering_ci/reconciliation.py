@@ -166,6 +166,29 @@ def _report_ref(value, code):
     return value
 
 
+def execution_report_ref(report):
+    """Identify one original Execution Report by its canonical content."""
+    if not isinstance(report, dict) or report.get("kind") != EXECUTION_REPORT_KIND:
+        raise ReconciliationError("execution_report_invalid")
+    version = report.get("schema_version")
+    if type(version) is not int or version < 1:
+        raise ReconciliationError("execution_report_invalid")
+    return {
+        "kind": EXECUTION_REPORT_KIND,
+        "schema_version": version,
+        "sha256": _digest(report).removeprefix("sha256:"),
+    }
+
+
+def verify_execution_report(report, report_ref=None):
+    """Verify one Report reference and return its accepted Native Results."""
+    actual = execution_report_ref(report)
+    if report_ref is not None and report_ref != actual:
+        raise ReconciliationError("execution_report_digest_mismatch")
+    results, rejections = _execution_report(report, actual)
+    return results, rejections, actual
+
+
 def _optional_scope_id(value, code):
     if value is None:
         return None
