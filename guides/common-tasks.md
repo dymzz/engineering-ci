@@ -57,13 +57,26 @@ Git 须支持 `--attr-source` 和 `show-ref --exists`。
 要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
 `uv run --locked --no-sync engineering-ci hooks check pre-commit --json`。
 
-推送验证用独占 stdin 的 Lefthook Job 采集 Git 原始参数与有序 Ref，使用同一
-Invocation 调用 `hooks prepare pre-push`、`hooks run pre-push` 和
-`hooks reconcile pre-push`。前者通过可重复的 `--effective-profile` 指定要在受检
-Ref 树内查找的策略文件。各动作的审批可在 `ci-selection.toml` 用
-`[[effective_profile]]` 分别登记。新建 Ref 的比较基线由目标树里的 `[push]`
-策略提供。删除使用旧对象中的删除策略，保留删除义务和本地收据。
-本仓的 `pre-push` 仍处于隔离验收阶段，生产配置及启用状态由 #152 记录。
+配置推送检查时，在 `ci-selection.toml` 的 `[push].effective_profiles` 列出
+Ref 树内的策略文件，并用 `[[effective_profile]]` 分别登记适用动作的审批。
+新建 Ref 的比较基线由目标树里的 `[push]` 策略提供。删除使用旧对象中的删除
+策略，保留删除义务和本地收据。`pre-push-checks` 从各 Ref 的实际树读取配置。
+
+启用隔离验收时，给 Lefthook 增加以下原生入口。Job 独占 Git 的 stdin，外层
+在子任务成功后消费同一次 Invocation 的逐 Ref Receipt，缺失最终对账时阻断。
+
+```yaml
+pre-push:
+  jobs:
+    - name: capture-refs
+      use_stdin: true
+      run: |
+        invocation=$(uv run --locked --no-sync engineering-ci hooks capture pre-push --framed-stdin) || exit $?
+        ECI_HOOK_INVOCATION_REF="$invocation" lefthook run pre-push-checks --no-auto-install || exit $?
+        uv run --locked --no-sync engineering-ci hooks consume pre-push --invocation-ref "$invocation"
+```
+
+本仓的 `pre-push` 默认安装仍待实际 Scope/Profile。生产配置及启用状态由 #152 记录。
 
 `uv run --locked --no-sync lefthook run verify --no-auto-install` 运行 Dagger 的
 lint、格式、版本与锁文件检查和核心测试。各项保留原生结果，Lefthook 汇总退出。

@@ -374,12 +374,19 @@ def _verify_git_execution_binding(plan, root, *, execution_context="host"):
     if snapshot is None:
         snapshot = "commit" if expected_tree else "worktree"
     if snapshot == "index":
-        if execution_context == "dagger_export":
-            return False, "dagger_export_index_unsupported", expected_tree
         execution_tree = git.get("execution_tree")
         index_tree = git.get("index_tree")
         if execution_tree and index_tree and execution_tree != index_tree:
             return False, "index_source_identity_mismatch", execution_tree
+        if execution_context == "dagger_export":
+            source_tree_id = git.get("source_tree_id")
+            if not execution_tree or not index_tree or not source_tree_id:
+                return False, "dagger_export_index_source_unverified", execution_tree
+            if selection.directory_content_id(root) != source_tree_id:
+                return False, "source_tree_mismatch", execution_tree
+            # This proves only the exported bytes. Git-dependent checks still
+            # need the actual comparison baseline and object database.
+            return True, None, execution_tree
         expected_tree = expected_tree or index_tree
         if (
             git.get("base_tree") is not None

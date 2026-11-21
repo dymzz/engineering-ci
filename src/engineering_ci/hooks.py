@@ -930,14 +930,17 @@ def main(argv=None):
     check.add_argument("--json", action="store_true")
     for command in ("prepare", "run", "reconcile", "consume"):
         job = subparsers.add_parser(command)
-        job.add_argument(
-            "hook", choices=("pre-commit",) if command == "consume" else HOOKS
-        )
+        job.add_argument("hook", choices=HOOKS)
         job.add_argument("--root", type=Path, default=Path("."))
         job.add_argument("--invocation-ref", required=True)
         job.add_argument("--json", action="store_true")
         if command == "prepare":
             job.add_argument("--new-ref-baseline")
+            job.add_argument(
+                "--require-plan",
+                action="store_true",
+                help="Require each pre-push Ref to have a Plan and matching EffectiveProfile.",
+            )
             job.add_argument(
                 "--effective-profile",
                 action="append",
@@ -974,16 +977,18 @@ def main(argv=None):
                         binding,
                         new_ref_baseline=args.new_ref_baseline,
                         effective_profiles=args.effective_profile,
+                        require_plan=args.require_plan,
                     )
                 else:
                     handlers = {
                         "run": hook_checks.run_push_checks,
                         "reconcile": hook_checks.reconcile_push,
+                        "consume": hook_checks.consume_push_result,
                     }
                     outcome = handlers[args.command](args.root, binding)
             else:
                 if args.command == "prepare" and (
-                    args.effective_profile or args.new_ref_baseline
+                    args.effective_profile or args.new_ref_baseline or args.require_plan
                 ):
                     raise HookEventError("pre_commit_push_options_unsupported")
                 handlers = {

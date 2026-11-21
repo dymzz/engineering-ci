@@ -159,7 +159,9 @@ def prepare(root, binding):
     return {"invocation_ref": binding.invocation_ref, "exit_code": 0}
 
 
-def prepare_push(root, binding, *, new_ref_baseline=None, effective_profiles=()):
+def prepare_push(
+    root, binding, *, new_ref_baseline=None, effective_profiles=(), require_plan=False
+):
     """Prepare distinct Plans for the ordered Ref targets of an actual push."""
     if binding.hook != "pre-push":
         raise hooks.HookEventError("invocation_hook_mismatch")
@@ -178,7 +180,7 @@ def prepare_push(root, binding, *, new_ref_baseline=None, effective_profiles=())
     if not refs:
         result.update(status="not_applicable", reason="no_ref_updates", exit_code=0)
     _artifact(binding, ".push-source", result)
-    if result["exit_code"] or not effective_profiles:
+    if result["exit_code"] or not (effective_profiles or require_plan):
         return result
     plans = []
     for reference in result["references"]:
@@ -453,15 +455,19 @@ def consume_index_result(root, binding):
         }:
             raise hooks.HookEventError("hook_final_result_mismatch")
         return receipt
+    _check_receipt_scope(binding, prepared["plan"], receipt)
+    return {"exit_code": reconciliation.hook_exit_code([receipt])}
+
+
+def _check_receipt_scope(binding, plan, receipt):
     reconciliation.validate_receipt(receipt)
-    expected = prepared["plan"]["expected_checks"]
+    expected = plan["expected_checks"]
     if (
         receipt.get("expected_invocation_ref") != binding.invocation_ref
         or receipt.get("scope_id") != expected["scope_id"]
         or receipt.get("expected_set_ref") != expected["expected_set_ref"]
     ):
         raise hooks.HookEventError("hook_final_result_mismatch")
-    return {"exit_code": reconciliation.hook_exit_code([receipt])}
 
 
 def _run_push_plan(root, plan, source, prepared, job_ref, operation):
@@ -528,7 +534,11 @@ def reconcile_push(root, binding):
         )
         reports.append(report)
         receipts.append(receipt)
-    _artifact(binding, ".receipt", {**_identity(binding), "receipts": receipts})
+    _artifact(
+        binding,
+        ".receipt",
+        {**_identity(binding), "plan_ref": prepared["plan_ref"], "receipts": receipts},
+    )
     return {
         "references": [
             {"remote_ref": ref["remote_ref"], "receipt": receipt}
@@ -539,6 +549,25 @@ def reconcile_push(root, binding):
             reconciliation.hook_exit_code(receipts) if refs else 0,
         ),
     }
+
+
+def consume_push_result(root, binding):
+    """Require final reconciliation for every Ref in the original push order."""
+    prepared, refs = _push_plans(root, binding)
+    result = _artifact(binding, ".receipt")
+    if result is None:
+        raise hooks.HookEventError("hook_final_result_missing")
+    receipts = result.get("receipts")
+    if (
+        any(result.get(key) != value for key, value in _identity(binding).items())
+        or result.get("plan_ref") != prepared["plan_ref"]
+        or not isinstance(receipts, list)
+        or len(receipts) != len(refs)
+    ):
+        raise hooks.HookEventError("hook_final_result_mismatch")
+    for plan, receipt in zip(prepared["plan"], receipts, strict=True):
+        _check_receipt_scope(binding, plan, receipt)
+    return {"exit_code": reconciliation.hook_exit_code(receipts) if refs else 0}
 
 
 def print_result(outcome, invocation_ref):
@@ -594,18 +623,20 @@ def _matching_push_profile(root, changes, candidates):
 
 
 def _make_plan(operation, payload, root):
+    config_path = Path(_SELECTION_CONFIG)
+    config = selection.load_config(root / config_path)
     if operation == "plan-push":
         ref = payload["reference"]
         changes = replace(selection.ref_changeset(root, ref), references=(ref,))
-        profile = _matching_push_profile(root, changes, payload["profiles"])
+        profile = _matching_push_profile(
+            root, changes, payload["profiles"] or config.push.effective_profiles
+        )
     else:
         profiles = [root / name for name in _PROFILE_FILES if (root / name).is_file()]
         if len(profiles) != 1:
             raise hooks.HookEventError("hook_effective_profile_required")
         profile = profiles[0]
         changes = selection.changeset(root, base="HEAD", mode="index")
-    config_path = Path(_SELECTION_CONFIG)
-    config = selection.load_config(root / config_path)
     return selection.plan(
         selection.select(changes, config, root=root),
         config=config,

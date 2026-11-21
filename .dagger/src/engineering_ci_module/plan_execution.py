@@ -178,7 +178,7 @@ async def _tests(
         files = module._pytest_bundle(execution)
     else:
         container = module._uv_container(source, python_version).with_exec(
-            ["uv", "run", "python", "-m", "unittest", *targets],
+            ["uv", "run", "--no-sync", "python", "-m", "unittest", *targets],
             expect=dagger.ReturnType.ANY,
         )
         code = await container.exit_code()
@@ -624,7 +624,7 @@ def _host_adapter_plan(value, selected_host_checks, *, preserve_verified_git=Fal
     host_plan["selection"].pop("check_scope", None)
     host_plan.pop("expected_checks", None)
     host_plan["git"] = dict(host_plan.get("git") or {})
-    if not preserve_verified_git:
+    if not preserve_verified_git and host_plan["git"].get("snapshot") != "index":
         # This is only the Host adapter's filesystem view. Preserve the
         # original Git identity in source_handoff, and do not claim an
         # exported Directory has the original ODB or verified full Tree.
@@ -1397,6 +1397,21 @@ async def execute(
     git = value.get("git") or {}
     source_tree_id = git.get("source_tree_id")
     execution_tree = git.get("execution_tree")
+    if git.get("snapshot") == "index" and (
+        not execution_tree
+        or git.get("index_tree") != execution_tree
+        or not source_tree_id
+    ):
+        return make_result(
+            {
+                "plan_declaration_consistent": declaration_consistent,
+                "status": "not_executed",
+                "reason": "dagger_export_index_source_unverified",
+                "exit_code": 4,
+                "plan": {"generator": value.get("generator"), "git": git},
+            },
+            artifacts,
+        )
     tree_verified = False
     source_tree_state = "not_requested"
     source_digest = None
@@ -1408,7 +1423,7 @@ async def execute(
         exported_directory = await native_results.directory_reference(source)
         exported_content_id = selection.directory_content_id(directory)
         if source_tree_id and execution_tree:
-            source_digest = selection.directory_content_id(directory)
+            source_digest = exported_content_id
             tree_verified = source_digest == source_tree_id
             source_tree_state = "verified" if tree_verified else "failed"
             if not tree_verified:

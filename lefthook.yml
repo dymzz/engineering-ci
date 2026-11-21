@@ -26,6 +26,15 @@ pre-commit-checks:
     - name: reconcile-index
       run: uv run --locked --no-sync engineering-ci hooks reconcile pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
 
+pre-push-checks:
+  jobs:
+    - name: prepare-push-plan
+      run: uv run --locked --no-sync engineering-ci hooks prepare pre-push --require-plan --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+    - name: check-push
+      run: uv run --locked --no-sync engineering-ci hooks run pre-push --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+    - name: reconcile-push
+      run: uv run --locked --no-sync engineering-ci hooks reconcile pre-push --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+
 verify:
   parallel: true
   jobs:

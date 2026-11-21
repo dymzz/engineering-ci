@@ -1641,6 +1641,7 @@ def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
     selection_config = (
         'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
         '[push]\nnew_ref_baseline = "refs/heads/baseline"\n'
+        'effective_profiles = ["push-create.json", "push-update.json"]\n'
     )
     (root / "ci-hygiene.toml").write_bytes(
         b'schema_version = 1\nchecks = ["whitespace"]\n'
@@ -1652,7 +1653,6 @@ def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
         b'source_roots = ["src"]\n[[modules]]\npath = "sample"\ndepends_on = []\n'
     )
     approvals = []
-    profile_paths = []
     for action, branch in (("create", "topic"), ("update", "main")):
         target = f"refs/heads/{branch}"
         profile = expected_checks.build_effective_profile(
@@ -1682,7 +1682,6 @@ def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
         )
         filename = f"push-{action}.json"
         (root / filename).write_text(json.dumps(profile), encoding="utf-8")
-        profile_paths.append(filename)
     config.write_bytes(
         (
             selection_config
@@ -1704,6 +1703,7 @@ def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
     run(root, "commit", "-qm", "main change")
     head = run(root, "rev-parse", "HEAD").strip()
     source.write_bytes(b"VALUE = 9\n")
+    config.write_bytes(b"invalid working policy\n")
     event = hooks.capture_pre_push(
         root,
         "origin",
@@ -1713,7 +1713,7 @@ def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
     )
     invocation = hooks.persist_event(root, event)
     binding = hooks.load_invocation_binding(invocation.invocation_path)
-    prepared = hook_checks.prepare_push(root, binding, effective_profiles=profile_paths)
+    prepared = hook_checks.prepare_push(root, binding, require_plan=True)
     assert prepared["exit_code"] == 0
     assert [ref["after"] for ref in prepared["references"]] == [topic, head]
     assert prepared["references"][0]["before"] == baseline
@@ -1721,13 +1721,34 @@ def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
     assert [ref["report"]["status"] for ref in reports] == ["passed", "failed"], [
         ref["report"]["reason"] for ref in reports
     ]
+    with pytest.raises(hooks.HookEventError, match="hook_final_result_missing"):
+        hook_checks.consume_push_result(root, binding)
     outcome = hook_checks.reconcile_push(root, binding)
     assert outcome["exit_code"] != 0
     assert [ref["receipt"]["status"] for ref in outcome["references"]] == [
         "matched",
         "partial",
     ]
+    assert hook_checks.consume_push_result(root, binding)["exit_code"] == 1
     assert source.read_bytes() == b"VALUE = 9\n"
+
+
+def test_dagger_index_binding_requires_matching_export(tmp_path):
+    source = tmp_path / "pyproject.toml"
+    source.write_bytes(b"staged project\n")
+    tree = "a" * 40
+    git = {"snapshot": "index", "index_tree": tree, "execution_tree": tree}
+
+    def binding():
+        return execution._verify_git_execution_binding(
+            {"git": git}, tmp_path, execution_context="dagger_export"
+        )
+
+    assert binding() == (False, "dagger_export_index_source_unverified", tree)
+    git["source_tree_id"] = selection.directory_content_id(tmp_path)
+    assert binding() == (True, None, tree)
+    source.write_bytes(b"working copy project\n")
+    assert binding() == (False, "source_tree_mismatch", tree)
 
 
 def test_execute_refuses_stale_index_tree(repo):

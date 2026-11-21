@@ -108,6 +108,7 @@ class WorkflowChecksConfig:
 class PushPolicyConfig:
     new_ref_baseline: str | None = None
     target_baselines: dict[str, str] = field(default_factory=dict)
+    effective_profiles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -479,6 +480,7 @@ def _parse_config_bytes(raw):
     if not isinstance(push_raw, dict) or set(push_raw) - {
         "new_ref_baseline",
         "target_baselines",
+        "effective_profiles",
     }:
         raise SelectionError("push_policy_invalid")
     new_ref_base = (
@@ -496,6 +498,9 @@ def _parse_config_bytes(raw):
     push_policy = PushPolicyConfig(
         new_ref_baseline=new_ref_base,
         target_baselines=target_bases,
+        effective_profiles=_string_list(
+            push_raw.get("effective_profiles", []), "push_effective_profiles"
+        ),
     )
     effective_profile_policy = _parse_effective_profile_approvals(
         value.get("effective_profile")
@@ -691,6 +696,11 @@ def _normalize_config(config):
         "push": {
             "new_ref_baseline": config.push.new_ref_baseline,
             "target_baselines": dict(sorted(config.push.target_baselines.items())),
+            **(
+                {"effective_profiles": list(config.push.effective_profiles)}
+                if config.push.effective_profiles
+                else {}
+            ),
         },
         "effective_profile": config.effective_profile_policy,
         "dependency_edges": json.loads(
@@ -860,6 +870,7 @@ def config_from_identity(identity):
         push=PushPolicyConfig(
             new_ref_baseline=push_raw.get("new_ref_baseline"),
             target_baselines=dict(push_raw.get("target_baselines") or {}),
+            effective_profiles=tuple(push_raw.get("effective_profiles") or ()),
         ),
         effective_profile_policy=norm.get("effective_profile"),
         workflow_checks=WorkflowChecksConfig(
