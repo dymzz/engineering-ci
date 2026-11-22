@@ -48,11 +48,20 @@ uv run --locked --no-sync lefthook install
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
-本仓运行原生暂存空白检查。受检树声明了 `ci-selection.toml` 和已绑定的
-`ci-effective-profile.json` 或 `ci-effective-profile.toml` 时，准备 Job 从
-隔离临时 Git checkout 加载暂存策略（仅采用受检 Tree 内 `.gitattributes` 与干净默认规则，不继承宿主 `.git/config`、`.git/info/attributes` 或用户属性），Host Job 在同一 Tree 上执行 Plan，最终 Job
-保存真实 Report 的本地 Receipt。外层 Job 消费本次最终结果。失败、缺失或
-被过滤掉的必需检查和最终对账都会阻断提交。
+本仓默认使用本地 Git 规则运行原生暂存空白检查。受检树声明了
+`ci-selection.toml` 和已绑定的 `ci-effective-profile.json` 或
+`ci-effective-profile.toml` 时，准备 Job 从隔离检出读取暂存策略。该检出
+采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`
+和干净的 Git 默认值。
+
+配置版 Hook 按 Plan 调用 Host 执行或 Dagger `plan-execution`。需要 Dagger 时，
+受检项目须配置对应的 Dagger 模块。Hook 保留一次 Dagger 执行的原生结果包，
+并核对包中的 Plan、目录字节、原始退出和本次 Invocation。最终 Job 从
+真实 Report 形成结构性本地 Receipt。失败、缺失、过滤及异源结果都会阻断
+最终消费。正式接纳由 #63/#61 决定。
+
+需要 Git 比较的 Dagger Plan 会携带受检 Tree 与基线所需的 Git 对象和 Index，
+由隔离检出生成 Git 配置。该输入不包含调用方的 Git 配置、其他引用或完整历史。
 Git 须支持 `--attr-source` 和 `show-ref --exists`。
 要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
 `uv run --locked --no-sync python -P -m engineering_ci.cli hooks check pre-commit --json`。

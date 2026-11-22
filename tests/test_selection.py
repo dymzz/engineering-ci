@@ -304,7 +304,10 @@ def test_directory_content_id_matches_tree_content_id(repo, tmp_path):
     }
     subprocess.run(["git", "read-tree", tree], cwd=path, env=env, check=True)
     subprocess.run(
-        ["git", "checkout-index", "-a", "-f"], cwd=export, env=env, check=True
+        ["git", "-c", "core.autocrlf=false", "checkout-index", "-a", "-f"],
+        cwd=export,
+        env=env,
+        check=True,
     )
     assert selection.directory_content_id(export) == expected
 
@@ -1375,7 +1378,18 @@ def test_plan_recomputes_dependency_prerequisites_from_final_scope(repo, tmp_pat
 def test_linked_worktree_tree_content_id_and_worktree_tree_refusal(repo, tmp_path):
     path, base = repo
     linked = tmp_path / "linked-wt"
-    run(path, "worktree", "add", "-q", "-b", "wt-branch", str(linked), base)
+    run(
+        path,
+        "-c",
+        "core.autocrlf=false",
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "wt-branch",
+        str(linked),
+        base,
+    )
     try:
         tree = run(linked, "rev-parse", "HEAD^{tree}").strip()
         assert selection._resolve_git_dir(linked) is not None

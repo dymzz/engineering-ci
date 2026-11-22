@@ -1243,47 +1243,16 @@ def _diff_deleted_paths(root, *diff_args, env=None):
 
 def tree_content_id(root, tree):
     """Content id for a Git tree, matching directory_content_id on a raw checkout."""
-    import tempfile
+    from . import git_source
 
     root = Path(root).resolve()
-    git_dir = _resolve_git_dir(root)
-    if git_dir is None:
+    if _resolve_git_dir(root) is None:
         return None
-    with tempfile.TemporaryDirectory() as temporary:
-        temporary = Path(temporary)
-        index = temporary / "index"
-        work = temporary / "work"
-        config = temporary / "gitconfig"
-        config.touch()
-        work.mkdir()
-        env = {
-            **os.environ,
-            "GIT_DIR": str(git_dir),
-            "GIT_INDEX_FILE": str(index),
-            "GIT_WORK_TREE": str(work),
-            "GIT_CONFIG_GLOBAL": str(config),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_ATTR_NOSYSTEM": "1",
-        }
-        read = subprocess.run(
-            ["git", "read-tree", tree],
-            cwd=root,
-            env=env,
-            capture_output=True,
-            check=False,
-        )
-        if read.returncode != 0:
-            return None
-        checkout = subprocess.run(
-            ["git", "-c", "core.autocrlf=false", "checkout-index", "-a", "-f"],
-            cwd=work,
-            env=env,
-            capture_output=True,
-            check=False,
-        )
-        if checkout.returncode != 0:
-            return None
-        return directory_content_id(work)
+    try:
+        with git_source.raw_checkout(root, tree) as (worktree, _env, _format):
+            return directory_content_id(worktree)
+    except git_source.GitSourceError:
+        return None
 
 
 def parse_pre_push_stdin(text):

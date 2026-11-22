@@ -61,14 +61,8 @@ def _verify_files(worktree, records, object_format):
 
 
 @contextmanager
-def materialized_tree(root, tree, *, head=None):
-    """Yield a byte-verified Git checkout and its isolated subprocess environment.
-
-    The isolated checkout authorizes only in-tree attributes (via
-    ``--attr-source``) and clean Git defaults, blocking host/user
-    ``core.whitespace``, ``.git/info/attributes``, global/XDG attributes and
-    system Git configuration.
-    """
+def raw_checkout(root, tree, *, head=None):
+    """Check out Tree bytes with no checkout filters or ambient Git policy."""
     root = Path(root).resolve()
     object_format = _git(root, "rev-parse", "--show-object-format").decode().strip()
     if object_format not in {"sha1", "sha256"}:
@@ -136,6 +130,61 @@ def materialized_tree(root, tree, *, head=None):
         actual = _git(worktree, "write-tree", env=env).decode().strip()
         if actual != tree:
             raise GitSourceError("checkout_index_tree_mismatch")
+        yield worktree, env, object_format
+
+
+@contextmanager
+def materialized_tree(root, tree, *, head=None):
+    """Yield a byte-verified checkout and its isolated subprocess environment.
+
+    Native checks can read the checkout's tracked attributes using clean Git
+    defaults. Checkout itself always uses the original Git blob bytes.
+    """
+    with raw_checkout(root, tree, head=head) as (worktree, env, object_format):
         records = _git(worktree, "ls-tree", "-r", "-z", tree, env=env)
         _verify_files(worktree, records, object_format)
         yield worktree, env
+
+
+def add_git_context(source, destination, git):
+    """Supply the exact Index/Ref and comparison objects without host Git metadata."""
+    tree = git["execution_tree"]
+    roots = {tree}
+    if git.get("base_tree"):
+        roots.add(git["base_tree"])
+    objects = {git[key] for key in ("base_commit", "head_commit") if git.get(key)}
+    for commit in objects:
+        roots.add(
+            _git(source, "rev-parse", "--verify", f"{commit}^{{tree}}").decode().strip()
+        )
+    objects.update(roots)
+    for root in roots:
+        records = _git(source, "ls-tree", "-r", "-t", "-z", root)
+        for record in records.split(b"\0"):
+            if record:
+                _, kind, oid = record.partition(b"\t")[0].split(b" ")
+                if kind != b"commit":
+                    objects.add(oid.decode("ascii"))
+    object_format = _git(source, "rev-parse", "--show-object-format").decode().strip()
+    _git(
+        destination,
+        "init",
+        "--quiet",
+        "--template=",
+        "--initial-branch=source",
+        f"--object-format={object_format}",
+    )
+    membership = ("\n".join(sorted(objects)) + "\n").encode("ascii")
+    pack = destination / ".git" / "objects" / "pack" / "pack"
+    _git(source, "pack-objects", str(pack), data=membership)
+    if git.get("head_commit"):
+        _git(
+            destination,
+            "-c",
+            "core.logAllRefUpdates=false",
+            "update-ref",
+            "--no-deref",
+            "HEAD",
+            git["head_commit"],
+        )
+    _git(destination, "read-tree", tree)

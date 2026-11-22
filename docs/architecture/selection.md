@@ -99,8 +99,13 @@ The plan records `git.snapshot`, `index_tree`, `merge_tree`, `execution_tree`,
 `content_binding` (worktree) and `source_tree_id` (immutable trees). Host
 `execute` verifies the binding before tests/checks and passes `expected_tree`
 into `run_tests` when immutable. Dagger `execute-plan` compares the mounted
-`source` Directory to `source_tree_id` and sets `tree_verified`/`trusted` only
-when they match; a mismatch is `source_tree_mismatch`.
+`source` Directory to `source_tree_id` when supplied. The byte comparison sets
+`tree_verified`; a mismatch is `source_tree_mismatch`. Native test diagnostics
+can also run with Index identity alone, in which case the result leaves the
+byte comparison `not_requested`. `PlanExecution.enforce` interprets the native
+verdict. A Git Hook using that result as a check of the captured Index also
+requires an independently verified byte binding and same-Invocation
+reconciliation. Evidence admission is a separate #63 decision.
 
 PR merge-tree requires a Git version with `merge-tree --write-tree`; conflicts
 or missing objects produce `complete: false`, never a narrower pass. Multi-ref

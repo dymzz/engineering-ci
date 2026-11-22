@@ -3416,6 +3416,8 @@ def _verified_check_source_ref(
         execution_context=execution_context,
         hygiene_config=loaded_hyg,
         item=item,
+    ) and not _closed_tree_check(
+        plan, name, resolved_root, base_path, execution_context, sources_config
     ):
         return None
     git = plan.get("git") or {}
@@ -3594,6 +3596,51 @@ def _canonical_sha256(value):
         + hashlib.sha256(
             json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+    )
+
+
+def _closed_tree_check(plan, name, root, base_path, execution_context, sources_config):
+    git = plan["git"]
+    if (
+        name not in {"forwarding", "source", "unittest", "pytest"}
+        or root != base_path
+        or git.get("snapshot") not in {"index", "commit", "push", "pr_merge"}
+        or not git.get("source_tree_id")
+        or selection.directory_content_id(root) != git["source_tree_id"]
+    ):
+        return False
+    if name == "forwarding":
+        return True
+    if name == "source":
+        config, path, _, error = _load_verified_config(
+            plan,
+            root,
+            sources_config,
+            key="sources",
+            default_name="ci-sources.toml",
+            loader=sources.load_config,
+            error_type=sources.SourcesError,
+            identity_fn=sources.config_identity,
+        )
+        return (
+            error is None
+            and config is not None
+            and not config.require_text_unset
+            and path.is_relative_to(root)
+            and all(
+                (root / candidate).resolve().is_relative_to(root)
+                for candidate in (config.manifest, *config.acquired_roots)
+            )
+        )
+    chosen = plan["selection"]
+    return (
+        name == chosen.get("framework", "unittest")
+        and bool(chosen.get("tests"))
+        and (root / chosen.get("src_root", "src")).resolve().is_relative_to(root)
+        and (
+            execution_context == "dagger_export"
+            or not (root / "pyproject.toml").is_file()
+        )
     )
 
 
@@ -4990,6 +5037,8 @@ def build_source_resolution(
             base_root=resolved_root if art_tuples else None,
         )
         input_refs = [cfg_input]
+        if check_name == eval_plan["selection"].get("framework", "unittest"):
+            input_refs.extend(_test_target_inputs(eval_plan, matched_expected))
         for ref in gen_refs:
             input_refs.append(dict(ref))
         seen_changed = set()
@@ -6432,7 +6481,57 @@ def _decorated_blocked_check(
     )[0]
 
 
-def _finalize_report(report):
+def _test_target_inputs(plan, expected=None):
+    targets = plan["selection"].get("tests") or ()
+    refs = [{"kind": "test_target", "path": target} for target in targets]
+    if expected is not None:
+        refs.extend(
+            ref
+            for ref in expected.get("input_refs") or ()
+            if ref.get("kind") == "changed_path" and ref.get("path") in targets
+        )
+    return refs
+
+
+def test_input_binding(plan, *, root, execution_context, source_snapshots):
+    """Bind a selected framework invocation to its rules and observed Source."""
+    if not plan or source_snapshots is None:
+        return None
+    framework = plan["selection"].get("framework", "unittest")
+    source = _verified_check_source_ref(
+        plan,
+        framework,
+        {},
+        root=root,
+        execution_context=execution_context,
+        source_snapshots=source_snapshots,
+    )
+    if source is None:
+        return None
+    try:
+        rule, _, config = _independent_rule_for_check(plan, framework, root=root)
+    except ExecutionError:
+        return None
+    expected = next(
+        (
+            item
+            for item in (plan.get("expected_checks") or {}).get("checks", ())
+            if item["name"] == framework
+        ),
+        None,
+    )
+    return {
+        "source_ref": source,
+        "rule_ref": rule,
+        "baseline_ref": _baseline_reference(plan),
+        "profile_ref": _profile_reference(
+            plan, root=root, execution_context=execution_context
+        ),
+        "input_refs": [config, *_test_target_inputs(plan, expected)],
+    }
+
+
+def _finalize_report(report, *, plan, root, source_snapshots=None):
     tests = report.get("tests") or {}
     if tests.get("observation") and not tests.get("check_contract"):
         origin, _, parent = _result_origin_and_runner(report["execution_context"])
@@ -6456,6 +6555,13 @@ def _finalize_report(report):
             origin=origin,
             artifact_prefix=None,
             generated_inputs=tests.get("generated_input_refs") or (),
+            plan_authorized=bool(plan["selection"]["tests"]),
+            binding=test_input_binding(
+                plan,
+                root=root,
+                execution_context=report["execution_context"],
+                source_snapshots=source_snapshots,
+            ),
         )
         tests["implementation_sources"] = hashes
         report["checks"].append({"name": report["framework"], **tests})
@@ -6756,7 +6862,7 @@ def execute(
         )
         if early is not None:
             return early
-        return _finalize_report(report)
+        return _finalize_report(report, plan=plan, root=root)
 
     gate = target_test_gate(plan)
     if gate is not None:
@@ -6902,7 +7008,9 @@ def execute(
         execution_context=execution_context,
     )
     report["prerequisites"] = prereq_results
-    return _finalize_report(report)
+    return _finalize_report(
+        report, plan=plan, root=root, source_snapshots=source_snapshots
+    )
 
 
 def _print(value):

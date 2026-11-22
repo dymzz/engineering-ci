@@ -164,6 +164,7 @@ async def _tests(
     context=None,
     plan=None,
     generated_inputs=(),
+    binding_root=None,
 ):
     """Use the existing pytest computation, or native unittest, exactly once."""
     if framework == "pytest":
@@ -198,6 +199,20 @@ async def _tests(
         payload["junit"] = xml
     from . import native_results
 
+    binding = None
+    if binding_root is not None and not generated_inputs:
+        from engineering_ci import execution
+
+        bound_plan = _plan_with_repo_relative_configs(plan)
+        snapshots = execution._prepare_source_snapshots(
+            bound_plan, [], root=binding_root, execution_context="dagger_export"
+        )
+        binding = execution.test_input_binding(
+            bound_plan,
+            root=binding_root,
+            execution_context="dagger_export",
+            source_snapshots=snapshots,
+        )
     payload["tests"] = await native_results.test_result(
         payload["tests"],
         container,
@@ -208,6 +223,7 @@ async def _tests(
         context=context,
         plan=plan,
         generated_inputs=generated_inputs,
+        binding=binding,
     )
     files = files.with_new_file(
         "check-result.json", json.dumps(payload["tests"], sort_keys=True)
@@ -324,6 +340,9 @@ async def _native_results(
                     python_version,
                     context=report.get("execution_identity"),
                     plan=value,
+                    binding_root=directory
+                    if report.get("tree_verified") is True
+                    else None,
                 ),
             )
         )
@@ -476,7 +495,15 @@ def _make_hygiene_runner(
     """Delegate missing Lychee / read-only Git / pinned workflow calls to Dagger containers."""
     from engineering_ci import hygiene
 
-    _readonly_git = {"ls-files", "diff", "show", "cat-file", "rev-parse", "ls-tree"}
+    _readonly_git = {
+        "ls-files",
+        "diff",
+        "show",
+        "cat-file",
+        "rev-parse",
+        "ls-tree",
+        "check-attr",
+    }
     _workflow_tools = {"actionlint", "shellcheck", "zizmor"}
 
     def _is_pinned_workflow_uvx(argv_list):
@@ -1120,6 +1147,9 @@ async def _execute_dag(
                     context=report.get("execution_identity"),
                     plan=value,
                     generated_inputs=generated_refs,
+                    binding_root=directory
+                    if report.get("tree_verified") is True
+                    else None,
                 )
                 return payload, test_files
             if kind == "report_artifacts":

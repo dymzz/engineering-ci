@@ -254,6 +254,29 @@ def _job_receipt(value, *, job_ref, run_ref, attempt_ref, runner_ref, report_ref
     return value
 
 
+def _matches_job_runner(result, runner_ref, report):
+    observed_runner = result.get("runner_ref")
+    if runner_ref is None or observed_runner in {None, runner_ref}:
+        return True
+    if (
+        runner_ref != "execution:dagger"
+        or observed_runner != "execution:dagger_export"
+        or not isinstance(report, dict)
+        or report.get("execution_context") != "dagger_export"
+    ):
+        return False
+    evidence = result.get("evidence") or {}
+    handoff = report.get("source_handoff") or {}
+    return (
+        result.get("result_origin") == "host"
+        and evidence.get("execution_context") == "dagger_export"
+        and evidence.get("parent_execution_context") == "dagger"
+        and result["result_id"] in (handoff.get("host_result_ids") or ())
+        and handoff.get("parent_execution_ref")
+        == (report.get("execution_identity") or {}).get("execution_ref")
+    )
+
+
 def _check_report_rejection(
     check,
     native_list,
@@ -808,11 +831,7 @@ def _normalize_observations(observations):
                 raise ReconciliationError(
                     "native_result_invalid", native_code=error.code
                 ) from None
-            if (
-                runner_ref is not None
-                and result.get("runner_ref") is not None
-                and result["runner_ref"] != runner_ref
-            ):
+            if not _matches_job_runner(result, runner_ref, item.get("report")):
                 raise ReconciliationError("observation_runner_mismatch")
             received_results[result["result_id"]] = _canonical(result)
         if report_results is not None and provided is not None:

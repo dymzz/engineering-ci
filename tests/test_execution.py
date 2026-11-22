@@ -1927,6 +1927,31 @@ def test_index_plan_checks_read_staged_bytes_across_check_families(tmp_path):
         encoding="utf-8",
         newline="\n",
     )
+    all_checks = [*names, "unittest"]
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="multi-check-index-with-tests",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=all_checks,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in all_checks
+        ],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(config_path.read_text(encoding="utf-8").encode("utf-8"))
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8", newline="\n"
+    )
+    (path / ".gitattributes").write_bytes(b"*.txt text eol=crlf\n")
+    (path / "note.txt").write_bytes(b"staged bytes\n")
     run(
         path,
         "add",
@@ -1934,12 +1959,32 @@ def test_index_plan_checks_read_staged_bytes_across_check_families(tmp_path):
         "data/catalog/manifest.json",
         "tests/test_initial.py",
         "ci-selection.toml",
+        "ci-effective-profile.json",
+        ".gitattributes",
+        "note.txt",
     )
     (path / "data/acquired/a.bin").write_bytes(dirty_bin)
     test_event = hooks.capture_pre_commit(path)
+    invocation = hooks.persist_event(path, test_event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+    report = hook_checks.run_checks(path, binding)
+    assert report["exit_code"] == 0, report
+    outcome = hook_checks.reconcile(path, binding)
+    assert outcome["exit_code"] == 0, outcome
+    assert {
+        entry["name"]: entry["binding_status"]
+        for entry in outcome["receipt"]["entries"]
+    } == dict.fromkeys(all_checks, "matched")
+    assert outcome["receipt"]["trusted"] is False
+    assert hook_checks.consume_index_result(path, binding)["exit_code"] == 0
     with git_source.materialized_tree(
         path, test_event["index"]["tree"], head=test_event["head_commit"]
     ) as (materialized, _):
+        assert (materialized / "note.txt").read_bytes() == b"staged bytes\n"
+        assert selection.tree_content_id(
+            path, test_event["index"]["tree"]
+        ) == selection.directory_content_id(materialized)
         cfg = selection.load_config(materialized / "ci-selection.toml")
         cs = selection.changeset(materialized, base="HEAD", mode="index")
         chosen = selection.select(cs, cfg, root=materialized)
@@ -1985,6 +2030,90 @@ def test_index_plan_checks_read_staged_bytes_across_check_families(tmp_path):
     dagger_checks = {entry["name"]: entry for entry in dagger_report["checks"]}
     assert dagger_checks["source"]["status"] == "passed"
     assert dagger_checks["unittest"]["status"] == "passed"
+
+
+def test_dagger_hook_consumes_original_exit_and_verifies_source(tmp_path):
+    from engineering_ci import dagger_plan, hooks
+
+    git = {"snapshot": "index", "execution_tree": "a" * 40, "source_tree_id": "b" * 64}
+    plan = {"git": git}
+    report = {
+        "kind": execution.REPORT_KIND,
+        "schema_version": execution.SCHEMA_VERSION,
+        "execution_context": "dagger_export",
+        "execution_identity": {"execution_ref": "execution:dagger"},
+        "plan_execution_tree": git["execution_tree"],
+        "source_tree_id": git["source_tree_id"],
+        "source_digest": git["source_tree_id"],
+        "source_tree_verified": "verified",
+        "tree_verified": True,
+        "source_handoff": {
+            "original_git": git,
+            "exported_content_id": git["source_tree_id"],
+            "parent_execution_ref": "execution:dagger",
+        },
+        "status": "failed",
+        "exit_code": 1,
+    }
+    (tmp_path / "plan.json").write_bytes(hooks.canonical_event_bytes(plan))
+    (tmp_path / "report.json").write_bytes(hooks.canonical_event_bytes(report))
+    native_exit = tmp_path / "exit-code.txt"
+    native_exit.write_bytes(b"1\n")
+    loaded = dagger_plan.load_result(
+        tmp_path, plan, run_ref="run", attempt_ref="attempt"
+    )
+    assert loaded["exit_code"] == 1
+    assert dagger_plan.source_bound(plan, loaded)
+    unbound = {
+        **loaded,
+        "source_tree_verified": "not_requested",
+        "tree_verified": False,
+        "status": "passed",
+        "exit_code": 0,
+    }
+    assert not dagger_plan.source_bound(plan, unbound)
+    native_exit.write_bytes(b"0\n")
+    with pytest.raises(
+        hooks.HookEventError, match="hook_dagger_original_exit_mismatch"
+    ):
+        dagger_plan.load_result(tmp_path, plan, run_ref="run", attempt_ref="attempt")
+    (tmp_path / "report.json").write_bytes(
+        hooks.canonical_event_bytes({**report, "status": "passed", "exit_code": 0})
+    )
+    with pytest.raises(hooks.HookEventError, match="hook_dagger_attempt_mismatch"):
+        dagger_plan.load_result(tmp_path, plan, run_ref="run", attempt_ref="attempt")
+
+
+def test_dagger_git_context_retains_only_target_and_comparison_objects(repo, tmp_path):
+    from engineering_ci import git_source
+
+    path, _ = repo
+    head = run(path, "rev-parse", "HEAD").strip()
+    extra = tmp_path / "outside-target.txt"
+    extra.write_bytes(b"a blob outside both trees\n")
+    unselected = run(path, "hash-object", "-w", str(extra)).strip()
+    (path / "selected.txt").write_bytes(b"target bytes\n")
+    run(path, "add", "selected.txt")
+    tree = run(path, "write-tree").strip()
+    destination = tmp_path / "export"
+    with git_source.materialized_tree(path, tree, head=head) as (source, _):
+        shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".git"))
+        git_source.add_git_context(
+            source,
+            destination,
+            {
+                "execution_tree": tree,
+                "base_commit": head,
+                "head_commit": head,
+            },
+        )
+
+    assert run(destination, "write-tree").strip() == tree
+    assert run(destination, "rev-parse", "HEAD").strip() == head
+    assert run(destination, "show", f"{tree}:selected.txt") == "target bytes\n"
+    assert not (destination / ".git/objects/info/alternates").exists()
+    with pytest.raises(subprocess.CalledProcessError):
+        run(destination, "cat-file", "-e", unselected)
 
 
 def test_execute_refuses_stale_index_tree(repo):

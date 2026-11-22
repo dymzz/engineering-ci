@@ -41,6 +41,7 @@ _HYGIENE_MANAGED = frozenset(
 _WORKFLOW_SCRIPT_MANAGED = frozenset(
     {"actionlint", "shellcheck", "workflow_shellcheck", "zizmor"}
 )
+_TEST_FRAMEWORKS = frozenset({"pytest", "unittest"})
 
 
 class ExpectedError(ValueError):
@@ -63,6 +64,23 @@ def _file_digest(path):
 
 def _canon_key(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _scope_input_refs(name, inputs):
+    kind = "test_target" if name in _TEST_FRAMEWORKS else "changed_path"
+    return [{"kind": kind, "path": path} for path in inputs]
+
+
+def _scope_input_paths(entry):
+    # Older Plans encoded framework target names as changed paths.
+    kinds = {"changed_path"}
+    if entry.get("name") in _TEST_FRAMEWORKS:
+        kinds.add("test_target")
+    return [
+        ref.get("path")
+        for ref in entry.get("input_refs", [])
+        if ref.get("kind") in kinds
+    ]
 
 
 def _event_ref(changeset):
@@ -999,6 +1017,8 @@ def _parse_profile_obligations(
                 rule_by_check[name] = chosen
         elif config_rule is not None:
             rule_by_check[name] = config_rule
+        elif name in _TEST_FRAMEWORKS and selection_check_rule is not None:
+            rule_by_check[name] = selection_check_rule
 
     for name in list(obligations_by_check):
         obligations_by_check[name] = sorted(
@@ -1394,7 +1414,7 @@ def _recompute_ref_projection(
                 else "unknown"
             ),
             "source_ref": json.loads(json.dumps(ref_source)),
-            "input_refs": [{"kind": "changed_path", "path": p} for p in app_inputs],
+            "input_refs": _scope_input_refs(name, app_inputs),
             "baseline_ref": json.loads(json.dumps(baseline_obj)),
         }
         if effective_profile is not None:
@@ -1765,9 +1785,7 @@ def _derive_v2_from_profile(
             "applicability": {"status": app_status, "reason": app_reason},
             "policy_status": policy_status,
             "source_ref": json.loads(json.dumps(source_ref)),
-            "input_refs": [
-                {"kind": "changed_path", "path": path} for path in app_inputs
-            ],
+            "input_refs": _scope_input_refs(name, app_inputs),
             "baseline_ref": _baseline_ref_for_changes(changeset),
         }
         entry["expected_check_ref"] = entry_identity(entry)
@@ -2252,10 +2270,7 @@ def derive_expected_checks(
             },
             "policy_status": "unknown",
             "source_ref": json.loads(json.dumps(source_ref)),
-            "input_refs": [
-                {"kind": "changed_path", "path": path}
-                for path in item.get("inputs", [])
-            ],
+            "input_refs": _scope_input_refs(name, item.get("inputs", [])),
             "baseline_ref": json.loads(json.dumps(baseline))
             if baseline is not None
             else None,
@@ -2394,7 +2409,10 @@ def _hygiene_config_for_validation(plan):
             return hygiene.config_from_identity(hygiene_input)
         except hygiene.HygieneError as error:
             raise ExpectedError(error.code) from None
-    return hygiene.default_config()
+    from . import selection
+
+    config = _selection_for_validation(plan)
+    return selection._fallback_hygiene_config(config) if config is not None else None
 
 
 def _sources_for_validation(plan):
@@ -3009,7 +3027,7 @@ def _validate_per_ref(
                 consumer=expected.get("consumer"),
                 profile_ref=expected.get("profile_ref"),
                 profile_source=expected.get("profile_source"),
-                hygiene_config=hygiene_config or hygiene.default_config(),
+                hygiene_config=hygiene_config,
                 code_prefixes=code_prefixes,
                 source_prefixes=source_prefixes,
                 weaver_prefixes=weaver_prefixes,
@@ -3227,11 +3245,7 @@ def validate_projection(
                         "reason"
                     ) != origin.get("reason"):
                         raise ExpectedError("expected_applicability_mismatch")
-                    expected_inputs = [
-                        ref.get("path")
-                        for ref in item.get("input_refs", [])
-                        if ref.get("kind") == "changed_path"
-                    ]
+                    expected_inputs = _scope_input_paths(item)
                     if expected_inputs != list(origin.get("inputs", [])):
                         raise ExpectedError("expected_input_mismatch")
         configured_domain = _configured_domain_names(
@@ -3373,11 +3387,7 @@ def validate_projection(
                 raise ExpectedError("expected_applicability_mismatch")
             if item.get("applicability", {}).get("reason") != origin.get("reason"):
                 raise ExpectedError("expected_applicability_mismatch")
-            expected_inputs = [
-                ref.get("path")
-                for ref in item.get("input_refs", [])
-                if ref.get("kind") == "changed_path"
-            ]
+            expected_inputs = _scope_input_paths(item)
             if expected_inputs != list(origin.get("inputs", [])):
                 raise ExpectedError("expected_input_mismatch")
 

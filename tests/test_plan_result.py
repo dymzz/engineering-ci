@@ -2115,6 +2115,7 @@ def test_pr103_pr108_converged_dagger_profile_chain(modules, tmp_path):
     run(repo, "init", "-q", "-b", "main")
     run(repo, "config", "user.email", "dagger@example.invalid")
     run(repo, "config", "user.name", "Dagger Test")
+    run(repo, "config", "core.autocrlf", "false")
     run(repo, "add", "-A")
     run(repo, "commit", "-q", "-m", "init")
     base = run(repo, "rev-parse", "HEAD").strip()

@@ -84,6 +84,7 @@ async def test_result(
     context=None,
     plan=None,
     generated_inputs=(),
+    binding=None,
 ):
     # This reads the environment of the retained result Container. It never
     # invokes pytest/unittest a second time.
@@ -125,6 +126,8 @@ async def test_result(
         context=child_context(context),
         impl=impl,
         generated_inputs=generated_inputs,
+        plan_authorized=True if plan is not None else None,
+        binding=binding,
     )
     enriched["implementation_sources"] = hashes
     return enriched
