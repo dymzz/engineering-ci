@@ -367,11 +367,12 @@ mistaking them for a full observation ledger.
 - The caller must pass a Plan-validated Expected projection. This module
   recomputes its immutable identities but does not re-authorize the engineering
   Profile or Plan (`expected_projection_authority_not_reverified`).
-- Scheduler routing, Hook Dispatch/Collect, and Qualification evidence remain
-  upstream in #72/#102 (`engineering-ci.hook.dispatch.v1`); this module verifies
-  supplied routing and `job_receipt` / `invocation_ref` / `event_ref`
-  attribution without generating Hook receipts itself. A routed Expected without
-  activated Job instances stays `unknown`.
+- The Hook caller derives routing from actual Lefthook Job activation, binds
+  each Job/Attempt to the native Report it produced, and supplies `job_receipt`,
+  `invocation_ref` and `event_ref`. Reconciliation verifies those associations.
+  Routed Expected entries without an activated Job remain `unknown`.
+  #102 continues to supply Git event and Invocation capture. The old #72
+  `engineering-ci.hook.dispatch.v1` proposal describes historical routing.
 - The Job/Attempt receipt is consumed as an upstream proof state. #66-C verifies
   the Report digest, Report->Result membership, attribution fields, and receipt
   logical consistency, but does not authenticate the issuer; #63 remains
