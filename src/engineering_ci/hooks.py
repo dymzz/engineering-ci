@@ -790,6 +790,10 @@ def prune_events(root, *, now=None, retention_seconds=EVENT_RETENTION_SECONDS):
                         sidecars.extend(
                             path.parent.glob(f"{path.stem}.execution-[0-9]*")
                         )
+                        for suffix in ("execution", "activation"):
+                            sidecars.extend(
+                                path.parent.glob(f"{path.stem}.{suffix}-check-*")
+                            )
                         for sidecar in sidecars:
                             try:
                                 sidecar.unlink(missing_ok=True)
@@ -928,13 +932,22 @@ def main(argv=None):
     check.add_argument("--root", type=Path, default=Path("."))
     check.add_argument("--invocation-ref", help="Consume an existing pre-commit Event.")
     check.add_argument("--json", action="store_true")
-    for command in ("prepare", "run", "reconcile", "consume"):
+    for command in ("prepare", "run", "reconcile", "consume", "skip"):
         job = subparsers.add_parser(command)
-        job.add_argument("hook", choices=HOOKS)
+        job.add_argument(
+            "hook", choices=("pre-commit",) if command == "skip" else HOOKS
+        )
         job.add_argument("--root", type=Path, default=Path("."))
         job.add_argument("--invocation-ref", required=True)
         job.add_argument("--json", action="store_true")
+        if command in ("skip", "run"):
+            job.add_argument("--job")
         if command == "prepare":
+            job.add_argument("--split-checks", action="store_true")
+            job.add_argument(
+                "--dagger-module",
+                help="Use . in the ECI checkout or pin the ECI Dagger module to a full Git commit.",
+            )
             job.add_argument("--new-ref-baseline")
             job.add_argument(
                 "--require-plan",
@@ -966,20 +979,29 @@ def main(argv=None):
     capture.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        if args.command in ("prepare", "run", "reconcile", "consume"):
+        if args.command in ("prepare", "run", "reconcile", "consume", "skip"):
             from . import hook_checks
 
             binding = _load_invocation_ref(args.root, args.invocation_ref)
+            if args.command == "skip":
+                if args.job is None:
+                    raise HookEventError("hook_index_job_required")
+                return int(not hook_checks.skip_index_job(binding, args.job))
             if args.hook == "pre-push":
                 if args.command == "prepare":
+                    if args.split_checks:
+                        raise HookEventError("pre_push_split_checks_unsupported")
                     outcome = hook_checks.prepare_push(
                         args.root,
                         binding,
                         new_ref_baseline=args.new_ref_baseline,
                         effective_profiles=args.effective_profile,
                         require_plan=args.require_plan,
+                        dagger_module=args.dagger_module,
                     )
                 else:
+                    if args.command == "run" and args.job is not None:
+                        raise HookEventError("pre_push_index_job_unsupported")
                     handlers = {
                         "run": hook_checks.run_push_checks,
                         "reconcile": hook_checks.reconcile_push,
@@ -997,7 +1019,15 @@ def main(argv=None):
                     "reconcile": hook_checks.reconcile,
                     "consume": hook_checks.consume_index_result,
                 }
-                outcome = handlers[args.command](args.root, binding)
+                options = {}
+                if args.command == "prepare":
+                    options = {
+                        "dagger_module": args.dagger_module,
+                        "split_checks": args.split_checks,
+                    }
+                elif args.command == "run" and args.job is not None:
+                    options = {"job_ref": args.job}
+                outcome = handlers[args.command](args.root, binding, **options)
             if args.json:
                 print(json.dumps(outcome, sort_keys=True))
             elif args.command not in ("prepare", "consume") or outcome["exit_code"]:

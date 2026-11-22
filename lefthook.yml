@@ -20,16 +20,99 @@ pre-commit:
 pre-commit-checks:
   jobs:
     - name: prepare-index-plan
-      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks prepare pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
-    - name: check-index
-      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+      run: >-
+        uv run --locked --no-sync python -P -m engineering_ci.cli hooks prepare pre-commit
+        --invocation-ref "$ECI_HOOK_INVOCATION_REF" --dagger-module . --split-checks
+    - group:
+        parallel: true
+        jobs:
+          - name: check-index
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-index
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-index
+          - name: check-whitespace
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-whitespace
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-whitespace
+          - name: check-forwarding
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-forwarding
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-forwarding
+          - name: check-docs
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-docs
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-docs
+          - name: check-tach
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-tach
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-tach
+          - name: check-tach-external
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-tach-external
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-tach-external
+          - name: check-vulture
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-vulture
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-vulture
+          - name: check-source
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-source
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-source
+          - name: check-workflows
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-workflows
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-workflows
+          - name: check-tests
+            skip:
+              - run: >-
+                  uv run --locked --no-sync python -P -m engineering_ci.cli hooks skip pre-commit
+                  --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-tests
+            run: >-
+              uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit
+              --invocation-ref "$ECI_HOOK_INVOCATION_REF" --job check-tests
     - name: reconcile-index
       run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks reconcile pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
 
 pre-push-checks:
   jobs:
     - name: prepare-push-plan
-      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks prepare pre-push --require-plan --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks prepare pre-push --require-plan --invocation-ref "$ECI_HOOK_INVOCATION_REF" --dagger-module .
     - name: check-push
       run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-push --invocation-ref "$ECI_HOOK_INVOCATION_REF"
     - name: reconcile-push

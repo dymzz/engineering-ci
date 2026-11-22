@@ -168,3 +168,18 @@
 - Assessment: no attribution to a specific upstream bug or competing process.
   This warning is not a tool result, cache-hit proof or fresh Origin identity.
   No Dagger binary, user profile file or third-party source was modified.
+
+## Dagger CLI@1.0.0-beta.16: Windows File argument path
+
+- Status: reproduced with the native Windows CLI against the matching Engine.
+- Seen: 2026-11-22, #152/#153 Hook module and path verification.
+- Evidence: `plan-execution --plan` with the absolute Windows path to the
+  same test input returned CLI exit 1 and `failed to match includepatterns:
+  syntax error in pattern`. The workspace-relative path reached the function
+  and returned its native `plan_invalid` report for the intentionally invalid
+  input. A valid Plan using relative inputs passed and exported its bundle.
+- Integration: place the Plan and Source in one temporary Dagger workspace
+  and use workspace-relative arguments. A Git-pinned module call also exposed
+  `WinError 32` while removing its Windows temporary workspace after export.
+  The process holding the handle was undetermined. Windows cleanup is
+  best-effort after the verified bundle is retained.

@@ -374,6 +374,33 @@ def test_capture_pre_commit_uses_actual_index(repo, tmp_path):
     assert hooks.resolve_index_path(event, root=repo) == index.resolve()
 
 
+def test_pre_commit_keeps_index_locator_distinct_for_equal_bytes(tmp_path, monkeypatch):
+    worktree = tmp_path / "work"
+    worktree.mkdir()
+    store = tmp_path / "repo.git"
+    git(worktree, "init", "-q", "--separate-git-dir", str(store))
+    (worktree / "a.txt").write_bytes(b"staged\n")
+    git(worktree, "add", "a.txt")
+    default = hooks.capture_pre_commit(worktree)
+    reference = hooks.persist_event(worktree, default)
+    assert default["index"]["locator"] == {"kind": "git_dir", "path": "index"}
+    assert (
+        hooks.resolve_index_path(default, root=worktree) == (store / "index").resolve()
+    )
+
+    alternate = worktree / "index"
+    alternate.write_bytes((store / "index").read_bytes())
+    monkeypatch.setenv("GIT_INDEX_FILE", str(alternate))
+    explicit = hooks.capture_pre_commit(worktree)
+    assert explicit["index"]["locator"] == {"kind": "worktree", "path": "index"}
+    assert explicit["index"]["sha256"] == default["index"]["sha256"]
+    assert explicit["index"]["tree"] == default["index"]["tree"]
+    assert hooks.resolve_index_path(explicit, root=worktree) == alternate.resolve()
+    result = hooks.check_pre_commit(worktree, invocation_ref=reference.invocation_ref)
+    assert result["reason"] == "index_changed_during_check"
+    assert result["exit_code"] != 0
+
+
 def test_pre_commit_index_change_during_capture_is_refused(repo, monkeypatch):
     real_git = hooks._git
     changed = False

@@ -2,8 +2,9 @@
 
 Status: additive #66-C contract and first implementation slice
 (`engineering_ci.reconciliation`). It does not change Plan schema 2, the
-Execution Report schema, or any pre-execution Expected identity. Scheduler and
-Hook lifecycle remain #66/#72 work; this module consumes their evidence.
+Execution Report schema, or any pre-execution Expected identity. Lefthook owns
+Hook installation and scheduling under the current #66 and #152 design. This
+module consumes execution evidence.
 
 ## Position
 
@@ -364,11 +365,12 @@ mistaking them for a full observation ledger.
 - The caller must pass a Plan-validated Expected projection. This module
   recomputes its immutable identities but does not re-authorize the engineering
   Profile or Plan (`expected_projection_authority_not_reverified`).
-- Scheduler routing, Hook Dispatch/Collect, and Qualification evidence remain
-  upstream in #72/#102 (`engineering-ci.hook.dispatch.v1`); this module verifies
-  supplied routing and `job_receipt` / `invocation_ref` / `event_ref`
-  attribution without generating Hook receipts itself. A routed Expected without
-  activated Job instances stays `unknown`.
+- The Hook caller derives routing from actual Lefthook Job activation, binds
+  qualification and the Report to the same Invocation, and supplies
+  `job_receipt` / `invocation_ref` / `event_ref` attribution. This module verifies
+  those inputs. A routed Expected without activated Job instances stays
+  `unknown`. The #72/#102 `engineering-ci.hook.dispatch.v1` proposal describes
+  historical routing.
 - The Job/Attempt receipt is consumed as an upstream proof state. #66-C verifies
   the Report digest, Report->Result membership, attribution fields, and receipt
   logical consistency, but does not authenticate the issuer; #63 remains
@@ -421,7 +423,7 @@ mistaking them for a full observation ledger.
 
 `#63` 消费端的独立取回与验证步骤：
 
-1. **定位原始载荷**：通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从 Run Artifact / 归档存储（或本仓库现有 `gh` Run/Artifact 下载通道与 `#72/#102` 调度产物）获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**。
+1. **定位原始载荷**。通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从证据所声明的受控制品归档获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**。历史 Actions 证据仍可按已知 Run/Artifact 通过 `gh` 读取。
 2. **摘要与签发者独立验真**：
    - 重新计算 Raw Execution Report SHA-256 并核对等于 `report_ref.sha256`；
    - 重新计算 `job_receipt` SHA-256 并核对等于 `job_receipt_ref`；

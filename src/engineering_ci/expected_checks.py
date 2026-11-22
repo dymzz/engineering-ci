@@ -2417,7 +2417,7 @@ def _hygiene_config_for_validation(plan):
             raise ExpectedError(error.code) from None
     from . import selection
 
-    config = _selection_for_validation(plan)
+    config, _, _ = _selection_for_validation(plan)
     return selection._fallback_hygiene_config(config) if config is not None else None
 
 

@@ -61,9 +61,12 @@ def _index_source(root, binding):
     if binding.hook != "pre-commit":
         raise hooks.HookEventError("invocation_hook_mismatch")
     event = binding.event
-    index = hooks.resolve_index_path(event, root=root)
-    if not hooks._active_index_matches(root, index, event["index"]):
-        raise hooks.HookEventError("index_changed_during_check")
+    # Git write-tree may lock the real Index. Keep that proof serialized while
+    # the actual tools work concurrently in their own immutable checkouts.
+    with hooks._capture_lock(hooks._invocation_git_dir(binding.invocation_path)):
+        index = hooks.resolve_index_path(event, root=root)
+        if not hooks._active_index_matches(root, index, event["index"]):
+            raise hooks.HookEventError("index_changed_during_check")
     head = selection._resolve(root, "HEAD")
     if head != event.get("head_commit") or hooks._pre_commit_base_tree(
         root
@@ -98,7 +101,7 @@ def _source_worker(root, tree, head, operation, payload):
             [sys.executable, "-P", "-m", "engineering_ci.hook_checks", operation],
             cwd=source,
             env=worker_env,
-            input=json.dumps(payload),
+            input=json.dumps({**payload, "checkout": str(Path(root).resolve())}),
             encoding="utf-8",
             capture_output=True,
             check=False,
@@ -146,6 +149,8 @@ def _planned(root, binding):
         if (
             git.get("snapshot") != "index"
             or git.get("execution_tree") != tree
+            or git.get("index_tree") != tree
+            or git.get("index_file") is not None
             or git.get("head_commit") != head
             or (head is None and git.get("base_tree") != binding.event["base_tree"])
         ):
@@ -153,7 +158,7 @@ def _planned(root, binding):
     return prepared
 
 
-def prepare(root, binding):
+def prepare(root, binding, *, dagger_module=None, split_checks=False):
     _index_source(root, binding)
     tree = binding.event["index"]["tree"]
     baseline = binding.event["base_tree"]
@@ -169,18 +174,35 @@ def prepare(root, binding):
         raise hooks.HookEventError("hook_effective_profile_removed")
     if staged_profiles and _SELECTION_CONFIG not in staged_names:
         raise hooks.HookEventError("hook_selection_config_missing")
-    plan = _invoke_worker(root, binding, "plan", {}) if staged_profiles else None
+    planned = (
+        _invoke_worker(root, binding, "plan", {"split_checks": split_checks})
+        if staged_profiles
+        else {"plan": None, "split_checks": False}
+    )
+    plan = planned["plan"]
+    module_ref = (
+        dagger_plan.module_reference(dagger_module, root=root)
+        if plan is not None and _requires_dagger(root, plan)
+        else None
+    )
     prepared = {
         **_identity(binding),
-        "plan": plan,
+        **planned,
         "plan_ref": hooks._digest_bytes(hooks.canonical_event_bytes(plan)),
+        "dagger_module": module_ref,
     }
     _artifact(binding, ".plan", prepared)
     return {"invocation_ref": binding.invocation_ref, "exit_code": 0}
 
 
 def prepare_push(
-    root, binding, *, new_ref_baseline=None, effective_profiles=(), require_plan=False
+    root,
+    binding,
+    *,
+    new_ref_baseline=None,
+    effective_profiles=(),
+    require_plan=False,
+    dagger_module=None,
 ):
     """Prepare distinct Plans for the ordered Ref targets of an actual push."""
     if binding.hook != "pre-push":
@@ -214,6 +236,16 @@ def prepare_push(
                 {"reference": reference, "profiles": list(effective_profiles)},
             )
         )
+    module_ref = (
+        dagger_plan.module_reference(dagger_module, root=root)
+        if any(
+            plan["git"].get("ref_action") != "delete"
+            and _push_needs_execution(plan)
+            and _requires_dagger(root, plan)
+            for plan in plans
+        )
+        else None
+    )
     _artifact(
         binding,
         ".plan",
@@ -221,6 +253,7 @@ def prepare_push(
             **_identity(binding),
             "plan": plans,
             "plan_ref": hooks._digest_bytes(hooks.canonical_event_bytes(plans)),
+            "dagger_module": module_ref,
         },
     )
     return result
@@ -309,9 +342,58 @@ def _push_plans(root, binding):
     return prepared, refs
 
 
-def run_checks(root, binding):
+def _independent_index_jobs(plan):
+    chosen = plan["selection"]
+    if chosen.get("prerequisites") or (plan.get("dependency_contract") or {}).get(
+        "edges"
+    ):
+        return {}
+    checks = dict.fromkeys(item["name"] for item in execution._selected_checks(plan))
+    framework = chosen.get("framework", "unittest")
+    if chosen["tests"]:
+        checks[framework] = None
+    jobs = {}
+    for name in checks:
+        if name == framework and chosen["tests"]:
+            job = "check-tests"
+        elif name in execution._WORKFLOW_SCRIPT_CHECKS:
+            # Workflow checks share Actionlint's inline ShellCheck observation.
+            job = "check-workflows"
+        elif name in execution._HYGIENE_CHECKS or name == "source":
+            job = f"check-{name.replace('_', '-')}"
+        else:
+            return {}
+        jobs.setdefault(job, []).append(name)
+    return jobs
+
+
+def _index_jobs(prepared):
+    if prepared.get("split_checks") is True:
+        return _independent_index_jobs(prepared["plan"])
+    return {_JOB_REF: None}
+
+
+def skip_index_job(binding, job_ref):
+    return job_ref not in _index_jobs(_load_plan(binding))
+
+
+def _index_execution_suffix(job_ref):
+    return ".execution" if job_ref == _JOB_REF else f".execution-{job_ref}"
+
+
+def _index_activation_suffix(job_ref):
+    return ".activation" if job_ref == _JOB_REF else f".activation-{job_ref}"
+
+
+def run_checks(root, binding, *, job_ref=_JOB_REF):
     prepared = _planned(root, binding)
-    _artifact(binding, ".activation", _identity(binding), exclusive=True)
+    jobs = _index_jobs(prepared)
+    if job_ref not in jobs:
+        raise hooks.HookEventError("hook_index_job_not_applicable")
+    _artifact(
+        binding, _index_activation_suffix(job_ref), _identity(binding), exclusive=True
+    )
+    suffix = _index_execution_suffix(job_ref)
     if prepared["plan"] is None:
         report = hooks.check_pre_commit(root, invocation_ref=binding.invocation_ref)
     else:
@@ -321,10 +403,12 @@ def run_checks(root, binding):
             "execute",
             {
                 **prepared,
-                "dagger_bundle": str(_dagger_bundle(binding)),
+                "dagger_bundle": str(_dagger_bundle(binding, suffix)),
+                "job_ref": job_ref,
+                "check_names": jobs[job_ref],
             },
         )
-    _record_execution(binding, prepared, report)
+    _record_execution(binding, prepared, report, suffix=suffix)
     return report
 
 
@@ -336,6 +420,7 @@ def _record_execution(binding, prepared, report, *, suffix=".execution"):
             **_identity(binding),
             "report": report,
             "plan_ref": prepared["plan_ref"],
+            "dagger_module": prepared.get("dagger_module"),
             "report_digest": hooks._digest_bytes(hooks.canonical_event_bytes(report)),
         },
     )
@@ -435,13 +520,24 @@ def _observe(
     return route, observation
 
 
-def _load_execution(binding, prepared, *, suffix=".execution", native_plan=None):
+def _load_execution(
+    binding,
+    prepared,
+    *,
+    suffix=".execution",
+    activation=".activation",
+    native_plan=None,
+):
     recorded = _artifact(binding, suffix)
-    activated = _artifact(binding, ".activation")
+    activated = _artifact(binding, activation)
     if recorded is not None and activated != _identity(binding):
         raise hooks.HookEventError("hook_report_activation_missing")
     if recorded is not None and recorded.get("plan_ref") != prepared["plan_ref"]:
         raise hooks.HookEventError("hook_report_plan_mismatch")
+    if recorded is not None and recorded.get("dagger_module") != prepared.get(
+        "dagger_module"
+    ):
+        raise hooks.HookEventError("hook_report_dagger_module_mismatch")
     if recorded is not None and any(
         recorded.get(key) != value for key, value in _identity(binding).items()
     ):
@@ -471,75 +567,94 @@ def _load_execution(binding, prepared, *, suffix=".execution", native_plan=None)
 def _reconcile_plan(
     binding,
     plan,
-    recorded,
-    report,
-    job_ref,
+    evidence,
     resolve,
-    *,
-    execution_suffix=None,
-    native_dagger=False,
 ):
     expected = plan["expected_checks"]
-    route = observation = None
-    if report is not None:
-        route, observation = _observe(
-            plan,
-            recorded,
-            expected,
-            report,
-            job_ref,
-            execution_suffix or job_ref,
-            native_dagger=native_dagger,
+    routing, observations = [], []
+    for job_ref, names, route, observation in evidence:
+        if observation is not None:
+            observations.append(observation)
+        routing.extend(
+            {
+                "expected_check_ref": check["expected_check_ref"],
+                "mapping_status": "routed",
+                "job_refs": [job_ref],
+                "job_instances": [route] if route is not None else [],
+            }
+            for check in expected["checks"]
+            if names is None or check["name"] in names
         )
-    routing = [
-        {
-            "expected_check_ref": check["expected_check_ref"],
-            "mapping_status": "routed" if route is not None else "unrouted",
-            "job_refs": [job_ref] if route is not None else [],
-            "job_instances": [route] if route is not None else [],
-        }
-        for check in expected["checks"]
-    ]
     receipt = reconciliation.reconcile_expected_results(
         expected,
         routing=routing,
-        resolutions=resolve() if observation is not None else [],
-        observations=[observation] if observation is not None else [],
+        resolutions=resolve() if observations else [],
+        observations=observations,
         invocation_ref=binding.invocation_ref,
     )
     reconciliation.validate_receipt(receipt)
     return receipt
 
 
+def _index_reports(binding, prepared, *, native_dagger):
+    return {
+        job_ref: _load_execution(
+            binding,
+            prepared,
+            suffix=_index_execution_suffix(job_ref),
+            activation=_index_activation_suffix(job_ref),
+            native_plan=prepared["plan"] if native_dagger else None,
+        )
+        for job_ref in _index_jobs(prepared)
+    }
+
+
+def _original_exit(reports):
+    return next(
+        (report["exit_code"] for report in reports if report and report["exit_code"]), 0
+    )
+
+
 def reconcile(root, binding):
     prepared = _planned(root, binding)
     plan = prepared["plan"]
     native_dagger = plan is not None and _requires_dagger(root, plan)
-    recorded, report = _load_execution(
-        binding, prepared, native_plan=plan if native_dagger else None
-    )
+    reports = _index_reports(binding, prepared, native_dagger=native_dagger)
     if plan is None:
+        _, report = reports[_JOB_REF]
         if report is None:
             raise hooks.HookEventError("hook_report_missing")
         outcome = {**_identity(binding), "exit_code": report["exit_code"]}
         _artifact(binding, ".receipt", outcome)
         return outcome
+    evidence = []
+    for job_ref, names in _index_jobs(prepared).items():
+        recorded, report = reports[job_ref]
+        route = observation = None
+        if report is not None:
+            route, observation = _observe(
+                plan,
+                recorded,
+                plan["expected_checks"],
+                report,
+                job_ref,
+                job_ref,
+                native_dagger=native_dagger,
+            )
+        evidence.append((job_ref, names, route, observation))
     receipt = _reconcile_plan(
         binding,
         plan,
-        recorded,
-        report,
-        _JOB_REF,
+        evidence,
         lambda: _invoke_worker(
             root, binding, "resolve", {**prepared, "native_dagger": native_dagger}
         ),
-        native_dagger=native_dagger,
     )
     _artifact(binding, ".receipt", receipt)
     return {
         "invocation_ref": binding.invocation_ref,
         "receipt": receipt,
-        "exit_code": (report or {}).get("exit_code")
+        "exit_code": _original_exit(report for _, report in reports.values())
         or reconciliation.hook_exit_code([receipt]),
     }
 
@@ -552,10 +667,9 @@ def consume_index_result(root, binding):
         raise hooks.HookEventError("hook_final_result_missing")
     plan = prepared["plan"]
     native_dagger = plan is not None and _requires_dagger(root, plan)
-    _recorded, report = _load_execution(
-        binding, prepared, native_plan=plan if native_dagger else None
-    )
+    reports = _index_reports(binding, prepared, native_dagger=native_dagger)
     if plan is None:
+        _, report = reports[_JOB_REF]
         if report is None or receipt != {
             **_identity(binding),
             "exit_code": report["exit_code"],
@@ -563,10 +677,17 @@ def consume_index_result(root, binding):
             raise hooks.HookEventError("hook_final_result_mismatch")
         return receipt
     _check_receipt_scope(binding, plan, receipt)
-    if native_dagger and (report is None or not dagger_plan.source_bound(plan, report)):
-        raise hooks.HookEventError("hook_dagger_source_unverified")
+    if native_dagger:
+        _, report = reports[_JOB_REF]
+        if report is None or not dagger_plan.source_bound(plan, report):
+            raise hooks.HookEventError("hook_dagger_source_unverified")
+    if any(report is None for _, report in reports.values()):
+        raise hooks.HookEventError("hook_report_missing")
+    _check_receipt_reports(
+        receipt, {job: report for job, (_, report) in reports.items()}
+    )
     return {
-        "exit_code": (report or {}).get("exit_code")
+        "exit_code": _original_exit(report for _, report in reports.values())
         or reconciliation.hook_exit_code([receipt])
     }
 
@@ -580,6 +701,20 @@ def _check_receipt_scope(binding, plan, receipt):
         or receipt.get("expected_set_ref") != expected["expected_set_ref"]
     ):
         raise hooks.HookEventError("hook_final_result_mismatch")
+
+
+def _check_receipt_reports(receipt, reports):
+    references = {
+        job: reconciliation.execution_report_ref(report)
+        for job, report in reports.items()
+        if report is not None
+    }
+    if any(
+        result["report_ref"] != references.get(result["job_ref"])
+        for entry in receipt["entries"]
+        for result in entry["observed_results"]
+    ):
+        raise hooks.HookEventError("hook_final_report_mismatch")
 
 
 def _run_push_plan(root, plan, source, prepared, job_ref, operation):
@@ -650,12 +785,21 @@ def reconcile_push(root, binding):
             native_plan=plan if native_dagger else None,
         )
         suffix = _push_execution_suffix(index)
+        route = observation = None
+        if report is not None:
+            route, observation = _observe(
+                plan,
+                recorded,
+                plan["expected_checks"],
+                report,
+                _PUSH_JOB_REF,
+                suffix,
+                native_dagger=native_dagger,
+            )
         receipt = _reconcile_plan(
             binding,
             plan,
-            recorded,
-            report,
-            _PUSH_JOB_REF,
+            [(_PUSH_JOB_REF, None, route, observation)],
             partial(
                 _run_push_plan,
                 root,
@@ -665,8 +809,6 @@ def reconcile_push(root, binding):
                 suffix,
                 "resolve",
             ),
-            execution_suffix=suffix,
-            native_dagger=native_dagger,
         )
         reports.append(report)
         receipts.append(receipt)
@@ -716,6 +858,7 @@ def consume_push_result(root, binding):
         _, report = _load_execution(
             binding, prepared, suffix=f".execution-{index}", native_plan=native_plan
         )
+        _check_receipt_reports(receipt, {_PUSH_JOB_REF: report})
         if native_plan is not None and (
             report is None or not dagger_plan.source_bound(plan, report)
         ):
@@ -811,17 +954,34 @@ def _make_plan(operation, payload, root):
 
 
 def _work(operation, payload, root):
-    if operation in {"plan", "plan-push"}:
+    if operation == "plan-push":
         return _make_plan(operation, payload, root)
+    if operation == "plan":
+        plan = _make_plan(operation, payload, root)
+        selected = execution._selected_checks(plan)
+        split_checks = (
+            payload.get("split_checks")
+            and not dagger_plan.required(
+                plan, python_project=(root / "pyproject.toml").is_file()
+            )
+            and bool(_independent_index_jobs(plan))
+            and not execution.omitted_hygiene_checks(plan, selected, root=root)
+            and not execution.omitted_workflow_script_checks(plan, selected, root=root)
+        )
+        return {"plan": plan, "split_checks": bool(split_checks)}
     plan = payload["plan"]
     if operation == "execute":
         if dagger_plan.required(
             plan, python_project=(root / "pyproject.toml").is_file()
         ):
+            if payload.get("check_names") is not None:
+                raise hooks.HookEventError("hook_dagger_split_unsupported")
             return dagger_plan.execute(
                 plan,
                 source=root,
+                checkout=Path(payload["checkout"]),
                 destination=Path(payload["dagger_bundle"]),
+                module_ref=payload.get("dagger_module"),
                 run_ref=payload["run_ref"],
                 attempt_ref=payload["attempt_ref"],
             )
@@ -831,6 +991,7 @@ def _work(operation, payload, root):
             run_ref=payload["run_ref"],
             attempt_ref=payload["attempt_ref"],
             run_instance=f"{payload['invocation_ref']}:{payload.get('job_ref', _JOB_REF)}",
+            check_names=payload.get("check_names"),
         )
     if operation != "resolve":
         raise hooks.HookEventError("hook_source_worker_operation_invalid")

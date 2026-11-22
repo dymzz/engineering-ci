@@ -629,6 +629,37 @@ def _sample_effective_profile(
     )
 
 
+def test_profile_plan_validates_with_selection_hygiene_defaults(repo):
+    path, base = repo
+    (path / "ci-hygiene.toml").unlink()
+    config_path = path / "ci-selection.toml"
+    profile = _sample_effective_profile(
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        declared_checks=[
+            "whitespace",
+            "forwarding",
+            "docs",
+            "vulture",
+            "tach",
+            "unittest",
+        ],
+    )
+    config = _attach_effective_profile_policy(config_path, profile)
+    changes = selection.changeset(path, base=base, mode="worktree")
+    plan = selection.plan(
+        selection.select(changes, config, root=path),
+        config=config,
+        config_path=config_path,
+        root=path,
+        effective_profile=profile,
+    )
+    assert plan["expected_checks"]["schema_version"] == 2
+    assert "hygiene" not in plan["inputs"]
+    assert plan_contract.validate(plan) is plan
+
+
 def test_multi_ref_per_ref_identities_distinguish_baselines_on_same_tree(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 11\n", encoding="utf-8")

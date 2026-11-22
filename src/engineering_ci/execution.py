@@ -6755,6 +6755,7 @@ def execute(
     produced_artifacts_dir=None,
     run_ref=None,
     attempt_ref=None,
+    check_names=None,
 ):
     """Execute a Plan with optional independently verified Workflow/Shell Source claims.
 
@@ -6780,6 +6781,24 @@ def execute(
     framework = chosen.get("framework", "unittest")
     selected = _selected_checks(plan)
     prerequisites = list(chosen.get("prerequisites", []))
+    if check_names is not None:
+        # A host Job may execute a subset of the same immutable Plan. The
+        # caller reconciles all Jobs against the original Expected scope.
+        eligible = {item["name"] for item in selected}
+        if tests:
+            eligible.add(framework)
+        requested = set(check_names)
+        if (
+            execution_context != "host"
+            or prerequisites
+            or (plan.get("dependency_contract") or {}).get("edges")
+            or not requested
+            or not requested.issubset(eligible)
+        ):
+            return plan_rejection(ExecutionError("independent_host_checks_invalid"))
+        selected = [item for item in selected if item["name"] in requested]
+        if framework not in requested:
+            tests = ()
     run_instance = run_instance or uuid.uuid4().hex
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -6864,7 +6883,7 @@ def execute(
             return early
         return _finalize_report(report, plan=plan, root=root)
 
-    gate = target_test_gate(plan)
+    gate = target_test_gate(plan) if tests else None
     if gate is not None:
         gate_reason, coverage_scope = gate
         report["status"] = "blocked"
@@ -6890,6 +6909,7 @@ def execute(
         root=root,
         hygiene_config=hygiene_config,
         runner=runner,
+        check_omitted=check_names is None,
     )
     source_result, _ = _run_source_check(
         plan,
@@ -6905,6 +6925,7 @@ def execute(
         runner=runner,
         selection_config=selection_config,
         policy_admission=policy_admission,
+        check_omitted=check_names is None,
         admitted_external_targets=admitted_external_targets,
         workflow_authority=workflow_authority,
     )

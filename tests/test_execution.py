@@ -1579,18 +1579,31 @@ def test_first_commit_index_report_and_reconciliation(
     working = b"VALUE = 2\n" if native_exit else b"VALUE = 2 \n"
     target.write_bytes(working)
     (path / "ci-hygiene.toml").write_text("invalid working config", encoding="utf-8")
-    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+    assert hook_checks.prepare(path, binding, split_checks=True)["exit_code"] == 0
     selected_plan = json.loads(
         invocation.invocation_path.with_suffix(".plan").read_bytes()
     )["plan"]
     assert selected_plan["selection"]["status"] == "no_tests"
     expected = selected_plan["expected_checks"]
-    report = hook_checks.run_checks(path, binding)
-    assert "checks" in report, report.get("reason")
-    checks = {entry["name"]: entry for entry in report["checks"]}
+    assert hook_checks.skip_index_job(binding, "check-index")
+    assert hook_checks.skip_index_job(binding, "check-source")
+    assert not hook_checks.skip_index_job(binding, "check-whitespace")
+    assert not hook_checks.skip_index_job(binding, "check-forwarding")
+    reports = [
+        hook_checks.run_checks(path, binding, job_ref=job)
+        for job in ("check-whitespace", "check-forwarding")
+    ]
+    assert [report["status"] for report in reports] == [
+        "failed" if native_exit else "passed",
+        "passed",
+    ]
+    checks = {entry["name"]: entry for report in reports for entry in report["checks"]}
+    assert [[item["name"] for item in report["checks"]] for report in reports] == [
+        ["whitespace"],
+        ["forwarding"],
+    ]
     assert checks["whitespace"]["exit_code"] == native_exit
     assert checks["forwarding"]["status"] == "passed"
-    assert report["status"] == ("failed" if native_exit else "passed")
     baseline = {"base_tree": event["base_tree"], "baseline_status": "unborn"}
     assert checks["whitespace"]["native_result"]["baseline_ref"] == baseline
     assert expected["event_ref"]["base_tree"] == event["base_tree"]
@@ -1616,6 +1629,38 @@ def test_first_commit_index_report_and_reconciliation(
     assert target.read_bytes() == working
 
     if not native_exit:
+        filtered = hooks.persist_event(path, event)
+        filtered_binding = hooks.load_invocation_binding(filtered.invocation_path)
+        hook_checks.prepare(path, filtered_binding, split_checks=True)
+        hook_checks.run_checks(path, filtered_binding, job_ref="check-forwarding")
+        filtered_outcome = hook_checks.reconcile(path, filtered_binding)
+        assert filtered_outcome["exit_code"] != 0
+        filtered_entries = {
+            entry["name"]: entry for entry in filtered_outcome["receipt"]["entries"]
+        }
+        assert filtered_entries["whitespace"]["binding_status"] != "matched"
+        assert filtered_entries["forwarding"]["binding_status"] == "matched"
+
+        replay = hooks.persist_event(path, event)
+        replay_binding = hooks.load_invocation_binding(replay.invocation_path)
+        hook_checks.prepare(path, replay_binding, split_checks=True)
+        for job in ("check-whitespace", "check-forwarding"):
+            hook_checks.run_checks(path, replay_binding, job_ref=job)
+        assert hook_checks.reconcile(path, replay_binding)["exit_code"] == 0
+        current = replay.invocation_path.with_suffix(".execution-check-whitespace")
+        wrapper = json.loads(current.read_bytes())
+        previous = json.loads(
+            invocation.invocation_path.with_suffix(
+                ".execution-check-whitespace"
+            ).read_bytes()
+        )
+        wrapper.update(
+            report=previous["report"], report_digest=previous["report_digest"]
+        )
+        current.write_bytes(hooks.canonical_event_bytes(wrapper))
+        with pytest.raises(hooks.HookEventError, match="hook_final_report_mismatch"):
+            hook_checks.consume_index_result(path, replay_binding)
+
         invalid_plan = json.loads(json.dumps(selected_plan))
         invalid_plan["git"]["base_tree"] = changes.index_tree
         assert execution.execute(invalid_plan, root=path)["reason"] == (
@@ -2049,6 +2094,32 @@ def test_index_plan_checks_read_staged_bytes_across_check_families(
     dagger_checks = {entry["name"]: entry for entry in dagger_report["checks"]}
     assert dagger_checks["source"]["status"] == "passed"
     assert dagger_checks["unittest"]["status"] == "passed"
+
+
+def test_dagger_hook_requires_explicit_eci_module_pin(tmp_path):
+    from engineering_ci import dagger_plan, hooks
+
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    (consumer / "dagger-module.toml").write_text(
+        'name = "consumer"\n', encoding="utf-8"
+    )
+    with pytest.raises(hooks.HookEventError, match="hook_dagger_module_required"):
+        dagger_plan.module_reference(None, root=consumer)
+    with pytest.raises(
+        hooks.HookEventError, match="hook_dagger_local_module_outside_eci_checkout"
+    ):
+        dagger_plan.module_reference(".", root=consumer)
+    for ref in (
+        "github.com/dymzz/engineering-ci@main",
+        "github.com/example/consumer@" + "c" * 40,
+    ):
+        with pytest.raises(
+            hooks.HookEventError, match="hook_dagger_module_revision_required"
+        ):
+            dagger_plan.module_reference(ref, root=consumer)
+    pinned = "github.com/dymzz/engineering-ci@" + "c" * 40
+    assert dagger_plan.module_reference(pinned, root=consumer) == pinned
 
 
 def test_dagger_hook_consumes_original_exit_and_verifies_source(tmp_path):

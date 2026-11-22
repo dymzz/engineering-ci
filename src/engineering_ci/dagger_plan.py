@@ -3,12 +3,29 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from pathlib import Path
 
 from . import execution, git_source, hooks, selection
+
+_ECI_MODULE = re.compile(r"github\.com/dymzz/engineering-ci@[0-9a-f]{40}")
+
+
+def module_reference(value, *, root):
+    """Admit the explicit module selected by the Hook configuration."""
+    if value is None:
+        raise hooks.HookEventError("hook_dagger_module_required")
+    if value == ".":
+        if Path(root).resolve() != Path(__file__).resolve().parents[2]:
+            raise hooks.HookEventError("hook_dagger_local_module_outside_eci_checkout")
+    elif not isinstance(value, str) or not _ECI_MODULE.fullmatch(value):
+        raise hooks.HookEventError("hook_dagger_module_revision_required")
+    return value
 
 
 def required(plan, *, python_project):
@@ -28,7 +45,7 @@ def required(plan, *, python_project):
     )
 
 
-def execute(plan, *, source, destination, run_ref, attempt_ref):
+def execute(plan, *, source, checkout, destination, module_ref, run_ref, attempt_ref):
     source_tree_id = plan["git"].get("source_tree_id")
     if not source_tree_id or selection.directory_content_id(source) != source_tree_id:
         raise hooks.HookEventError("hook_dagger_source_unverified")
@@ -37,7 +54,23 @@ def execute(plan, *, source, destination, run_ref, attempt_ref):
         raise hooks.HookEventError("hook_dagger_cli_unavailable")
     if destination.exists():
         raise hooks.HookEventError("hook_dagger_result_already_exists")
-    with tempfile.TemporaryDirectory(prefix="eci-dagger-plan-") as temporary:
+    module_ref = module_reference(module_ref, root=checkout)
+    if module_ref == ".":
+        manifest_path = source / "dagger-module.toml"
+        if manifest_path.is_symlink():
+            raise hooks.HookEventError("hook_dagger_local_module_unavailable")
+        try:
+            with manifest_path.open("rb") as manifest:
+                module_name = tomllib.load(manifest).get("name")
+        except (OSError, ValueError):
+            raise hooks.HookEventError("hook_dagger_local_module_unavailable") from None
+        if module_name != "engineering-ci":
+            raise hooks.HookEventError("hook_dagger_local_module_identity_mismatch")
+    # A Windows child of the CLI can briefly keep the workspace open after
+    # export. Publish the verified bundle before best-effort temp cleanup.
+    with tempfile.TemporaryDirectory(
+        prefix="eci-dagger-plan-", ignore_cleanup_errors=os.name == "nt"
+    ) as temporary:
         scratch = Path(temporary).resolve()
         plan_file = scratch / "plan.json"
         plan_file.write_bytes(hooks.canonical_event_bytes(plan))
@@ -50,19 +83,24 @@ def execute(plan, *, source, destination, run_ref, attempt_ref):
             for item in execution._selected_checks(plan)
         ):
             git_source.add_git_context(source, export_source, plan["git"])
-        module = ["-m", "."] if (source / "dagger-module.toml").is_file() else []
+        bundle = scratch / "result"
+        # Resolve the File and Directory from a common workspace. The Windows
+        # CLI otherwise uses the absolute File path as an include pattern.
         result = subprocess.run(
             [
                 executable,
                 "--progress=plain",
+                "--workspace",
+                ".",
                 "api",
                 "call",
-                *module,
+                "-m",
+                "./source" if module_ref == "." else module_ref,
                 "plan-execution",
                 "--plan",
-                str(plan_file),
+                "plan.json",
                 "--source",
-                str(export_source),
+                "./source",
                 "--run-ref",
                 run_ref,
                 "--attempt-ref",
@@ -70,21 +108,23 @@ def execute(plan, *, source, destination, run_ref, attempt_ref):
                 "artifacts",
                 "export",
                 "--path",
-                str(destination),
+                "result",
             ],
-            cwd=source,
+            cwd=scratch,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
         )
-    if result.returncode:
-        raise hooks.HookEventError(
-            result.stderr.strip()
-            or f"hook_dagger_execution_failed ({result.returncode})"
-        )
-    return load_result(destination, plan, run_ref=run_ref, attempt_ref=attempt_ref)
+        if result.returncode:
+            raise hooks.HookEventError(
+                result.stderr.strip()
+                or f"hook_dagger_execution_failed ({result.returncode})"
+            )
+        report = load_result(bundle, plan, run_ref=run_ref, attempt_ref=attempt_ref)
+        shutil.copytree(bundle, destination, symlinks=True)
+        return report
 
 
 def load_result(destination, plan, *, run_ref, attempt_ref):

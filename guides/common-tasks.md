@@ -54,11 +54,19 @@ uv run --locked --no-sync lefthook install
 采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`
 和干净的 Git 默认值。
 
-配置版 Hook 按 Plan 调用 Host 执行或 Dagger `plan-execution`。需要 Dagger 时，
-受检项目须配置对应的 Dagger 模块。Hook 保留一次 Dagger 执行的原生结果包，
-并核对包中的 Plan、目录字节、原始退出和本次 Invocation。最终 Job 从
-真实 Report 形成结构性本地 Receipt。失败、缺失、过滤及异源结果都会阻断
-最终消费。正式接纳由 #63/#61 决定。
+配置版 `pre-commit` 先准备同一份 Plan。Lefthook 按适用性唤醒独立的 Host
+Check Job 并安全并行。共享 Workflow 分析的检查在同一 Job 内复用原生结果，
+含共享前置条件的 Plan 和 Dagger Plan 仍整体执行。最后的对账 Job 核对同一次
+Invocation 的全部适用结果。失败、缺失、过滤及异源结果都会阻断最终消费。
+正式接纳由 #63/#61 决定。
+
+需要 Dagger 时，在 Lefthook 准备 Job 显式传入 `--dagger-module`。ECI 开发检出
+使用 `--dagger-module .`，由本次暂存或目标 Ref 的 ECI 模块源码提供函数。
+消费者把该参数设为 `github.com/dymzz/engineering-ci@<40 位提交 SHA>`，固定到
+提供兼容 `plan-execution` 接口的 ECI 修订。消费者自己的 Dagger 配置可以保留，
+它的受检树作为独立的 `--source` 输入。缺少模块引用或使用非固定修订的调用会
+在准备阶段阻断。Hook 保留一次 Dagger 执行的原生结果包，核对包中的 Plan、
+目录字节、原始退出和本次 Invocation。
 
 需要 Git 比较的 Dagger Plan 会携带受检 Tree 与基线所需的 Git 对象和 Index，
 由隔离检出生成 Git 配置。该输入不包含调用方的 Git 配置、其他引用或完整历史。
