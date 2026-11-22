@@ -72,7 +72,7 @@ Invocation 的全部适用结果。失败、缺失、过滤及异源结果都会
 
 复验固定修订的跨仓调用时，将 `ECI_TEST_DAGGER_MODULE` 设为已发布的 ECI 模块引用，
 然后运行 `uv run --locked --no-sync pytest -q tests/test_native_hooks.py::test_installed_lefthook_uses_pinned_dagger_module`。
-测试使用已有的 Dagger CLI、Engine 和 Tach，在隔离 Git 仓库中运行 Lefthook，核对能通过的首次提交和因暂存空白失败被拒绝的提交。
+测试使用已有的 Dagger CLI、Engine 和 Tach，在隔离 Git 仓库中运行 Lefthook，核对能通过的首次提交和因暂存空白失败被拒绝的提交（未设置 `ECI_TEST_DAGGER_MODULE` 时在默认 PR CI 中跳过；消费者仓库的长期接入配置由 [新仓库接入](new-repository.md) 在后续阶段承接）。
 
 需要 Git 比较的 Dagger Plan 会携带受检 Tree 与基线所需的 Git 对象和 Index，
 由隔离检出生成 Git 配置。该输入不包含调用方的 Git 配置、其他引用或完整历史。
@@ -116,7 +116,7 @@ $pr.url
 gh pr checks $pr.number --watch
 ```
 
-核对当前 head 的三个实际检查 `python-ci / checks`、`sync-tool-tests`、`version-metadata`，
+核对当前 head 的四个实际检查 `python-ci / checks`、`sync-tool-tests`、`version-metadata`、`dagger-native-telemetry / a1-gate`，
 完成代码审查后再 Ready 和合并。合并权限遵循 [AGENTS.md](../AGENTS.md)。
 如果检查尚未完成或失败，在此停止；修复并提交到同一分支，再查同一 PR。
 

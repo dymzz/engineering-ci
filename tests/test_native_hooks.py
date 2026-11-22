@@ -224,10 +224,15 @@ def test_installed_lefthook_reconciles_independent_jobs(
     jobs = {"check-whitespace", "check-forwarding"}
     if excluded == "check-whitespace":
         assert not binding.invocation_path.with_suffix(
+            ".activation-check-whitespace"
+        ).exists()
+        assert not binding.invocation_path.with_suffix(
             ".execution-check-whitespace"
         ).exists()
         jobs.remove(excluded)
     for job in jobs:
+        activation = _artifact(binding, f".activation-{job}")
+        assert activation["invocation_ref"] == binding.invocation_ref
         execution = _artifact(binding, f".execution-{job}")
         assert execution["invocation_ref"] == binding.invocation_ref
         failed = job == "check-whitespace" and whitespace_result == "insufficient"
@@ -244,6 +249,13 @@ def test_installed_lefthook_reconciles_independent_jobs(
         receipt = _artifact(binding, ".receipt")
         assert receipt["expected_invocation_ref"] == binding.invocation_ref
         assert receipt["trusted"] is False
+        assert receipt["required"] is False
+        assert receipt["evidence_admission"] == "not_evaluated"
+        assert receipt["required_gate"] == "not_evaluated"
+        assert all(
+            entry["scheduler_ref"] is None and entry["effective_config_ref"] is None
+            for entry in receipt["entries"]
+        )
         assert {
             entry["name"]: (entry["binding_status"], entry["job_refs"])
             for entry in receipt["entries"]

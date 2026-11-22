@@ -111,7 +111,12 @@ PR merge-tree requires a Git version with `merge-tree --write-tree`; conflicts
 or missing objects produce `complete: false`, never a narrower pass. Multi-ref
 pre-push batches produce a union selection plus `references[]`, but the
 executor refuses to attribute one run to them: `multi_ref_requires_per_ref_execution`.
-Per-ref execution orchestration remains open.
+Hook `pre-push` already implements per-ref planning, isolated execution, and
+per-ref receipts in `engineering_ci.hook_checks` (`prepare_push()`,
+`run_push_checks()`, `reconcile_push()`, `consume_push_result()`) invoked by
+`lefthook.yml`'s `pre-push-checks`; default top-level `pre-push:` enablement in
+`lefthook.yml` (pending repo Scope/Profile) and generic non-Hook multi-ref
+execution orchestration remain open.
 
 ## Per-check impact (not a global ignore)
 

@@ -1613,11 +1613,25 @@ def test_first_commit_index_report_and_reconciliation(
     outcome = hook_checks.reconcile(path, binding)
     receipt = outcome["receipt"]
     reconciliation.validate_receipt(receipt)
+    assert receipt["trusted"] is False
+    assert receipt["required"] is False
+    assert receipt["evidence_admission"] == "not_evaluated"
+    assert receipt["required_gate"] == "not_evaluated"
     entries = {entry["name"]: entry for entry in receipt["entries"]}
     assert entries["forwarding"]["binding_status"] == "matched"
     assert entries["whitespace"]["binding_status"] == (
         "insufficient" if native_exit else "matched"
     )
+    assert all(
+        entry["scheduler_ref"] is None and entry["effective_config_ref"] is None
+        for entry in receipt["entries"]
+    )
+    expected_identity = hook_checks._identity(binding)
+    for job in ("check-whitespace", "check-forwarding"):
+        activation = json.loads(
+            binding.invocation_path.with_suffix(f".activation-{job}").read_bytes()
+        )
+        assert activation == expected_identity
     assert entries["forwarding"]["evidence_refs"]["baseline_source_ref"]["name"] == (
         "git-odb-empty-tree"
     )
@@ -1627,6 +1641,41 @@ def test_first_commit_index_report_and_reconciliation(
     )
     assert bool(outcome["exit_code"]) == bool(native_exit)
     assert target.read_bytes() == working
+
+    if not native_exit:
+        from test_admission import JOB_ISSUER, policy_for
+
+        from engineering_ci import admission
+
+        local_reports = []
+        local_job_receipts = []
+        for job in ("check-whitespace", "check-forwarding"):
+            recorded = json.loads(
+                binding.invocation_path.with_suffix(f".execution-{job}").read_bytes()
+            )
+            local_reports.append(recorded["report"])
+            _route, observation = hook_checks._observe(
+                selected_plan,
+                recorded,
+                expected,
+                recorded["report"],
+                job,
+                job,
+                native_dagger=False,
+            )
+            local_job_receipts.append(observation["job_receipt"])
+        admitted = admission.admit_evidence(
+            expected,
+            receipt,
+            reports=local_reports,
+            job_receipts=local_job_receipts,
+            policy=policy_for(issuer=JOB_ISSUER),
+            authority=lambda _ctx: True,
+        )
+        for item in admitted["entries"]:
+            assert item["admitted"] is False
+            assert item["origin_status"] == "unverified", item
+            assert "verification_implementation_missing" in item["reasons"], item
 
     with git_source.materialized_tree(path, changes.index_tree) as (source, _):
         exported = tmp_path / "dagger-index"
@@ -1831,10 +1880,17 @@ def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
         hook_checks.consume_push_result(root, binding)
     outcome = hook_checks.reconcile_push(root, binding)
     assert outcome["exit_code"] != 0
+    assert binding.invocation_path.with_suffix(".activation").is_file()
     assert [ref["receipt"]["status"] for ref in outcome["references"]] == [
         "matched",
         "partial",
     ]
+    for ref in outcome["references"]:
+        assert ref["receipt"]["trusted"] is False
+        assert all(
+            entry["scheduler_ref"] is None and entry["effective_config_ref"] is None
+            for entry in ref["receipt"]["entries"]
+        )
     assert hook_checks.consume_push_result(root, binding)["exit_code"] == 1
     assert source.read_bytes() == b"VALUE = 9\n"
 

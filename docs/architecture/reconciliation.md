@@ -24,7 +24,11 @@ versioned **Binding/Reconciliation Receipt**. It:
 - keeps `matched` / `missing` / `insufficient` / `unknown` / `unrouted` /
   `not_applicable` distinct, and reports `unexpected`, `duplicate`, rejected
   execution objects and inactive attempts;
-- never admits trusted evidence (#63) or decides Required/Release (#61).
+- never admits trusted evidence (#63) or decides Required/Release (#61);
+- in the `#152` Stage ① Hook caller slice (`engineering_ci.hook_checks`),
+  produces local structural Receipts (`trusted=false`) for developer-side
+  `pre-commit` / `pre-push` exit verdicts while `#63` admission, `#61` gates,
+  and non-Workflow controlled CI Providers remain Stage ②–⑤ deliverables.
 
 ## Inputs
 
@@ -86,6 +90,15 @@ resolutions=(), observations=())`
   consumes this qualification; it does not infer it from result order, ID size
   or success. `mapping_status` is `routed`, `unrouted`, `filtered`,
   `not_configured`, `skipped`, or `unknown`.
+
+  At the structural `#66-C` API level (`reconciliation.py`),
+  `scheduler_ref` and `effective_config_ref` are optional nullable mappings:
+  missing values serialize as `null` rather than synthetic literal defaults.
+  Stage ① `hook_checks._reconcile_plan()` omits both instead of inventing
+  literal `lefthook:2.2.2` / `hook-job:1` strings; binding them to the actual
+  merged effective Lefthook configuration (`lefthook dump`) and invocation, and
+  independently authenticating the scheduler issuer, apply to `#63` admission
+  and controlled execution rather than local structural Hook exits.
 
 - `resolutions` — separately sourced evidence that turns the pre-execution
   projection into a strict #52 Expected instance:
@@ -382,6 +395,21 @@ mistaking them for a full observation ledger.
   the Report digest, Report->Result membership, attribution fields, and receipt
   logical consistency, but does not authenticate the issuer; #63 remains
   responsible for admission.
+- Stage ① local Hook caller boundary (`engineering_ci.hook_checks`):
+  `hook_checks._reconcile_plan()` supplies `expected`, `routing`,
+  `resolutions` (via `execution.evaluate_source_resolution()`), and
+  `observations` (bound Execution Reports and local `job_receipt`) to
+  `reconcile_expected_results()` and outputs the structural Receipt
+  (`trusted=false`, `required=false`). Specifically, `run_checks()` /
+  `run_push_checks()` record exclusive `.activation*` lock markers before check
+  execution, `_observe()` verifies `run_ref`/`attempt_ref`/`execution_ref`/
+  `plan.git` and emits self-attested `issuer_ref`
+  (`engineering-ci.local-hook-job` + module SHA-256), `qualification_ref`, and
+  `job_receipt` (`verification_status="upstream_verified"`), and `_reconcile_plan()`
+  leaves optional `scheduler_ref`/`effective_config_ref` omitted. Native Hook
+  tests verify Lefthook activation of those jobs for developer Hook exits, but
+  these local self-assertions neither prove an external Lefthook authority nor
+  grant `#63` admission or Source App authorization.
 - Cross-Run/Attempt historical reuse is not accepted as current execution
   evidence here (`cross_run_reuse_requires_upstream_admission`). Replaying a
   report from another `invocation_ref`, `event_ref`, `scope_id`, or
@@ -430,7 +458,7 @@ mistaking them for a full observation ledger.
 
 `#63` 消费端的独立取回与验证步骤：
 
-1. **定位原始载荷**。通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从证据所声明的受控制品归档获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**。历史 Actions 证据仍可按已知 Run/Artifact 通过 `gh` 读取。
+1. **定位原始载荷**。通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从对应运行来源的原始载荷位置获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**：当前主线生产 CI 仍经现行 Actions Run/Artifact（`gh`）读取，阶段①本地 Hook 保存在仓内 `.git/eci-hooks/invocations/`（供本地对账与调试），待 `#152` 阶段②+ 交付非 Workflow 受控执行端后改为从证据所声明的受控制品归档取回；历史 Actions Run 证据继续通过 `gh` 保持只读核验。
 2. **摘要与签发者独立验真**：
    - 重新计算 Raw Execution Report SHA-256 并核对等于 `report_ref.sha256`；
    - 重新计算 `job_receipt` SHA-256 并核对等于 `job_receipt_ref`；
