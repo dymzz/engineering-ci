@@ -62,11 +62,17 @@ Invocation 的全部适用结果。失败、缺失、过滤及异源结果都会
 
 需要 Dagger 时，在 Lefthook 准备 Job 显式传入 `--dagger-module`。ECI 开发检出
 使用 `--dagger-module .`，由本次暂存或目标 Ref 的 ECI 模块源码提供函数。
+当 Python 包从同一 ECI 仓库的另一检出导入时，Git 的共同目录和 worktree 注册
+确认调用方属于该仓库。模块源码仍来自本次受检树。
 消费者把该参数设为 `github.com/dymzz/engineering-ci@<40 位提交 SHA>`，固定到
 提供兼容 `plan-execution` 接口的 ECI 修订。消费者自己的 Dagger 配置可以保留，
 它的受检树作为独立的 `--source` 输入。缺少模块引用或使用非固定修订的调用会
 在准备阶段阻断。Hook 保留一次 Dagger 执行的原生结果包，核对包中的 Plan、
 目录字节、原始退出和本次 Invocation。
+
+复验固定修订的跨仓调用时，将 `ECI_TEST_DAGGER_MODULE` 设为已发布的 ECI 模块引用，
+然后运行 `uv run --locked --no-sync pytest -q tests/test_native_hooks.py::test_installed_lefthook_uses_pinned_dagger_module`。
+测试使用已有的 Dagger CLI、Engine 和 Tach，在隔离 Git 仓库中运行 Lefthook，核对能通过的首次提交和因暂存空白失败被拒绝的提交。
 
 需要 Git 比较的 Dagger Plan 会携带受检 Tree 与基线所需的 Git 对象和 Index，
 由隔离检出生成 Git 配置。该输入不包含调用方的 Git 配置、其他引用或完整历史。

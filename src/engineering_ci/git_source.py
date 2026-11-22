@@ -38,6 +38,43 @@ def _git(root, *args, env=None, data=None):
     return result.stdout
 
 
+def registered_worktree(checkout, candidate):
+    """Prove that both checkout roots belong to one Git worktree registration."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+
+    def common_dir(root):
+        top, common = os.fsdecode(
+            _git(
+                root,
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+                env=env,
+            )
+        ).splitlines()
+        return Path(common).resolve() if Path(top).resolve() == root else None
+
+    try:
+        common = common_dir(checkout)
+        if common is None or common_dir(candidate) != common:
+            return False
+        worktrees = {
+            Path(os.fsdecode(field.removeprefix(b"worktree "))).resolve()
+            for field in _git(
+                checkout, "worktree", "list", "--porcelain", "-z", env=env
+            ).split(b"\0")
+            if field.startswith(b"worktree ")
+        }
+        return checkout in worktrees and candidate in worktrees
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _verify_files(worktree, records, object_format):
     seen = set()
     for record in records.split(b"\0"):

@@ -2,9 +2,11 @@
 
 Status: additive #66-C contract and first implementation slice
 (`engineering_ci.reconciliation`). It does not change Plan schema 2, the
-Execution Report schema, or any pre-execution Expected identity. Lefthook owns
-Hook installation and scheduling under the current #66 and #152 design. This
-module consumes execution evidence.
+Execution Report schema, or any pre-execution Expected identity. The current
+[#66 decision](https://github.com/dymzz/engineering-ci/issues/66) assigns Git Hook
+installation and scheduling to Lefthook 2.2.2, not to ECI's historical L2/
+Event Coordinator design. This module consumes **actually observed** activation,
+Report and Attempt evidence; it does not implement or authorize a scheduler.
 
 ## Position
 
@@ -61,6 +63,11 @@ resolutions=(), observations=())`
     "reason": null
   }
   ```
+
+  The JSON above is a contract **example**, not evidence that a Lefthook Job ran. The
+  `scheduler_ref` and `effective_config_ref` must be bound to the real effective
+  Lefthook configuration and invocation; a default literal `lefthook:2.2.2`
+  or `hook-job:1` does not prove scheduling, activation or source authority.
 
   `job_refs` are Job names; `job_instances` are the actually activated
   identities `(job_ref, run_ref, attempt_ref)`. A `routed` binding without
@@ -366,11 +373,11 @@ mistaking them for a full observation ledger.
   recomputes its immutable identities but does not re-authorize the engineering
   Profile or Plan (`expected_projection_authority_not_reverified`).
 - The Hook caller derives routing from actual Lefthook Job activation, binds
-  qualification and the Report to the same Invocation, and supplies
-  `job_receipt` / `invocation_ref` / `event_ref` attribution. This module verifies
-  those inputs. A routed Expected without activated Job instances stays
-  `unknown`. The #72/#102 `engineering-ci.hook.dispatch.v1` proposal describes
-  historical routing.
+  each Job/Attempt to the native Report it produced, and supplies `job_receipt`,
+  `invocation_ref` and `event_ref`. Reconciliation verifies those associations.
+  Routed Expected entries without an activated Job remain `unknown`.
+  #102 continues to supply Git event and Invocation capture. The old #72
+  `engineering-ci.hook.dispatch.v1` proposal describes historical routing.
 - The Job/Attempt receipt is consumed as an upstream proof state. #66-C verifies
   the Report digest, Report->Result membership, attribution fields, and receipt
   logical consistency, but does not authenticate the issuer; #63 remains

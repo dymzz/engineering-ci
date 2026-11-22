@@ -2183,6 +2183,34 @@ def test_dagger_hook_requires_explicit_eci_module_pin(tmp_path):
     assert dagger_plan.module_reference(pinned, root=consumer) == pinned
 
 
+def test_dagger_local_module_requires_a_registered_eci_worktree(
+    repo, tmp_path, monkeypatch
+):
+    from engineering_ci import dagger_plan, hooks
+
+    checkout, _ = repo
+    monkeypatch.setattr(
+        dagger_plan, "__file__", checkout / "src/engineering_ci/dagger_plan.py"
+    )
+    linked = tmp_path / "linked worktree"
+    run(checkout, "worktree", "add", "-qb", "linked", str(linked))
+    assert dagger_plan.module_reference(".", root=checkout) == "."
+    assert dagger_plan.module_reference(".", root=linked) == "."
+
+    unregistered = tmp_path / "unregistered"
+    unregistered.mkdir()
+    (unregistered / ".git").write_bytes(
+        f"gitdir: {(checkout / '.git').as_posix()}\n".encode()
+    )
+    assert run(
+        unregistered, "rev-parse", "--path-format=absolute", "--git-common-dir"
+    ) == run(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    with pytest.raises(
+        hooks.HookEventError, match="hook_dagger_local_module_outside_eci_checkout"
+    ):
+        dagger_plan.module_reference(".", root=unregistered)
+
+
 def test_dagger_hook_consumes_original_exit_and_verifies_source(tmp_path):
     from engineering_ci import dagger_plan, hooks
 

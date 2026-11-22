@@ -21,7 +21,13 @@ def module_reference(value, *, root):
     if value is None:
         raise hooks.HookEventError("hook_dagger_module_required")
     if value == ".":
-        if Path(root).resolve() != Path(__file__).resolve().parents[2]:
+        package_file = Path(__file__).resolve()
+        checkout = package_file.parents[2]
+        candidate = Path(root).resolve()
+        if package_file.parent.parent != checkout / "src" or (
+            candidate != checkout
+            and not git_source.registered_worktree(checkout, candidate)
+        ):
             raise hooks.HookEventError("hook_dagger_local_module_outside_eci_checkout")
     elif not isinstance(value, str) or not _ECI_MODULE.fullmatch(value):
         raise hooks.HookEventError("hook_dagger_module_revision_required")
