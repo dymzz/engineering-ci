@@ -50,17 +50,17 @@ uv run --locked --no-sync lefthook install
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
 本仓运行原生暂存空白检查。受检树声明了 `ci-selection.toml` 和已绑定的
 `ci-effective-profile.json` 或 `ci-effective-profile.toml` 时，准备 Job 从
-临时 Git checkout 加载暂存策略，Host Job 在同一 Tree 上执行 Plan，最终 Job
+隔离临时 Git checkout 加载暂存策略（仅采用受检 Tree 内 `.gitattributes` 与干净默认规则，不继承宿主 `.git/config`、`.git/info/attributes` 或用户属性），Host Job 在同一 Tree 上执行 Plan，最终 Job
 保存真实 Report 的本地 Receipt。外层 Job 消费本次最终结果。失败、缺失或
 被过滤掉的必需检查和最终对账都会阻断提交。
 Git 须支持 `--attr-source` 和 `show-ref --exists`。
 要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
-`uv run --locked --no-sync python -m engineering_ci.cli hooks check pre-commit --json`。
+`uv run --locked --no-sync python -P -m engineering_ci.cli hooks check pre-commit --json`。
 
 配置推送检查时，在 `ci-selection.toml` 的 `[push].effective_profiles` 列出
 Ref 树内的策略文件，并用 `[[effective_profile]]` 分别登记适用动作的审批。
-新建 Ref 的比较基线由目标树里的 `[push]` 策略提供。删除使用旧对象中的删除
-策略，保留删除义务和本地收据。`pre-push-checks` 从各 Ref 的实际树读取配置。
+新建 Ref 的比较基线由目标树里的 `[push]` 策略提供。删除在本地存在旧对象时使用
+该旧对象中的删除策略并保留删除义务与本地收据；若本地缺少该旧对象，因无法证明删除审批策略而直接阻断。`pre-push-checks` 从各 Ref 的实际树读取配置。
 
 启用隔离验收时，给 Lefthook 增加以下原生入口。Job 独占 Git 的 stdin，外层
 在子任务成功后消费同一次 Invocation 的逐 Ref Receipt，缺失最终对账时阻断。
@@ -71,9 +71,9 @@ pre-push:
     - name: capture-refs
       use_stdin: true
       run: |
-        invocation=$(uv run --locked --no-sync python -m engineering_ci.cli hooks capture pre-push --framed-stdin) || exit $?
+        invocation=$(uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin) || exit $?
         ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-push-checks --no-auto-install || exit $?
-        uv run --locked --no-sync python -m engineering_ci.cli hooks consume pre-push --invocation-ref "$invocation"
+        uv run --locked --no-sync python -P -m engineering_ci.cli hooks consume pre-push --invocation-ref "$invocation"
 ```
 
 本仓的 `pre-push` 默认安装仍待实际 Scope/Profile。生产配置及启用状态由 #152 记录。

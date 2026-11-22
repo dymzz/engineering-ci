@@ -62,7 +62,13 @@ def _verify_files(worktree, records, object_format):
 
 @contextmanager
 def materialized_tree(root, tree, *, head=None):
-    """Yield a byte-verified Git checkout and its isolated subprocess environment."""
+    """Yield a byte-verified Git checkout and its isolated subprocess environment.
+
+    The isolated checkout authorizes only in-tree attributes (via
+    ``--attr-source``) and clean Git defaults, blocking host/user
+    ``core.whitespace``, ``.git/info/attributes``, global/XDG attributes and
+    system Git configuration.
+    """
     root = Path(root).resolve()
     object_format = _git(root, "rev-parse", "--show-object-format").decode().strip()
     if object_format not in {"sha1", "sha256"}:
@@ -79,7 +85,12 @@ def materialized_tree(root, tree, *, head=None):
     with tempfile.TemporaryDirectory(prefix="eci-tree-") as directory:
         temporary = Path(directory).resolve()
         config = temporary / "gitconfig"
-        config.touch()
+        attributes = temporary / "gitattributes"
+        attributes.touch()
+        config.write_text(
+            f"[core]\n\tattributesFile = {attributes.as_posix()}\n",
+            encoding="utf-8",
+        )
         env.update(
             GIT_CONFIG_GLOBAL=str(config),
             GIT_CONFIG_NOSYSTEM="1",

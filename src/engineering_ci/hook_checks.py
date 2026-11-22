@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -74,10 +75,21 @@ def _invoke_worker(root, binding, operation, payload):
 
 def _source_worker(root, tree, head, operation, payload):
     with git_source.materialized_tree(root, tree, head=head) as (source, env):
+        worker_env = dict(env)
+        if "PYTHONPATH" in worker_env:
+            entries = [
+                str(Path(item).resolve()) if not Path(item).is_absolute() else item
+                for item in worker_env["PYTHONPATH"].split(os.pathsep)
+                if item and item != "."
+            ]
+            if entries:
+                worker_env["PYTHONPATH"] = os.pathsep.join(entries)
+            else:
+                worker_env.pop("PYTHONPATH", None)
         result = subprocess.run(
-            [sys.executable, "-m", "engineering_ci.hook_checks", operation],
+            [sys.executable, "-P", "-m", "engineering_ci.hook_checks", operation],
             cwd=source,
-            env=env,
+            env=worker_env,
             input=json.dumps(payload),
             encoding="utf-8",
             capture_output=True,
@@ -229,13 +241,17 @@ def _push_ref_baselines(root, refs):
 
 def _push_checkout(root, ref):
     if ref["ref_action"] == "delete":
-        # Only read policy files for a deletion. There is no execution target.
+        # Deletion has no execution target tree; only the deleted ref's verified
+        # local `before` commit supplies approved delete policy. Absent old
+        # objects fail closed instead of reading unverified worktree/HEAD policy.
         head = ref["before"]
         tree = selection._tree_of(root, head) if head else None
+        error_code = "hook_push_delete_policy_unavailable"
     else:
         head, tree = ref["after"], ref["tree"]
+        error_code = "hook_push_source_unavailable"
     if not head or not tree or selection._tree_of(root, head) != tree:
-        raise hooks.HookEventError("hook_push_source_unavailable")
+        raise hooks.HookEventError(error_code)
     return tree, head
 
 

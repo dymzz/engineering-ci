@@ -4576,3 +4576,383 @@ def test_directory_artifact_closure_emits_member_digests(tmp_path):
     )
     assert missing["ok"] is False
     assert missing["file_digests"] == {}
+
+
+def test_hook_source_worker_ignores_shadowing_package_in_checked_tree(
+    tmp_path, monkeypatch
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    path = tmp_path / "repo"
+    path.mkdir()
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "execution@example.invalid")
+    run(path, "config", "user.name", "Execution Test")
+    run(path, "config", "core.autocrlf", "false")
+
+    (path / "engineering_ci").mkdir()
+    (path / "engineering_ci" / "__init__.py").write_text(
+        'raise RuntimeError("candidate engineering_ci shadowed worker")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "engineering_ci" / "hook_checks.py").write_text(
+        'raise RuntimeError("candidate hook_checks shadowed worker")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src").mkdir()
+    (path / "src" / "app.py").write_text(
+        "def compute():\n    return 1\n", encoding="utf-8", newline="\n"
+    )
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n[[modules]]\npath = "app"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    config_path = path / "ci-selection.toml"
+    base_selection = (
+        'schema_version = 1\nchecks = ["whitespace"]\nstrict_modules = false\n'
+        "coverage_required = false\n"
+        '[[non_code_rules]]\nprefix = "docs/"\ntests = []\nreason = "docs only"\n'
+    )
+    config_path.write_text(base_selection, encoding="utf-8", newline="\n")
+    declared = ["whitespace"]
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="shadow-worker-guard",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {
+                "obligation_ref": f"req-{name}",
+                "check_names": [name],
+                "allow_inapplicable": True,
+            }
+            for name in declared
+        ],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        domain_complete=True,
+        authority_verified=True,
+    )
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(
+        config_path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+    )
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8", newline="\n"
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "initial baseline with shadowing package")
+
+    # Simulate --no-install-project + PYTHONPATH including dirty relative "." entry.
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([".", str(ROOT / "src")]))
+
+    (path / "src" / "app.py").write_text(
+        "def compute():\n    return 2\n", encoding="utf-8", newline="\n"
+    )
+    run(path, "add", "src/app.py")
+    event = hooks.capture_pre_commit(path)
+    invocation = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+    report = hook_checks.run_checks(path, binding)
+    assert report["status"] == "passed", report
+    checks = {entry["name"]: entry for entry in report["checks"]}
+    assert checks["whitespace"]["status"] == "passed"
+    outcome = hook_checks.reconcile(path, binding)
+    assert outcome["exit_code"] == 0, [
+        (e["name"], e["binding_status"], e.get("reason"))
+        for e in outcome["receipt"]["entries"]
+    ]
+    assert outcome["receipt"]["status"] == "matched"
+    assert hook_checks.consume_index_result(path, binding)["exit_code"] == 0
+
+    # Child test runner spawned by `_source_worker` still resolves candidate `src/` and `tests/`
+    # because `-P` is scoped only to the worker process (not inherited as PYTHONSAFEPATH).
+    (path / "tests").mkdir()
+    (path / "tests" / "test_app.py").write_text(
+        "import unittest\nfrom app import compute\n\n\n"
+        "class AppTest(unittest.TestCase):\n"
+        "    def test_compute(self):\n"
+        "        self.assertEqual(compute(), 2)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    config_path.write_text(
+        base_selection + '[module_tests]\n"app" = ["tests.test_app"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(
+        config_path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+    )
+    run(path, "add", "tests/test_app.py", "ci-selection.toml")
+    event_tests = hooks.capture_pre_commit(path)
+    inv_tests = hooks.persist_event(path, event_tests)
+    binding_tests = hooks.load_invocation_binding(inv_tests.invocation_path)
+    assert hook_checks.prepare(path, binding_tests)["exit_code"] == 0
+    report_tests = hook_checks.run_checks(path, binding_tests)
+    assert report_tests["status"] == "passed", report_tests
+    assert report_tests["tests"]["status"] == "passed", report_tests
+
+
+def test_hook_whitespace_uses_isolated_tree_rules_and_rejects_local_config_parity(
+    tmp_path, monkeypatch
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    xdg_dir = tmp_path / "xdg"
+    (xdg_dir / "git").mkdir(parents=True)
+    (xdg_dir / "git" / "attributes").write_text(
+        "*.txt -whitespace\n", encoding="utf-8", newline="\n"
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_dir))
+
+    path = tmp_path / "repo"
+    path.mkdir()
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "execution@example.invalid")
+    run(path, "config", "user.name", "Execution Test")
+    run(path, "config", "core.autocrlf", "false")
+    run(path, "config", "core.whitespace", "-blank-at-eol")
+    info_attrs = path / ".git" / "info" / "attributes"
+    info_attrs.parent.mkdir(parents=True, exist_ok=True)
+    info_attrs.write_text("*.txt -whitespace\n", encoding="utf-8", newline="\n")
+
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src").mkdir()
+    (path / "src" / "pkg.py").write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "a.txt").write_bytes(b"clean\n")
+    config_path = path / "ci-selection.toml"
+    base_selection = (
+        'schema_version = 1\nchecks = ["whitespace"]\nstrict_modules = false\n'
+        "coverage_required = false\n"
+        '[[non_code_rules]]\nprefix = "docs/"\ntests = []\nreason = "docs only"\n'
+    )
+    config_path.write_text(base_selection, encoding="utf-8", newline="\n")
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="ws-isolation",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=["whitespace"],
+        required_obligations=[
+            {"obligation_ref": "req-ws", "check_names": ["whitespace"]}
+        ],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg_policy = _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(
+        config_path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+    )
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8", newline="\n"
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "initial baseline")
+
+    (path / "a.txt").write_bytes(b"trailing \n")
+    run(path, "add", "a.txt")
+
+    cs_host = selection.changeset(path, base="HEAD", mode="index")
+    host_plan = selection.plan(
+        selection.select(cs_host, cfg_policy, root=path),
+        config=cfg_policy,
+        config_path=config_path,
+        root=path,
+        effective_profile_path=path / "ci-effective-profile.json",
+    )
+    pre_proof_host = execution.build_pre_execution_source_proof(
+        host_plan, "whitespace", root=path
+    )
+    assert pre_proof_host["status"] == "verified_candidate_inputs", (
+        pre_proof_host.get("reason"),
+        pre_proof_host,
+    )
+    assert pre_proof_host["environment_inputs"]["core.whitespace"] == "-blank-at-eol"
+    assert pre_proof_host["environment_inputs"]["info_attributes_sha256"] is not None
+
+    event = hooks.capture_pre_commit(path)
+    inv = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(inv.invocation_path)
+    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+
+    report = hook_checks.run_checks(path, binding)
+    assert report["status"] == "failed", report
+    ws_check = next(c for c in report["checks"] if c["name"] == "whitespace")
+    assert ws_check["status"] == "failed"
+    ws_nr = ws_check["native_result"]
+    ws_cfg = ws_nr["evidence"]["git_whitespace_config"]
+    assert ws_cfg["core.whitespace"] is None
+    assert ws_cfg["info_attributes_sha256"] is None
+    assert (
+        ws_cfg["core_attributes_file_sha256"]
+        == f"sha256:{hashlib.sha256(b'').hexdigest()}"
+    )
+    parity = execution.compare_pre_execution_to_historical_result(pre_proof_host, ws_nr)
+    assert parity["equivalent"] is False
+    assert parity["reason"] == "whitespace_config_mismatch", (
+        parity,
+        pre_proof_host["source_ref"],
+        ws_nr["source_ref"],
+    )
+
+    # Staging .gitattributes inside the Tree itself IS honored via --attr-source.
+    (path / ".gitattributes").write_text(
+        "*.txt -whitespace\n*.md -whitespace\n", encoding="utf-8", newline="\n"
+    )
+    run(path, "add", ".gitattributes")
+    event_in_tree = hooks.capture_pre_commit(path)
+    inv_in_tree = hooks.persist_event(path, event_in_tree)
+    binding_in_tree = hooks.load_invocation_binding(inv_in_tree.invocation_path)
+    assert hook_checks.prepare(path, binding_in_tree)["exit_code"] == 0
+    rep_in_tree = hook_checks.run_checks(path, binding_in_tree)
+    assert rep_in_tree["status"] == "passed", rep_in_tree
+    rec_in_tree = hook_checks.reconcile(path, binding_in_tree)
+    ws_entry = next(
+        e for e in rec_in_tree["receipt"]["entries"] if e["name"] == "whitespace"
+    )
+    assert ws_entry["binding_status"] == "matched"
+
+    # When .gitattributes is already in HEAD and only a matching doc changes,
+    # the full Hook prepare -> run -> reconcile -> consume chain exits 0.
+    run(path, "commit", "-qm", "commit in-tree gitattributes")
+    (path / "docs").mkdir()
+    (path / "docs" / "note.md").write_bytes(b"doc trailing \n")
+    run(path, "add", "docs/note.md")
+    event_doc = hooks.capture_pre_commit(path)
+    inv_doc = hooks.persist_event(path, event_doc)
+    binding_doc = hooks.load_invocation_binding(inv_doc.invocation_path)
+    assert hook_checks.prepare(path, binding_doc)["exit_code"] == 0
+    rep_doc = hook_checks.run_checks(path, binding_doc)
+    assert rep_doc["status"] == "passed", rep_doc
+    rec_doc = hook_checks.reconcile(path, binding_doc)
+    assert rec_doc["exit_code"] == 0, rec_doc["receipt"]["entries"]
+    assert rec_doc["receipt"]["status"] == "matched"
+    assert hook_checks.consume_index_result(path, binding_doc)["exit_code"] == 0
+
+
+def test_push_delete_reconciles_with_local_before_and_blocks_missing_old_object(
+    tmp_path,
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    run(root, "init", "-q", "-b", "main")
+    run(root, "config", "user.email", "execution@example.invalid")
+    run(root, "config", "user.name", "Execution Test")
+    (root / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (root / "src").mkdir()
+    (root / "src" / "sample.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "tach.toml").write_text(
+        'source_roots = ["src"]\n', encoding="utf-8", newline="\n"
+    )
+    config = root / "ci-selection.toml"
+    base_selection = (
+        'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
+        '[push]\neffective_profiles = ["push-delete.json"]\n'
+    )
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/local-push", "1.0.0"),
+        profile_revision="delete-rev",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="push",
+        action="delete",
+        target="refs/heads/topic",
+        declared_checks=["whitespace"],
+        required_obligations=[],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    config.write_text(base_selection, encoding="utf-8", newline="\n")
+    _attach_effective_profile_policy(config, profile)
+    (root / "push-delete.json").write_text(json.dumps(profile), encoding="utf-8")
+    run(root, "add", "-A")
+    run(root, "commit", "-qm", "baseline with delete profile")
+    run(root, "branch", "topic")
+    topic_oid = run(root, "rev-parse", "topic").strip()
+    zero = "0" * len(topic_oid)
+
+    # Positive: local `before` commit exists in ODB -> plan reads approved delete policy.
+    event = hooks.capture_pre_push(
+        root,
+        "origin",
+        "remote repo",
+        f"(delete) {zero} refs/heads/topic {topic_oid}\n",
+    )
+    inv = hooks.persist_event(root, event)
+    binding = hooks.load_invocation_binding(inv.invocation_path)
+    prepared = hook_checks.prepare_push(root, binding, require_plan=True)
+    assert prepared["exit_code"] == 0
+    push_reports = hook_checks.run_push_checks(root, binding)
+    assert push_reports["exit_code"] == 0
+    assert push_reports["references"][0]["report"] is None
+    reconciled = hook_checks.reconcile_push(root, binding)
+    assert reconciled["exit_code"] == 0
+    receipt = reconciled["references"][0]["receipt"]
+    reconciliation.validate_receipt(receipt)
+    assert receipt["status"] == "matched"
+    assert hook_checks.consume_push_result(root, binding)["exit_code"] == 0
+
+    # Negative: missing old object in local ODB -> selector stays ref_action=delete,
+    # while hook_checks fails closed because delete policy source is unprovable.
+    missing_oid = "f" * len(topic_oid)
+    missing_event = hooks.capture_pre_push(
+        root,
+        "origin",
+        "remote repo",
+        f"(delete) {zero} refs/heads/topic {missing_oid}\n",
+    )
+    changes = selection.changeset_multi(root, missing_event["refs"])
+    assert changes.complete is True
+    assert changes.references[0]["ref_action"] == "delete"
+    missing_inv = hooks.persist_event(root, missing_event)
+    missing_binding = hooks.load_invocation_binding(missing_inv.invocation_path)
+    with pytest.raises(
+        hooks.HookEventError, match="hook_push_delete_policy_unavailable"
+    ):
+        hook_checks.prepare_push(root, missing_binding, require_plan=True)

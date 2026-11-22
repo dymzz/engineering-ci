@@ -5,7 +5,7 @@ lefthook: >-
   sh -c 'set -f; IFS=; case $2 in
   pre-commit) exec uv run --locked --no-sync lefthook run pre-commit --no-stage-fixed ;;
   pre-push) (printf ECI-PRE-PUSH:%s:%s: $(printf %s "$3" | base64 -w0) $(printf %s "$4" | base64 -w0); cat) |
-  uv run --locked --no-sync lefthook run pre-push $3 $4 ;;
+  uv run --locked --no-sync lefthook run pre-push ;;
   *) exec uv run --locked --no-sync lefthook $1 $2 $3 $4 ;;
   esac' lefthook
 
@@ -13,27 +13,27 @@ pre-commit:
   jobs:
     - name: capture-index
       run: |
-        invocation=$(uv run --locked --no-sync python -m engineering_ci.cli hooks capture pre-commit) || exit $?
+        invocation=$(uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-commit) || exit $?
         ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-commit-checks --no-auto-install --no-stage-fixed || exit $?
-        uv run --locked --no-sync python -m engineering_ci.cli hooks consume pre-commit --invocation-ref "$invocation"
+        uv run --locked --no-sync python -P -m engineering_ci.cli hooks consume pre-commit --invocation-ref "$invocation"
 
 pre-commit-checks:
   jobs:
     - name: prepare-index-plan
-      run: uv run --locked --no-sync python -m engineering_ci.cli hooks prepare pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks prepare pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
     - name: check-index
-      run: uv run --locked --no-sync python -m engineering_ci.cli hooks run pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
     - name: reconcile-index
-      run: uv run --locked --no-sync python -m engineering_ci.cli hooks reconcile pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks reconcile pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
 
 pre-push-checks:
   jobs:
     - name: prepare-push-plan
-      run: uv run --locked --no-sync python -m engineering_ci.cli hooks prepare pre-push --require-plan --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks prepare pre-push --require-plan --invocation-ref "$ECI_HOOK_INVOCATION_REF"
     - name: check-push
-      run: uv run --locked --no-sync python -m engineering_ci.cli hooks run pre-push --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks run pre-push --invocation-ref "$ECI_HOOK_INVOCATION_REF"
     - name: reconcile-push
-      run: uv run --locked --no-sync python -m engineering_ci.cli hooks reconcile pre-push --invocation-ref "$ECI_HOOK_INVOCATION_REF"
+      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks reconcile pre-push --invocation-ref "$ECI_HOOK_INVOCATION_REF"
 
 verify:
   parallel: true

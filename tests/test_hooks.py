@@ -907,7 +907,10 @@ def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
     lefthook_text = (Path(__file__).parents[1] / "lefthook.yml").read_text(
         encoding="utf-8"
     )
-    assert "python -m engineering_ci.cli hooks" in lefthook_text
+    assert "python -P -m engineering_ci.cli hooks" in lefthook_text
+    assert "python -m engineering_ci.cli hooks" not in lefthook_text
+    assert "lefthook run pre-push ;;" in lefthook_text
+    assert "lefthook run pre-push $3 $4" not in lefthook_text
     assert "uv run --locked --no-sync engineering-ci hooks" not in lefthook_text
 
     target.write_text("staged\n", encoding="utf-8")
@@ -928,3 +931,83 @@ def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
     assert target.read_text(encoding="utf-8") == "working \n"
     assert git(tmp_path, "rev-parse", "HEAD^{tree}") == staged_tree
     assert git(tmp_path, "show", "HEAD:a.txt") == "staged"
+
+
+def test_lefthook_install_leaves_pre_push_disabled_and_framed_push_runs_without_forwarded_argv(
+    tmp_path,
+):
+    repo_root = Path(__file__).parents[1].resolve()
+    env = _git_sh_env()
+
+    default_repo = tmp_path / "default_repo"
+    default_repo.mkdir()
+    git(default_repo, "init", "-q", "-b", "main")
+    (default_repo / "lefthook.yml").write_bytes(
+        (repo_root / "lefthook.yml").read_bytes()
+    )
+    install_default = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "install"],
+        cwd=default_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert install_default.returncode == 0, install_default.stderr
+    assert (default_repo / ".git" / "hooks" / "pre-commit").is_file()
+    assert not (default_repo / ".git" / "hooks" / "pre-push").exists()
+
+    remote = tmp_path / "remote repo.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-q", "-b", "main", str(remote)],
+        env=env,
+        check=True,
+    )
+    push_repo = tmp_path / "push_repo"
+    push_repo.mkdir()
+    git(push_repo, "init", "-q", "-b", "main")
+    git(push_repo, "config", "user.email", "hooks@example.invalid")
+    git(push_repo, "config", "user.name", "Hooks Test")
+    repo_yml = (repo_root / "lefthook.yml").read_text(encoding="utf-8")
+    enabled_yml = (
+        repo_yml
+        + "\npre-push:\n  jobs:\n    - name: capture-push\n      use_stdin: true\n"
+        + "      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin --json\n"
+    )
+    (push_repo / "lefthook.yml").write_text(enabled_yml, encoding="utf-8")
+    (push_repo / "a.txt").write_text("hello\n", encoding="utf-8")
+    git(push_repo, "add", "-A")
+    git(push_repo, "commit", "-q", "-m", "init")
+    install_push = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "install", "pre-push"],
+        cwd=push_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert install_push.returncode == 0, install_push.stderr
+    hook_file = push_repo / ".git" / "hooks" / "pre-push"
+    assert hook_file.is_file()
+    assert "lefthook run pre-push ;;" in hook_file.read_text(encoding="utf-8")
+
+    pushed = subprocess.run(
+        ["git", "push", str(remote), "main"],
+        cwd=push_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert pushed.returncode == 0, pushed.stdout + pushed.stderr
+    invocations = sorted(
+        (push_repo / ".git" / "eci-hooks" / "invocations").glob("*.json")
+    )
+    assert len(invocations) == 1, pushed.stdout + pushed.stderr
+    event = hooks.load_invocation_binding(invocations[0]).event
+    assert event["hook"] == "pre-push"
+    assert [ref["remote_ref"] for ref in event["refs"]] == ["refs/heads/main"]
+    assert event["remote"]["location"]["kind"] == "path"
