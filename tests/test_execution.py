@@ -1751,7 +1751,23 @@ def test_dagger_index_binding_requires_matching_export(tmp_path):
     assert binding() == (False, "source_tree_mismatch", tree)
 
 
-def test_index_plan_checks_read_staged_bytes_across_check_families(tmp_path):
+def _fixture_tach(tmp_path, monkeypatch):
+    if shutil.which("tach") is not None:
+        return True
+    if os.name == "nt":
+        return False
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir(exist_ok=True)
+    tach = shim_dir / "tach"
+    tach.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    tach.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim_dir), prepend=os.pathsep)
+    return True
+
+
+def test_index_plan_checks_read_staged_bytes_across_check_families(
+    tmp_path, monkeypatch
+):
     from test_reconciliation import _attach_effective_profile_policy
 
     from engineering_ci import expected_checks, git_source, hook_checks, hooks
@@ -1965,19 +1981,22 @@ def test_index_plan_checks_read_staged_bytes_across_check_families(tmp_path):
     )
     (path / "data/acquired/a.bin").write_bytes(dirty_bin)
     test_event = hooks.capture_pre_commit(path)
-    invocation = hooks.persist_event(path, test_event)
-    binding = hooks.load_invocation_binding(invocation.invocation_path)
-    assert hook_checks.prepare(path, binding)["exit_code"] == 0
-    report = hook_checks.run_checks(path, binding)
-    assert report["exit_code"] == 0, report
-    outcome = hook_checks.reconcile(path, binding)
-    assert outcome["exit_code"] == 0, outcome
-    assert {
-        entry["name"]: entry["binding_status"]
-        for entry in outcome["receipt"]["entries"]
-    } == dict.fromkeys(all_checks, "matched")
-    assert outcome["receipt"]["trusted"] is False
-    assert hook_checks.consume_index_result(path, binding)["exit_code"] == 0
+    # This process test exercises the Hook handoff. A POSIX fixture supplies
+    # Tach's process exit when the binary is absent in the core test image.
+    if _fixture_tach(tmp_path, monkeypatch):
+        invocation = hooks.persist_event(path, test_event)
+        binding = hooks.load_invocation_binding(invocation.invocation_path)
+        assert hook_checks.prepare(path, binding)["exit_code"] == 0
+        report = hook_checks.run_checks(path, binding)
+        assert report["exit_code"] == 0, report
+        outcome = hook_checks.reconcile(path, binding)
+        assert outcome["exit_code"] == 0, outcome
+        assert {
+            entry["name"]: entry["binding_status"]
+            for entry in outcome["receipt"]["entries"]
+        } == dict.fromkeys(all_checks, "matched")
+        assert outcome["receipt"]["trusted"] is False
+        assert hook_checks.consume_index_result(path, binding)["exit_code"] == 0
     with git_source.materialized_tree(
         path, test_event["index"]["tree"], head=test_event["head_commit"]
     ) as (materialized, _):
@@ -4815,20 +4834,8 @@ def test_hook_source_worker_ignores_shadowing_package_in_checked_tree(
     # because `-P` is scoped only to the worker process (not inherited as PYTHONSAFEPATH).
     # Dagger `sync-tool-tests` omits `tach` from PATH, so provide a POSIX shim there to pass
     # `target_test_gate`; on Windows without `tach.exe`, Part 1 above already proved `-P` isolation.
-    if shutil.which("tach") is None:
-        if os.name == "nt":
-            return
-        shim_dir = tmp_path / "bin"
-        shim_dir.mkdir(exist_ok=True)
-        tach_shim = shim_dir / "tach"
-        tach_shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
-        tach_shim.chmod(0o755)
-        monkeypatch.setenv(
-            "PATH",
-            os.pathsep.join(
-                [str(shim_dir), *(p for p in [os.environ.get("PATH", "")] if p)]
-            ),
-        )
+    if not _fixture_tach(tmp_path, monkeypatch):
+        return
     (path / "tests").mkdir()
     (path / "tests" / "test_app.py").write_text(
         "import unittest\nfrom app import compute\n\n\n"

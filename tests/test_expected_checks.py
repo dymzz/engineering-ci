@@ -42,6 +42,7 @@ def repo(tmp_path):
     run(target, "init", "-q", "-b", "main")
     run(target, "config", "user.email", "expected@example.invalid")
     run(target, "config", "user.name", "Expected Test")
+    run(target, "config", "core.autocrlf", "false")
     run(target, "add", "-A")
     run(target, "commit", "-q", "-m", "base")
     return target, run(target, "rev-parse", "HEAD").strip()

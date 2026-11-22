@@ -1017,7 +1017,13 @@ def _parse_profile_obligations(
                 rule_by_check[name] = chosen
         elif config_rule is not None:
             rule_by_check[name] = config_rule
-        elif name in _TEST_FRAMEWORKS and selection_check_rule is not None:
+        elif (
+            name in _TEST_FRAMEWORKS
+            and name in declared_names
+            and effective_profile.get("context") in {"index", "push"}
+            and selection_check_rule is not None
+        ):
+            # The Hook profile explicitly declares this framework.
             rule_by_check[name] = selection_check_rule
 
     for name in list(obligations_by_check):
