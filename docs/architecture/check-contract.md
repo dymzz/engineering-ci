@@ -621,6 +621,12 @@ exits and the resulting Report) is recorded in
   `dagger_export` still does not claim Host index parity (`identity_only`/narrowed)
   and Dagger `tach-check`/`lychee-check` keep their ad-hoc JSON. Three-entry-point
   parity is not claimed.
+- For a Dagger-exported `index`, `whitespace` can prove its own Source closure.
+  Native Git compares the captured baseline tree and Index tree using the target
+  tree's attributes, a fresh Git configuration and the exported object store.
+  The Result records the exact paths and Git settings observed before and after
+  the comparison. Independent reconciliation reconstructs the same input
+  reference from the captured Index and requires it on the native Result.
 - The `all-required` relation is real only for `docs` (`git` + Lychee). No
   production `allowed-alternative` instance exists yet; the alternative path is
   covered by controlled contract tests, and `after` edges are declared only

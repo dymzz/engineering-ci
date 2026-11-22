@@ -591,6 +591,17 @@ def _make_hygiene_runner(
     return _runner
 
 
+def _make_index_whitespace_runner(module, source, loop):
+    run = getattr(module, "_run_index_whitespace", None)
+    if run is None:
+        return None
+
+    def compare(git, paths):
+        return asyncio.run_coroutine_threadsafe(run(source, git, paths), loop).result()
+
+    return compare
+
+
 def _tag_command_prerequisites(entries):
     """Label module-local command prerequisites without fabricating Engine cache."""
     for entry in entries or ():
@@ -1085,6 +1096,9 @@ async def _execute_dag(
                             check_item,
                             root=consumer_root,
                             runner=runner,
+                            whitespace_runner=_make_index_whitespace_runner(
+                                module, consumer_source, loop
+                            ),
                             execution_context="dagger_export",
                             run_instance=run_instance,
                             artifact_paths=artifact_paths,
@@ -1607,6 +1621,9 @@ async def execute(
                     root=directory,
                     execution_context="dagger_export",
                     runner=_make_hygiene_runner(module, source, loop),
+                    whitespace_runner=_make_index_whitespace_runner(
+                        module, source, loop
+                    ),
                     profile_ref=verified_profile,
                     run_instance=identity["execution_ref"],
                 )

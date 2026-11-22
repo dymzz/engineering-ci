@@ -20,7 +20,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import check_contract
+from . import check_contract, git_source
 from ._paths import (
     SourcePathError,
     read_internal_linked_source,
@@ -681,29 +681,26 @@ def _whitespace(changes, root, runner, paths=None):
 
 def check_git_whitespace(root, *, base, tree=None, paths=None, runner=_run):
     """Run the native whitespace check against the worktree or a fixed tree."""
-    argv = ["git"]
-    if tree is not None:
-        argv.append(f"--attr-source={tree}")
-    argv.extend(("diff", "--check"))
-    if tree is not None:
-        argv.extend(("--no-ext-diff", "--no-textconv", base, tree))
-    else:
-        argv.append(base)
     if paths is not None and not paths:
         return _result("whitespace", "not_applicable", reason="no_changed_paths")
-    argv.append("--")
-    if paths is not None:
-        argv.extend(f":(literal){path}" for path in paths)
-    result = runner(argv, root)
-    if result.returncode == 0:
+    result = runner(
+        ["git", *git_source.whitespace_diff_args(base, tree=tree, paths=paths)], root
+    )
+    return whitespace_result(
+        result.returncode, stdout=result.stdout, stderr=result.stderr
+    )
+
+
+def whitespace_result(exit_code, *, stdout, stderr):
+    if exit_code == 0:
         return _result("whitespace", "passed", exit_code=0, executable="git")
     return _result(
         "whitespace",
         "failed",
-        exit_code=result.returncode,
-        reason="whitespace_errors" if result.returncode == 2 else "git_diff_failed",
-        stdout=result.stdout,
-        stderr=result.stderr,
+        exit_code=exit_code,
+        reason="whitespace_errors" if exit_code == 2 else "git_diff_failed",
+        stdout=stdout,
+        stderr=stderr,
         executable="git",
     )
 

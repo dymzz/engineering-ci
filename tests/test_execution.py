@@ -1509,7 +1509,7 @@ def test_first_commit_index_report_and_reconciliation(
 ):
     from test_reconciliation import _attach_effective_profile_policy
 
-    from engineering_ci import expected_checks, hook_checks, hooks
+    from engineering_ci import expected_checks, git_source, hook_checks, hooks
 
     path = tmp_path / "repository"
     path.mkdir()
@@ -1628,7 +1628,68 @@ def test_first_commit_index_report_and_reconciliation(
     assert bool(outcome["exit_code"]) == bool(native_exit)
     assert target.read_bytes() == working
 
+    with git_source.materialized_tree(path, changes.index_tree) as (source, _):
+        exported = tmp_path / "dagger-index"
+        shutil.copytree(source, exported, ignore=shutil.ignore_patterns(".git"))
+        git_source.add_git_context(source, exported, selected_plan["git"])
+        resolved = execution.build_source_resolution(
+            selected_plan, "whitespace", root=source, execution_context="dagger_export"
+        )
+    run(exported, "config", "--local", "core.whitespace", "-blank-at-eol")
+    attributes = exported / ".git" / "info" / "attributes"
+    attributes.parent.mkdir(parents=True, exist_ok=True)
+    attributes.write_bytes(b"*.py -whitespace\n")
+    report = execution.execute(
+        selected_plan, root=exported, execution_context="dagger_export"
+    )
+    whitespace = _whitespace_result(report)
+    native = whitespace["native_result"]
+    assert whitespace["exit_code"] == native_exit
+    assert native["source_ref"] == resolved["source_ref"]
+    assert native["source_ref"]["binding_status"] == "byte_tree"
+    comparison = next(
+        ref
+        for ref in native["input_refs"]
+        if ref["kind"] == "git_whitespace_comparison"
+    )
+    assert comparison in resolved["input_refs"]
+    assert comparison["base_tree"] == changes.base_tree
+    assert comparison["target_tree"] == changes.index_tree
+    assert comparison["git_config"]["core.whitespace"] is None
+    entry = next(item for item in expected["checks"] if item["name"] == "whitespace")
+    strict, status, reason = reconciliation.derive_strict_expected(entry, resolved)
+    assert (status, reason) == ("matched", None)
+    assert check_contract.evaluate_expected_satisfaction([native], strict)[
+        "status"
+    ] == ("unsatisfied" if native_exit else "satisfied")
+
     if not native_exit:
+        wrong_comparison = {
+            **comparison,
+            "git_config": {
+                **comparison["git_config"],
+                "core.whitespace": "-blank-at-eol",
+            },
+        }
+        strict["input_refs"] = [
+            wrong_comparison if ref == comparison else ref
+            for ref in strict["input_refs"]
+        ]
+        assert (
+            check_contract.evaluate_expected_satisfaction([native], strict)["status"]
+            == "unsatisfied"
+        )
+
+        alternates = exported / ".git" / "objects" / "info" / "alternates"
+        alternates.write_bytes(b"unapproved-object-store\n")
+        unconfined = execution.execute(
+            selected_plan, root=exported, execution_context="dagger_export"
+        )
+        check = _whitespace_result(unconfined)
+        assert check["status"] == "not_executed"
+        assert check["reason"] == "whitespace_comparison_inputs_unverified"
+        assert "whitespace_export_object_store_not_self_contained" in check["stderr"]
+
         filtered = hooks.persist_event(path, event)
         filtered_binding = hooks.load_invocation_binding(filtered.invocation_path)
         hook_checks.prepare(path, filtered_binding, split_checks=True)
@@ -4940,7 +5001,7 @@ def test_hook_whitespace_uses_isolated_tree_rules_and_rejects_local_config_parit
 ):
     from test_reconciliation import _attach_effective_profile_policy
 
-    from engineering_ci import expected_checks, hook_checks, hooks
+    from engineering_ci import expected_checks, git_source, hook_checks, hooks
 
     xdg_dir = tmp_path / "xdg"
     (xdg_dir / "git").mkdir(parents=True)
@@ -5088,6 +5149,32 @@ def test_hook_whitespace_uses_isolated_tree_rules_and_rejects_local_config_parit
     assert rec_doc["exit_code"] == 0, rec_doc["receipt"]["entries"]
     assert rec_doc["receipt"]["status"] == "matched"
     assert hook_checks.consume_index_result(path, binding_doc)["exit_code"] == 0
+
+    doc_plan = json.loads(inv_doc.invocation_path.with_suffix(".plan").read_bytes())[
+        "plan"
+    ]
+    with git_source.materialized_tree(
+        path, event_doc["index"]["tree"], head=event_doc["head_commit"]
+    ) as (source, _):
+        exported = tmp_path / "dagger-doc"
+        shutil.copytree(source, exported, ignore=shutil.ignore_patterns(".git"))
+        git_source.add_git_context(source, exported, doc_plan["git"])
+        resolved = execution.build_source_resolution(
+            doc_plan, "whitespace", root=source, execution_context="dagger_export"
+        )
+    report = execution.execute(
+        doc_plan, root=exported, execution_context="dagger_export"
+    )
+    native = _whitespace_result(report)["native_result"]
+    comparison = next(
+        ref
+        for ref in native["input_refs"]
+        if ref["kind"] == "git_whitespace_comparison"
+    )
+    assert native["source_ref"] == resolved["source_ref"]
+    assert comparison in resolved["input_refs"]
+    assert comparison["base_tree"] == run(path, "rev-parse", "HEAD^{tree}").strip()
+    assert native["native_exit_code"] == 0
 
 
 def test_push_delete_reconciles_with_local_before_and_blocks_missing_old_object(

@@ -25,6 +25,7 @@ from pathlib import Path
 from . import (
     check_contract,
     expected_checks,
+    git_source,
     hygiene,
     native_producer,
     plan_contract,
@@ -816,6 +817,8 @@ def _run_hygiene_checks(
     root,
     hygiene_config,
     runner,
+    execution_context="host",
+    whitespace_runner=None,
     extra_paths=(),
     generated_input_refs=(),
     check_omitted=True,
@@ -885,31 +888,44 @@ def _run_hygiene_checks(
         if "tach_external" not in selected_by_name and config.tach.external
         else config.tach
     )
-    run_config = dataclasses.replace(config, checks=checks, tach=effective_tach)
+    isolated_whitespace = "whitespace" in checks and _uses_exported_index_comparison(
+        plan, execution_context, extra_paths=extra_paths
+    )
+    remaining = (
+        tuple(name for name in checks if name != "whitespace")
+        if isolated_whitespace
+        else checks
+    )
+    run_config = dataclasses.replace(config, checks=remaining, tach=effective_tach)
     run_kwargs = {"root": root, "runner": runner or hygiene._run}
     if code_prefixes is not None:
         run_kwargs["code_prefixes"] = code_prefixes
     ws_before = None
     ws_err_before = None
     ws_tree = changes.index_tree if changes.base_tree is not None else None
-    if "whitespace" in checks:
+    if "whitespace" in remaining:
         ws_before, ws_err_before = _effective_git_whitespace_config(
             root, changes.paths, tree=ws_tree
         )
-    report = hygiene.run(
-        changes,
-        run_config,
-        **run_kwargs,
+    report = (
+        hygiene.run(changes, run_config, **run_kwargs) if remaining else {"checks": []}
     )
+    if isolated_whitespace:
+        report["checks"].insert(
+            checks.index("whitespace"),
+            _run_exported_index_whitespace(
+                root, plan["git"], changes.paths, whitespace_runner
+            ),
+        )
     ws_after = None
     ws_err_after = None
-    if "whitespace" in checks:
+    if "whitespace" in remaining:
         ws_after, ws_err_after = _effective_git_whitespace_config(
             root, changes.paths, tree=ws_tree
         )
     results = []
     seen = set()
-    any_failed = report["status"] == "failed"
+    any_failed = report.get("status") == "failed"
     for native in report["checks"]:
         name = native["name"]
         authorized = name in selected_by_name
@@ -924,7 +940,7 @@ def _run_hygiene_checks(
         if name == "docs":
             # The git inventory is a real native input step of this Check.
             payload["inventory"] = report.get("inventory")
-        if name == "whitespace":
+        if name == "whitespace" and not isolated_whitespace:
             if (
                 ws_err_before is None
                 and ws_err_after is None
@@ -3410,14 +3426,25 @@ def _verified_check_source_ref(
             or selection.directory_content_id(base_path) != workflow_tree
         ):
             return None
-    elif not _closure_supported(
-        name,
-        root=resolved_root,
-        execution_context=execution_context,
-        hygiene_config=loaded_hyg,
-        item=item,
-    ) and not _closed_tree_check(
-        plan, name, resolved_root, base_path, execution_context, sources_config
+    elif (
+        not (
+            name == "whitespace"
+            and _uses_exported_index_comparison(
+                plan, execution_context, extra_paths=artifact_paths
+            )
+            and resolved_root == base_path
+            and item.get("git_whitespace_comparison") is not None
+        )
+        and not _closure_supported(
+            name,
+            root=resolved_root,
+            execution_context=execution_context,
+            hygiene_config=loaded_hyg,
+            item=item,
+        )
+        and not _closed_tree_check(
+            plan, name, resolved_root, base_path, execution_context, sources_config
+        )
     ):
         return None
     git = plan.get("git") or {}
@@ -4089,119 +4116,67 @@ def _active_tool_identities(definition, rule_ref):
     ]
 
 
-def _effective_whitespace_attributes(root_path, paths, *, tree=None):
-    """All final Git attributes per checked path via `git check-attr -a`.
-
-    Uses Git itself so every attribute source (info/attributes, explicit or
-    default user-level attributes, in-tree .gitattributes) is resolved with
-    Git's own precedence under the same environment as the native check. All\r\n    attributes are bound because git diff --check is also affected by e.g.\r\n    conflict-marker-size and diff, not only whitespace.
-    """
-    unique = sorted({str(p).replace("\\", "/") for p in paths or () if p})
-    if not unique:
-        return _canonical_sha256([]), None
-    payload = b"".join(p.encode("utf-8") + b"\0" for p in unique)
-    attr_source = [f"--attr-source={tree}"] if tree is not None else []
-    try:
-        res = subprocess.run(
-            ["git", *attr_source, "check-attr", "-a", "-z", "--stdin"],
-            cwd=root_path,
-            input=payload,
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return None, "whitespace_config_unreadable"
-    if res.returncode != 0:
-        return None, "whitespace_config_unreadable"
-    fields = res.stdout.split(b"\0")
-    if fields and fields[-1] == b"":
-        fields.pop()
-    if len(fields) % 3 != 0:
-        return None, "whitespace_config_unreadable"
-    known = set(unique)
-    effective = []
-    for index in range(0, len(fields), 3):
-        path = fields[index].decode("utf-8", errors="replace")
-        if path not in known:
-            return None, "whitespace_config_unreadable"
-        effective.append(
-            [
-                path,
-                fields[index + 1].decode("utf-8", errors="replace"),
-                fields[index + 2].decode("utf-8", errors="replace"),
-            ]
-        )
-    return _canonical_sha256(sorted(effective)), None
-
-
 def _effective_git_whitespace_config(root, paths=(), *, tree=None):
-    if root is None:
+    if root is None or selection._resolve_git_dir(root) is None:
         return None, "whitespace_config_unreadable"
-    root_path = Path(root)
-    git_dir = selection._resolve_git_dir(root_path)
-    if git_dir is None:
-        return None, "whitespace_config_unreadable"
-    res = selection._git(root_path, "config", "--get", "core.whitespace")
-    if res.returncode == 1:
-        core_ws = None
-    elif res.returncode == 0:
-        core_ws = res.stdout.strip()
-    else:
-        return None, "whitespace_config_unreadable"
-
-    info_res = selection._git(root_path, "rev-parse", "--git-path", "info/attributes")
-    if info_res.returncode != 0 or not info_res.stdout.strip():
-        return None, "whitespace_config_unreadable"
-    info_raw = Path(info_res.stdout.strip())
-    info_attrs = info_raw if info_raw.is_absolute() else (root_path / info_raw)
     try:
-        if info_attrs.is_file():
-            info_attrs_sha = hashlib.sha256(info_attrs.read_bytes()).hexdigest()
-        elif info_attrs.exists():
-            return None, "whitespace_config_unreadable"
-        else:
-            info_attrs_sha = None
-    except OSError:
+        return git_source.whitespace_settings(root, paths, tree=tree), None
+    except (git_source.GitSourceError, OSError):
         return None, "whitespace_config_unreadable"
 
-    attr_res = selection._git(
-        root_path, "config", "--path", "--get", "core.attributesfile"
+
+def _uses_exported_index_comparison(plan, execution_context, *, extra_paths=()):
+    return (
+        execution_context == "dagger_export"
+        and plan["git"].get("snapshot") == "index"
+        and bool(plan["git"].get("source_tree_id"))
+        and not extra_paths
     )
-    if attr_res.returncode == 1:
-        core_attrs = None
-    elif attr_res.returncode == 0:
-        raw_attr = attr_res.stdout.strip()
-        if not raw_attr:
-            core_attrs = None
-        else:
-            attr_raw = Path(raw_attr)
-            attr_path = attr_raw if attr_raw.is_absolute() else (root_path / attr_raw)
-            try:
-                if attr_path.is_file():
-                    core_attrs = (
-                        "sha256:" + hashlib.sha256(attr_path.read_bytes()).hexdigest()
-                    )
-                elif attr_path.exists():
-                    return None, "whitespace_config_unreadable"
-                else:
-                    core_attrs = f"missing:{attr_path.as_posix()}"
-            except OSError:
-                return None, "whitespace_config_unreadable"
+
+
+def _run_exported_index_whitespace(root, git, paths, runner):
+    if not paths:
+        return hygiene._result(
+            "whitespace", "not_applicable", reason="no_changed_paths"
+        )
+    outcome = (
+        runner(git, paths)
+        if runner is not None
+        else git_source.run_exported_index_whitespace(root, git, paths)
+    )
+    code = outcome.get("exit_code")
+    if type(code) is not int:
+        return {
+            "name": "whitespace",
+            "status": "not_executed",
+            "reason": "whitespace_comparison_inputs_unverified",
+            "stderr": outcome.get("stderr") or "",
+            "execution_started": False,
+        }
+    result = hygiene.whitespace_result(
+        code, stdout=outcome["stdout"], stderr=outcome["stderr"]
+    )
+    comparison = outcome.get("comparison")
+    if comparison is not None:
+        result["git_whitespace_comparison"] = comparison
+        result["git_whitespace_config"] = comparison["git_config"]
     else:
-        return None, "whitespace_config_unreadable"
+        result["git_whitespace_config_drifted"] = True
+    return result
 
-    effective_attrs, attrs_err = _effective_whitespace_attributes(
-        root_path, paths, tree=tree
-    )
-    if attrs_err is not None:
-        return None, attrs_err
 
-    return {
-        "core.whitespace": core_ws,
-        "info_attributes_sha256": info_attrs_sha,
-        "core_attributes_file_sha256": core_attrs,
-        "effective_git_attributes_sha256": effective_attrs,
-    }, None
+def _resolve_exported_index_whitespace(root, git, paths):
+    try:
+        with git_source.isolated_index_comparison(root, git, exported=False) as (
+            checkout,
+            env,
+            base,
+        ):
+            return git_source.whitespace_comparison_ref(
+                checkout, env, base=base, target=git["execution_tree"], paths=paths
+            )
+    except (git_source.GitSourceError, OSError) as error:
+        raise ExecutionError("whitespace_comparison_inputs_unverified") from error
 
 
 def _verify_pre_execution_prerequisites(
@@ -5022,6 +4997,8 @@ def build_source_resolution(
             ),
             {"name": check_name, "inputs": []},
         )
+        # A serialized check scope cannot supply an observation of Git inputs.
+        scope_item.pop("git_whitespace_comparison", None)
         if gen_refs:
             scope_item["generated_input_refs"] = gen_refs
             scope_item["generated_inputs_retained"] = True
@@ -5037,6 +5014,21 @@ def build_source_resolution(
             base_root=resolved_root if art_tuples else None,
         )
         input_refs = [cfg_input]
+        whitespace_comparison = None
+        if (
+            check_name == "whitespace"
+            and not gen_refs
+            and _uses_exported_index_comparison(
+                eval_plan, effective_execution_context, extra_paths=art_paths
+            )
+        ):
+            whitespace_comparison = _resolve_exported_index_whitespace(
+                work_root,
+                eval_plan["git"],
+                _changeset_from_plan(eval_plan, work_root).paths,
+            )
+            scope_item["git_whitespace_comparison"] = whitespace_comparison
+            input_refs.append(whitespace_comparison)
         if check_name == eval_plan["selection"].get("framework", "unittest"):
             input_refs.extend(_test_target_inputs(eval_plan, matched_expected))
         for ref in gen_refs:
@@ -5146,7 +5138,7 @@ def build_source_resolution(
             "source_ref": source_ref,
             "rule_source_ref": rule_source_ref,
         }
-        if workflow_check or gen_refs:
+        if workflow_check or gen_refs or whitespace_comparison is not None:
             receipt_payload["input_refs"] = input_refs
         producer_exec_ident = None
         if handoff_verified is not None:
@@ -5338,6 +5330,9 @@ def _input_refs(rule, item=None):
     for path in (item or {}).get("inputs") or ():
         if isinstance(path, str) and path:
             refs.append({"kind": "changed_path", "path": path})
+    comparison = (item or {}).get("git_whitespace_comparison")
+    if comparison is not None:
+        refs.append(comparison)
     return refs
 
 
@@ -5861,6 +5856,7 @@ def run_host_check(
     selection_config=None,
     policy_admission=None,
     runner=None,
+    whitespace_runner=None,
     execution_context="host",
     run_instance=None,
     artifact_paths=(),
@@ -5910,6 +5906,8 @@ def run_host_check(
             root=root,
             hygiene_config=hygiene_config,
             runner=runner,
+            execution_context=execution_context,
+            whitespace_runner=whitespace_runner,
             extra_paths=artifact_paths,
             generated_input_refs=generated_input_refs,
             check_omitted=False,
@@ -6748,6 +6746,7 @@ def execute(
     prerequisite_actions=None,
     execution_context="host",
     runner=None,
+    whitespace_runner=None,
     run_instance=None,
     profile_ref=None,
     admitted_external_targets=None,
@@ -6909,6 +6908,8 @@ def execute(
         root=root,
         hygiene_config=hygiene_config,
         runner=runner,
+        execution_context=execution_context,
+        whitespace_runner=whitespace_runner,
         check_omitted=check_names is None,
     )
     source_result, _ = _run_source_check(
