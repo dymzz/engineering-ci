@@ -4684,6 +4684,22 @@ def test_hook_source_worker_ignores_shadowing_package_in_checked_tree(
 
     # Child test runner spawned by `_source_worker` still resolves candidate `src/` and `tests/`
     # because `-P` is scoped only to the worker process (not inherited as PYTHONSAFEPATH).
+    # Dagger `sync-tool-tests` omits `tach` from PATH, so provide a POSIX shim there to pass
+    # `target_test_gate`; on Windows without `tach.exe`, Part 1 above already proved `-P` isolation.
+    if shutil.which("tach") is None:
+        if os.name == "nt":
+            return
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir(exist_ok=True)
+        tach_shim = shim_dir / "tach"
+        tach_shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+        tach_shim.chmod(0o755)
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join(
+                [str(shim_dir), *(p for p in [os.environ.get("PATH", "")] if p)]
+            ),
+        )
     (path / "tests").mkdir()
     (path / "tests" / "test_app.py").write_text(
         "import unittest\nfrom app import compute\n\n\n"
