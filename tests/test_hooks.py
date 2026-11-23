@@ -960,7 +960,7 @@ def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
     assert git(tmp_path, "show", "HEAD:a.txt") == "staged"
 
 
-def test_lefthook_install_leaves_pre_push_disabled_and_framed_push_runs_without_forwarded_argv(
+def test_lefthook_installs_pre_push_and_frames_the_original_git_arguments(
     tmp_path,
 ):
     repo_root = Path(__file__).parents[1].resolve()
@@ -983,7 +983,7 @@ def test_lefthook_install_leaves_pre_push_disabled_and_framed_push_runs_without_
     )
     assert install_default.returncode == 0, install_default.stderr
     assert (default_repo / ".git" / "hooks" / "pre-commit").is_file()
-    assert not (default_repo / ".git" / "hooks" / "pre-push").exists()
+    assert (default_repo / ".git" / "hooks" / "pre-push").is_file()
 
     remote = tmp_path / "remote repo.git"
     subprocess.run(
@@ -998,7 +998,7 @@ def test_lefthook_install_leaves_pre_push_disabled_and_framed_push_runs_without_
     git(push_repo, "config", "user.name", "Hooks Test")
     repo_yml = (repo_root / "lefthook.yml").read_text(encoding="utf-8")
     enabled_yml = (
-        repo_yml
+        repo_yml.split("\npre-push:\n", 1)[0]
         + "\npre-push:\n  jobs:\n    - name: capture-push\n      use_stdin: true\n"
         + "      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin --json\n"
     )

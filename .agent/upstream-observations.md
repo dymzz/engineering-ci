@@ -183,3 +183,19 @@
   `WinError 32` while removing its Windows temporary workspace after export.
   The process holding the handle was undetermined. Windows cleanup is
   best-effort after the verified bundle is retained.
+
+## Lefthook 2.2.2: push file selection can skip a Ref event
+
+- Status: reproduced with installed Windows Lefthook during #153 validation.
+- Evidence: in a real ECI checkout whose branch was current with its upstream,
+  `git push origin HEAD:main HEAD:refs/heads/feature/push-policy` updated both
+  destination Refs. Lefthook reported `capture-refs (skip) no matching push files`,
+  Git exited 0 and no Hook Invocation was recorded.
+- The pinned [PushFiles implementation](https://github.com/evilmartians/lefthook/blob/v2.2.2/internal/git/wrapper/push_files.go)
+  first compares the current HEAD with `@{push}`. That comparison can be empty
+  during an explicit push to a different remote or target Ref.
+- Integration: a nonempty `files` command alone still falls through to the push
+  file check in the pinned [command builder](https://github.com/evilmartians/lefthook/blob/v2.2.2/internal/run/controller/command/build_command.go).
+  Use the native [job-level files option](https://lefthook.dev/configuration/files/)
+  with `{files}` to activate the capture Job from the Hook configuration path.
+  Git's stdin supplies the Ref updates for Source binding and final reconciliation.

@@ -528,7 +528,14 @@ def _match_profile_event(profile, git):
         allowed_targets = set(declared_targets)
     else:
         allowed_targets = {profile.get("target")}
-    if not expected_targets or not (expected_targets <= allowed_targets):
+    if snapshot in {"push", "multi"}:
+        covered = all(
+            isinstance(target, str) and _target_matches(target, allowed_targets)
+            for target in expected_targets
+        )
+    else:
+        covered = expected_targets <= allowed_targets
+    if not expected_targets or not covered:
         raise ExpectedError("effective_profile_event_mismatch")
 
 

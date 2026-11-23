@@ -629,6 +629,26 @@ def _sample_effective_profile(
     )
 
 
+def test_push_profile_prefix_only_matches_covered_refs_and_actions():
+    profile = _sample_effective_profile(
+        context="push", action="update", target="refs/heads/team/*"
+    )
+    git = {
+        "snapshot": "push",
+        "head_ref": "refs/heads/team/feature",
+        "ref_action": "update",
+    }
+    assert expected_checks.validate_effective_profile(profile, git=git) == profile
+    for change in (
+        {"head_ref": "refs/heads/team-other/feature"},
+        {"ref_action": "delete"},
+    ):
+        with pytest.raises(
+            expected_checks.ExpectedError, match="effective_profile_event_mismatch"
+        ):
+            expected_checks.validate_effective_profile(profile, git={**git, **change})
+
+
 def test_profile_plan_validates_with_selection_hygiene_defaults(repo):
     path, base = repo
     (path / "ci-hygiene.toml").unlink()

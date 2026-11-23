@@ -80,26 +80,34 @@ Git 须支持 `--attr-source` 和 `show-ref --exists`。
 要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
 `uv run --locked --no-sync python -P -m engineering_ci.cli hooks check pre-commit --json`。
 
-配置推送检查时，在 `ci-selection.toml` 的 `[push].effective_profiles` 列出
-Ref 树内的策略文件，并用 `[[effective_profile]]` 分别登记适用动作的审批。
-新建 Ref 的比较基线由目标树里的 `[push]` 策略提供。删除在本地存在旧对象时使用
-该旧对象中的删除策略并保留删除义务与本地收据；若本地缺少该旧对象，因无法证明删除审批策略而直接阻断。`pre-push-checks` 从各 Ref 的实际树读取配置。
+本仓的 `lefthook install` 安装 `pre-commit` 和 `pre-push`。同次推送的每个 Ref
+在自己的目标树内读取 `ci-selection.toml`、`ci-hygiene.toml` 和对应动作的
+[Profile](../config/hook-profiles)。`refs/*` 下指向提交的新建、更新和强制更新
+执行原生 Git 空白检查。新建以本机记录的 `refs/remotes/origin/main` 为比较基线，
+更新和强推使用 Git 交付的旧对象。删除读取待删 Ref 的本地旧树，保留 `ref_deletion`
+及逐 Ref 回执。`select_tests = false` 仅用于本地推送的测试选择，完整工程检查走 `verify`。
 
-启用隔离验收时，给 Lefthook 增加以下原生入口。Job 独占 Git 的 stdin，外层
-在子任务成功后消费同一次 Invocation 的逐 Ref Receipt，缺失最终对账时阻断。
+启用前将本仓策略带入要推送的分支。首次推送新 Ref 前，若本机还没有主线跟踪引用，
+先获取 `origin/main`。缺少已声明基线、目标树策略、删除旧对象或最终回执时，Git 拒绝推送。
+修改 Profile 时，在 `ci-selection.toml` 的 `[push].effective_profiles` 登记目标树内
+的文件，并同步更新对应 `[[effective_profile]]` 的修订和审批摘要。
+
+本仓使用以下原生入口。`files` 与 `{files}` 用 Hook 配置路径唤醒采集 Job。
+Lefthook 默认的 push files 比较可能为空，实际 Ref 来自 Git 的 stdin。
+子任务成功后消费同一次 Invocation 的逐 Ref Receipt，缺失最终对账时阻断。
 
 ```yaml
 pre-push:
   jobs:
     - name: capture-refs
       use_stdin: true
+      files: printf '%s\n' lefthook.yml
       run: |
+        : {files}
         invocation=$(uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin) || exit $?
         ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-push-checks --no-auto-install || exit $?
         uv run --locked --no-sync python -P -m engineering_ci.cli hooks consume pre-push --invocation-ref "$invocation"
 ```
-
-本仓的 `pre-push` 默认安装仍待实际 Scope/Profile。生产配置及启用状态由 #152 记录。
 
 `uv run --locked --no-sync lefthook run verify --no-auto-install` 运行 Dagger 的
 lint、格式、版本与锁文件检查和核心测试。各项保留原生结果，Lefthook 汇总退出。

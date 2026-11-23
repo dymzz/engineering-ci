@@ -992,6 +992,31 @@ def test_push_snapshot_uses_before_after_commits(repo):
     assert pushed.paths == ("src/pkg/other.py",)
 
 
+def test_push_policy_disables_test_selection_only_for_push(repo):
+    path, base = repo
+    config_path = path / "ci-selection.toml"
+    with config_path.open("ab") as stream:
+        stream.write(b"\n[push]\nselect_tests = false\n")
+    cfg = config(path)
+    restored = selection.config_from_identity(
+        selection.config_identity(config_path, cfg)
+    )
+    assert restored.push.select_tests is False
+    (path / "src/pkg/sub.py").write_bytes(b"VALUE = 8\n")
+    run(path, "add", "src/pkg/sub.py")
+    run(path, "commit", "-qm", "Change mapped source")
+    head = run(path, "rev-parse", "HEAD").strip()
+    pushed = changes(path, base=base, mode="push", before=base, after=head)
+
+    assert selection.select(pushed, restored, root=path).status == "no_tests"
+    assert (
+        "tests.test_sub"
+        in selection.select(pushed, restored, root=path, full=True).tests
+    )
+    committed = selection.changeset(path, base=base, head=head, mode="commit")
+    assert "tests.test_sub" in selection.select(committed, restored, root=path).tests
+
+
 def test_pr_merge_snapshot_records_merge_tree(repo):
     path, base = repo
     run(path, "checkout", "-q", "-b", "feature")

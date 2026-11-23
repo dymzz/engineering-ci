@@ -1,0 +1,51 @@
+schema_version = 1
+framework = "pytest"
+checks = ["hygiene"]
+
+[push]
+# New refs compare against the last observed main of the project remote.
+new_ref_baseline = "refs/remotes/origin/main"
+# Core tests run through the explicit Lefthook verify entrypoint.
+select_tests = false
+effective_profiles = [
+    "config/hook-profiles/create.json",
+    "config/hook-profiles/update.json",
+    "config/hook-profiles/force-update.json",
+    "config/hook-profiles/delete.json",
+]
+
+# create
+[[effective_profile]]
+profile_ref = { name = "eci/local-push", version = "1.0.0" }
+profile_revision = "1"
+approval_source = "project-governance"
+approval_digest = "sha256:061a3169d81e15fbaa0239d6cf4bc6a5db7fef6b83bc1346b37196799231e631"
+effective_at = "2026-11-22T16:00:00Z"
+declared_checks = ["whitespace"]
+
+# update
+[[effective_profile]]
+profile_ref = { name = "eci/local-push", version = "1.0.0" }
+profile_revision = "1"
+approval_source = "project-governance"
+approval_digest = "sha256:90cd64342009ad526eda13b8b11aef663ff25853ce5a736c08b9b32bc57877e7"
+effective_at = "2026-11-22T16:00:00Z"
+declared_checks = ["whitespace"]
+
+# force_update
+[[effective_profile]]
+profile_ref = { name = "eci/local-push", version = "1.0.0" }
+profile_revision = "1"
+approval_source = "project-governance"
+approval_digest = "sha256:2b043d767e83a6c93de10afe1bd92dc00bea46c8df39ac418bb213cc2c9e4971"
+effective_at = "2026-11-22T16:00:00Z"
+declared_checks = ["whitespace"]
+
+# delete
+[[effective_profile]]
+profile_ref = { name = "eci/local-push", version = "1.0.0" }
+profile_revision = "1"
+approval_source = "project-governance"
+approval_digest = "sha256:8e6a2f9f979770e3be648bd83cb315b9ca1b565a8a81ed519d107edfd8353f55"
+effective_at = "2026-11-22T16:00:00Z"
+declared_checks = ["whitespace"]

@@ -114,9 +114,13 @@ executor refuses to attribute one run to them: `multi_ref_requires_per_ref_execu
 Hook `pre-push` already implements per-ref planning, isolated execution, and
 per-ref receipts in `engineering_ci.hook_checks` (`prepare_push()`,
 `run_push_checks()`, `reconcile_push()`, `consume_push_result()`) invoked by
-`lefthook.yml`'s `pre-push-checks`; default top-level `pre-push:` enablement in
-`lefthook.yml` (pending repo Scope/Profile) and generic non-Hook multi-ref
-execution orchestration remain open.
+`lefthook.yml`'s `pre-push-checks`. The repository enables it via the top-level
+`pre-push` job and tracks the local push policy in `ci-selection.toml`.
+Push Profiles bind an action and exact Ref or a Ref prefix ending in `/*`.
+Every captured Ref must match a Profile. `[push].select_tests = false` limits
+test selection for this push policy. Other snapshots and explicit full-suite
+selection still use the configured framework. Generic non-Hook multi-ref
+execution remains a per-ref caller responsibility.
 
 ## Per-check impact (not a global ignore)
 

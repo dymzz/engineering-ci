@@ -109,6 +109,7 @@ class PushPolicyConfig:
     new_ref_baseline: str | None = None
     target_baselines: dict[str, str] = field(default_factory=dict)
     effective_profiles: tuple[str, ...] = ()
+    select_tests: bool = True
 
 
 @dataclass(frozen=True)
@@ -481,7 +482,11 @@ def _parse_config_bytes(raw):
         "new_ref_baseline",
         "target_baselines",
         "effective_profiles",
+        "select_tests",
     }:
+        raise SelectionError("push_policy_invalid")
+    select_push_tests = push_raw.get("select_tests", True)
+    if type(select_push_tests) is not bool:
         raise SelectionError("push_policy_invalid")
     new_ref_base = (
         _text(push_raw["new_ref_baseline"], "new_ref_baseline")
@@ -501,6 +506,7 @@ def _parse_config_bytes(raw):
         effective_profiles=_string_list(
             push_raw.get("effective_profiles", []), "push_effective_profiles"
         ),
+        select_tests=select_push_tests,
     )
     effective_profile_policy = _parse_effective_profile_approvals(
         value.get("effective_profile")
@@ -701,6 +707,7 @@ def _normalize_config(config):
                 if config.push.effective_profiles
                 else {}
             ),
+            **({"select_tests": False} if not config.push.select_tests else {}),
         },
         "effective_profile": config.effective_profile_policy,
         "dependency_edges": json.loads(
@@ -819,6 +826,9 @@ def config_from_identity(identity):
         raise SelectionError("config_identity_mismatch")
     scope = norm.get("check_scope") or {}
     push_raw = norm.get("push") or {}
+    select_push_tests = push_raw.get("select_tests", True)
+    if type(select_push_tests) is not bool:
+        raise SelectionError("config_identity_invalid")
     return Config(
         schema_version=int(norm.get("schema_version", SCHEMA_VERSION)),
         tach=str(norm.get("tach", "tach.toml")),
@@ -871,6 +881,7 @@ def config_from_identity(identity):
             new_ref_baseline=push_raw.get("new_ref_baseline"),
             target_baselines=dict(push_raw.get("target_baselines") or {}),
             effective_profiles=tuple(push_raw.get("effective_profiles") or ()),
+            select_tests=select_push_tests,
         ),
         effective_profile_policy=norm.get("effective_profile"),
         workflow_checks=WorkflowChecksConfig(
@@ -2193,6 +2204,21 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             status="not_applicable",
             escalated=False,
             reasons={"skipped": ["remote_ref_deleted"]},
+            base_prerequisites=frozenset(),
+        )
+    if (
+        changes.snapshot == "push"
+        and changes.complete
+        and not config.push.select_tests
+        and not full
+    ):
+        return Selection(
+            changeset=changes,
+            tests=(),
+            checks=config.checks,
+            status="no_tests",
+            escalated=False,
+            reasons={"skipped": ["Test selection is disabled by the push policy"]},
             base_prerequisites=frozenset(),
         )
     tests_dir = root / config.tests_dir

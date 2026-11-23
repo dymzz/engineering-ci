@@ -9,7 +9,13 @@ import pytest
 from test_hooks import _git_sh_env, git
 from test_reconciliation import _attach_effective_profile_policy
 
-from engineering_ci import check_contract, dagger_plan, expected_checks, hooks
+from engineering_ci import (
+    check_contract,
+    dagger_plan,
+    expected_checks,
+    hooks,
+    selection,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 LEFTHOOK = ("uv", "run", "--locked", "--no-sync", "lefthook")
@@ -18,16 +24,6 @@ INDEX_SELECTION = (
     'ignored_files = ["ci-selection.toml", "ci-hygiene.toml", '
     '"ci-effective-profile.json", "tach.toml", "lefthook.yml"]\n'
 )
-PRE_PUSH = """
-pre-push:
-  jobs:
-    - name: capture-refs
-      use_stdin: true
-      run: |
-        invocation=$(uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin) || exit $?
-        ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-push-checks --no-auto-install || exit $?
-        uv run --locked --no-sync python -P -m engineering_ci.cli hooks consume pre-push --invocation-ref "$invocation"
-"""
 
 
 @pytest.fixture
@@ -274,8 +270,7 @@ def test_installed_lefthook_captures_linked_worktree_index_and_push_refs(
     root = tmp_path / "primary"
     linked = tmp_path / "linked worktree"
     remote = tmp_path / "remote repository.git"
-    config = (ROOT / "lefthook.yml").read_text(encoding="utf-8") + PRE_PUSH
-    _init(root, hook_env, config=config)
+    _init(root, hook_env)
     checks = ("whitespace",)
     source = _source(root, "sample", checks)
     source.write_bytes(b"VALUE = 1\n")
@@ -347,6 +342,111 @@ def test_installed_lefthook_captures_linked_worktree_index_and_push_refs(
 
     assert linked_source.read_bytes() == dirty_bytes
     assert not list(_invocations(root, hook_env).glob("*.json"))
+
+
+def test_default_pre_push_uses_the_repository_profiles(tmp_path, hook_env):
+    root = tmp_path / "repo"
+    remote = tmp_path / "local remote.git"
+    upstream = tmp_path / "upstream.git"
+    _init(root, hook_env)
+    source = root / "sample.py"
+    source.write_bytes(b"VALUE = 1\n")
+    (root / "tests").mkdir()
+    (root / "tests/test_example.py").write_bytes(
+        b"def test_example():\n    assert True\n"
+    )
+    git(root, "add", "--all", env=hook_env)
+    git(root, "commit", "-qm", "Baseline before the push policy", env=hook_env)
+    baseline = git(root, "rev-parse", "HEAD", env=hook_env)
+    git(root, "init", "--bare", "-q", "--template=", str(remote), env=hook_env)
+    git(root, "remote", "add", "origin", str(remote), env=hook_env)
+    git(root, "push", "-q", "origin", "main", env=hook_env)
+
+    cfg = selection.load_config(ROOT / "ci-selection.toml")
+    for name in ("ci-selection.toml", "ci-hygiene.toml", *cfg.push.effective_profiles):
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / name).read_bytes().replace(b"\r\n", b"\n"))
+    git(root, "add", "--all", env=hook_env)
+    git(root, "commit", "-qm", "Adopt the repository push policy", env=hook_env)
+    policy_base = git(root, "rev-parse", "HEAD", env=hook_env)
+    source.write_bytes(b"VALUE = 2\n")
+    git(root, "commit", "-qam", "Main update", env=hook_env)
+    main = git(root, "rev-parse", "HEAD", env=hook_env)
+    git(root, "switch", "-qc", "feature/topic", policy_base, env=hook_env)
+    source.write_bytes(b"VALUE = 3\n")
+    git(root, "commit", "-qam", "Feature update", env=hook_env)
+    topic = git(root, "rev-parse", "HEAD", env=hook_env)
+    git(root, "tag", "-a", "candidate", "-m", "Annotated candidate", env=hook_env)
+    tag = git(root, "rev-parse", "refs/tags/candidate", env=hook_env)
+    git(root, "switch", "-qc", "rejected", env=hook_env)
+    source.write_bytes(b"VALUE = 4 \n")
+    git(root, "commit", "-qam", "Commit with trailing whitespace", env=hook_env)
+    git(root, "switch", "-q", "feature/topic", env=hook_env)
+    git(root, "init", "--bare", "-q", "--template=", str(upstream), env=hook_env)
+    git(root, "remote", "add", "upstream", str(upstream), env=hook_env)
+    git(root, "push", "-qu", "upstream", "feature/topic", env=hook_env)
+    git(root, "config", "push.default", "simple", env=hook_env)
+    git(root, "config", "remote.pushDefault", "upstream", env=hook_env)
+    assert git(root, "diff", "--name-only", "HEAD", "@{push}", env=hook_env) == ""
+    _run(root, hook_env, *LEFTHOOK, "install")
+    directory = _invocations(root, hook_env)
+
+    def push(*refspecs, env=hook_env, exit_code=0):
+        previous = set(directory.glob("*.json"))
+        result = _run(
+            root, env, "git", "push", "origin", *refspecs, exit_code=exit_code
+        )
+        return _new_invocation(directory, result, previous), result
+
+    binding, _ = push("main:main", "feature/topic:feature/topic", "refs/tags/candidate")
+    prepared = _artifact(binding, ".plan")
+    receipts = _artifact(binding, ".receipt")["receipts"]
+    assert prepared["dagger_module"] is None
+    assert {
+        plan["git"]["head_ref"]: (plan["git"]["ref_action"], plan["git"]["head_commit"])
+        for plan in prepared["plan"]
+    } == {
+        "refs/heads/main": ("update", main),
+        "refs/heads/feature/topic": ("create", topic),
+        "refs/tags/candidate": ("create", topic),
+    }
+    for plan, receipt in zip(prepared["plan"], receipts, strict=True):
+        assert plan["git"]["base_commit"] == baseline
+        assert plan["expected_checks"]["authority_status"] == "verified"
+        assert plan["selection"]["tests"] == []
+        assert receipt["status"] == "matched"
+        assert receipt["expected_invocation_ref"] == binding.invocation_ref
+        assert receipt["trusted"] is False and receipt["required"] is False
+    assert git(remote, "rev-parse", "refs/heads/main", env=hook_env) == main
+    assert git(remote, "rev-parse", "refs/heads/feature/topic", env=hook_env) == topic
+    assert git(remote, "rev-parse", "refs/tags/candidate", env=hook_env) == tag
+
+    binding, _ = push("rejected:feature/topic", exit_code=1)
+    receipt = _artifact(binding, ".receipt")["receipts"][0]
+    assert receipt["entries"][0]["binding_status"] == "insufficient"
+    report = _artifact(binding, ".execution-0")["report"]
+    assert report["checks"][0]["native_result"]["native_exit_code"] == 2
+    assert git(remote, "rev-parse", "refs/heads/feature/topic", env=hook_env) == topic
+
+    binding, _ = push("+main:feature/topic", ":refs/tags/candidate")
+    plans = _artifact(binding, ".plan")["plan"]
+    assert {plan["git"]["ref_action"] for plan in plans} == {"force_update", "delete"}
+    deleted = next(plan for plan in plans if plan["git"]["ref_action"] == "delete")
+    assert deleted["git"]["non_check_obligations"] == ["ref_deletion"]
+    assert deleted["git"]["execution_tree"] is None
+    assert [r["status"] for r in _artifact(binding, ".receipt")["receipts"]] == [
+        "matched",
+        "matched",
+    ]
+    assert git(remote, "rev-parse", "refs/heads/feature/topic", env=hook_env) == main
+    assert not git(remote, "tag", "--list", "candidate", env=hook_env)
+
+    excluded = {**hook_env, "LEFTHOOK_EXCLUDE": "reconcile-push"}
+    binding, result = push("main:next", env=excluded, exit_code=1)
+    assert "hook_final_result_missing" in result.stderr
+    assert not binding.invocation_path.with_suffix(".receipt").exists()
+    assert not git(remote, "branch", "--list", "next", env=hook_env)
 
 
 def test_installed_lefthook_uses_pinned_dagger_module(tmp_path, hook_env):

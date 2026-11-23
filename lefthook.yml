@@ -109,6 +109,18 @@ pre-commit-checks:
     - name: reconcile-index
       run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks reconcile pre-commit --invocation-ref "$ECI_HOOK_INVOCATION_REF"
 
+pre-push:
+  jobs:
+    - name: capture-refs
+      use_stdin: true
+      # The single config path activates this Job through Lefthook's file template.
+      files: printf '%s\n' lefthook.yml
+      run: |
+        : {files}
+        invocation=$(uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin) || exit $?
+        ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-push-checks --no-auto-install || exit $?
+        uv run --locked --no-sync python -P -m engineering_ci.cli hooks consume pre-push --invocation-ref "$invocation"
+
 pre-push-checks:
   jobs:
     - name: prepare-push-plan
