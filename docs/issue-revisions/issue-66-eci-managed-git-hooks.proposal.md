@@ -68,7 +68,7 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 | --- | --- |
 | Git Hook 文件的安装、状态诊断、卸载与 Job 调度 | **Lefthook**；通过原生安装和声明式 Job 配置管理 Hook 文件、过滤、分组、顺序与并行 |
 | 仓库 Hook 接线、Git Index/Push 实际对象、Source 物化、适用检查选择与原生结果交接 | **ECI #66**；复用已有 `engineering_ci` CLI/Selection/Execution/Plan 与 #67/#70/#71/#73/#79/#88 已交付部分 |
-| Native Check、工具资产、报告/Enforce；当前 Actions、目标 #152 受控 Provider 结果交接 | **ECI #52** 及既有 Tool Runtime/原生 Checks；新增具体扫描器不以 #66 Hook 交付为阻断前提 |
+| Native Check、工具资产、报告/Enforce 与现行 Actions 结果交接 | **ECI #52** 及既有 Tool Runtime/原生 Checks；新增具体扫描器不以 #66 Hook 交付为阻断前提 |
 | 真正的 Data/PASS 前置 Dagger DAG、产物闭包、同次 Result 共享 | **ECI #86** 消费 #66 Source/Prerequisite 生产事实；#66 不再发明一套 DAG |
 | 历史检查结果可信接纳、输入/范围有效覆盖和跨 Run 复用 | **ECI #63**；Hook 原生 PASS 不等于历史 Trusted |
 | 最终 Required/Release、GitHub Ruleset/Branch Protection | **ECI #61**；本地 Hook 不能伪造服务端 Required |
@@ -114,7 +114,7 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 | pre-push SAST/依赖 | Semgrep；osv-scanner；cargo-deny | Semgrep 的 baseline 使用实际受检 old→new；依赖检查按有效锁文件/声明变化或真实 Required 执行；Rust 规则仅对 Cargo 工程。 |
 | pre-push API 兼容 | griffe；oasdiff；buf | 仅适用 Python 公共 API、OpenAPI、Proto 资产。griffe 对比可导入包与有效 Git ref；oasdiff 接受真实旧/新 schema 文件，而非将 HEAD 当 schema 路径；buf 依据实际 proto module/基线。 |
 | pre-push 增量动态/形式 | ECI unittest/pytest 原生选测；候选 pytest-testmon；CrossHair；Hypothesis | ECI 是公共选择权威；testmon 只在实际收益与覆盖可证明时接入，不另跑重复的完整回归。CrossHair/Hypothesis 对应实际形式化/属性契约执行，不以预估 3–20 秒作保证。 |
-| 条件专项/受控 CI/Release（现行 Actions，目标 #152 替换） | Schemathesis；mutmut；cargo-mutants；Lychee 在线链接 | API fuzz 需服务和真实 schema（新版 Schemathesis 已移除 --app），mutation 受真实运行成本约束；cargo-mutants --in-diff 使用实际 diff 文件；在线链接可在适用风险/CI 环境运行，不能用波动网络代替可靠本地门禁。 |
+| 条件专项/受控 CI/Release（现行 Actions） | Schemathesis；mutmut；cargo-mutants；Lychee 在线链接 | API fuzz 需服务和真实 schema（新版 Schemathesis 已移除 --app），mutation 受真实运行成本约束；cargo-mutants --in-diff 使用实际 diff 文件；在线链接可在适用风险/CI 环境运行，不能用波动网络代替可靠本地门禁。 |
 
 ### 6.3 原始 lefthook.yml 不能直接当作可执行配置
 
@@ -163,7 +163,7 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 | **pre-commit** | 匹配 staged 文件才启用，如 Ruff、taplo、shfmt；默认只读 | 匹配代码或包配置才运行适用 Tach/类型检查/模块 Lint；避免无故跑全部项目 | Secrets、来源对账、离线链接按变更闭包唤醒；不能漏掉被删除的引用目标 | 仅对暂存 Index 相对基线的真实变化执行适用契约检查 | 只运行有效小范围前置或定向测试；昂贵运行按实际风险移至其他阶段 |
 | **commit-msg** | 消息文本本身的定向验证（cog 或 commitlint-rs） | 不适用 | 不适用 | 如提交策略需要时核对实际提交语义，不变成新测试选择器 | 不适用 |
 | **pre-push** | 仅在必要时对真实 push 目标的文件快速复核 | 对受影响 Cargo/Java/Python 包执行包级 Checks | Semgrep 污点、依赖安全与在线链接按原生对象/有效输入运行 | Griffe/oasdiff/buf 等在真实 old→new 上比较 | 增量回归、适用形式验证；fuzz/mutation 优先专项/受控 CI，不能伪称常规 push 数秒完成 |
-| **受控 CI / Release（当前 Actions；目标 #152）** | 复用原始 Check；缺失时定向补执行 | 必要全项目/构建型检查按策略运行 | 全依赖/安全和来源验证，检查 Required 证据 | 合并目标与发布候选兼容性 | 有实际服务/环境/预算的集成、fuzz、mutation 或发布验收 |
+| **受控 CI / Release（现行 Actions）** | 复用原始 Check；缺失时定向补执行 | 必要全项目/构建型检查按策略运行 | 全依赖/安全和来源验证，检查 Required 证据 | 合并目标与发布候选兼容性 | 有实际服务/环境/预算的集成、fuzz、mutation 或发布验收 |
 
 **重要的唤醒条件补足**：`Cargo.toml`/`Cargo.lock`、`pom.xml`/`build.gradle*`、`pyproject.toml`/`uv.lock`、Tach 和类型配置、工具版本与规则目录、CI Workflow、被链接资源的删除/重命名，都可能改变 P/R/D/E 的输出。只写 `glob: "*.rs"` 或 `glob: "*.py"` 会对这些非源码输入产生盲区；以有效工具依赖和消费者输入映射补全触发，而非一律升级全量。
 
@@ -205,7 +205,7 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 | `engineering_ci.reconciliation.reconcile_expected_results()` | PR #104（`c430ef7`）与 PR #110（`eb23582`）已交付独立 Expected→Routing/Job/Attempt→Native Result 对账消费合同、Report digest/成员关系、Job Receipt 上游归属、Attempt eligibility 与 `native_pass` 满足性校验（不承认自报 PASS）。PR #115（`6a6d0c2`）新增的 `hook_coordinator.py` 外层控制层按 2026-11-21 裁决撤销，仅回收其可复用 Report/Receipt/Exit 校验 | 由 Lefthook 的最终 Job 调用既有 `reconcile_expected_results()`，在可控失败或过滤后消费同次 Invocation 的实际产物、逐 Ref 对账并保留失败退出；退出 `#115` 专用 Coordinator CLI、控制状态与硬编码 `scheduler_ref`。若真实接线暴露公共接口不足，应修订该公共接口而非另建对账器 |
 | `engineering_ci.execution._verify_execution_binding()` / `execute()` / `evaluate_source_resolution()` + Hygiene/Sources | PR #100（`6c3123c`）已交付有效 Hygiene/Sources 配置与 Worktree/Tree 绑定；PR #111（`a82d11e`）已交付 `#66-P0` `build_pre_execution_source_proof()` 独立执行前宿主输入证明；PR #132（`b10dce6`，`NEW-053`）与 PR #139（`e6e2098`）已交付 Hygiene forwarding 基线 Git Source/ODB 证明与 AST 迁移语义；PR #135（`edd4094`，`NEW-055`）与 PR #140（`bb52c6d`，`NEW-049`）已交付 Workflow/Shell 受检 Source 绑定与 Actionlint 校验；**PR #141（`c1f3019`）已交付 `#86/#66` Generated Producer Artifact Handoff 与独立 `evaluate_source_resolution()` → Expected/Native 验收**；**PR #143（`a99efd5`）**已补齐 Directory Overlay 成员通过 Artifact Closure Digest 的独立核验 | **独立 Source Resolution 与 Generated Producer Artifact Handoff 已由 PR #141 交付，不再列为待实现**；剩余工作为 Hook 触发下的 Index/Push 目标树物化（使各适用 Host/Dagger 工具在正常部分暂存下实际读取目标 Index/Ref 字节而非拒绝全部脏 Worktree）、正式 Profile 接入与 Native Report/Receipt 交接 |
 | Dagger `execute_plan()`、Plan result sharing | PR #90（`bca1f12`）已交付原生 Plan DAG、Artifact Closure 与同次 Result Sharing；PR #117（`dd18b6a`）已交付 `#52` D2/D3 原生 Producer 与 Source Handoff；PR #119（`f3f5a7c`）已交付动态输入缓存；**PR #141（`c1f3019`）已将 Dagger verified-tree workflow handoff 与独立 Source Resolution 对齐并完成原生 Engine 验收** | Hook Event 的 Index/Push 目标字节、对比基线及 Git ODB 向 Dagger `plan-execution` 的真实交接，以及 Dagger 结果到正式 Hook Receipt 的消费；已交付 DAG/Closure/Source Resolution 直接复用 |
-| ECI #52/#63/#61 | PR #113（`80c86a1`，T1-a）、PR #114（`a149edc`，R1）、PR #116（`910515c`，T2）、PR #118（`9af9001`，R2）、PR #120（`b8bb899`，T1-b）、PR #121/#136（R4 合同）、PR #122（`512d3ab`，G2/G3）、PR #123/#134（R5 合同）、PR #124（`0007a38`，`#52-D4`）、PR #138（`d0566bc`，D-F02 T1/T2→R1 Gate）、**PR #142（`f18e520`，Required Assessment 发布与 Source App 绑定，禁止 `skipped`/`neutral` 作为允许性结论）**及 **PR #143（`a99efd5`，`#66-B2/#63/#61` D-G01/D-G02、`NEW-014/059`、前置 Result 受信依赖、严格 Producer Grant 与 R1 受控联合消费）**已在 `main` 合入并完成合同验收 | 本地 Hook 只提供真实 Producer/Source/Check 事实与本地结构性 Receipt（`trusted=false`、`required=false`），不制造平行 Gate/历史受信结果；非 Workflow 受控 CI 执行来源、GitHub App 安装、Ruleset 服务端门禁与 R4/R5 生产闭环按 [#152](https://github.com/dymzz/engineering-ci/issues/152) 阶段②–⑤推进 |
+| ECI #52/#63/#61 | PR #113（`80c86a1`，T1-a）、PR #114（`a149edc`，R1）、PR #116（`910515c`，T2）、PR #118（`9af9001`，R2）、PR #120（`b8bb899`，T1-b）、PR #121/#136（R4 合同）、PR #122（`512d3ab`，G2/G3）、PR #123/#134（R5 合同）、PR #124（`0007a38`，`#52-D4`）、PR #138（`d0566bc`，D-F02 T1/T2→R1 Gate）、**PR #142（`f18e520`，Required Assessment 发布与 Source App 绑定，禁止 `skipped`/`neutral` 作为允许性结论）**及 **PR #143（`a99efd5`，`#66-B2/#63/#61` D-G01/D-G02、`NEW-014/059`、前置 Result 受信依赖、严格 Producer Grant 与 R1 受控联合消费）**已在 `main` 合入并完成合同验收 | 本地 Hook 只提供真实 Producer/Source/Check 事实与本地结构性 Receipt（`trusted=false`、`required=false`），不制造平行 Gate/历史受信结果；GitHub App、Ruleset 服务端门禁和 R4/R5 按各自 #61 合同验收。ECI 验证实测起止由 [#152](https://github.com/dymzz/engineering-ci/issues/152#eci-%E9%AA%8C%E8%AF%81%E5%AE%9E%E6%B5%8B%E8%B5%B7%E6%AD%A2) 独立记录 |
 
 **现行证据与修复规则（取代任何“已核销/不得重开”的绝对措辞）：** 已有符合当前合同的公共能力应复用，避免平行实现；但“已实现/已合并/测试曾通过/文档已冻结”与“当前契约完整”是不同事实。出现新证据、契约冲突、真实回归或未覆盖风险时，**必须修复正确归属的既有实现**（例如 #104 的对账接口、#102 的 Event Invocation/暂存实现），并按实际变化与风险验证；旧证据只在输入、范围、代码与规则仍等价时复用。不能机械重跑无关全量测试，也不能以“避免重复”为由拒绝必要修复。
 
@@ -215,7 +215,7 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 
 Knowledge [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) **已经合并**，其 `design/engineering-verification/opentelemetry-weaver-delivery.md` 是 OTel/Weaver 专题设计来源；具体实施按 ECI #74/#75/#87 和消费者独立开展，不在此复制 Span/Exporter/Root 或 Trace Context 的完整规范。
 
-**状态纠正：PR #72 已于 2026-11-16 合并**，历史上的 Draft/P1 设计验收及“后续决定 Ready/合并”不再是当前待办。其已合并内容中的有效 Source/Check/触发合同仍按实际证据保留；旧 L1/L2/Coordinator 方案仅在 §8 作为历史审计资料。#66 的 Lefthook→ECI 实际接线与 [#152](https://github.com/dymzz/engineering-ci/issues/152) 的完整 GitHub Workflow 退出按各自真实生产/消费职责推进，不被 OTel 专题错误地阻断。
+**状态纠正：PR #72 已于 2026-11-16 合并**，历史上的 Draft/P1 设计验收及“后续决定 Ready/合并”不再是当前待办。其已合并内容中的有效 Source/Check/触发合同仍按实际证据保留；旧 L1/L2/Coordinator 方案仅在 §8 作为历史审计资料。#66 继续验收 Lefthook 到 ECI 的实际本地调用。[#152](https://github.com/dymzz/engineering-ci/issues/152#eci-%E9%AA%8C%E8%AF%81%E5%AE%9E%E6%B5%8B%E8%B5%B7%E6%AD%A2) 只为显式验证补记实际起止，现行 GitHub Actions 继续负责远端 CI 和发布。
 
 ## 8. 历史归档：S1-E v1 候选调度器核验（2026-11-15；当前已撤销）
 

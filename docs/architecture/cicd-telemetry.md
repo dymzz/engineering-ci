@@ -3,13 +3,13 @@
 Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) stream C (O2/O3).
 
-> **2026-11-21 设计裁决与实际运行状态（[#75](https://github.com/dymzz/engineering-ci/issues/75)）**：GitHub Attempt API 证明终态、结论及真实 Job 事实，却不能从 `updated_at`、Job End、观察时间或任意误差预算推算完整 Pipeline End。**目标**为 [Draft PR #150](https://github.com/dymzz/engineering-ci/pull/150) 的 `terminal_event`、合法 Task Spans 与 `root_emission=not_emitted` / `time_precision=unproven`；**当前 main** 的 `cicd-telemetry-post-run.yml` 仍以 `--end-time-mode observed_upper_bound` 运行，CLI 的此路径仍是当前代码事实，尚未完成目标切换。旧模式不是新设计授权，但不能将当前生产事实误标为“仅历史兼容”。[#152](https://github.com/dymzz/engineering-ci/issues/152) 将用非 Workflow 的真实受控 Provider 替换整个旧后置入口，保留历史 Witness 的原证明范围。Dagger Function/Check Span 只证明自身边界。
+> **2026-11-21 设计裁决与实际运行状态（[#75](https://github.com/dymzz/engineering-ci/issues/75)）**：GitHub Attempt API 证明终态、结论及真实 Job 事实，却不能从 `updated_at`、Job End、观察时间或任意误差预算推算完整 Pipeline End。**目标**为 [Draft PR #150](https://github.com/dymzz/engineering-ci/pull/150) 的 `terminal_event`、合法 Task Spans 与 `root_emission=not_emitted` / `time_precision=unproven`；**当前 main** 的 `cicd-telemetry-post-run.yml` 仍以 `--end-time-mode observed_upper_bound` 运行，CLI 的此路径仍是当前代码事实，尚未完成目标切换。旧模式不是新设计授权，但不能将当前生产事实误标为“仅历史兼容”。[#152](https://github.com/dymzz/engineering-ci/issues/152#eci-%E9%AA%8C%E8%AF%81%E5%AE%9E%E6%B5%8B%E8%B5%B7%E6%AD%A2) 记录在保留 GitHub Actions 的情况下实测 ECI 验证起止的待实现方案。Dagger Function/Check Span 只证明自身边界。
 
 ## Producer decision
 
 | Object | Producer | Native facts |
 | --- | --- | --- |
-| Pipeline Run Span (only with owner-proven full execution bounds) | A producer that actually measures that Pipeline boundary; `engineering_ci.cicd_telemetry` may serialize supplied numeric bounds in Candidate records, while keeping `time_source_verified=false` unless an independent time-source authority proves authenticity | Workflow identity, Run/Attempt, conclusion and **independently proven** Pipeline start/end; no inferred GitHub API completion timestamp |
+| Pipeline Run Span (only with owner-proven full execution bounds) | A producer that actually measures that Pipeline boundary; `engineering_ci.cicd_telemetry` may serialize supplied numeric bounds in Candidate records, while keeping `time_source_verified=false` unless an independent time-source authority proves authenticity | Identity, Run/Attempt, conclusion and **independently proven** start/end of the actual Pipeline scope |
 | Task Run Span | Same adapter from separate Job facts | Job id/name/**url**, **Job** conclusion, real start/end |
 | Dagger Function Trace | Dagger SDK only | Not owned here; do not re-instrument |
 
@@ -46,6 +46,49 @@ Current Candidate records (`terminal` and `terminal_provenance` in `engineering_
 - `exact_run_duration`: indicates only that the numeric interval is closed by an explicit input (`time_precision == "exact_input"`), not that GitHub or an authorized Provider certified the completion timestamp. Schema 9 keeps these time-quality fields in Candidate `terminal` / `terminal_provenance` metadata rather than unregistered Span attributes.
 
 Transport delivery, Weaver semantic PASS, Terminal correlation and #63 trusted admission remain separate facts. #52A Task-only may pass on valid Tasks without Root; #52B Root-dependent Terminal remains unverified until a genuine eligible Pipeline Root with authenticated full-Pipeline bounds is available, and an estimated or approximate Root never receives #52B authorization.
+
+### Measuring an ECI verification run (#152)
+
+**Status** · Planned. The existing Lefthook `verify` group is available on
+[Draft PR #153](https://github.com/dymzz/engineering-ci/pull/153). The timing record and its CI
+invocation still need implementation and real runs. GitHub Actions continues
+to provide CI triggers, runner allocation and artifact upload. Release
+orchestration stays under the current workflow.
+
+1. **Bind the invocation.** Add one explicit entry point to the existing
+   ECI CLI. Bind its verification identity, the checked commit SHA and the
+   digest of the effective Lefthook configuration captured with `lefthook dump`.
+   Use the pinned Lefthook version and keep the same effective configuration
+   for the execution. The current `verify` scope is lint, format, version/lock,
+   and core tests.
+2. **Measure on the execution host.** At entry to the verification execution,
+   read a UTC Unix timestamp in nanoseconds from the host clock (`time.time_ns()`),
+   and invoke `uv run --locked --no-sync lefthook run verify --no-auto-install`.
+   Wait for the native command and the defined verification result collection
+   to finish, then take a second reading on the same host. Preserve the native
+   exit code for both success and ordinary failure. If the command never
+   starts, the runner is interrupted before completion is recorded, or the
+   clock gives an invalid interval, leave the end unproven. Use the two actual
+   clock readings. Lefthook 2.2.2's rounded summary, GitHub Workflow timestamps,
+   last Job completion, post-run observation time and uncertainty budgets
+   cannot supply either bound.
+3. **Retain a scoped record.** Store the ECI verification identity, candidate
+   SHA, effective configuration digest, Lefthook version, measured
+   `run_started_at_ns` / `run_completed_at_ns`, native exit code and report
+   identities with the existing verification report or its artifact. A
+   GitHub Run/Attempt, when present, is a separate correlation reference for
+   artifact lookup. Validate a real success and a real nonzero exit before
+   using the same ECI entry point on a GitHub Actions runner.
+
+This record measures the declared ECI verification invocation. The
+`sync-tool-tests` and `dagger-native-telemetry` Jobs in `ci.yml` run outside the
+current `verify` group. GitHub Attempt telemetry retains its own identity and
+terminal facts. Use a measured interval for #52B only when the accepted
+Pipeline scope matches the actual complete execution, with independently
+verified timing origin, identity and expected coverage. A local report, exact
+numeric bounds or successful artifact upload alone does not establish this
+authority. The [verification checklist](../verification/cicd-telemetry.md#eci-verification-timing-planned)
+and [Issue #152](https://github.com/dymzz/engineering-ci/issues/152#eci-%E9%AA%8C%E8%AF%81%E5%AE%9E%E6%B5%8B%E8%B5%B7%E6%AD%A2) track the pending work.
 
 ### Expected Trace identity (`github-actions-attempt-sha256-v1`)
 
@@ -228,7 +271,7 @@ terminal PASS. Missing identity, terminal Run/Job results, required Task URL,
 or real timestamps yield `incomplete` / `partial` (exit 3 when nothing is
 emitted).
 
-**Current, to be retired by #152 (not the target Provider):** `.github/workflows/cicd-telemetry-post-run.yml` listens for
+**Current GitHub Actions post-run entry:** `.github/workflows/cicd-telemetry-post-run.yml` listens for
 `workflow_run` completion of `Engineering CI` (and supports
 `workflow_dispatch`). It reads the source Run via Attempt API using the event
 identity, never executes the source PR head, and uploads candidate/OTLP

@@ -11,6 +11,23 @@ The accepted target is **true GitHub Attempt terminal facts**, not an estimated 
 
 The table below contains **historical contract tests and current-main legacy behavior** for `observed_upper_bound` and approximate Root. Those rows are not the new `terminal_event` acceptance criteria, and schema/shape-valid synthetic Root tests do not establish #52B production coverage.
 
+## ECI verification timing (planned)
+
+Validate the [timing entry point](../architecture/cicd-telemetry.md#measuring-an-eci-verification-run-152)
+against the actual Lefthook invocation. The following checks are pending.
+
+- Run the same entry point with a real successful verification and a real
+  nonzero check result. Each completed run retains both execution-host UTC
+  readings, its ECI execution identity, candidate SHA, effective configuration
+  digest, and original native exit code. Match the record to that run's report.
+- Interrupt an invocation before the end record is written. The retained record
+  leaves completion unproven. Do not fill the missing value from the Workflow,
+  another Job, rounded Lefthook output or the later artifact upload.
+- When using GitHub Actions, call the same entry point and read the returned
+  record from its artifact. Check the candidate, ECI execution identity and
+  GitHub Run/Attempt correlation. The time covers `verify`. GitHub Task-only
+  evidence and full-Pipeline #52B Terminal retain their own acceptance rules.
+
 ## Candidate records + API/OTLP JSON slice
 
 | Case | Input | Expected |
