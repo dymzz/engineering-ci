@@ -4,7 +4,7 @@
 
 ## 1. 两条独立原生链路
 1. **Dagger Native Execution**：Engine/SDK 产生自身 Function、Container 与内部计算的 Traces/Spans；ECI 不重新生成或改写这些 Span。原生导出实际配置、协议、接收端和固定 `v1.0.0-beta.16` SDK 行为必须核实。
-2. **CI/CD Telemetry**：#75 的 GitHub Attempt/Job API 提供实际 Task/Terminal 事实，#74 Weaver 独立消费。[#152](https://github.com/dymzz/engineering-ci/issues/152#eci-%E9%AA%8C%E8%AF%81%E5%AE%9E%E6%B5%8B%E8%B5%B7%E6%AD%A2) 计划在 ECI 调用 Lefthook 验证的同次执行中实测起止，GitHub Actions 继续承担触发、Runner 分配和制品上传。Producer、OTLP、Receiver、Weaver、#63 Admission 分别证明其实际范围。
+2. **CI/CD Telemetry**：#75 的 GitHub Attempt/Job API 提供实际 Task/Terminal 事实，#74 Weaver 独立消费。[#152](https://github.com/dymzz/engineering-ci/issues/152) 单独记录一次显式 ECI 验证的宿主起止和原生结果引用。现有 GitHub Actions Job 与制品路径保持现状。Producer、OTLP、Receiver、Weaver、#63 Admission 分别证明其实际范围。
 
 两条链路可以依据真实 Run、Check 和 Trace Context 关联，不能凭命令/时间猜父 Span。
 
@@ -15,7 +15,9 @@
 | ECI Verification Session | ECI 真正控制的验证范围 | 不将局部 Check 的 Parent 伪称完整 Provider Root |
 | CI Provider Pipeline Run/Attempt | 实际拥有整个 Pipeline 运行边界的 Provider；当前 GitHub API 只证明其真实 Attempt/Job 事实 | 不用单个 Plan、最后 Job End 或观察上界伪称整个 Pipeline 结束时刻 |
 
-GitHub `workflow_run.completed` 后置事件只证明已观察到该 Attempt 的终态，不为标准 Pipeline Root 提供精确结束时间。`last_job_end`、`updated_at`、后置观察时刻及其推得的条件区间都不能升级为真实 Workflow End；不得靠无来源的误差预算或近似 Root 满足 #52B Terminal。[#75 当前裁决](https://github.com/dymzz/engineering-ci/issues/75) 的 `terminal_event` 保留真实 Attempt/Job/Task 和观察事件；没有拥有完整 Pipeline 生命边界的可信 Producer 时 Root 不发射，Task-only #52A 独立验收，#52B 保持未覆盖。Dagger 原生 Span 仅代表自身 Engine/Function/Check 的实际执行范围，不给 GitHub Pipeline 补造结束时间。ECI 在同一执行主机于启动 `lefthook run verify` 与完成验证收尾时读时钟。它的时间只属于已声明的验证范围。#52B Root 需要实际测量其指定 Pipeline 的全部适用任务，并核验身份和时间来源。具体实现与验收见 [ECI 验证计时](../../docs/architecture/cicd-telemetry.md#measuring-an-eci-verification-run-152)。
+GitHub `workflow_run.completed` 后置事件只证明已观察到该 Attempt 的终态，不为标准 Pipeline Root 提供精确结束时间。`last_job_end`、`updated_at`、后置观察时刻及其推得的条件区间都不能升级为真实 Workflow End；不得靠无来源的误差预算或近似 Root 满足 #52B Terminal。[#75 当前裁决](https://github.com/dymzz/engineering-ci/issues/75) 的 `terminal_event` 保留真实 Attempt/Job/Task 和观察事件；没有拥有完整 Pipeline 生命边界的可信 Producer 时 Root 不发射，Task-only #52A 独立验收，#52B 保持未覆盖。Dagger 原生 Span 仅代表自身 Engine/Function/Check 的实际执行范围，不给 GitHub Pipeline 补造结束时间。ECI 在同一执行主机于调用 `lefthook run verify` 前与原生命令返回时读时钟。它的时间只属于已声明的验证范围。#52B Root 需要实际测量其指定 Pipeline 的全部适用任务，并核验身份和时间来源。具体实现与验收见 [ECI 验证计时](../../docs/architecture/cicd-telemetry.md)。
+
+宿主计时写入独立的本地回执，`time_source_verified=false`。它包含 Lefthook 调度与命令开销。#87 原生 Span 和缓存属性照原范围解释。只有同一次原生调用已经存在可核验的 #87 绑定时才关联两份记录。当前 `verify` 无该绑定时保留独立记录。
 
 ## 3. Trace 交接（拟议）
 - **Producer**：Dagger SDK/Engine 产出原生 Trace；ECI Caller 产出 Invocation/Check/Source/Result 引用；Provider 产出真实 Run/Attempt/Job 身份。

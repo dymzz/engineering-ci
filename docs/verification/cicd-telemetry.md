@@ -5,28 +5,27 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 
 ## 2026-11-21 current verification decision
 
-The accepted target is **true GitHub Attempt terminal facts**, not an estimated Workflow completion timestamp. [#75](https://github.com/dymzz/engineering-ci/issues/75) is authoritative; Draft [PR #150](https://github.com/dymzz/engineering-ci/pull/150) implements `terminal_event` **on its branch only**. **Current `main` still runs `cicd-telemetry-post-run.yml` with `observed_upper_bound`; this is current behavior, not evidence that the approved target is deployed.** Native Job/Task spans, terminal LogRecord, independent API witness and `root_emission=not_emitted` / `time_precision=unproven` are the new target when full Pipeline End is not owner-proven. Dagger Function/Check timestamps remain scoped to the actual Dagger operation. Future #152 non-Workflow Producer must prove a whole Pipeline scope (possibly several Plans/platform Jobs) before claiming a Root.
+The accepted target is **true GitHub Attempt terminal facts**, not an estimated Workflow completion timestamp. [#75](https://github.com/dymzz/engineering-ci/issues/75) is authoritative; Draft [PR #150](https://github.com/dymzz/engineering-ci/pull/150) implements `terminal_event` **on its branch only**. **Current `main` still runs `cicd-telemetry-post-run.yml` with `observed_upper_bound`; this is current behavior, not evidence that the approved target is deployed.** Native Job/Task spans, terminal LogRecord, independent API witness and `root_emission=not_emitted` / `time_precision=unproven` are the new target when full Pipeline End is not owner-proven. Dagger Function/Check timestamps remain scoped to the actual Dagger operation.
 
 **Prohibited implementation direction:** treating `updated_at`, last Job end, post-run observation, guessed time intervals or invented `--max-end-uncertainty-ns` budgets as the GitHub Workflow's real Pipeline End, or reopening this route merely to get a #52B Terminal-positive result. #52A Task-only is independently valid; #52B requires a genuinely bound Pipeline Root and remains unverified otherwise. Reuse historical API/Receiver/Weaver evidence and verify only the actual new integration difference.
 
 The table below contains **historical contract tests and current-main legacy behavior** for `observed_upper_bound` and approximate Root. Those rows are not the new `terminal_event` acceptance criteria, and schema/shape-valid synthetic Root tests do not establish #52B production coverage.
 
-## ECI verification timing (planned)
+## ECI verification timing (#152)
 
-Validate the [timing entry point](../architecture/cicd-telemetry.md#measuring-an-eci-verification-run-152)
-against the actual Lefthook invocation. The following checks are pending.
+Use the [timing command](../architecture/cicd-telemetry.md) on an explicit
+local Lefthook `verify` invocation. This check leaves the four Actions Jobs
+and the existing #87 A.1 workflow untouched.
 
-- Run the same entry point with a real successful verification and a real
-  nonzero check result. Each completed run retains both execution-host UTC
-  readings, its ECI execution identity, candidate SHA, effective configuration
-  digest, and original native exit code. Match the record to that run's report.
-- Interrupt an invocation before the end record is written. The retained record
-  leaves completion unproven. Do not fill the missing value from the Workflow,
-  another Job, rounded Lefthook output or the later artifact upload.
-- When using GitHub Actions, call the same entry point and read the returned
-  record from its artifact. Check the candidate, ECI execution identity and
-  GitHub Run/Attempt correlation. The time covers `verify`. GitHub Task-only
-  evidence and full-Pipeline #52B Terminal retain their own acceptance rules.
+- A native success and a native nonzero result retain both host clock readings,
+  their original aggregate exit codes and readable stdout/stderr whose SHA-256
+  digests match the independent `verify-timing.json`.
+- Interruption before finalization leaves no completed receipt. A reversed
+  clock yields `completed_at_ns: null`. Native nonzero status is retained.
+- The receipt is self-observed timing with `time_source_verified=false`.
+  Confirm the native output and timing reference separately. Dagger span
+  associations require an actual #87 binding for the same invocation. Any
+  unlinked spans or cache hits keep their native interpretation.
 
 ## Candidate records + API/OTLP JSON slice
 
