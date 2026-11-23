@@ -3,7 +3,7 @@
 Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) stream C (O2/O3).
 
-> **2026-11-21 设计裁决与实际运行状态（[#75](https://github.com/dymzz/engineering-ci/issues/75)）**：GitHub Attempt API 证明终态、结论及真实 Job 事实，却不能从 `updated_at`、Job End、观察时间或任意误差预算推算完整 Pipeline End。**目标**为 [Draft PR #150](https://github.com/dymzz/engineering-ci/pull/150) 的 `terminal_event`、合法 Task Spans 与 `root_emission=not_emitted` / `time_precision=unproven`；**当前 main** 的 `cicd-telemetry-post-run.yml` 仍以 `--end-time-mode observed_upper_bound` 运行，CLI 的此路径仍是当前代码事实，尚未完成目标切换。旧模式不是新设计授权，但不能将当前生产事实误标为“仅历史兼容”。[#152](https://github.com/dymzz/engineering-ci/issues/152) 记录在保留 GitHub Actions 的情况下实测 ECI 验证起止的待实现方案。Dagger Function/Check Span 只证明自身边界。
+> **2026-11-21 设计裁决与实际运行状态（[#75](https://github.com/dymzz/engineering-ci/issues/75)）**：GitHub Attempt API 证明终态、结论及真实 Job 事实，却不能从 `updated_at`、Job End、观察时间或任意误差预算推算完整 Pipeline End。**目标**为 [Draft PR #150](https://github.com/dymzz/engineering-ci/pull/150) 的 `terminal_event`、合法 Task Spans 与 `root_emission=not_emitted` / `time_precision=unproven`；**当前 main** 的 `cicd-telemetry-post-run.yml` 仍以 `--end-time-mode observed_upper_bound` 运行，CLI 的此路径仍是当前代码事实，尚未完成目标切换。旧模式不是新设计授权，但不能将当前生产事实误标为“仅历史兼容”。[#152](https://github.com/dymzz/engineering-ci/issues/152) 与 [Draft PR #154](https://github.com/dymzz/engineering-ci/pull/154) 定义在保留 GitHub Actions 的情况下单独记录显式 ECI 验证起止的本地计时方案。Dagger Function/Check Span 只证明自身边界。
 
 ## Producer decision
 
@@ -49,10 +49,12 @@ Transport delivery, Weaver semantic PASS, Terminal correlation and #63 trusted a
 
 ### Measuring an ECI verification run (#152)
 
-[#152](https://github.com/dymzz/engineering-ci/issues/152) covers an explicit local verification command. Run
-`uv run --locked --no-sync engineering-ci verify --out .artifacts/verify` on
-a checkout with the existing pinned Lefthook tools. It invokes
-`lefthook run verify --no-auto-install` once. The existing Actions Jobs and
+[#152](https://github.com/dymzz/engineering-ci/issues/152) defines the explicit local verification timing command
+([Draft PR #154](https://github.com/dymzz/engineering-ci/pull/154), stacked on
+[Draft PR #153](https://github.com/dymzz/engineering-ci/pull/153), not yet deployed on `main`).
+On a checkout carrying that entrypoint and the existing pinned Lefthook tools, run
+`uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`.
+It invokes `lefthook run verify --no-auto-install` once. The existing Actions Jobs and
 their artifacts stay in place. This command is outside the automatic CI
 matrix and has no Runner acceptance requirement.
 

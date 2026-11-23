@@ -20,8 +20,10 @@ Consult relevant documentation and interfaces when working across module boundar
 - Native Dagger Checks define repository checks; standard Ruff settings and locked tools live in pyproject.toml. Do not recreate a host scheduler, input-hash receipt or check registry.
 - Dagger manages internal execution graphs, containers and caching.
 - Lefthook owns local Git Hook installation and Job scheduling under
-  [#66](https://github.com/dymzz/engineering-ci/issues/66). Use the existing ECI interfaces for Git Source,
-  native Check results and final reconciliation.
+  [#66](https://github.com/dymzz/engineering-ci/issues/66) and the
+  [Git Hooks contract](docs/issue-revisions/issue-66-eci-managed-git-hooks.proposal.md).
+  Use the existing ECI interfaces for Git Source, native Check results and
+  final reconciliation.
 - GitHub Actions manages remote workflow orchestration, permissions and release gates.
 - Release CLI requests, inspects and waits for that Workflow; Git/PR operations use native Git/gh. Downloads use native gh for explicitly selected Runs.
 - engineering-ci may depend on vesryn-log for CI event recording and vesryn-tool-runtime for actual CI tool contracts and invocation.

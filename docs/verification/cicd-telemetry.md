@@ -13,9 +13,11 @@ The table below contains **historical contract tests and current-main legacy beh
 
 ## ECI verification timing (#152)
 
-Use the [timing command](../architecture/cicd-telemetry.md) on an explicit
-local Lefthook `verify` invocation. This check leaves the four Actions Jobs
-and the existing #87 A.1 workflow untouched.
+Use the [timing command](../architecture/cicd-telemetry.md) from
+[Draft PR #154](https://github.com/dymzz/engineering-ci/pull/154) (stacked on
+[Draft PR #153](https://github.com/dymzz/engineering-ci/pull/153), not yet deployed on `main`)
+on an explicit local Lefthook `verify` invocation. This check leaves the four
+Actions Jobs and the existing #87 A.1 workflow untouched.
 
 - A native success and a native nonzero result retain both host clock readings,
   their original aggregate exit codes and readable stdout/stderr whose SHA-256
