@@ -458,7 +458,7 @@ mistaking them for a full observation ledger.
 
 `#63` 消费端的独立取回与验证步骤：
 
-1. **定位原始载荷**。通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从对应运行来源的原始载荷位置获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**：当前主线生产 CI 仍经现行 Actions Run/Artifact（`gh`）读取，阶段①本地 Hook 保存在仓内 `.git/eci-hooks/invocations/`（供本地对账与调试），待 `#152` 阶段②+ 交付非 Workflow 受控执行端后改为从证据所声明的受控制品归档取回；历史 Actions Run 证据继续通过 `gh` 保持只读核验。
+1. **定位原始载荷**。通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从对应运行来源的原始载荷位置获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**：现行 GitHub Actions CI 的产物通过 `gh` 按 Run/Attempt 读取，本地 Hook 的结果从 `.git/eci-hooks/invocations/` 取回。[#152](https://github.com/dymzz/engineering-ci/issues/152#eci-%E9%AA%8C%E8%AF%81%E5%AE%9E%E6%B5%8B%E8%B5%B7%E6%AD%A2) 拟将 ECI 显式验证的实测起止随同次报告或制品保存，并通过已记录的执行身份关联。既有 Actions 制品按原 Run/Attempt 只读核验。
 2. **摘要与签发者独立验真**：
    - 重新计算 Raw Execution Report SHA-256 并核对等于 `report_ref.sha256`；
    - 重新计算 `job_receipt` SHA-256 并核对等于 `job_receipt_ref`；

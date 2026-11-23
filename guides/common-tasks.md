@@ -103,7 +103,9 @@ Receipt，缺失最终对账时阻断。
 `uv run --locked --no-sync lefthook run verify --no-auto-install` 运行 Dagger 的
 lint、格式、版本与锁文件检查和核心测试。各项保留原生结果，Lefthook 汇总退出。
 用 `uv run --locked --no-sync lefthook uninstall` 卸载本地 Hook。
-完整迁移与生效条件见 [#152](https://github.com/dymzz/engineering-ci/issues/152)。
+[#152](https://github.com/dymzz/engineering-ci/issues/152#eci-%E9%AA%8C%E8%AF%81%E5%AE%9E%E6%B5%8B%E8%B5%B7%E6%AD%A2) 记录 ECI 入口调用 `verify` 时实测起止的待实现方案。
+上述现有命令仍是原生验证入口。计划中的时间记录范围是当次 `verify`，
+远端触发、Runner 和制品上传继续使用 GitHub Actions。
 
 ### 审查与合并
 
