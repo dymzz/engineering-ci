@@ -1044,6 +1044,88 @@ def test_terminal_event_requires_confirmed_attempt_from_the_api():
     assert report["terminal"]["root_emission"] == "not_emitted"
 
 
+def test_terminal_event_zero_job_cancelled_attempt_exports_terminal_log(
+    tmp_path, monkeypatch
+):
+    run, _ = _api_run_job_fixture()
+    run = {**run, "conclusion": "cancelled"}
+    pages = {"total_count": 0, "jobs": []}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    monkeypatch.setattr(cicd_telemetry, "time_ns", lambda: RUN_END)
+    output = tmp_path / "candidate.json"
+    traces = tmp_path / "otel.json"
+    logs = tmp_path / "logs.json"
+    code = cicd_telemetry.main(
+        [
+            "--repository",
+            "dymzz/engineering-ci",
+            "--run-id",
+            str(run["id"]),
+            "--attempt",
+            "1",
+            "--end-time-mode",
+            "terminal_event",
+            "--output",
+            str(output),
+            "--otlp-json",
+            str(traces),
+            "--otlp-logs-json",
+            str(logs),
+        ]
+    )
+    assert code == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["status"] == "partial"
+    assert report["reason"] == "run_completed_at_unproven"
+    assert report["spans"] == []
+    assert report["coverage"]["task_coverage"] == "empty"
+    assert report["terminal"]["terminal_confirmed"] is True
+    assert report["claims"]["otlp_json_skip"] == "no_candidate_spans"
+    assert report["claims"]["otlp_logs_exported"] is True
+    assert not traces.exists()
+    wire = json.loads(logs.read_text(encoding="utf-8"))
+    records = wire["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    assert len(records) == 1
+    assert records[0]["body"] == {"stringValue": "GitHub Attempt completed: cancelled"}
+
+
+def test_terminal_event_rejects_unsupported_run_conclusion():
+    facts = complete_facts(run_status="completed", run_conclusion="neutral")
+    with_task = cicd_telemetry.produce(
+        facts,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_TERMINAL_EVENT,
+        terminal_observed_at_ns=RUN_END,
+    )
+    assert with_task["status"] == "partial"
+    assert with_task["reason"] == "unsupported_run_conclusion"
+    assert not with_task["terminal"]["terminal_confirmed"]
+    assert with_task["terminal"]["root_emission"] == "not_emitted"
+
+    without_task = cicd_telemetry.produce(
+        complete_facts(
+            run_status="completed",
+            run_conclusion="neutral",
+            job_id=None,
+            job_name=None,
+            job_url=None,
+            job_conclusion=None,
+            job_started_at_ns=None,
+            job_completed_at_ns=None,
+        ),
+        source="github_api",
+        github_api_fetched=True,
+        completed_jobs_total=0,
+        task_facts=[],
+        end_time_mode=cicd_telemetry.END_TIME_TERMINAL_EVENT,
+        terminal_observed_at_ns=RUN_END,
+    )
+    assert without_task["status"] == "incomplete"
+    assert without_task["reason"] == "unsupported_run_conclusion"
+    assert not without_task["terminal"]["terminal_confirmed"]
+
+
 def test_witness_is_saved_before_a_rejected_export(tmp_path, monkeypatch):
     run, job = _api_run_job_fixture()
     job = {**job, "run_id": run["id"], "run_attempt": 1}

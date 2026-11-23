@@ -1081,6 +1081,8 @@ def produce(
             reasons.append("event_api_status_conflict")
         elif not facts.run_conclusion:
             reasons.append("missing_run_terminal_result")
+        elif run_result is None:
+            reasons.append("unsupported_run_conclusion")
         elif event_conclusion is not None and event_conclusion != facts.run_conclusion:
             reasons.append("event_api_conclusion_conflict")
         else:
@@ -1496,14 +1498,26 @@ def produce(
             "otlp_sha256": None,
         }
 
+    no_task_obligation = not job_sources and completed_jobs_total in {None, 0}
     if not spans:
+        if (
+            end_time_mode == END_TIME_TERMINAL_EVENT
+            and report["terminal"].get("terminal_confirmed")
+            and completed_jobs_total == 0
+            and not job_sources
+            and not witness_anomalies
+            and not snapshot_incomplete
+            and reasons == [root_emission_reason]
+        ):
+            report["status"] = "partial"
+            report["reason"] = root_emission_reason
+            return report
         report["status"] = "incomplete"
         report["reason"] = reasons[0] if reasons else "no_candidate_spans"
         return report
 
     # Pipeline-only Root is valid when the Attempt has no Task obligation
     # (e.g. cancelled before Jobs). Exact dual coverage without reasons → produced.
-    no_task_obligation = not job_sources and completed_jobs_total in {None, 0}
     if pipeline_ok and task_ok and not reasons:
         report["status"] = "produced"
         report["reason"] = None
@@ -3044,11 +3058,19 @@ def main(argv=None):
         }
     export_error = None
     if args.otlp_json is not None:
-        try:
-            write_otlp_json(report, args.otlp_json)
-        except TelemetryError as error:
-            export_error = error
-            sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+        if (
+            not report.get("otlp_json")
+            and args.end_time_mode == END_TIME_TERMINAL_EVENT
+            and report["status"] in {"produced", "partial"}
+            and report.get("otlp_logs_json")
+        ):
+            report["claims"]["otlp_json_skip"] = "no_candidate_spans"
+        else:
+            try:
+                write_otlp_json(report, args.otlp_json)
+            except TelemetryError as error:
+                export_error = error
+                sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
     if args.otlp_logs_json is not None and export_error is None:
         if report.get("otlp_logs_json"):
             try:
