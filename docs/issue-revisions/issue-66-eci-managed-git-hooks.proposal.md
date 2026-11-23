@@ -4,7 +4,7 @@
 
 **规范权威为 [Issue #66 当前置顶裁决](https://github.com/dymzz/engineering-ci/issues/66)。旧 PR #72 中 L2 优先、ECI 管理 Git Hook 文件、外层 Event/Hook Coordinator、比较后另选调度器等条款已被撤销，仅作为历史审查证据；任何旧段落的“当前/必须/下一步”均不能据此指导代码或创建任务。**
 
-- **已安装/验证的 Lefthook 2.2.2 为现行基线。** `lefthook install` 负责 Hook 文件；声明式配置负责 Job 过滤、必要顺序及安全并行。完整 pre-push 的 argv/stdin 在含空格参数下有已知 2.2.2 `script` 失真，必须采用实测保真的原生交接方式或已核实修复版本，实际版本和 YAML 同步固定；不能因此删减多 Ref 功能，也不恢复 ECI 自建 Hook Coordinator。正式环境核对合并后的 `lefthook dump`（local/extends/remotes）及获批准配置，而非仅相信主 YAML。
+- **已安装/验证的 Lefthook 2.2.2 为现行基线。** `lefthook install` 负责 Hook 文件；声明式配置负责 Job 过滤、必要顺序及安全并行。完整 pre-push 在 2.2.2 中既存在含空格参数的 `script` 失真，也存在默认 push 文件比对（`HEAD` 与 `@{push}`）为空时跳过 Job 的已知行为，必须采用实测保真且可靠唤醒推送事件的原生交接方式或已核实修复版本，实际版本和 YAML 同步固定；不能因此删减多 Ref 功能，也不恢复 ECI 自建 Hook Coordinator。正式环境核对合并后的 `lefthook dump`（local/extends/remotes）及获批准配置，而非仅相信主 YAML。
 - **保留完整检查能力。** ECI 的 #102 Git Event/Invocation、#66 Source/Selection/Plan、#52 原生 Execution/Report、#104 Reconciliation/Receipt 和 Hook Exit 各自复用既有实现；#86 处理真正的 Dagger Data/PASS DAG，#63/#61 处理受信/Required。本裁决不减少多 Ref、共享 Source、输入闭包、文件/项目级条件检查、失败归因和有效的并行能力。
 - **Hook 运行链路：** Lefthook 唤醒本次适用 Job；一个指定 ECI 入口读取完整 pre-push argv/stdin 或 pre-commit Index，为每 Ref 准备有效 Source/Expected；各 Check 消费同次准备事实并保留原生 Report/Attempt。由 Lefthook 管理的接入方式调用已有最终对账 API，处理可控 Job 失败、过滤、缺失及真实 Exit；不再新建外围调度器。
 - **已合并 PR #115 的退出策略：** `hook_coordinator.py` 已有的真实来源绑定、Plan、Report/Receipt 检验按职责回收至现有模块；停止扩展 Coordinator 专用状态与 CLI。默认 `scheduler_ref=lefthook` 不是 Lefthook 实际执行的证据。有效测试和证据按范围继承；只有新接线的真实风险需要定向验证。
