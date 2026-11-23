@@ -104,6 +104,18 @@ Receipt，缺失最终对账时阻断。
 lint、格式、版本与锁文件检查和核心测试。各项保留原生结果，Lefthook 汇总退出。
 用 `uv run --locked --no-sync lefthook uninstall` 卸载本地 Hook。
 
+
+要记录一次显式验证的实际起止，可使用本地计时入口：
+
+```powershell
+uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
+```
+
+该命令执行一次原生 `verify`，在独立目录保存 `lefthook.stdout`、
+`lefthook.stderr` 和引用二者摘要的 `verify-timing.json`。保存的是当次
+Lefthook 调用的宿主时钟读数，`time_source_verified=false`。返回原生检查
+退出状态。此命令由操作者显式调用，现有 Actions Job 保持原有执行路径。
+
 ### 审查与合并
 
 在当前分支执行以下命令，取得当前 PR 的身份和真实检查：
