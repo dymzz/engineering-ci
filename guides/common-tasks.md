@@ -48,7 +48,9 @@ uv run --locked --no-sync lefthook install
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
-本仓默认使用本地 Git 规则运行原生暂存空白检查。受检树声明了
+本仓当前仅为 `pre-push` 绑定了根级策略与 [Profile](../config/hook-profiles)，根目录尚无
+`ci-effective-profile.json` 或 `ci-effective-profile.toml`，因此本仓 `pre-commit` 默认仍使用
+本地 Git 规则运行原生暂存空白检查（不产出 `Plan` 与多 Job 拆分）。当受检树声明了
 `ci-selection.toml` 和已绑定的 `ci-effective-profile.json` 或
 `ci-effective-profile.toml` 时，准备 Job 从隔离检出读取暂存策略。该检出
 采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`
@@ -92,22 +94,11 @@ Git 须支持 `--attr-source` 和 `show-ref --exists`。
 修改 Profile 时，在 `ci-selection.toml` 的 `[push].effective_profiles` 登记目标树内
 的文件，并同步更新对应 `[[effective_profile]]` 的修订和审批摘要。
 
-本仓使用以下原生入口。`files` 与 `{files}` 用 Hook 配置路径唤醒采集 Job。
-Lefthook 默认的 push files 比较可能为空，实际 Ref 来自 Git 的 stdin。
-子任务成功后消费同一次 Invocation 的逐 Ref Receipt，缺失最终对账时阻断。
-
-```yaml
-pre-push:
-  jobs:
-    - name: capture-refs
-      use_stdin: true
-      files: printf '%s\n' lefthook.yml
-      run: |
-        : {files}
-        invocation=$(uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin) || exit $?
-        ECI_HOOK_INVOCATION_REF="$invocation" uv run --locked --no-sync lefthook run pre-push-checks --no-auto-install || exit $?
-        uv run --locked --no-sync python -P -m engineering_ci.cli hooks consume pre-push --invocation-ref "$invocation"
-```
+本仓的 `pre-push`、`pre-push-checks` 及顶层 `lefthook:` 参数帧包装已配置在
+[lefthook.yml](../lefthook.yml) 中：采集 Job `capture-refs` 通过 `files` 与 `{files}`
+用 Hook 配置路径唤醒，规避 Lefthook 默认 `push` 文件比较可能为空的问题，并从 stdin
+读取 `ECI-PRE-PUSH` 参数帧和全部 Git Ref；子任务成功后消费同一次 Invocation 的逐 Ref
+Receipt，缺失最终对账时阻断。
 
 `uv run --locked --no-sync lefthook run verify --no-auto-install` 运行 Dagger 的
 lint、格式、版本与锁文件检查和核心测试。各项保留原生结果，Lefthook 汇总退出。
