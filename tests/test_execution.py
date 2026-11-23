@@ -37,7 +37,9 @@ def run(repo, *args):
 @pytest.fixture
 def repo(tmp_path):
     target = tmp_path / "repo"
-    shutil.copytree(FIXTURE, target)
+    # Build regular fixture files without inheriting executable bits from
+    # the host-to-container source import.
+    shutil.copytree(FIXTURE, target, copy_function=shutil.copyfile)
     run(target, "init", "-q", "-b", "main")
     run(target, "config", "user.email", "execution@example.invalid")
     run(target, "config", "user.name", "Execution Test")

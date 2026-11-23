@@ -6,7 +6,7 @@ lefthook: >-
   pre-commit) exec uv run --locked --no-sync lefthook run pre-commit --no-stage-fixed ;;
   pre-push) (printf ECI-PRE-PUSH:%s:%s: $(printf %s "$3" | base64 | tr -d [:space:]) $(printf %s "$4" | base64 | tr -d [:space:]); cat) |
   uv run --locked --no-sync lefthook run pre-push ;;
-  *) exec uv run --locked --no-sync lefthook $1 $2 $3 $4 ;;
+  *) exec uv run --locked --no-sync lefthook $* ;;
   esac' lefthook
 
 pre-commit:
