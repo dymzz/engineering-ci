@@ -3,11 +3,26 @@
 import argparse
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from time import time_ns
 from uuid import uuid4
+
+
+def _lefthook_binary():
+    names = ("lefthook.exe", "lefthook") if os.name == "nt" else ("lefthook",)
+    sibling_dir = Path(sys.executable).resolve().parent
+    for name in names:
+        candidate = sibling_dir / name
+        if candidate.is_file():
+            return str(candidate)
+    resolved = shutil.which("lefthook")
+    if resolved:
+        return resolved
+    raise FileNotFoundError("lefthook executable not found")
 
 
 def _native_output(path):
@@ -19,27 +34,44 @@ def _native_output(path):
 
 
 def _verify(out):
+    lefthook = _lefthook_binary()
     git_head = subprocess.run(
         ("git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}"),
         stdout=subprocess.PIPE,
         check=False,
     )
-    version = subprocess.check_output(("lefthook", "version"))
-    config = subprocess.check_output(("lefthook", "dump", "--format", "json"))
+    version = subprocess.check_output((lefthook, "version"))
+    config = subprocess.check_output((lefthook, "dump", "--format", "json"))
+    try:
+        parsed_config = json.loads(config)
+    except ValueError as exc:
+        raise ValueError(f"invalid lefthook dump JSON: {exc}") from None
+    if not isinstance(parsed_config, dict) or not isinstance(
+        parsed_config.get("verify"), dict
+    ):
+        raise TypeError("lefthook config has no 'verify' hook")
 
     invocation = out / f"verify-{uuid4().hex}"
     invocation.mkdir(parents=True)
     stdout_path = invocation / "lefthook.stdout"
     stderr_path = invocation / "lefthook.stderr"
-    with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
-        started_at_ns = time_ns()
-        result = subprocess.run(
-            ("lefthook", "run", "verify", "--no-auto-install"),
-            stdout=stdout,
-            stderr=stderr,
-            check=False,
+    print(f"verify: running lefthook verify (outputs: {invocation})", file=sys.stderr)
+    try:
+        with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+            started_at_ns = time_ns()
+            result = subprocess.run(
+                (lefthook, "run", "verify", "--no-auto-install"),
+                stdout=stdout,
+                stderr=stderr,
+                check=False,
+            )
+            ended_at_ns = time_ns()
+    except KeyboardInterrupt:
+        print(
+            f"verify interrupted; partial outputs in {invocation}",
+            file=sys.stderr,
         )
-        ended_at_ns = time_ns()
+        return 130
 
     native_exit = result.returncode
     exit_code = native_exit if native_exit >= 0 else 128 - native_exit
@@ -85,7 +117,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         return _verify(args.out)
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (OSError, TypeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"verify: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
