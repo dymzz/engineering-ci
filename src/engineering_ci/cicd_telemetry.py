@@ -31,9 +31,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import github_receiver
+
 SCHEMA_VERSION = 9
-# Reconstruct Trace/Span IDs from Run/Attempt/Job only. Not a trust decision.
-ID_SCHEME = "github-actions-attempt-sha256-v1"
+# Historical ECI self-authored ID scheme (archived / transitional only).
+LEGACY_ID_SCHEME = "github-actions-attempt-sha256-v1"
+# Reconstruct Trace/Span IDs from upstream githubreceiver (UseCheckRunID).
+ID_SCHEME = LEGACY_ID_SCHEME
 # Groups this producer maps. Not an official Required judgment and not a
 # second copy of the SemConv registry pin. The shared registry record belongs
 # to #74; this baseline does not import it.
@@ -767,13 +771,34 @@ def _canonical_job_id(value):
     return str(number)
 
 
-def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
+def reconcile_expected_trace(
+    *,
+    run_id,
+    attempt,
+    job_ids,
+    observed_spans,
+    id_scheme=github_receiver.ID_SCHEME,
+):
     """Match Task Span IDs rebuilt from run_id, attempt and job_ids.
 
-    ok means only verification_scope task_trace_identity. It does not verify
-    source completeness, Job attributes, URLs, or trust.
+    Defaults to upstream ``githubreceiver`` deterministic IDs
+    (``otel-githubreceiver-usecheckrunid-v1``); pass
+    ``id_scheme=LEGACY_ID_SCHEME`` only when checking frozen historical
+    ECI-producer artifacts. ``ok`` means only
+    ``verification_scope=task_trace_identity``. It does not verify source
+    completeness, Job attributes, URLs, or trust.
     """
-    trace_id, pipeline_span_id, _ = _stable_ids(str(run_id), int(attempt))
+    if id_scheme not in {github_receiver.ID_SCHEME, LEGACY_ID_SCHEME}:
+        raise TelemetryError("unsupported_id_scheme")
+    use_upstream = id_scheme == github_receiver.ID_SCHEME
+    if use_upstream:
+        try:
+            trace_id = github_receiver.trace_id(run_id, attempt)
+            pipeline_span_id = github_receiver.root_span_id(run_id, attempt)
+        except github_receiver.GitHubReceiverError as error:
+            raise TelemetryError(error.code) from None
+    else:
+        trace_id, pipeline_span_id, _ = _stable_ids(str(run_id), int(attempt))
     invalid = []
     duplicates = []
     seen = []
@@ -786,7 +811,7 @@ def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
             duplicates.append(job_id)
         seen.append(job_id)
     base = {
-        "id_scheme": ID_SCHEME,
+        "id_scheme": id_scheme,
         "verification_scope": "task_trace_identity",
         "source_completeness_verified": False,
         "job_attributes_verified": False,
@@ -808,14 +833,33 @@ def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
         return base
     expected_ids = set()
     for job_id in seen:
-        _, _, task_span_id = _stable_ids(str(run_id), int(attempt), job_id)
-        expected_ids.add(task_span_id)
+        if use_upstream:
+            expected_ids.add(github_receiver.job_span_id(job_id))
+        else:
+            _, _, task_span_id = _stable_ids(str(run_id), int(attempt), job_id)
+            expected_ids.add(task_span_id)
     trace_mismatch = []
     parent_mismatch = []
     observed_counts = {}
     for span in observed_spans:
         if span.get("kind") != SPAN_KIND_INTERNAL:
             continue
+        if use_upstream:
+            # Exclude nested githubreceiver queue-* and step child spans whose parent
+            # is a Job span unless they falsely carry task.run.id or attach to Root.
+            parent_id = span.get("parent_span_id") or span.get("parentSpanId")
+            attrs = span.get("span_attrs") or span.get("attributes") or {}
+            if isinstance(attrs, list):
+                has_task_id = any(
+                    isinstance(a, dict) and a.get("key") == ATTR_TASK_RUN_ID
+                    for a in attrs
+                )
+            elif isinstance(attrs, dict):
+                has_task_id = ATTR_TASK_RUN_ID in attrs
+            else:
+                has_task_id = False
+            if parent_id != pipeline_span_id and not has_task_id:
+                continue
         span_id = span.get("span_id")
         observed_counts[span_id] = observed_counts.get(span_id, 0) + 1
         if span.get("trace_id") != trace_id:
@@ -836,6 +880,85 @@ def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
         duplicate=duplicate,
     )
     return base
+
+
+def reconcile_attempt_witness_capture(
+    raw_api_witness,
+    capture,
+    *,
+    repository_url=None,
+    expect_previous_attempt_link=None,
+):
+    """Validate an independent GitHub API Attempt Witness against a ``githubreceiver`` capture.
+
+    Verifies Attempt + paginated Job pages completeness (never inferring
+    Expected from the capture itself) and delegates trace/root/task/attribute
+    reconciliation to :func:`github_receiver.reconcile_github_receiver_trace`.
+    """
+    if not isinstance(raw_api_witness, dict):
+        raise TelemetryError("witness_payload_invalid")
+    run_obj = raw_api_witness.get("attempt")
+    pages = raw_api_witness.get("job_pages")
+    if not isinstance(run_obj, dict) or not isinstance(pages, list):
+        raise TelemetryError("witness_payload_invalid")
+    run_id = run_obj.get("id")
+    run_attempt = run_obj.get("run_attempt")
+    if type(run_id) is bool or not isinstance(run_id, int) or run_id <= 0:
+        raise TelemetryError("run_id_invalid")
+    if (
+        type(run_attempt) is bool
+        or not isinstance(run_attempt, int)
+        or run_attempt <= 0
+    ):
+        raise TelemetryError("run_attempt_invalid")
+    declared_total = None
+    jobs = []
+    seen_job_ids = set()
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
+            raise TelemetryError("jobs_payload_invalid")
+        total = page.get("total_count")
+        if type(total) is not int or total < 0:
+            raise TelemetryError("jobs_total_count_invalid")
+        if declared_total is None:
+            declared_total = total
+        elif total != declared_total:
+            raise TelemetryError("jobs_snapshot_inconsistent")
+        for job in page["jobs"]:
+            if not isinstance(job, dict):
+                raise TelemetryError("jobs_payload_invalid")
+            _validate_job_membership(job, run_id=run_id, run_attempt=run_attempt)
+            jid = job.get("id")
+            if jid is not None:
+                if jid in seen_job_ids:
+                    raise TelemetryError("jobs_snapshot_inconsistent")
+                seen_job_ids.add(jid)
+            jobs.append(job)
+    if declared_total is not None and len(jobs) < declared_total:
+        raise TelemetryError("jobs_page_incomplete")
+    if expect_previous_attempt_link is None:
+        expect_link = bool(run_attempt > 1 and run_obj.get("previous_attempt_url"))
+    else:
+        expect_link = bool(expect_previous_attempt_link)
+    repo_url = repository_url
+    if repo_url is None and isinstance(run_obj.get("repository"), dict):
+        html_url = run_obj["repository"].get("html_url")
+        if isinstance(html_url, str) and html_url:
+            repo_url = html_url
+    try:
+        return github_receiver.reconcile_github_receiver_trace(
+            run_id=run_id,
+            attempt=run_attempt,
+            run_status=run_obj.get("status") or "",
+            run_conclusion=run_obj.get("conclusion"),
+            jobs=jobs,
+            capture=capture,
+            repository_url=repo_url,
+            head_sha=run_obj.get("head_sha"),
+            expect_previous_attempt_link=expect_link,
+        )
+    except github_receiver.GitHubReceiverError as error:
+        raise TelemetryError(error.code) from None
 
 
 def _task_omit_reason(job_facts):

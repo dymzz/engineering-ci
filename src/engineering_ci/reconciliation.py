@@ -28,7 +28,7 @@ import hashlib
 import json
 import re
 
-from . import check_contract, expected_checks
+from . import check_contract, expected_checks, terminal_expected
 
 RECONCILIATION_KIND = "engineering-ci-expected-result-reconciliation"
 RECONCILIATION_VERSION = 1
@@ -735,6 +735,53 @@ def _normalize_resolutions(resolutions, expected_refs):
     return normalized
 
 
+def normalize_terminal_bindings(terminal_bindings, expected_refs, scope):
+    """Validate optional #52-D4 Terminal Expected bindings without minting authority."""
+    if isinstance(terminal_bindings, dict) or not isinstance(
+        terminal_bindings, (list, tuple)
+    ):
+        raise ReconciliationError("terminal_binding_invalid")
+    bindings = {}
+    for item in terminal_bindings:
+        try:
+            validated = terminal_expected.validate_terminal_expected_binding(item)
+        except terminal_expected.TerminalExpectedError:
+            raise ReconciliationError("terminal_binding_invalid") from None
+        ref = validated["expected_check_ref"]
+        if ref not in expected_refs:
+            raise ReconciliationError("terminal_binding_expected_unknown")
+        if ref in bindings:
+            raise ReconciliationError("terminal_binding_duplicate")
+        if validated.get("scope_id") != scope.get("scope_id") or validated.get(
+            "expected_set_ref"
+        ) != scope.get("expected_set_ref"):
+            raise ReconciliationError("terminal_binding_scope_mismatch")
+        bindings[ref] = validated
+    return bindings
+
+
+def terminal_applicability_authorized(entry, terminal_binding):
+    """True only when an authorized #52-D4 binding unlocks weaver_terminal unknown."""
+    if terminal_binding is None or entry.get("name") != "weaver_terminal":
+        return False
+    if entry.get("check_id") != check_contract.CHECK_IDS.get("weaver_terminal"):
+        return False
+    return (
+        terminal_binding.get("authorized") is True
+        and terminal_binding.get("status") == "bound"
+        and terminal_binding.get("contract_sample") is False
+        and terminal_binding.get("authorization_basis") == "authority_verified"
+        and terminal_binding.get("input_closure") == "verified"
+        and terminal_binding.get("phase_witness_verified") is True
+        and terminal_binding.get("projection_verified") is True
+        and terminal_binding.get("completed_run_verified") is True
+        and terminal_binding.get("subject_correlated") is True
+        and terminal_binding.get("check_id") == entry.get("check_id")
+        and terminal_binding.get("expected_check_ref")
+        == entry.get("expected_check_ref")
+    )
+
+
 def _normalize_observations(observations):
     if isinstance(observations, dict) or not isinstance(observations, (list, tuple)):
         raise ReconciliationError("observation_invalid")
@@ -1338,6 +1385,7 @@ def _reconcile_entry(
     *,
     scope=None,
     invocation_ref=None,
+    terminal_binding=None,
 ):
     output = {
         "expected_check_ref": entry["expected_check_ref"],
@@ -1383,12 +1431,14 @@ def _reconcile_entry(
         )
         return output
     if application_status not in _RECONCILABLE_APPLICABILITY:
-        output.update(
-            binding_status="unknown",
-            reason="applicability_unknown",
-            unknown_fields=_unknown_fields("applicability_unknown"),
-        )
-        return output
+        if not terminal_applicability_authorized(entry, terminal_binding):
+            output.update(
+                binding_status="unknown",
+                reason="applicability_unknown",
+                unknown_fields=_unknown_fields("applicability_unknown"),
+            )
+            return output
+        output["terminal_binding_ref"] = terminal_binding["binding_ref"]
     if binding is not None:
         output.update(
             scheduler_ref=binding.get("scheduler_ref"),
@@ -1840,15 +1890,17 @@ def reconcile_expected_results(
     resolutions=(),
     observations=(),
     invocation_ref=None,
+    terminal_bindings=(),
 ):
     """Reconcile one immutable Expected scope with activated Jobs and results.
 
     ``expected`` is the #66-B projection (or, for a multi-ref Schema v2
     projection, select one child scope with ``ref_scope_id``). ``routing``
     carries activated Job identities, ``resolutions`` carries separately
-    sourced rule/source/baseline evidence, and ``observations`` carries genuine
+    sourced rule/source/baseline evidence, ``observations`` carries genuine
     #52 Native Results under the exact Job/Run/Attempt/Report identity they came
-    from.
+    from, and optional ``terminal_bindings`` carries verified #52-D4 bindings
+    for post-completion ``weaver_terminal``.
 
     The returned receipt is additive and versioned. It never rewrites the
     Expected projection and does not claim trusted evidence or Required status.
@@ -1858,6 +1910,9 @@ def reconcile_expected_results(
     expected_refs = {item["expected_check_ref"] for item in checks}
     bindings = _normalize_routing(routing, expected_refs)
     resolutions_by_ref = _normalize_resolutions(resolutions, expected_refs)
+    terminal_by_ref = normalize_terminal_bindings(
+        terminal_bindings, expected_refs, scope
+    )
     normalized_observations, duplicates = _normalize_observations(observations)
     observations_by_identity = {
         _observation_key(item): item for item in normalized_observations
@@ -1870,6 +1925,7 @@ def reconcile_expected_results(
             observations_by_identity,
             scope=scope,
             invocation_ref=invocation_ref,
+            terminal_binding=terminal_by_ref.get(entry["expected_check_ref"]),
         )
         for entry in checks
     ]
