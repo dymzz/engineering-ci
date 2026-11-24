@@ -5,6 +5,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from engineering_ci import cicd_telemetry
 
 RUN_START = 1_700_000_000_000_000_000
@@ -970,6 +972,210 @@ def _api_attempt_get(run, pages):
         raise AssertionError(path)
 
     return api_get
+
+
+def test_terminal_event_records_attempt_without_using_workflow_end_times(
+    tmp_path, monkeypatch
+):
+    run, job = _api_run_job_fixture()
+    run = {**run, "completed_at": "2025-01-01T00:00:00Z"}
+    job = {**job, "run_id": run["id"], "run_attempt": 1}
+    pages = {"total_count": 1, "jobs": [job]}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    # The producer's clock timestamp has a different scope from the API times.
+    monkeypatch.setattr(cicd_telemetry, "time_ns", lambda: RUN_END)
+    output = tmp_path / "candidate.json"
+    logs = tmp_path / "logs.json"
+    code = cicd_telemetry.main(
+        [
+            "--repository",
+            "dymzz/engineering-ci",
+            "--run-id",
+            str(run["id"]),
+            "--attempt",
+            "1",
+            "--end-time-mode",
+            "terminal_event",
+            "--output",
+            str(output),
+            "--otlp-logs-json",
+            str(logs),
+        ]
+    )
+    assert code == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    terminal = report["terminal"]
+    assert terminal["terminal_confirmed"] is True
+    assert terminal["conclusion"] == run["conclusion"]
+    assert terminal["root_emission_reason"] == "run_completed_at_unproven"
+    assert terminal["time_precision"] == "unproven"
+    assert terminal["end_lower_bound_ns"] is None
+    assert terminal["end_upper_bound_ns"] is None
+    assert terminal["uncertainty_ns"] is None
+    assert report["facts"]["run_started_at_ns"] is None
+    assert report["facts"]["run_updated_at_ns"] is None
+    assert report["facts"]["run_completed_at_ns"] is None
+    assert not terminal["time_source_verified"]
+    assert not terminal["duration_valid_for_metrics"]
+    assert report["coverage"]["terminal_check"] == "not_verified"
+    assert [span["kind"] for span in report["spans"]] == [
+        cicd_telemetry.SPAN_KIND_INTERNAL
+    ]
+    wire = json.loads(logs.read_text(encoding="utf-8"))
+    records = wire["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    event = next(
+        record for record in records if "GitHub Attempt" in str(record["body"])
+    )
+    assert event["body"] == {
+        "stringValue": f"GitHub Attempt completed: {run['conclusion']}"
+    }
+    assert event["timeUnixNano"] == str(RUN_END)
+    assert event["traceId"] == report["coverage"]["expected_trace"]["expected_trace_id"]
+    assert "spanId" not in event
+
+
+def test_terminal_event_requires_confirmed_attempt_from_the_api():
+    facts = complete_facts(run_status="completed")
+    report = cicd_telemetry.produce(
+        facts,
+        end_time_mode=cicd_telemetry.END_TIME_TERMINAL_EVENT,
+        terminal_observed_at_ns=RUN_END,
+    )
+    assert report["reason"] == "terminal_status_unverified"
+    assert not report["terminal"]["terminal_confirmed"]
+    assert report["terminal"]["root_emission"] == "not_emitted"
+
+
+def test_terminal_event_zero_job_cancelled_attempt_exports_terminal_log(
+    tmp_path, monkeypatch
+):
+    run, _ = _api_run_job_fixture()
+    run = {**run, "conclusion": "cancelled"}
+    pages = {"total_count": 0, "jobs": []}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    monkeypatch.setattr(cicd_telemetry, "time_ns", lambda: RUN_END)
+    output = tmp_path / "candidate.json"
+    traces = tmp_path / "otel.json"
+    logs = tmp_path / "logs.json"
+    code = cicd_telemetry.main(
+        [
+            "--repository",
+            "dymzz/engineering-ci",
+            "--run-id",
+            str(run["id"]),
+            "--attempt",
+            "1",
+            "--end-time-mode",
+            "terminal_event",
+            "--output",
+            str(output),
+            "--otlp-json",
+            str(traces),
+            "--otlp-logs-json",
+            str(logs),
+        ]
+    )
+    assert code == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["status"] == "partial"
+    assert report["reason"] == "run_completed_at_unproven"
+    assert report["spans"] == []
+    assert report["coverage"]["task_coverage"] == "empty"
+    assert report["terminal"]["terminal_confirmed"] is True
+    assert report["claims"]["otlp_json_skip"] == "no_candidate_spans"
+    assert report["claims"]["otlp_logs_exported"] is True
+    assert not traces.exists()
+    wire = json.loads(logs.read_text(encoding="utf-8"))
+    records = wire["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    assert len(records) == 1
+    assert records[0]["body"] == {"stringValue": "GitHub Attempt completed: cancelled"}
+
+
+@pytest.mark.parametrize(
+    ("existing_trace", "export_logs", "diagnostic"),
+    [
+        (True, True, "otlp_json_output_exists"),
+        (False, False, "otlp_json_unavailable"),
+    ],
+)
+def test_terminal_event_zero_job_rejects_unfulfilled_trace_export(
+    tmp_path, monkeypatch, capsys, existing_trace, export_logs, diagnostic
+):
+    run, _ = _api_run_job_fixture()
+    run = {**run, "conclusion": "cancelled"}
+    pages = {"total_count": 0, "jobs": []}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    output = tmp_path / "candidate.json"
+    traces = tmp_path / "otel.json"
+    logs = tmp_path / "logs.json"
+    if existing_trace:
+        traces.write_bytes(b"trace from a previous invocation")
+    args = [
+        "--repository",
+        "dymzz/engineering-ci",
+        "--run-id",
+        str(run["id"]),
+        "--attempt",
+        "1",
+        "--end-time-mode",
+        "terminal_event",
+        "--output",
+        str(output),
+        "--otlp-json",
+        str(traces),
+    ]
+    if export_logs:
+        args.extend(["--otlp-logs-json", str(logs)])
+
+    assert cicd_telemetry.main(args) == 3
+    assert diagnostic in capsys.readouterr().err
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["terminal"]["terminal_confirmed"] is True
+    assert report["spans"] == []
+    assert not report["claims"]["otlp_json_exported"]
+    assert "otlp_json_skip" not in report["claims"]
+    assert not logs.exists()
+    if existing_trace:
+        assert traces.read_bytes() == b"trace from a previous invocation"
+    else:
+        assert not traces.exists()
+
+
+def test_terminal_event_rejects_unsupported_run_conclusion():
+    facts = complete_facts(run_status="completed", run_conclusion="neutral")
+    with_task = cicd_telemetry.produce(
+        facts,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_TERMINAL_EVENT,
+        terminal_observed_at_ns=RUN_END,
+    )
+    assert with_task["status"] == "partial"
+    assert with_task["reason"] == "unsupported_run_conclusion"
+    assert not with_task["terminal"]["terminal_confirmed"]
+    assert with_task["terminal"]["root_emission"] == "not_emitted"
+
+    without_task = cicd_telemetry.produce(
+        complete_facts(
+            run_status="completed",
+            run_conclusion="neutral",
+            job_id=None,
+            job_name=None,
+            job_url=None,
+            job_conclusion=None,
+            job_started_at_ns=None,
+            job_completed_at_ns=None,
+        ),
+        source="github_api",
+        github_api_fetched=True,
+        completed_jobs_total=0,
+        task_facts=[],
+        end_time_mode=cicd_telemetry.END_TIME_TERMINAL_EVENT,
+        terminal_observed_at_ns=RUN_END,
+    )
+    assert without_task["status"] == "incomplete"
+    assert without_task["reason"] == "unsupported_run_conclusion"
+    assert not without_task["terminal"]["terminal_confirmed"]
 
 
 def test_witness_is_saved_before_a_rejected_export(tmp_path, monkeypatch):
@@ -2355,6 +2561,8 @@ def test_post_run_workflow_syncs_with_the_lockfile():
     assert "uv sync --locked" in workflow
     assert "uv run --locked python -m engineering_ci.cicd_telemetry" in workflow
     assert "uv sync\n" not in workflow
+    assert "--end-time-mode terminal_event" in workflow
+    assert "--max-end-uncertainty-ns" not in workflow
 
 
 _ARCHIVED_V8 = Path("docs/verification/cicd-telemetry-real-run-identity-v8")

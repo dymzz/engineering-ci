@@ -142,6 +142,24 @@ not skip a mismatched or illegal membership field.
 
 ## Export
 
+### Post-run terminal output
+
+The post-run Workflow selects `--end-time-mode terminal_event`. The Attempt
+API supplies the completed state and mapped conclusion, and the producer
+timestamps its own observation. The Candidate and correlated terminal
+LogRecord preserve these facts with `time_precision=unproven`, empty end
+bounds and `root_emission=not_emitted`. Workflow timestamps stay in the raw
+API witness. Task telemetry retains its own Job timestamps.
+
+A Pipeline Root requires instrumentation at the boundary that owns the
+measured execution. A Dagger Query or Function span describes its own
+operation within the enclosing GitHub Attempt.
+
+A confirmed Attempt with zero Jobs can export its terminal LogRecord with
+an unused Trace destination. A trace-only request fails when no Span is
+available. If a file already occupies the Trace destination, the export
+fails and preserves that file.
+
 ### Attribute contract (schema 9)
 
 The upstream identity belongs to #74's shared
