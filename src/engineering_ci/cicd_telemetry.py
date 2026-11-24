@@ -3058,19 +3058,28 @@ def main(argv=None):
         }
     export_error = None
     if args.otlp_json is not None:
-        if (
-            not report.get("otlp_json")
-            and args.end_time_mode == END_TIME_TERMINAL_EVENT
-            and report["status"] in {"produced", "partial"}
-            and report.get("otlp_logs_json")
-        ):
-            report["claims"]["otlp_json_skip"] = "no_candidate_spans"
-        else:
-            try:
+        try:
+            if (
+                not report.get("otlp_json")
+                and args.end_time_mode == END_TIME_TERMINAL_EVENT
+                and report["status"] in {"produced", "partial"}
+                and report.get("otlp_logs_json")
+                and args.otlp_logs_json != args.otlp_json
+                and (args.otlp_logs_json is not None or args.otlp_endpoint is not None)
+            ):
+                try:
+                    args.otlp_json.lstat()
+                except FileNotFoundError:
+                    report["claims"]["otlp_json_skip"] = "no_candidate_spans"
+                except OSError as error:
+                    raise TelemetryError("otlp_json_path_unavailable") from error
+                else:
+                    raise TelemetryError("otlp_json_output_exists")
+            else:
                 write_otlp_json(report, args.otlp_json)
-            except TelemetryError as error:
-                export_error = error
-                sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+        except TelemetryError as error:
+            export_error = error
+            sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
     if args.otlp_logs_json is not None and export_error is None:
         if report.get("otlp_logs_json"):
             try:

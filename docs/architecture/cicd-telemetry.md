@@ -33,17 +33,6 @@ Inputs (first → second slice):
 Without a proven Run completed-at the producer reports
 `run_completed_at_unproven` (when `updated_at` is present) or
 `missing_run_timestamps` and does **not** emit an exact Pipeline Span end.
-The default post-run Workflow uses `--end-time-mode terminal_event`. The
-exact Attempt API supplies the completed state and native conclusion. The
-producer measures the time at which it records that event. The Candidate
-and correlated Attempt-terminal LogRecord preserve these facts, with
-`time_precision=unproven` for the Pipeline end, empty end bounds and
-`root_emission=not_emitted`. Workflow timestamps stay in the raw API witness.
-Task telemetry retains its own Job timestamps.
-A Pipeline Root requires instrumentation at the boundary that actually
-owns the measured execution. A Dagger Query or Function span describes
-that operation within the enclosing GitHub Attempt.
-
 With `--end-time-mode observed_upper_bound`, native Attempt API
 `run_status=completed` confirms the terminal and records a constraint interval:
 last completed Job end (or Run start when there are no Jobs) through the
@@ -152,6 +141,24 @@ pages are read, every returned Job is checked for a provided `run_id` or
 not skip a mismatched or illegal membership field.
 
 ## Export
+
+### Post-run terminal output
+
+The post-run Workflow selects `--end-time-mode terminal_event`. The Attempt
+API supplies the completed state and mapped conclusion, and the producer
+timestamps its own observation. The Candidate and correlated terminal
+LogRecord preserve these facts with `time_precision=unproven`, empty end
+bounds and `root_emission=not_emitted`. Workflow timestamps stay in the raw
+API witness. Task telemetry retains its own Job timestamps.
+
+A Pipeline Root requires instrumentation at the boundary that owns the
+measured execution. A Dagger Query or Function span describes its own
+operation within the enclosing GitHub Attempt.
+
+A confirmed Attempt with zero Jobs can export its terminal LogRecord with
+an unused Trace destination. A trace-only request fails when no Span is
+available. If a file already occupies the Trace destination, the export
+fails and preserves that file.
 
 ### Attribute contract (schema 9)
 

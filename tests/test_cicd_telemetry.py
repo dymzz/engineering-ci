@@ -5,6 +5,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from engineering_ci import cicd_telemetry
 
 RUN_START = 1_700_000_000_000_000_000
@@ -1087,6 +1089,56 @@ def test_terminal_event_zero_job_cancelled_attempt_exports_terminal_log(
     records = wire["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
     assert len(records) == 1
     assert records[0]["body"] == {"stringValue": "GitHub Attempt completed: cancelled"}
+
+
+@pytest.mark.parametrize(
+    ("existing_trace", "export_logs", "diagnostic"),
+    [
+        (True, True, "otlp_json_output_exists"),
+        (False, False, "otlp_json_unavailable"),
+    ],
+)
+def test_terminal_event_zero_job_rejects_unfulfilled_trace_export(
+    tmp_path, monkeypatch, capsys, existing_trace, export_logs, diagnostic
+):
+    run, _ = _api_run_job_fixture()
+    run = {**run, "conclusion": "cancelled"}
+    pages = {"total_count": 0, "jobs": []}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    output = tmp_path / "candidate.json"
+    traces = tmp_path / "otel.json"
+    logs = tmp_path / "logs.json"
+    if existing_trace:
+        traces.write_bytes(b"trace from a previous invocation")
+    args = [
+        "--repository",
+        "dymzz/engineering-ci",
+        "--run-id",
+        str(run["id"]),
+        "--attempt",
+        "1",
+        "--end-time-mode",
+        "terminal_event",
+        "--output",
+        str(output),
+        "--otlp-json",
+        str(traces),
+    ]
+    if export_logs:
+        args.extend(["--otlp-logs-json", str(logs)])
+
+    assert cicd_telemetry.main(args) == 3
+    assert diagnostic in capsys.readouterr().err
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["terminal"]["terminal_confirmed"] is True
+    assert report["spans"] == []
+    assert not report["claims"]["otlp_json_exported"]
+    assert "otlp_json_skip" not in report["claims"]
+    assert not logs.exists()
+    if existing_trace:
+        assert traces.read_bytes() == b"trace from a previous invocation"
+    else:
+        assert not traces.exists()
 
 
 def test_terminal_event_rejects_unsupported_run_conclusion():
