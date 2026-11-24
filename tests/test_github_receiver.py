@@ -458,9 +458,14 @@ def test_reconcile_zero_job_and_partial_rerun_scenarios():
         run_conclusion="success",
         jobs=[rerun_job],
         capture=rerun_cap,
+        run_started_at="2026-11-10T10:00:01Z",
         expect_previous_attempt_link=True,
     )
     assert rerun_verdict["ok"] is True
+    assert rerun_verdict["execution_attribution_status"] == "verified"
+    assert rerun_verdict["executed_jobs"] == ["3002"]
+    assert rerun_verdict["result_completed_jobs"] == ["3002"]
+    assert rerun_verdict["reused_jobs"] == []
     assert rerun_verdict["expected_previous_trace_id"] == gr.trace_id(9003, 1)
 
     # Attempt 1 job mistakenly mixed into Attempt 2 witness must fail immediately
@@ -473,7 +478,249 @@ def test_reconcile_zero_job_and_partial_rerun_scenarios():
             run_conclusion="success",
             jobs=[rerun_job, stale_job],
             capture=rerun_cap,
+            run_started_at="2026-11-10T10:00:01Z",
         )
+
+
+def test_partial_rerun_separates_result_and_executed_inventories_44713410255_pattern():
+    # Models GitHub Run 44713410255 Attempt 2:
+    # - run_started_at = 2026-11-20T09:49:34Z
+    # - 1 job genuinely re-ran (version-metadata, started_at 09:49:39Z >= run_started_at)
+    # - 3 jobs reused from Attempt 1 carry run_attempt=2 & new check_run_id, but
+    #   started_at=09:45:32Z < run_started_at.
+    run_id = 44713410255
+    attempt = 2
+    run_started_at = "2026-11-20T09:49:34Z"
+
+    def make_job(cid: int, name: str, started_at: str, completed_at: str) -> dict:
+        job = _sample_job(
+            job_id=cid,
+            run_id=run_id,
+            attempt=attempt,
+            name=name,
+            conclusion="success",
+        )["workflow_job"]
+        job["created_at"] = "2026-11-20T09:49:36Z"
+        job["started_at"] = started_at
+        job["completed_at"] = completed_at
+        return job
+
+    executed_job = make_job(
+        136212522105,
+        "version-metadata",
+        "2026-11-20T09:49:39Z",
+        "2026-11-20T09:50:40Z",
+    )
+    reused_sync = make_job(
+        136212523496,
+        "sync-tool-tests",
+        "2026-11-20T09:45:32Z",
+        "2026-11-20T09:47:40Z",
+    )
+    reused_checks = make_job(
+        136212524904,
+        "python-ci / checks",
+        "2026-11-20T09:45:32Z",
+        "2026-11-20T09:46:47Z",
+    )
+    reused_a1 = make_job(
+        136212602878,
+        "dagger-native-telemetry / a1-gate",
+        "2026-11-20T09:45:32Z",
+        "2026-11-20T09:45:48Z",
+    )
+    all_jobs = [executed_job, reused_sync, reused_checks, reused_a1]
+
+    # Upstream githubreceiver only sees workflow_job webhook for version-metadata.
+    partial_cap = _normalized_span_capture(
+        run_id=run_id,
+        attempt=attempt,
+        run_conclusion="success",
+        jobs=[executed_job],
+    )
+
+    exp = gr.build_weaver_expectations(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=all_jobs,
+        run_started_at=run_started_at,
+    )
+    assert exp["execution_attribution_status"] == "verified"
+    assert exp["result_completed_jobs"] == [
+        "136212522105",
+        "136212523496",
+        "136212524904",
+        "136212602878",
+    ]
+    assert len(exp["result_inventory"]) == 4
+    assert exp["executed_jobs"] == ["136212522105"]
+    assert exp["reused_jobs"] == ["136212523496", "136212524904", "136212602878"]
+    assert exp["unknown_execution_jobs"] == []
+    assert [s["span_id"] for s in exp["spans"]] == [
+        gr.root_span_id(run_id, attempt),
+        gr.job_span_id(136212522105),
+    ]
+
+    verdict = gr.reconcile_github_receiver_trace(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=all_jobs,
+        capture=partial_cap,
+        run_started_at=run_started_at,
+        expect_previous_attempt_link=True,
+    )
+    assert verdict["ok"] is True, verdict
+    assert verdict["errors"] == []
+    assert verdict["task_coverage"] == "complete"
+    assert verdict["execution_attribution_status"] == "verified"
+    assert verdict["result_completed_jobs"] == exp["result_completed_jobs"]
+    assert verdict["executed_jobs"] == ["136212522105"]
+    assert verdict["reused_jobs"] == exp["reused_jobs"]
+    assert verdict["missing_jobs"] == []
+
+    # Reused-only Attempt 2 (0 executed jobs): Root-only trace passes while preserving Result Inventory
+    root_only_cap = _normalized_span_capture(
+        run_id=run_id, attempt=attempt, run_conclusion="success", jobs=[]
+    )
+    reused_only = gr.reconcile_github_receiver_trace(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=[reused_sync, reused_checks],
+        capture=root_only_cap,
+        run_started_at=run_started_at,
+    )
+    assert reused_only["ok"] is True, reused_only
+    assert reused_only["executed_jobs"] == []
+    assert reused_only["expected_matchers"] == ["gh.pipeline"]
+    assert reused_only["result_completed_jobs"] == ["136212523496", "136212524904"]
+
+    # Negative 1: Missing Task span for genuinely executed Attempt 2 job fails ONLY on executed job
+    missing_exec = gr.reconcile_github_receiver_trace(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=all_jobs,
+        capture=root_only_cap,
+        run_started_at=run_started_at,
+    )
+    assert missing_exec["ok"] is False
+    assert "missing_expected_task_spans" in missing_exec["errors"]
+    assert missing_exec["missing_jobs"] == ["136212522105"]
+
+    # Negative 2a: Wrong reuse attribution — claiming historical pre-run job ran in Attempt 2
+    with pytest.raises(gr.GitHubReceiverError, match="wrong_reuse_attribution"):
+        gr.build_weaver_expectations(
+            run_id=run_id,
+            attempt=attempt,
+            run_status="completed",
+            run_conclusion="success",
+            jobs=all_jobs,
+            run_started_at=run_started_at,
+            executed_job_ids=[136212522105, 136212523496],
+        )
+
+    # Negative 2b: Wrong reuse attribution — dismissing executed job as reused
+    with pytest.raises(gr.GitHubReceiverError, match="wrong_reuse_attribution"):
+        gr.reconcile_github_receiver_trace(
+            run_id=run_id,
+            attempt=attempt,
+            run_status="completed",
+            run_conclusion="success",
+            jobs=all_jobs,
+            capture=partial_cap,
+            run_started_at=run_started_at,
+            executed_job_ids=[],
+        )
+
+    # Negative 2c: Wrong reuse attribution — Capture emits a Task span for a reused job
+    cap_with_reused = _normalized_span_capture(
+        run_id=run_id,
+        attempt=attempt,
+        run_conclusion="success",
+        jobs=[executed_job, reused_sync],
+    )
+    reused_span_verdict = gr.reconcile_github_receiver_trace(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=all_jobs,
+        capture=cap_with_reused,
+        run_started_at=run_started_at,
+    )
+    assert reused_span_verdict["ok"] is False
+    assert "wrong_reuse_attribution" in reused_span_verdict["errors"]
+    assert "unexpected_task_spans" in reused_span_verdict["errors"]
+    assert reused_span_verdict["reused_job_spans_in_capture"] == ["136212523496"]
+
+    # Negative 2d: Attempt 1 cannot have prior-Attempt reused jobs
+    att1_job = _sample_job(job_id=7001, run_id=9100, attempt=1)["workflow_job"]
+    att1_job["started_at"] = "2026-11-10T09:55:00Z"
+    with pytest.raises(gr.GitHubReceiverError, match="wrong_reuse_attribution"):
+        gr.reconcile_github_receiver_trace(
+            run_id=9100,
+            attempt=1,
+            run_status="completed",
+            run_conclusion="success",
+            jobs=[att1_job],
+            capture=_normalized_span_capture(
+                run_id=9100, attempt=1, run_conclusion="success", jobs=[att1_job]
+            ),
+            run_started_at="2026-11-10T10:00:00Z",
+        )
+
+    # Negative 3: Unproven Attempt 2 jobs (no run_started_at and no executed_job_ids)
+    # stay explicitly unknown and cannot self-certify Expected from Capture spans
+    unknown_verdict = gr.reconcile_github_receiver_trace(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=[executed_job, reused_sync],
+        capture=partial_cap,
+    )
+    assert unknown_verdict["ok"] is False
+    assert unknown_verdict["execution_attribution_status"] == "unknown"
+    assert unknown_verdict["task_coverage"] == "execution_attribution_unknown"
+    assert "execution_attribution_unknown" in unknown_verdict["errors"]
+    assert unknown_verdict["result_completed_jobs"] == ["136212522105", "136212523496"]
+    assert unknown_verdict["unknown_execution_jobs"] == [
+        "136212522105",
+        "136212523496",
+    ]
+    assert unknown_verdict["executed_jobs"] == []
+    assert unknown_verdict["unattributed_capture_spans"] == ["136212522105"]
+
+    with pytest.raises(gr.GitHubReceiverError, match="execution_attribution_unknown"):
+        gr.build_weaver_expectations(
+            run_id=run_id,
+            attempt=attempt,
+            run_status="completed",
+            run_conclusion="success",
+            jobs=[executed_job, reused_sync],
+        )
+
+    diag_exp = gr.build_weaver_expectations(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=[executed_job, reused_sync],
+        allow_unproven_execution_attribution=True,
+    )
+    assert diag_exp["execution_attribution_status"] == "unknown"
+    assert diag_exp["provenance_gaps"] == ["execution_attribution_unknown"]
+    assert diag_exp["result_completed_jobs"] == ["136212522105", "136212523496"]
+    assert [s["span_id"] for s in diag_exp["spans"]] == [
+        gr.root_span_id(run_id, attempt)
+    ]
 
 
 def test_reconcile_rejects_negative_tampered_captures():
@@ -497,6 +744,7 @@ def test_reconcile_rejects_negative_tampered_captures():
         run_conclusion="failure",
         jobs=[job],
         capture=rogue,
+        run_started_at="2026-11-10T10:00:01Z",
     )
     assert res_rogue["ok"] is False
     assert "unexpected_task_spans" in res_rogue["errors"]
@@ -514,6 +762,7 @@ def test_reconcile_rejects_negative_tampered_captures():
         run_conclusion="failure",
         jobs=[job],
         capture=no_err,
+        run_started_at="2026-11-10T10:00:01Z",
     )
     assert res_no_err["ok"] is False
     assert "root_error_type_mismatch" in res_no_err["errors"]
@@ -528,6 +777,7 @@ def test_reconcile_rejects_negative_tampered_captures():
         run_conclusion="failure",
         jobs=[job],
         capture=no_link,
+        run_started_at="2026-11-10T10:00:01Z",
         expect_previous_attempt_link=True,
     )
     assert res_no_link["ok"] is False
@@ -541,6 +791,7 @@ def test_reconcile_rejects_negative_tampered_captures():
             run_status="completed",
             run_conclusion="neutral",
             jobs=[job],
+            run_started_at="2026-11-10T10:00:01Z",
         )
 
 
@@ -893,6 +1144,7 @@ def test_live_collector_to_otlp_to_weaver_v1_45_0_e2e():
             run_status="completed",
             run_conclusion="failure",
             jobs=jobs_501,
+            run_started_at=run_fail["workflow_run"]["run_started_at"],
         )
         weaver_501 = _run_dagger_weaver(
             work_root / "weaver-501",
@@ -918,6 +1170,7 @@ def test_live_collector_to_otlp_to_weaver_v1_45_0_e2e():
             run_conclusion="failure",
             jobs=jobs_501,
             capture=cap_501,
+            run_started_at=run_fail["workflow_run"]["run_started_at"],
             repository_url="https://github.com/dymzz/engineering-ci",
             head_sha="7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
             expect_previous_attempt_link=True,

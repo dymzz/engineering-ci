@@ -13,6 +13,7 @@ import base64
 import hashlib
 import hmac
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,48 @@ _GITHUB_JOB_STATUSES = frozenset(
 )
 _HEX_TRACE_RE = re.compile(r"^[0-9a-f]{32}$")
 _HEX_SPAN_RE = re.compile(r"^[0-9a-f]{16}$")
+_EPOCH_UTC = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _parse_timestamp_ns(value: Any, code: str) -> int | None:
+    """Parse an ISO-8601 tz-aware timestamp or positive integer ns into UTC ns."""
+    if value is None:
+        return None
+    if type(value) is bool:
+        raise GitHubReceiverError(code)
+    if type(value) is int:
+        if value <= 0:
+            raise GitHubReceiverError(code)
+        return value
+    if not isinstance(value, str):
+        raise GitHubReceiverError(code)
+    text = value.strip()
+    if not text:
+        raise GitHubReceiverError(code)
+    normalized = f"{text[:-1]}+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as err:
+        raise GitHubReceiverError(code) from err
+    if parsed.tzinfo is None:
+        raise GitHubReceiverError(code)
+    delta = parsed.astimezone(UTC) - _EPOCH_UTC
+    ns = (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + (
+        delta.microseconds * 1_000
+    )
+    if ns <= 0:
+        raise GitHubReceiverError(code)
+    return ns
+
+
+def _normalize_executed_job_ids(executed_job_ids: Any) -> set[int] | None:
+    if executed_job_ids is None:
+        return None
+    if isinstance(executed_job_ids, (dict, str, bytes)) or not isinstance(
+        executed_job_ids, (list, tuple, set, frozenset)
+    ):
+        raise GitHubReceiverError("executed_job_ids_invalid")
+    return {_positive_int(item, "executed_job_id_invalid") for item in executed_job_ids}
 
 
 class GitHubReceiverError(ValueError):
@@ -346,11 +389,138 @@ def extract_capture_spans(capture: dict[str, Any]) -> list[dict[str, Any]]:
     return records
 
 
-def expected_matchers_for_jobs(completed_jobs: list[dict[str, Any]]) -> list[str]:
-    """Return expected Weaver matchers strictly from independent completed Job witness."""
-    if completed_jobs:
+def expected_matchers_for_jobs(executed_jobs: list[dict[str, Any]]) -> list[str]:
+    """Return expected Weaver matchers strictly from Attempt-executed Job witness."""
+    if executed_jobs:
         return [PIPELINE_MATCHER_ID, TASK_MATCHER_ID]
     return [PIPELINE_MATCHER_ID]
+
+
+def partition_witness_jobs(
+    jobs: list[dict[str, Any]],
+    *,
+    rid: int,
+    att: int,
+    run_started_at: Any = None,
+    executed_job_ids: Any = None,
+) -> dict[str, Any]:
+    """Separate full Attempt Result Inventory from Attempt Executed Job Inventory.
+
+    GitHub rerun API snapshots can carry ``run_attempt == N`` on historical jobs
+    reused from earlier Attempts (with ``started_at < run_started_at``). Only jobs
+    with independent current-Attempt execution attribution require Task spans;
+    ambiguous ``attempt > 1`` jobs stay in ``unknown_execution_jobs`` rather
+    than shrinking Result Inventory or inferring expectations from a capture.
+    """
+    completed, noncompleted = _validate_witness_jobs(jobs, rid=rid, att=att)
+    run_started_ns = _parse_timestamp_ns(run_started_at, "invalid_run_started_at")
+    event_executed_set = _normalize_executed_job_ids(executed_job_ids)
+    completed_ids = {
+        _positive_int(job["id"], "missing_check_run_id") for job in completed
+    }
+    if event_executed_set is not None and (event_executed_set - completed_ids):
+        raise GitHubReceiverError("wrong_reuse_attribution")
+
+    result_inventory: list[dict[str, Any]] = []
+    executed_jobs: list[dict[str, Any]] = []
+    reused_jobs: list[dict[str, Any]] = []
+    unknown_execution_jobs: list[dict[str, Any]] = []
+
+    for job in completed:
+        cid = _positive_int(job["id"], "missing_check_run_id")
+        job_started_ns = _parse_timestamp_ns(
+            job.get("started_at"), "job_timestamp_invalid"
+        )
+        job_completed_ns = _parse_timestamp_ns(
+            job.get("completed_at"), "job_timestamp_invalid"
+        )
+        if (
+            job_started_ns is not None
+            and job_completed_ns is not None
+            and job_completed_ns < job_started_ns
+        ):
+            raise GitHubReceiverError("invalid_job_timestamps")
+
+        time_signal: str | None = None
+        if run_started_ns is not None and job_started_ns is not None:
+            time_signal = "executed" if job_started_ns >= run_started_ns else "reused"
+
+        event_signal: str | None = None
+        if event_executed_set is not None:
+            event_signal = "executed" if cid in event_executed_set else "reused"
+
+        if att == 1:
+            if time_signal == "reused" or event_signal == "reused":
+                raise GitHubReceiverError("wrong_reuse_attribution")
+            attribution = "executed_in_attempt"
+            if time_signal == "executed" and event_signal == "executed":
+                attr_source = "run_started_at_and_event"
+            elif time_signal == "executed":
+                attr_source = "run_started_at"
+            elif event_signal == "executed":
+                attr_source = "executed_job_ids"
+            else:
+                attr_source = "attempt_1_witness"
+            executed_jobs.append(job)
+        else:
+            if (
+                time_signal is not None
+                and event_signal is not None
+                and time_signal != event_signal
+            ):
+                raise GitHubReceiverError("wrong_reuse_attribution")
+            effective = time_signal if time_signal is not None else event_signal
+            if effective == "executed":
+                attribution = "executed_in_attempt"
+                if time_signal is not None and event_signal is not None:
+                    attr_source = "run_started_at_and_event"
+                elif time_signal is not None:
+                    attr_source = "run_started_at"
+                else:
+                    attr_source = "executed_job_ids"
+                executed_jobs.append(job)
+            elif effective == "reused":
+                attribution = "reused_from_prior_attempt"
+                if time_signal is not None and event_signal is not None:
+                    attr_source = "run_started_at_and_event"
+                elif time_signal is not None:
+                    attr_source = "run_started_at"
+                else:
+                    attr_source = "executed_job_ids"
+                reused_jobs.append(job)
+            else:
+                attribution = "unknown"
+                attr_source = "unproven_execution_vs_reuse"
+                unknown_execution_jobs.append(job)
+
+        result_inventory.append(
+            {
+                "job_id": str(cid),
+                "name": job.get("name"),
+                "status": job.get("status"),
+                "conclusion": job.get("conclusion"),
+                "started_at": job.get("started_at"),
+                "completed_at": job.get("completed_at"),
+                "execution_attribution": attribution,
+                "execution_attribution_source": attr_source,
+            }
+        )
+
+    return {
+        "completed": completed,
+        "noncompleted": noncompleted,
+        "result_inventory": result_inventory,
+        "result_completed_job_ids": [str(job["id"]) for job in completed],
+        "executed_jobs": executed_jobs,
+        "executed_job_ids": [str(job["id"]) for job in executed_jobs],
+        "reused_jobs": reused_jobs,
+        "reused_job_ids": [str(job["id"]) for job in reused_jobs],
+        "unknown_execution_jobs": unknown_execution_jobs,
+        "unknown_execution_job_ids": [str(job["id"]) for job in unknown_execution_jobs],
+        "execution_attribution_status": (
+            "unknown" if unknown_execution_jobs else "verified"
+        ),
+    }
 
 
 def _validate_witness_jobs(
@@ -397,11 +567,17 @@ def build_weaver_expectations(
     run_status: str,
     run_conclusion: str | None,
     jobs: list[dict[str, Any]],
+    run_started_at: Any = None,
+    executed_job_ids: Any = None,
+    allow_unproven_execution_attribution: bool = False,
 ) -> dict[str, Any]:
     """Build ``ci-weaver.toml`` expectations JSON from independent GitHub Witness.
 
-    Never copies Trace or Span IDs from a capture. Rejects unmapped conclusions,
-    incomplete/mismatched jobs, and missing ``check_run_id``.
+    Never copies Trace or Span IDs from a capture and never treats reused prior-Attempt
+    jobs or unproven ``attempt > 1`` jobs as verified current-Attempt Task spans.
+    Rejects unmapped conclusions, incomplete/mismatched jobs, missing ``check_run_id``,
+    wrong reuse attribution, and unproven rerun attribution unless explicitly allowed
+    for inspection.
     """
     rid = _positive_int(run_id, "invalid_run_id")
     att = _positive_int(attempt, "invalid_attempt")
@@ -411,9 +587,17 @@ def build_weaver_expectations(
     if mapped_run is None:
         raise GitHubReceiverError("unsupported_run_conclusion")
 
-    completed, noncompleted = _validate_witness_jobs(jobs, rid=rid, att=att)
-    if noncompleted:
+    partition = partition_witness_jobs(
+        jobs,
+        rid=rid,
+        att=att,
+        run_started_at=run_started_at,
+        executed_job_ids=executed_job_ids,
+    )
+    if partition["noncompleted"]:
         raise GitHubReceiverError("attempt_has_noncompleted_jobs")
+    if partition["unknown_execution_jobs"] and not allow_unproven_execution_attribution:
+        raise GitHubReceiverError("execution_attribution_unknown")
 
     exp_trace = trace_id(rid, att)
     exp_root = root_span_id(rid, att)
@@ -425,7 +609,7 @@ def build_weaver_expectations(
             "signal": PIPELINE_SIGNAL,
         }
     ]
-    for job in completed:
+    for job in partition["executed_jobs"]:
         cid = _positive_int(job["id"], "missing_check_run_id")
         spans.append(
             {
@@ -436,16 +620,27 @@ def build_weaver_expectations(
             }
         )
     composite_run_id = f"{rid}/{att}"
+    gaps = (
+        ["execution_attribution_unknown"] if partition["unknown_execution_jobs"] else []
+    )
     return {
         "schema_version": 1,
         "id_scheme": ID_SCHEME,
         "source": {"run_id": composite_run_id, "attempt": att},
+        "result_inventory": partition["result_inventory"],
+        "result_completed_jobs": partition["result_completed_job_ids"],
+        "executed_jobs": partition["executed_job_ids"],
+        "reused_jobs": partition["reused_job_ids"],
+        "unknown_execution_jobs": partition["unknown_execution_job_ids"],
+        "execution_attribution_status": partition["execution_attribution_status"],
+        "provenance_gaps": gaps,
         "spans": spans,
         "terminal_evidence": {
             "run_id": composite_run_id,
             "attempt": att,
             "status": "completed",
             "result": mapped_run,
+            "execution_attribution_status": partition["execution_attribution_status"],
         },
     }
 
@@ -467,17 +662,20 @@ def reconcile_github_receiver_trace(
     run_conclusion: str | None,
     jobs: list[dict[str, Any]],
     capture: dict[str, Any],
+    run_started_at: Any = None,
+    executed_job_ids: Any = None,
     repository_url: str | None = None,
     head_sha: str | None = None,
     expect_previous_attempt_link: bool = False,
 ) -> dict[str, Any]:
     """Reconcile an official ``githubreceiver`` capture against independent Witness.
 
-    Checks Trace/Root/Job/Attempt deterministic IDs (``UseCheckRunID``),
-    complete Attempt Task multiset (excluding child Queue/Step spans), result
-    & conditional ``error.type``, Attempt link on reruns, and optional
-    repository URL / Head SHA agreement. Never elevates transport/shape checks
-    into ``#63`` trusted admission or ``#61`` required satisfaction.
+    Preserves the full API Result Inventory while restricting expected Task
+    spans strictly to the Attempt's proven Executed Job Inventory (never requiring
+    current-Attempt Task spans for reused prior-Attempt jobs, and never inferring
+    execution attribution from the capture being verified). Never elevates
+    transport/shape checks into ``#63`` trusted admission or ``#61`` required
+    satisfaction.
     """
     rid = _positive_int(run_id, "invalid_run_id")
     att = _positive_int(attempt, "invalid_attempt")
@@ -487,7 +685,19 @@ def reconcile_github_receiver_trace(
     if mapped_run is None:
         raise GitHubReceiverError("unsupported_run_conclusion")
 
-    completed, noncompleted = _validate_witness_jobs(jobs, rid=rid, att=att)
+    partition = partition_witness_jobs(
+        jobs,
+        rid=rid,
+        att=att,
+        run_started_at=run_started_at,
+        executed_job_ids=executed_job_ids,
+    )
+    completed = partition["completed"]
+    noncompleted = partition["noncompleted"]
+    executed_jobs = partition["executed_jobs"]
+    reused_jobs = partition["reused_jobs"]
+    unknown_jobs = partition["unknown_execution_jobs"]
+
     spans = extract_capture_spans(capture)
     exp_trace = trace_id(rid, att)
     exp_root = root_span_id(rid, att)
@@ -499,6 +709,8 @@ def reconcile_github_receiver_trace(
     errors: list[str] = []
     if noncompleted:
         errors.append("attempt_has_noncompleted_jobs")
+    if unknown_jobs:
+        errors.append("execution_attribution_unknown")
 
     roots = [s for s in spans if s["kind"] == SPAN_KIND_SERVER]
     if len(roots) != 1:
@@ -536,9 +748,18 @@ def reconcile_github_receiver_trace(
     # Select direct Task spans only (exclude Queue and Step sub-spans whose parent
     # is a Job span rather than the Root span and carry no task.run.id).
     expected_by_span_id: dict[str, dict[str, Any]] = {}
-    for job in completed:
+    for job in executed_jobs:
         cid = _positive_int(job["id"], "missing_check_run_id")
         expected_by_span_id[job_span_id(cid)] = job
+
+    reused_by_span_id: dict[str, str] = {
+        job_span_id(_positive_int(job["id"], "missing_check_run_id")): str(job["id"])
+        for job in reused_jobs
+    }
+    unknown_by_span_id: dict[str, str] = {
+        job_span_id(_positive_int(job["id"], "missing_check_run_id")): str(job["id"])
+        for job in unknown_jobs
+    }
 
     observed_task_spans = [
         s
@@ -559,6 +780,8 @@ def reconcile_github_receiver_trace(
 
     missing_jobs: list[str] = []
     unexpected_spans: list[str] = []
+    reused_in_capture: list[str] = []
+    unattributed_in_capture: list[str] = []
     duplicate_spans = sorted(sid for sid, cnt in counts.items() if cnt > 1)
     mismatched_tasks: list[dict[str, str]] = []
 
@@ -580,17 +803,33 @@ def reconcile_github_receiver_trace(
             mismatched_tasks.append({"job_id": str(job["id"]), "reasons": reasons})
 
     for obs_sid in counts:
-        if obs_sid not in expected_by_span_id:
+        if obs_sid in expected_by_span_id:
+            continue
+        if obs_sid in reused_by_span_id:
+            reused_in_capture.append(reused_by_span_id[obs_sid])
+            unexpected_spans.append(obs_sid)
+        elif obs_sid in unknown_by_span_id:
+            unattributed_in_capture.append(unknown_by_span_id[obs_sid])
+        else:
             unexpected_spans.append(obs_sid)
 
     if missing_jobs:
         errors.append("missing_expected_task_spans")
+    if reused_in_capture:
+        errors.append("wrong_reuse_attribution")
     if unexpected_spans:
         errors.append("unexpected_task_spans")
     if duplicate_spans:
         errors.append("duplicate_task_spans")
     if mismatched_tasks:
         errors.append("task_span_attribute_mismatch")
+
+    if not errors:
+        task_coverage = "zero_task_confirmed" if not completed else "complete"
+    elif errors == ["execution_attribution_unknown"]:
+        task_coverage = "execution_attribution_unknown"
+    else:
+        task_coverage = "incomplete"
 
     return {
         "id_scheme": ID_SCHEME,
@@ -600,15 +839,20 @@ def reconcile_github_receiver_trace(
         "expected_root_span_id": exp_root,
         "expected_previous_trace_id": exp_prev_trace,
         "expected_pipeline_run_id": composite_run_id,
-        "expected_completed_jobs": [str(job["id"]) for job in completed],
-        "expected_matchers": expected_matchers_for_jobs(completed),
-        "task_coverage": (
-            "zero_task_confirmed"
-            if not completed and not errors
-            else ("complete" if not errors else "incomplete")
-        ),
+        "result_inventory": partition["result_inventory"],
+        "result_completed_jobs": partition["result_completed_job_ids"],
+        "executed_jobs": partition["executed_job_ids"],
+        "reused_jobs": partition["reused_job_ids"],
+        "unknown_execution_jobs": partition["unknown_execution_job_ids"],
+        "execution_attribution_status": partition["execution_attribution_status"],
+        "expected_completed_jobs": partition["result_completed_job_ids"],
+        "expected_executed_jobs": partition["executed_job_ids"],
+        "expected_matchers": expected_matchers_for_jobs(executed_jobs),
+        "task_coverage": task_coverage,
         "missing_jobs": missing_jobs,
         "unexpected_spans": unexpected_spans,
+        "reused_job_spans_in_capture": reused_in_capture,
+        "unattributed_capture_spans": unattributed_in_capture,
         "duplicate_spans": duplicate_spans,
         "mismatched_tasks": mismatched_tasks,
         "trusted": False,
