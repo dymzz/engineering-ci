@@ -82,15 +82,28 @@ def test_interrupted_verify_has_no_completed_receipt(tmp_path, monkeypatch, caps
     assert str(stdout.parent) in err
 
 
-def test_verify_prefers_sibling_lefthook_over_global_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize("linked_python", [False, True])
+def test_verify_prefers_sibling_lefthook_over_global_path(
+    tmp_path, monkeypatch, linked_python
+):
     fake_bin = tmp_path / "venv"
     fake_bin.mkdir()
     fake_python = fake_bin / ("python.exe" if os.name == "nt" else "python")
-    fake_python.write_bytes(b"")
     sibling = fake_bin / ("lefthook.exe" if os.name == "nt" else "lefthook")
     sibling.write_bytes(b"")
     global_bin = tmp_path / "global"
     global_bin.mkdir()
+    if linked_python:
+        base_python = global_bin / fake_python.name
+        base_python.touch()
+        try:
+            fake_python.symlink_to(base_python)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                pytest.skip("Windows requires privilege to create file symlinks")
+            raise
+    else:
+        fake_python.touch()
     global_lh = global_bin / ("lefthook.exe" if os.name == "nt" else "lefthook")
     global_lh.write_bytes(b"")
     monkeypatch.setattr(verify.sys, "executable", str(fake_python))

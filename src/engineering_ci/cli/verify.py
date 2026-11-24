@@ -14,7 +14,8 @@ from uuid import uuid4
 
 def _lefthook_binary():
     names = ("lefthook.exe", "lefthook") if os.name == "nt" else ("lefthook",)
-    sibling_dir = Path(sys.executable).resolve().parent
+    # A virtual environment can link its Python launcher to the base interpreter.
+    sibling_dir = Path(sys.executable).parent
     for name in names:
         candidate = sibling_dir / name
         if candidate.is_file():
