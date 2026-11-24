@@ -215,7 +215,7 @@ ECI 提供现存的 `hooks capture`、Selection/Source/Execution/Report、Reconc
 
 Knowledge [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) **已经合并**，其 `design/engineering-verification/opentelemetry-weaver-delivery.md` 是 OTel/Weaver 专题设计来源；具体实施按 ECI #74/#75/#87 和消费者独立开展，不在此复制 Span/Exporter/Root 或 Trace Context 的完整规范。
 
-**状态纠正：PR #72 已于 2026-11-16 合并**，历史上的 Draft/P1 设计验收及“后续决定 Ready/合并”不再是当前待办。其已合并内容中的有效 Source/Check/触发合同仍按实际证据保留；旧 L1/L2/Coordinator 方案仅在 §8 作为历史审计资料。#66 继续验收 Lefthook 到 ECI 的实际本地调用。[#152](https://github.com/dymzz/engineering-ci/issues/152) 只为显式验证补记实际起止，现行 GitHub Actions 继续负责远端 CI 和发布。
+**状态纠正：PR #72 已于 2026-11-16 合并**，历史上的 Draft/P1 设计验收及“后续决定 Ready/合并”不再是当前待办。其已合并内容中的有效 Source/Check/触发合同仍按实际证据保留；旧 L1/L2/Coordinator 方案仅在 §8 作为历史审计资料。#66 继续验收 Lefthook 到 ECI 的实际本地调用。#152 跟踪 #153 的本地 Hook 交付和 #154 的显式验证实测起止，两项各以自身原生证据验收。GitHub Actions 负责远端 CI 和发布。[#152](https://github.com/dymzz/engineering-ci/issues/152) · [PR #153](https://github.com/dymzz/engineering-ci/pull/153) · [PR #154](https://github.com/dymzz/engineering-ci/pull/154)
 
 ## 8. 历史归档：S1-E v1 候选调度器核验（2026-11-15；当前已撤销）
 

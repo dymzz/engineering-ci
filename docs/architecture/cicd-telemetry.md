@@ -3,7 +3,7 @@
 Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) stream C (O2/O3).
 
-> **2026-11-21 设计裁决与实际运行状态（[#75](https://github.com/dymzz/engineering-ci/issues/75)）**：GitHub Attempt API 证明终态、结论及真实 Job 事实，却不能从 `updated_at`、Job End、观察时间或任意误差预算推算完整 Pipeline End。**目标**为 [Draft PR #150](https://github.com/dymzz/engineering-ci/pull/150) 的 `terminal_event`、合法 Task Spans 与 `root_emission=not_emitted` / `time_precision=unproven`；**当前 main** 的 `cicd-telemetry-post-run.yml` 仍以 `--end-time-mode observed_upper_bound` 运行，CLI 的此路径仍是当前代码事实，尚未完成目标切换。旧模式不是新设计授权，但不能将当前生产事实误标为“仅历史兼容”。[#152](https://github.com/dymzz/engineering-ci/issues/152) 与 [Draft PR #154](https://github.com/dymzz/engineering-ci/pull/154) 定义在保留 GitHub Actions 的情况下单独记录显式 ECI 验证起止的本地计时方案。Dagger Function/Check Span 只证明自身边界。
+> **2026-11-21 设计裁决与运行基线。** GitHub Attempt API 确认终态、结论及真实 Job 事实。完整 Pipeline End 须由掌握整个执行边界的 Producer 实测。`terminal_event` 保留有效 Task Spans，并记录 `root_emission=not_emitted` 和 `time_precision=unproven`。`main@a99efd5` 使用 `observed_upper_bound`，实际生效模式以所部署提交的后置 Workflow 配置为准。显式 ECI 本地计时覆盖单次验证调用。Dagger Function/Check Span 覆盖自身的执行边界。[#75 裁决](https://github.com/dymzz/engineering-ci/issues/75) · [PR #150](https://github.com/dymzz/engineering-ci/pull/150) · [后置 Workflow](../../.github/workflows/cicd-telemetry-post-run.yml) · [#152](https://github.com/dymzz/engineering-ci/issues/152) · [PR #154](https://github.com/dymzz/engineering-ci/pull/154)
 
 ## Producer decision
 
@@ -33,9 +33,9 @@ Inputs (first → second slice):
 | Explicit supplied Pipeline start/end | Owner-controlled instrumentation or external mapping | Only valid for a full Pipeline Root when evidence proves its origin and scope. A syntactically exact input does not itself prove authenticity |
 | Dagger Function/Check start/end | Dagger Engine native spans | Valid only for their own Dagger operation, not the enclosing GitHub Workflow |
 
-**Approved target post-run route (not yet deployed on `main`):** `--end-time-mode terminal_event` in [PR #150](https://github.com/dymzz/engineering-ci/pull/150). It validates the exact Attempt `completed` state and `conclusion` through GitHub API, records a correlated terminal LogRecord at the observer's own event time, and retains original native timestamps in the raw API witness. It emits **no guessed Pipeline Root**, no estimated interval or duration grant. Task spans keep their real Job bounds. Without proven Pipeline end, `time_precision=unproven`, `root_emission=not_emitted`, and Terminal Root coverage is not verified.
+**Approved post-run mode.** `--end-time-mode terminal_event` validates the exact Attempt `completed` state and `conclusion` through GitHub API, records a correlated terminal LogRecord at the observer's own event time, and retains original native timestamps in the raw API witness. Task spans keep their real Job bounds. Pipeline end remains `time_precision=unproven` with `root_emission=not_emitted`. [PR #150](https://github.com/dymzz/engineering-ci/pull/150)
 
-**Current `main` observed-upper-bound implementation / legacy acceptance route (`observed_upper_bound` / `--max-end-uncertainty-ns`):** Earlier versions stored a conditional interval and could emit an approximate Root if an explicit budget was supplied. This behavior is recorded here only to interpret historical artifacts and any still-present code paths. It is **not** the default implementation target, an acceptable replacement for a true GitHub Workflow End, or a way to satisfy #52B/#74 Terminal by fabricating a Root. A provenance tag such as `end_time_quality=observed_upper_bound` does not make an OTel Root's numeric end a real execution timestamp.
+**Observed upper bounds at the `main@a99efd5` baseline.** `observed_upper_bound` stores a conditional interval and can emit an approximate Root when `--max-end-uncertainty-ns` covers it. Use `end_time_quality=observed_upper_bound` to interpret those artifacts and code paths. #52B and #74 Terminal require actual evidence for their execution boundaries.
 
 Coverage retains distinct `pipeline_terminal_covered` / `task_coverage`; the `expected_completed_jobs` inventory and `coverage.expected_trace` are reconstructed from independent Run/Attempt/Job witness. `expected_completed_jobs[].expected_task_span_id` records the per-Job expected Task Span mapping, and a withheld parent uses `parent_exported=false` with its ID in `coverage.withheld_parent_span` (not a second list). These Candidate IDs and inventories support #52 correlation and diagnostics only; they are not #63 trusted admission.
 
@@ -50,8 +50,8 @@ Transport delivery, Weaver semantic PASS, Terminal correlation and #63 trusted a
 ### Measuring an ECI verification run (#152)
 
 [#152](https://github.com/dymzz/engineering-ci/issues/152) defines the explicit local verification timing command
-([Draft PR #154](https://github.com/dymzz/engineering-ci/pull/154), stacked on
-[Draft PR #153](https://github.com/dymzz/engineering-ci/pull/153), not yet deployed on `main`).
+([PR #154](https://github.com/dymzz/engineering-ci/pull/154), stacked on
+[PR #153](https://github.com/dymzz/engineering-ci/pull/153)).
 On a checkout carrying that entrypoint and the existing pinned Lefthook tools, run
 `uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`.
 It invokes `lefthook run verify --no-auto-install` once. The existing Actions Jobs and

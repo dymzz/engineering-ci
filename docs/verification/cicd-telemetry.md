@@ -5,17 +5,17 @@ and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 
 ## 2026-11-21 current verification decision
 
-The accepted target is **true GitHub Attempt terminal facts**, not an estimated Workflow completion timestamp. [#75](https://github.com/dymzz/engineering-ci/issues/75) is authoritative; Draft [PR #150](https://github.com/dymzz/engineering-ci/pull/150) implements `terminal_event` **on its branch only**. **Current `main` still runs `cicd-telemetry-post-run.yml` with `observed_upper_bound`; this is current behavior, not evidence that the approved target is deployed.** Native Job/Task spans, terminal LogRecord, independent API witness and `root_emission=not_emitted` / `time_precision=unproven` are the new target when full Pipeline End is not owner-proven. Dagger Function/Check timestamps remain scoped to the actual Dagger operation.
+The approved `terminal_event` mode records actual GitHub Attempt facts, native Job/Task spans, a terminal LogRecord and its independent API witness. Without an owner-proven Pipeline End, it records `root_emission=not_emitted` and `time_precision=unproven`. The `main@a99efd5` baseline ran `observed_upper_bound`. Check the deployed revision of the post-run Workflow for the mode in use. Dagger Function/Check timestamps cover their actual Dagger operation. [#75 decision](https://github.com/dymzz/engineering-ci/issues/75) · [PR #150](https://github.com/dymzz/engineering-ci/pull/150) · [Post-run Workflow](../../.github/workflows/cicd-telemetry-post-run.yml)
 
 **Prohibited implementation direction:** treating `updated_at`, last Job end, post-run observation, guessed time intervals or invented `--max-end-uncertainty-ns` budgets as the GitHub Workflow's real Pipeline End, or reopening this route merely to get a #52B Terminal-positive result. #52A Task-only is independently valid; #52B requires a genuinely bound Pipeline Root and remains unverified otherwise. Reuse historical API/Receiver/Weaver evidence and verify only the actual new integration difference.
 
-The table below contains **historical contract tests and current-main legacy behavior** for `observed_upper_bound` and approximate Root. Those rows are not the new `terminal_event` acceptance criteria, and schema/shape-valid synthetic Root tests do not establish #52B production coverage.
+The table below preserves the contract tests for the historical `observed_upper_bound` behavior at `main@a99efd5`. Acceptance for `terminal_event` uses its native Attempt facts and artifacts. #52B production coverage requires evidence from the actual Pipeline boundary.
 
 ## ECI verification timing (#152)
 
 Use the [timing command](../architecture/cicd-telemetry.md) from
-[Draft PR #154](https://github.com/dymzz/engineering-ci/pull/154) (stacked on
-[Draft PR #153](https://github.com/dymzz/engineering-ci/pull/153), not yet deployed on `main`)
+[PR #154](https://github.com/dymzz/engineering-ci/pull/154) (stacked on
+[PR #153](https://github.com/dymzz/engineering-ci/pull/153))
 on an explicit local Lefthook `verify` invocation. This check leaves the four
 Actions Jobs and the existing #87 A.1 workflow untouched.
 
