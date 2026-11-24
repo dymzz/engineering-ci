@@ -3,15 +3,18 @@
 Issue [#75](https://github.com/dymzz/engineering-ci/issues/75) / Knowledge
 [PR #79](https://github.com/dymzz/engineering-knowledge/pull/79) stream C (O2/O3).
 
+> **2026-11-24 上游优先架构决策与 #150 过渡基线。** GitHub Actions Workflow / Job / Step Trace 生产优先采用 OpenTelemetry Collector Contrib 官方 `githubreceiver`（`Webhook -> githubreceiver -> OTLP -> SemConv v1.45.0 Weaver -> #52`）；本仓不再扩建自研 GitHub Root / Task / Step Producer，待官方 Receiver 与 `#52` 消费者端到端覆盖后退出重复 ECI GitHub Trace Producer。既有 `engineering_ci.cicd_telemetry` 通过 GitHub Attempt API 与 [PR #150](https://github.com/dymzz/engineering-ci/pull/150) `terminal_event` 提供过渡 Task Spans、Terminal LogRecord 与独立 Witness（`root_emission=not_emitted`、`time_precision=unproven`），按该作用域独立验收，不阻塞于完整 Receiver 部署。`main@a99efd5` 基线曾运行 `observed_upper_bound`。显式 ECI 本地计时覆盖单次 `verify` 调用；Dagger Function/Check Span 覆盖自身执行边界。[#75 裁决](https://github.com/dymzz/engineering-ci/issues/75) · [#52 裁决](https://github.com/dymzz/engineering-ci/issues/52) · [后置 Workflow](../../.github/workflows/cicd-telemetry-post-run.yml) · [#152](https://github.com/dymzz/engineering-ci/issues/152) · [PR #154](https://github.com/dymzz/engineering-ci/pull/154)
+
 ## Producer decision
 
 | Object | Producer | Native facts |
 | --- | --- | --- |
-| Pipeline Run Span | `engineering_ci.cicd_telemetry` from separate Run facts | Workflow name, Run ID, Attempt, **Run** conclusion, real start/end |
-| Task Run Span | Same adapter from separate Job facts | Job id/name/**url**, **Job** conclusion, real start/end |
+| Pipeline Run Span (target upstream) | OpenTelemetry Collector Contrib `githubreceiver` consuming authenticated `workflow_run` webhooks (`createRootSpan()`, `SERVER`), or an owner-proven Pipeline Producer | Workflow Run/Attempt, deterministic Attempt Trace/Root IDs, webhook `run_started_at`..`updated_at` and conclusion; SemConv conformance must be checked against pinned Weaver `v1.45.0` |
+| Pipeline Run / Terminal Witness (scoped interim CLI) | `engineering_ci.cicd_telemetry` (`terminal_event` writes Candidate + LogRecord with `root_emission=not_emitted`; may serialize explicit numeric bounds with `time_source_verified=false`) | Attempt API completion witness, conclusions and original metadata without pretending REST polling or caller inputs are an independently certified exact end |
+| Task / Job / Step Run Spans | Upstream `githubreceiver` (`workflow_job` webhooks + `UseCheckRunID`); scoped interim `engineering_ci.cicd_telemetry` emits Task Spans from paginated Attempt Jobs until producer retirement | Job id/`check_run_id`, name/url, Job conclusion, real start/end |
 | Dagger Function Trace | Dagger SDK only | Not owned here; do not re-instrument |
 
-Inputs (first → second slice):
+Inputs (first -> second slice of the interim CLI witness):
 
 1. Explicit `--facts` mapping or Actions env (untrusted / incomplete identity).
 2. **GitHub Actions API** via native `gh api`: `--repository` + `--run-id`
@@ -20,55 +23,128 @@ Inputs (first → second slice):
    `GET .../runs/{id}/attempts/{N}` plus that Attempt's paginated Jobs — never
    the latest Run view mixed with an older Attempt's Jobs.
 
-### Timestamps
+### Timestamps and three distinct semantic layers
 
-| Field | Source | Role |
+Do not collapse OpenTelemetry SemConv rules, upstream `githubreceiver` behavior,
+and ECI's stricter time-source certification into an unconditional ban against
+official GitHub Webhook Root Spans:
+
+1. **OTel CI/CD SemConv v1.45.0:** defines Pipeline Run `SERVER` and Task Run
+   `INTERNAL` semantics and attributes without hardcoding a specific GitHub
+   event field for Pipeline end.
+2. **Official `githubreceiver` (OpenTelemetry Collector Contrib):** constructs
+   Pipeline Root Spans (`createRootSpan()`) from `workflow_run` webhooks using
+   `run_started_at` and `updated_at` (ordered via `correctActionTimestamps`),
+   generates Job/Step/Queue spans from `workflow_job` webhooks using
+   `workflow_job.id` (`receiver.githubreceiver.UseCheckRunID`), and links retry
+   Attempts to previous `trace_id`. Because upstream currently declares
+   `sem_conv_version: 1.43.0` while ECI pins SemConv `v1.45.0`, live/replay
+   Receiver OTLP captures must be run through pinned `v1.45.0` Weaver rather than
+   assuming automatic conformance or mutating official Registry YAML.
+3. **ECI time-source certification & `#150` interim boundary:** on ECI's
+   Attempt API / caller-mapping path, `#150` `terminal_event` proves Attempt
+   completion without generating a duplicate Root (`root_emission=not_emitted`,
+   `time_precision=unproven`), and ECI's prohibition against promoting REST
+   `updated_at`, `last_job_end`, post-run clock samples, or invented
+   `--max-end-uncertainty-ns` budgets into `time_source_verified=true` Workflow
+   End remains in effect. `#52` consumers adapt to `githubreceiver` rather than
+   expanding duplicate ECI GitHub Trace/Task production.
+
+| Field | Source | Meaning |
 | --- | --- | --- |
-| Run start | GitHub `run_started_at` / explicit mapping | Exact Pipeline start when present |
-| Run end (explicit input) | Explicit `run_completed_at` / `ENGINEERING_CI_RUN_COMPLETED_AT` only | Closed numeric bounds (`time_precision=exact_input`). This is not a verified GitHub completion timestamp (`time_source_verified=false`) |
-| Terminal observed | Post-run `--terminal-observed-at` | Observation upper bound only (`time_precision=observed_upper_bound`, `end_time_source=terminal_observed_at`); never renamed to native `completed_at` |
-| Run `updated_at` | GitHub Workflow Run object update time | Provenance / estimate only (`run_updated_at_ns`); **not** a proven Attempt completed-at |
-| Job bounds | Job `started_at` / `completed_at` | Exact Task bounds |
+| Run/Attempt status and conclusion | Native GitHub Attempt API + independent witness | Proven terminal completion fact; on ECI API paths without `githubreceiver`, does not close exact Workflow End |
+| `workflow_run` webhook `run_started_at` / `updated_at` | Signed GitHub `workflow_run` webhook -> upstream `githubreceiver` | Upstream `githubreceiver` Root Span bounds (evaluated against Weaver `v1.45.0`, not ECI REST polling estimates) |
+| Job `started_at` / `completed_at` | Attempt paginated GitHub Jobs / `workflow_job` webhook | Native Job/Task bounds only |
+| Post-run observation timestamp | Producer's local event clock | Time when the terminal event was **recorded**, not when Workflow finished |
+| ECI REST `updated_at` / supplied Pipeline end | GitHub REST metadata or caller mapping in ECI CLI | Original metadata or caller bounds (`time_source_verified=false`); insufficient by itself to replace `githubreceiver` or fabricate certified Workflow End |
+| Dagger Function/Check start/end | Dagger Engine native spans | Valid only for their own Dagger operation, not the enclosing GitHub Workflow |
 
-Without a proven Run completed-at the producer reports
-`run_completed_at_unproven` (when `updated_at` is present) or
-`missing_run_timestamps` and does **not** emit an exact Pipeline Span end.
-With `--end-time-mode observed_upper_bound`, native Attempt API
-`run_status=completed` confirms the terminal and records a constraint interval:
-last completed Job end (or Run start when there are no Jobs) through the
-observation time. That interval is not a proven end. An approximate Root is
-emitted only when `--max-end-uncertainty-ns` is set and the uncertainty fits
-that budget; `duration_valid_for_metrics` stays false. A late observation does
-not become the standard Root end. Tasks and Job-terminal logs stay. A withheld Root is recorded as
-`terminal_check=not_verified` and, when an observation time exists, as one
-Attempt-terminal LogRecord. That log is not a Run duration, and it is not a
-Weaver result.
-Event hints are conflict-checked against the Attempt API and never substitute
-for API status. A Job start/end envelope is coverage metadata
-(`job_execution_envelope`), not `cicd.pipeline.run.duration`.
-Coverage records `pipeline_terminal_covered` separately from `task_coverage`,
-plus a machine-readable `expected_completed_jobs` inventory for #52 hand-off.
-`coverage.expected_trace` publishes the same Attempt's expected Trace ID and
-Pipeline Span ID. `parent_exported` is false when that parent span is withheld;
-the withheld id is `coverage.withheld_parent_span`, not a second list.
-`expected_completed_jobs[].expected_task_span_id` is the Job mapping.
-These IDs are not trusted admission.
-`terminal_provenance.terminal_source` is the facts source that was actually
-used (`github_api`, `mapping`, or `env`). `end_time_source` is
-`explicit_mapping`, `explicit_env`, `not_native`, or `terminal_observed_at`.
-`time_precision` (`exact_input` / `observed_upper_bound` / `unproven`) is
-independent of `time_source_verified`. The Attempt API `status=completed`
-does not prove an official run-completed timestamp, so
-`time_source_verified` stays false. Schema 9 keeps time quality in Candidate
-`terminal` / `terminal_provenance`, rather than unregistered Span attributes.
-`exact_run_duration` means the numeric interval is closed
-by an explicit input, not that GitHub certified the end instant.
+**Scoped interim post-run mode (`#150`).** `--end-time-mode terminal_event` validates the exact Attempt `completed` state and `conclusion` through GitHub API, records a correlated terminal LogRecord at the observer's own event time (including confirmed zero-job Attempts without corrupting trace outputs), and retains original native timestamps in the raw API witness. Task spans keep their real Job bounds. Pipeline end remains `time_precision=unproven` with `root_emission=not_emitted`. [PR #150](https://github.com/dymzz/engineering-ci/pull/150)
 
-### Expected Trace identity (`github-actions-attempt-sha256-v1`)
+**Observed upper bounds at the `main@a99efd5` baseline.** `observed_upper_bound` stores a conditional interval and can emit an approximate Root when `--max-end-uncertainty-ns` covers it. Use `end_time_quality=observed_upper_bound` to interpret those historical artifacts and code paths; do not reopen approximate budgets to manufacture `#52B` PASS.
 
-#52 rebuilds the expected Trace from the Run/Attempt/Job witness. It does not
-copy `traceId` from the first span in a capture. The producer uses one
-function, `_stable_ids`, and records `producer.id_scheme`.
+Coverage retains distinct `pipeline_terminal_covered` / `task_coverage`; the `expected_completed_jobs` inventory and `coverage.expected_trace` are reconstructed from independent Run/Attempt/Job witness. `expected_completed_jobs[].expected_task_span_id` records the per-Job expected Task Span mapping, and a withheld parent uses `parent_exported=false` with its ID in `coverage.withheld_parent_span` (not a second list). These Candidate IDs and inventories support `#52` correlation and diagnostics only; they are not `#63` trusted admission.
+
+Current Candidate records (`terminal` and `terminal_provenance` in `engineering_ci.cicd_telemetry`) preserve distinct provenance and time-quality fields for existing evidence interpretation and downstream transitions:
+- `terminal_provenance.terminal_source`: the facts source actually consumed by the Producer (`github_api`, `mapping`, or `env`).
+- `end_time_source`: how the candidate end bound was obtained (`explicit_mapping`, `explicit_env`, `not_native`, or `terminal_observed_at`).
+- `time_precision` (`exact_input`, `observed_upper_bound`, or `unproven`) vs `time_source_verified`: numeric interval precision is independent of time-source authentication. Even when explicit Run end inputs (`run_completed_at` / `ENGINEERING_CI_RUN_COMPLETED_AT`) close the numeric bounds (`time_precision=exact_input`, `root_emission=explicit_end`), `engineering_ci.cicd_telemetry` sets `time_source_verified=false` because neither GitHub Attempt API `status=completed` nor caller-supplied timestamps prove an independently certified Provider completion instant.
+- `exact_run_duration`: indicates only that the numeric interval is closed by an explicit input (`time_precision == "exact_input"`), not that GitHub or an authorized Provider certified the completion timestamp. Schema 9 keeps these time-quality fields in Candidate `terminal` / `terminal_provenance` metadata rather than unregistered Span attributes.
+
+Transport delivery, Weaver semantic PASS, Terminal correlation and `#63` trusted admission remain separate facts. `#52A` Task-only may pass on valid Tasks without Root; `#52B` aligns to upstream `githubreceiver` deterministic IDs and verified full-Pipeline bounds rather than ECI approximate Roots. Once upstream `githubreceiver` + `#52` consumers pass end-to-end across normal, failed, cancelled, zero-job, and full/partial rerun cases, duplicate ECI GitHub Trace/Task production in `engineering_ci.cicd_telemetry` retires while preserving independent API Witness / `terminal_event` capabilities where needed.
+
+### Measuring an ECI verification run (#152)
+
+[#152](https://github.com/dymzz/engineering-ci/issues/152) defines the explicit local verification timing command
+([PR #154](https://github.com/dymzz/engineering-ci/pull/154), stacked on
+[PR #153](https://github.com/dymzz/engineering-ci/pull/153)).
+On a checkout carrying that entrypoint and the existing pinned Lefthook tools, run
+`uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`.
+It invokes `lefthook run verify --no-auto-install` once. The existing Actions Jobs and
+their artifacts stay in place. This command is outside the automatic CI
+matrix and has no Runner acceptance requirement.
+
+1. **Capture the invocation.** Read the current Git HEAD, actual Lefthook
+   version and SHA-256 of `lefthook dump --format json` before launch. Store
+   the HEAD and configuration digest as pre-run observations. A working
+   tree can differ from HEAD, and a digest from `dump` does not authenticate
+   every input during execution.
+2. **Measure and retain the native result.** Sample the execution host's
+   UTC clock immediately before starting the native invocation and after it
+   returns. Capture the native stdout and stderr as bytes and preserve its
+   aggregate exit code. The measured interval ends before output hashing
+   and receipt finalization. The current `verify` calls four native Dagger
+   Check groups. It supplies no unified `engineering-ci-execution-report`.
+3. **Finalize an independent timing receipt.** Each invocation gets its own
+   output directory. After closing the native output files, write
+   `verify-timing.json` atomically with the invocation identity, pre-run
+   observations, host start/end readings, native exit code and relative
+   paths and SHA-256 digests of `lefthook.stdout` and `lefthook.stderr`.
+   Retain those native bytes as captured. Reversed clock bounds leave
+   `completed_at_ns` null. An interrupted invocation without a finalized
+   receipt has no recorded completion.
+
+The receipt records host observations with `time_source_verified=false`.
+Its digests bind the captured bytes. GitHub Run/Attempt identity or artifact
+delivery does not certify this clock. The receipt stays separate from the
+CI/CD Candidate, #87 A.1 verification, native execution reports and #52B
+Terminal. The Workflow's `sync-tool-tests` and `dagger-native-telemetry` Jobs
+have their own results and scope.
+
+#87 Dagger Engine spans keep their own measured times and cache attributes.
+The local receipt measures the complete Lefthook command, including command
+and scheduling overhead. The current command publishes no Dagger span
+association. A consumer may use a genuine #87 binding for the same native
+invocation when available. With no binding the records remain unlinked.
+Cache hits and actual tool execution are determined from the native evidence.
+
+The [verification checklist](../verification/cicd-telemetry.md) covers
+success, ordinary native failure, interruption and invalid clock bounds.
+
+### Expected Trace identity (`githubreceiver` target vs interim `_stable_ids`)
+
+**Target upstream `githubreceiver` ID scheme (`#75` / `#52` convergence):**
+official `opentelemetry-collector-contrib/receiver/githubreceiver`
+(`trace_event_handling.go`) derives deterministic Attempt-scoped IDs with
+`receiver.githubreceiver.UseCheckRunID` enabled by default (since `v0.151.0`):
+
+| ID | Input string (UTF-8) | SHA-256 slice |
+| --- | --- | --- |
+| `trace_id` | `{run_id}{run_attempt}t` | `hex[:32]` (first 16 bytes) |
+| `root_span_id` | `{run_id}{run_attempt}s` | `hex[16:32]` (bytes 8..15) |
+| `job_span_id` | `{check_run_id}-j` (`workflow_job.id`) | `hex[16:32]` (bytes 8..15) |
+| `queue_span_id` | `{check_run_id}-q` | `hex[16:32]` (bytes 8..15) |
+| `step_span_id` | `{check_run_id}-{step_name}-s` | `hex[16:32]` (bytes 8..15) |
+
+When migrating `#52` Expected / Run / Attempt / `check_run_id` / Task / Terminal
+consumers to upstream `githubreceiver`, consumers align to these upstream IDs
+and retry Attempt Trace Links rather than altering `githubreceiver` or building
+a compatibility layer to imitate ECI's historical IDs.
+
+**Interim legacy scheme (`github-actions-attempt-sha256-v1`, `_stable_ids`):**
+retained only by the scoped `engineering_ci.cicd_telemetry` baseline (`#150`
+and existing tests prior to `#52` consumer migration). It does not copy
+`traceId` from an arbitrary capture span and records `producer.id_scheme`:
 
 | ID | Seed (UTF-8) | SHA-256 hex |
 | --- | --- | --- |
@@ -77,27 +153,35 @@ function, `_stable_ids`, and records `producer.id_scheme`.
 | `expected_task_span_id` | `task:{run_id}:{attempt}:{job_id}` | first 16 hex characters (8 bytes) |
 
 `run_id` and `job_id` are their decimal text. `attempt` is the integer rendered
-in decimal. A withheld Root still has this expected parent id, with
-`parent_exported=false`.
+in decimal. On the interim CLI path, a withheld Root still carries its expected
+parent ID with `parent_exported=false`.
 
-`reconcile_expected_trace` rebuilds those IDs from `run_id`, `attempt` and
-`job_ids`. Its `ok` flag means only `verification_scope=task_trace_identity`.
-`source_completeness_verified` and `job_attributes_verified` stay false.
-Duplicate, empty, or non-decimal Job IDs fail and remain visible. Job URL and
-omission coverage stay on the producer candidate, not in this function.
+`reconcile_expected_trace` currently checks those interim IDs from `run_id`,
+`attempt` and `job_ids`; its `ok` flag means only
+`verification_scope=task_trace_identity` (`source_completeness_verified` and
+`job_attributes_verified` stay false; duplicate, empty, or non-decimal Job IDs
+fail cleanly). `#52` consumer migration updates/extends reconciliation to verify
+official `githubreceiver` IDs before retiring the duplicate ECI trace producer.
 
 ### Pipeline Run identity (cross-PR with #74)
 
 Each GitHub Actions **Attempt** is one distinct pipeline execution (own Trace).
-SemConv `cicd.pipeline.run.id` is the stable canonical form
-`{github_run_id}/{run_attempt}` on Resource, Pipeline Span, and Task
-correlation. Raw GitHub Run ID and Attempt remain in `facts.*`,
-`coverage.expected_trace`, and the independent API Witness. Schema 9 omits the
-unregistered `github.actions.run_attempt` attribute. Consumers must compare
-the complete composite ID against the independently declared Run and Attempt,
-then reconcile the Trace/Span IDs with that witness; comparing only the Run
-prefix loses Attempt binding. When GitHub provides `html_url`, it is
-emitted as Recommended `cicd.pipeline.run.url.full`.
+SemConv v1.45.0 defines `cicd.pipeline.run.id` as a string identifying a
+Pipeline Run execution without prescribing GitHub's `{github_run_id}/{run_attempt}`
+encoding. That composite `{github_run_id}/{run_attempt}` form is ECI's
+canonical encoding / normalized consumer contract (emitted on Resource, Pipeline
+Span, and Task correlation by the interim/legacy Schema 9 producer and also
+selected by [PR #155](https://github.com/dymzz/engineering-ci/pull/155)'s
+Collector OTTL `transform/semconv_v1_45_0` normalization, rather than upstream
+`githubreceiver`'s native attribute encoding). Upstream `githubreceiver` native
+IDs (`trace_id`, `root_span_id`, `job_span_id`), Attempt, raw GitHub Run ID
+and Attempt in `facts.*` / `coverage.expected_trace`, and the independent API
+Witness must each be verified separately; `#52` consumers compare the complete
+composite ID against those independent declarations and reconcile Trace/Span IDs
+with that witness—comparing only the Run prefix or inferring upstream raw event
+attribution solely from `cicd.pipeline.run.id` is invalid. Schema 9 omits
+the unregistered `github.actions.run_attempt` attribute. When GitHub provides
+`html_url`, it is emitted as Recommended `cicd.pipeline.run.url.full`.
 
 Job conclusion never becomes Pipeline result. Selection / Required /
 `blocked` / `not_executed` stay in ECI Plan/Report and are never encoded as
@@ -163,7 +247,7 @@ semantic validation.
 | OTLP field | Location | Native source / mapping | Classification and upstream constraint | Producer handling / consumer |
 | --- | --- | --- | --- | --- |
 | `cicd.pipeline.name` | R, P, M | Attempt API `name` / Actions `GITHUB_WORKFLOW` | Official, string human-readable pipeline name, `cicd/registry.yaml` | Keep; #74 native catalog, #52 source agreement |
-| `cicd.pipeline.run.id` | R, P, T, L; M opt-in | GitHub Run ID + positive Attempt | Official string identifying an execution; upstream does not define GitHub's encoding | Keep existing `{run_id}/{attempt}`; independent Expected/Witness must bind the entire value |
+| `cicd.pipeline.run.id` | R, P, T, L; M opt-in | GitHub Run ID + positive Attempt | Official string identifying an execution; SemConv v1.45.0 does not prescribe GitHub's encoding | ECI canonical encoding / normalized consumer contract (`{run_id}/{attempt}` in Schema 9 interim producer and PR #155 OTTL `transform/semconv_v1_45_0`, not native `githubreceiver` encoding); Expected/Witness & native IDs bind separately without inferring raw event attribution from this field alone |
 | `cicd.pipeline.run.url.full` | R, P | Attempt `html_url` / explicit Run URL | Official full Run URL | Keep original; repository path, Run and supplied Attempt suffix must agree |
 | `vcs.repository.url.full` | R | API `repository.html_url`, or supplied server/Run URL origin + `repository.full_name` / `GITHUB_REPOSITORY` | Official string, canonical complete HTTP(S) browser URL; Git URL should omit `.git`, `vcs/registry.yaml` | Use original repository URL when present; verify owner/repo path and all supplied origins; missing origin omits URL with `repository_identity.reason` |
 | `vcs.ref.head.revision` | R, P | API `head_sha` / Actions SHA / explicit mapping | Official string VCS revision, `vcs/registry.yaml` | Keep; source Head SHA remains independently checked; it is not proof of the checked checkout Tree |
@@ -245,12 +329,16 @@ terminal PASS. Missing identity, terminal Run/Job results, required Task URL,
 or real timestamps yield `incomplete` / `partial` (exit 3 when nothing is
 emitted).
 
-Post-run entry: `.github/workflows/cicd-telemetry-post-run.yml` listens for
+**Current GitHub Actions interim post-run entry:** `.github/workflows/cicd-telemetry-post-run.yml` listens for
 `workflow_run` completion of `Engineering CI` (and supports
 `workflow_dispatch`). It reads the source Run via Attempt API using the event
 identity, never executes the source PR head, and uploads candidate/OTLP
-artifacts. Live Collector endpoint wiring remains optional via repository
-secrets / dispatch inputs; absence of a receiver leaves `rpc_accepted=false`.
+artifacts (`terminal_event` under `#150` without blocking on `githubreceiver`).
+Live Collector endpoint wiring remains optional via repository secrets / dispatch
+inputs; absence of a receiver leaves `rpc_accepted=false`. Target `#75`
+production telemetry routes signed GitHub webhooks directly to official
+`githubreceiver` rather than expanding this post-run script into a second full
+Trace Producer.
 
 ### O2 Logs / O3 Metrics (PR #81 decisions)
 
@@ -297,19 +385,23 @@ Single-Job diagnostic evidence (`--job-id`) lives under
 [cicd-telemetry-evidence](../verification/cicd-telemetry-evidence/README.md).
 Full Attempt `all_completed` multi-Task evidence (no `--job-id`) lives under
 [cicd-telemetry-evidence-all-completed](../verification/cicd-telemetry-evidence-all-completed/README.md).
-Baseline after PR #76/#77/#78/#80/#81: candidate Pipeline/Task construction,
-Attempt API/OTLP file export, full completed-Job Task coverage, observed
-upper-bound Root mode (API `status=completed` gated), Expected Job inventory,
-terminal provenance, OTLP/gRPC Export with controlled receiver observation,
-Job-terminal LogRecords, and phase-interval Histogram Metrics (only when a
-window is supplied) live under
-`engineering_ci.cicd_telemetry`. Production Collector endpoint remains optional
-via `ECI_OTLP_ENDPOINT`. Trusted admission (#63) and Required (#61) stay outside
-this Issue's producer claims; Issue #75 stays Open until its remaining
-acceptance items are separately confirmed.
+Baseline after PR #76/#77/#78/#80/#81 and scoped PR #150: candidate
+Pipeline/Task construction, Attempt API/OTLP file export, full completed-Job
+Task coverage, `terminal_event` + zero-job LogRecord support (`#150`), Expected
+Job inventory, terminal provenance, OTLP/gRPC Export with controlled receiver
+observation, Job-terminal LogRecords, and phase-interval Histogram Metrics
+(only when a window is supplied) live under `engineering_ci.cicd_telemetry`.
+Under the 2026-11-24 upstream-first decision, `githubreceiver` integration
+(`#75`: `Webhook -> githubreceiver -> OTLP -> SemConv v1.45.0 Weaver`) and `#52`
+consumer alignment run next; live Receiver production deployment and SemConv
+`v1.45.0` Receiver conformance are not claimed here prior to verification
+evidence, and duplicate ECI GitHub Trace/Task production retires once end-to-end
+coverage passes. Trusted admission (`#63`) and Required (`#61`) stay outside
+this producer's claims; Issue `#75` stays Open until Receiver + Weaver + `#52`
+integration acceptance is complete.
 
 ## Related
 
-- Authoritative requirements: [Issue #75](https://github.com/dymzz/engineering-ci/issues/75)
+- Authoritative requirements: [Issue #75](https://github.com/dymzz/engineering-ci/issues/75) · [Issue #52](https://github.com/dymzz/engineering-ci/issues/52)
 - [Verification](../verification/cicd-telemetry.md)
 - Parallel checker: [Issue #74](https://github.com/dymzz/engineering-ci/issues/74)

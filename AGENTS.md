@@ -19,12 +19,22 @@ Consult relevant documentation and interfaces when working across module boundar
 - Agent Harness, mining and generic Workflow execution are outside this repository. Do not add forwarding or compatibility layers for them.
 - Native Dagger Checks define repository checks; standard Ruff settings and locked tools live in pyproject.toml. Do not recreate a host scheduler, input-hash receipt or check registry.
 - Dagger manages internal execution graphs, containers and caching.
+- Lefthook owns local Git Hook installation and Job scheduling under
+  [#66](https://github.com/dymzz/engineering-ci/issues/66) and the
+  [Git Hooks contract](docs/issue-revisions/issue-66-eci-managed-git-hooks.proposal.md).
+  Use the existing ECI interfaces for Git Source, native Check results and
+  final reconciliation.
 - GitHub Actions manages remote workflow orchestration, permissions and release gates.
 - Release CLI requests, inspects and waits for that Workflow; Git/PR operations use native Git/gh. Downloads use native gh for explicitly selected Runs.
-- Do not recreate a generic execution FSM, StateStore, download backend or host delivery lifecycle. Preserve only concrete dispatch uncertainty and release evidence safeguards.
 - engineering-ci may depend on vesryn-log for CI event recording and vesryn-tool-runtime for actual CI tool contracts and invocation.
 - engineering-ci must not depend directly or transitively on vesryn or vesryn-workflow, including through Log or Tool Runtime.
-- Keep any CI instrumentation minimal; generic log storage, archiving and querying belong to the logging component.
+- Adopt OpenTelemetry Collector Contrib `githubreceiver` as the upstream-first
+  producer boundary for GitHub Actions Workflow/Job/Step CI/CD traces under the
+  [CI/CD telemetry contract](docs/architecture/cicd-telemetry.md) rather than
+  expanding a duplicate ECI GitHub trace producer. Keep CI instrumentation
+  minimal, bind timestamps to the execution whose lifecycle was observed, validate
+  captures against fixed CI/CD SemConv Weaver, and keep generic log storage,
+  archiving and querying in the logging component.
 - Vesryn and Workflow may consume engineering-ci capabilities;
   reverse dependencies are forbidden.
 - If a forbidden dependency appears necessary, reassess ownership
