@@ -1,13 +1,7 @@
 min_version: "2.2.2"
 
-# Keep pre-commit read-only and carry pre-push arguments in the native input stream.
-lefthook: >-
-  sh -c 'set -f; IFS=; case $2 in
-  pre-commit) exec uv run --locked --no-sync lefthook run pre-commit --no-stage-fixed ;;
-  pre-push) (printf ECI-PRE-PUSH:%s:%s: $(printf %s "$3" | base64 | tr -d [:space:]) $(printf %s "$4" | base64 | tr -d [:space:]); cat) |
-  uv run --locked --no-sync lefthook run pre-push ;;
-  *) exec uv run --locked --no-sync lefthook $* ;;
-  esac' lefthook
+# Lefthook 2.2.2 interpolates this command in its generated Hook's test expression.
+lefthook: sh scripts/lefthook-arguments.sh
 
 pre-commit:
   jobs:

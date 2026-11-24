@@ -829,6 +829,13 @@ def _git_sh_env():
     return env
 
 
+def _copy_lefthook_command(root):
+    path = Path("scripts/lefthook-arguments.sh")
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path(__file__).resolve().parents[1] / path, target)
+
+
 def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
     tmp_path,
 ):
@@ -838,6 +845,7 @@ def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
     git(tmp_path, "config", "user.email", "hooks@example.invalid")
     git(tmp_path, "config", "user.name", "Hooks Test")
     (tmp_path / "lefthook.yml").write_bytes((repo_root / "lefthook.yml").read_bytes())
+    _copy_lefthook_command(tmp_path)
 
     validate = subprocess.run(
         ["uv", "run", "--locked", "--no-sync", "lefthook", "validate"],
@@ -875,7 +883,7 @@ def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
     assert install.returncode == 0, install.stderr
     hook_file = tmp_path / ".git" / "hooks" / "pre-commit"
     hook_text = hook_file.read_text(encoding="utf-8")
-    assert "lefthook run pre-commit --no-stage-fixed" in hook_text
+    assert 'sh scripts/lefthook-arguments.sh "$@"' in hook_text
     assert 'call_lefthook run "pre-commit" "$@"' in hook_text
 
     target = tmp_path / "a.txt"
@@ -936,8 +944,6 @@ def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
     )
     assert "python -P -m engineering_ci.cli hooks" in lefthook_text
     assert "python -m engineering_ci.cli hooks" not in lefthook_text
-    assert "lefthook run pre-push ;;" in lefthook_text
-    assert "lefthook run pre-push $3 $4" not in lefthook_text
     assert "uv run --locked --no-sync engineering-ci hooks" not in lefthook_text
 
     target.write_text("staged\n", encoding="utf-8")
@@ -972,6 +978,7 @@ def test_lefthook_installs_pre_push_and_frames_the_original_git_arguments(
     (default_repo / "lefthook.yml").write_bytes(
         (repo_root / "lefthook.yml").read_bytes()
     )
+    _copy_lefthook_command(default_repo)
     install_default = subprocess.run(
         ["uv", "run", "--locked", "--no-sync", "lefthook", "install"],
         cwd=default_repo,
@@ -1003,6 +1010,7 @@ def test_lefthook_installs_pre_push_and_frames_the_original_git_arguments(
         + "      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin --json\n"
     )
     (push_repo / "lefthook.yml").write_text(enabled_yml, encoding="utf-8")
+    _copy_lefthook_command(push_repo)
     (push_repo / "a.txt").write_text("hello\n", encoding="utf-8")
     git(push_repo, "add", "-A")
     git(push_repo, "commit", "-q", "-m", "init")
@@ -1018,7 +1026,9 @@ def test_lefthook_installs_pre_push_and_frames_the_original_git_arguments(
     assert install_push.returncode == 0, install_push.stderr
     hook_file = push_repo / ".git" / "hooks" / "pre-push"
     assert hook_file.is_file()
-    assert "lefthook run pre-push ;;" in hook_file.read_text(encoding="utf-8")
+    assert 'sh scripts/lefthook-arguments.sh "$@"' in hook_file.read_text(
+        encoding="utf-8"
+    )
 
     pushed = subprocess.run(
         ["git", "push", str(remote), "main"],
