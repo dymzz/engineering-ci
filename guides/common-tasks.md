@@ -94,8 +94,11 @@ Git 须支持 `--attr-source` 和 `show-ref --exists`。
 修改 Profile 时，在 `ci-selection.toml` 的 `[push].effective_profiles` 登记目标树内
 的文件，并同步更新对应 `[[effective_profile]]` 的修订和审批摘要。
 
-本仓的 `pre-push`、`pre-push-checks` 及顶层 `lefthook:` 参数帧包装已配置在
-[lefthook.yml](../lefthook.yml) 中：采集 Job `capture-refs` 通过 `files` 与 `{files}`
+顶层 `lefthook:` 调用参数交接脚本，Git Hook 仍由 Lefthook 原生安装。更新这项配置后，
+运行 `uv run --locked --no-sync lefthook install` 同步已安装的 Hook。复用配置时带上同版脚本。
+[lefthook.yml](../lefthook.yml) · [参数交接脚本](../scripts/lefthook-arguments.sh)
+
+`pre-push` 的采集 Job `capture-refs` 通过 `files` 与 `{files}`
 用 Hook 配置路径唤醒，规避 Lefthook 默认 `push` 文件比较可能为空的问题，并从 stdin
 读取 `ECI-PRE-PUSH` 参数帧和全部 Git Ref；子任务成功后消费同一次 Invocation 的逐 Ref
 Receipt，缺失最终对账时阻断。

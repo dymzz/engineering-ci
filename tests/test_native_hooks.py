@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from test_hooks import _git_sh_env, git
+from test_hooks import _copy_lefthook_command, _git_sh_env, git
 from test_reconciliation import _attach_effective_profile_policy
 
 from engineering_ci import (
@@ -30,6 +30,7 @@ INDEX_SELECTION = (
 def hook_env():
     env = _git_sh_env()
     env.pop("LEFTHOOK", None)
+    env.pop("LEFTHOOK_BIN", None)
     env.pop("LEFTHOOK_EXCLUDE", None)
     return env
 
@@ -63,6 +64,39 @@ def _init(root, env, *, config=None):
     if config is None:
         config = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
     (root / "lefthook.yml").write_text(config, encoding="utf-8", newline="\n")
+    _copy_lefthook_command(root)
+
+
+def test_lefthook_fallback_preserves_empty_and_extra_arguments(tmp_path, hook_env):
+    root = tmp_path / "argv"
+    _init(
+        root,
+        hook_env,
+        config=(
+            "lefthook: sh scripts/lefthook-arguments.sh\n"
+            "post-checkout:\n  jobs:\n    - name: sample\n      run: true\n"
+        ),
+    )
+    _run(root, hook_env, *LEFTHOOK, "install", "post-checkout")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_bytes(b'#!/bin/sh\nprintf "<%s>\\n" "$@"\n')
+    uv.chmod(0o755)
+    env = {**hook_env, "PATH": os.pathsep.join([str(bin_dir), hook_env["PATH"]])}
+    args = ("path with spaces *", "", "third", "fourth", "fifth")
+    result = _run(
+        root,
+        env,
+        "git",
+        "hook",
+        "run",
+        "post-checkout",
+        "--",
+        *args,
+    )
+    forwarded = ("run", "--locked", "--no-sync", "lefthook", "run", "post-checkout")
+    assert result.stderr.splitlines() == [f"<{arg}>" for arg in (*forwarded, *args)]
 
 
 def _source(root, module, checks):
@@ -199,7 +233,18 @@ def test_installed_lefthook_reconciles_independent_jobs(
         INDEX_SELECTION,
         [("ci-effective-profile.json", "index", "index", "HEAD", checks)],
     )
-    git(root, "add", "--all", env=hook_env)
+    # Stage the source and policy under test. The command script is fixture setup.
+    git(
+        root,
+        "add",
+        "ci-effective-profile.json",
+        "ci-hygiene.toml",
+        "ci-selection.toml",
+        "lefthook.yml",
+        "src",
+        "tach.toml",
+        env=hook_env,
+    )
     _run(root, hook_env, *LEFTHOOK, "install", "pre-commit")
     if excluded:
         hook_env["LEFTHOOK_EXCLUDE"] = excluded

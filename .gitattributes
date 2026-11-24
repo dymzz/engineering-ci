@@ -1,6 +1,8 @@
 # Canonical policy input is hashed and must retain its published bytes.
 config/security-policy.example.json -text
 
+scripts/lefthook-arguments.sh text eol=lf
+
 # Native verification bundles and their published hashes retain exact bytes.
 docs/verification/native-tool-contract/process-results/** -text
 # Captured Windows Plan inputs keep their original CRLF, without allowing spaces.

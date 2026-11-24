@@ -199,3 +199,15 @@
   Use the native [job-level files option](https://lefthook.dev/configuration/files/)
   with `{files}` to activate the capture Job from the Hook configuration path.
   Git's stdin supplies the Ref updates for Source binding and final reconciliation.
+
+## Lefthook 2.2.2: inline command expansion in installed Hooks
+
+- Status: reproduced in native Linux pre-commit and pre-push Hooks during
+  #153/#154 validation.
+- Evidence: the generated Hook interpolates the configured command into
+  `test -n "..."`. With `"$@"` inside an inline `sh -c` body, the probe
+  receives multiple arguments and reports `unexpected operator`. Git then
+  uses Lefthook's fallback command, losing the custom Index options and
+  pre-push input frame. Four installed-Hook tests reproduced this.
+- Integration: keep the `lefthook:` command literal and put the argument
+  handling in the script called by that command.
