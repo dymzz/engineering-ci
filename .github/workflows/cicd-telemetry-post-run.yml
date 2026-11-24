@@ -120,6 +120,7 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.source.outputs.head_sha }}
           OTLP_ENDPOINT: ${{ vars.ECI_OTLP_ENDPOINT }}
           OTLP_INSECURE: ${{ vars.ECI_OTLP_INSECURE }}
+          GITHUBRECEIVER_PROD_VERIFIED: ${{ vars.ECI_GITHUBRECEIVER_PROD_VERIFIED }}
         run: |
           set -euo pipefail
           uv sync --locked
@@ -140,11 +141,20 @@ jobs:
               EXTRA+=(--otlp-insecure)
             fi
           fi
+          PROD_CUTOVER="not_verified"
+          if [[ "${GITHUBRECEIVER_PROD_VERIFIED}" == "true" ]]; then
+            PROD_CUTOVER="verified"
+          fi
           set +e
           # Duplicate GitHub Trace/Task Span synthesis is retired in favor of
           # official githubreceiver; ECI emits Witness, Expected inventory, and
-          # correlated Attempt/Job terminal companion records only.
-          printf '%s\n' 'mode=witness_only' 'trace_owner=opentelemetry-collector-contrib/githubreceiver' \
+          # correlated Attempt/Job terminal companion records only. Live host
+          # production cutover (repo Webhook subscription + HMAC + live receiver
+          # OTLP ingress + consumer gate) stays gated behind ECI_GITHUBRECEIVER_PROD_VERIFIED.
+          printf '%s\n' \
+            'mode=witness_only' \
+            'trace_owner=opentelemetry-collector-contrib/githubreceiver' \
+            "production_webhook_cutover=${PROD_CUTOVER}" \
             > artifacts/cicd-telemetry/end-time-policy.txt
           uv run --locked python -m engineering_ci.cicd_telemetry \
             --repository "${SOURCE_REPO}" \

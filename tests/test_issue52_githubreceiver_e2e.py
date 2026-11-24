@@ -234,6 +234,10 @@ def _make_weaver_terminal_report(
     run_ref: str,
     attempt_ref: str,
     rule_ref: dict,
+    terminal_correlation_status: str | None = None,
+    terminal_correlation_reason: str | None = None,
+    gate_status: str | None = None,
+    gate_exit_code: int | None = None,
 ) -> tuple[dict, dict, dict]:
     definition = check_contract.definition_for("weaver_terminal")
     native_results = []
@@ -267,6 +271,30 @@ def _make_weaver_terminal_report(
                     "check_id": pred_res["check"]["check_id"],
                 }
             )
+        evidence = {
+            "requirement_id": req.requirement_id,
+            "gate_status": (
+                gate_status if is_last and gate_status is not None else step_status
+            ),
+            "gate_exit_code": (
+                gate_exit_code if is_last and gate_exit_code is not None else step_exit
+            ),
+        }
+        if is_last:
+            evidence["terminal_correlation_status"] = (
+                terminal_correlation_status
+                if terminal_correlation_status is not None
+                else ("passed" if step_status == "passed" else "failed")
+            )
+            evidence["terminal_correlation_reason"] = (
+                terminal_correlation_reason
+                if terminal_correlation_reason is not None
+                else (
+                    "ok"
+                    if evidence["terminal_correlation_status"] == "passed"
+                    else "terminal_correlation_failed"
+                )
+            )
         step_res = check_contract.native_result(
             definition,
             source=copy.deepcopy(source_ref),
@@ -281,11 +309,7 @@ def _make_weaver_terminal_report(
             tool=tool,
             phase=check_contract.POST_COMPLETION_PHASE,
             input_refs=inputs,
-            evidence={
-                "requirement_id": req.requirement_id,
-                "gate_status": step_status,
-                "gate_exit_code": step_exit,
-            },
+            evidence=evidence,
         )
         prior_by_req[req.requirement_id] = step_res
         native_results.append(step_res)
@@ -331,6 +355,12 @@ def _run_issue52_gate_chain(
     terminal_exit_code: int,
     real_check_result: dict | None = None,
     trust_authorized: bool = True,
+    run_started_at: str | None = "2026-11-10T10:00:01Z",
+    executed_job_ids: list[int | str] | None = None,
+    terminal_correlation_status: str | None = None,
+    terminal_correlation_reason: str | None = None,
+    gate_status: str | None = None,
+    gate_exit_code: int | None = None,
 ) -> dict:
     """Execute #52 -> #74 -> #66-C -> #63 -> #61 prior/post Required gate chain."""
     closure_dir = stage_dir / "closure"
@@ -358,6 +388,19 @@ def _run_issue52_gate_chain(
         run_status="completed",
         run_conclusion=run_conclusion,
         jobs=jobs,
+        run_started_at=run_started_at,
+        executed_job_ids=executed_job_ids,
+    )
+    executed_jobs_for_matchers = (
+        gr.partition_witness_jobs(
+            jobs,
+            rid=run_id,
+            att=attempt,
+            run_started_at=run_started_at,
+            executed_job_ids=executed_job_ids,
+        )["executed_jobs"]
+        if attempt > 1 or executed_job_ids is not None
+        else jobs
     )
     (closure_dir / "expected.json").write_text(
         json.dumps(expectations, indent=2), encoding="utf-8"
@@ -369,7 +412,10 @@ def _run_issue52_gate_chain(
                 'registry = "registry"',
                 'registry_manifest = "registry-sha256.json"',
                 'matcher_config = ".weaver.toml"',
-                f"expected_matchers = {json.dumps(gr.expected_matchers_for_jobs(jobs))}",
+                (
+                    "expected_matchers = "
+                    f"{json.dumps(gr.expected_matchers_for_jobs(executed_jobs_for_matchers))}"
+                ),
                 'otlp = "capture.json"',
                 'expectations = "expected.json"',
                 'advice_policies = "advice-policies"',
@@ -391,6 +437,7 @@ def _run_issue52_gate_chain(
             "run_attempt": attempt,
             "status": "completed",
             "conclusion": run_conclusion,
+            "run_started_at": run_started_at,
             "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
             "html_url": f"https://github.com/dymzz/engineering-ci/actions/runs/{run_id}",
             "previous_attempt_url": (
@@ -406,7 +453,7 @@ def _run_issue52_gate_chain(
         "job_pages": [{"total_count": len(jobs), "jobs": jobs}],
     }
     witness_reconcile = cicd_telemetry.reconcile_attempt_witness_capture(
-        raw_witness, capture
+        raw_witness, capture, executed_job_ids=executed_job_ids
     )
     assert witness_reconcile["ok"] is True, witness_reconcile
 
@@ -414,7 +461,7 @@ def _run_issue52_gate_chain(
     trace_reconcile = cicd_telemetry.reconcile_expected_trace(
         run_id=str(run_id),
         attempt=attempt,
-        job_ids=[str(j["id"]) for j in jobs],
+        job_ids=[str(j["id"]) for j in executed_jobs_for_matchers],
         observed_spans=extracted,
     )
     assert trace_reconcile["id_scheme"] == gr.ID_SCHEME
@@ -606,6 +653,10 @@ def _run_issue52_gate_chain(
             run_ref=composite_run_id,
             attempt_ref=f"attempt/{attempt}",
             rule_ref=resolved_term_rule,
+            terminal_correlation_status=terminal_correlation_status,
+            terminal_correlation_reason=terminal_correlation_reason,
+            gate_status=gate_status,
+            gate_exit_code=gate_exit_code,
         )
 
     native_results = list(exec_report["checks"][0]["native_results"])
@@ -1048,6 +1099,7 @@ def test_issue52_reconcile_attempt_witness_handles_zero_job_pagination_and_parti
             "run_attempt": 2,
             "status": "completed",
             "conclusion": "success",
+            "run_started_at": "2026-11-10T10:00:01Z",
             "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
             "previous_attempt_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/7004/attempts/1",
             "repository": {"html_url": "https://github.com/dymzz/engineering-ci"},
@@ -1233,12 +1285,14 @@ def test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e():
 
         capture = gr.merge_otlp_json_batches(servicer.batches)
         jobs = [job1["workflow_job"], job2["workflow_job"]]
+        run_started_at = run2["workflow_run"]["run_started_at"]
         expectations = gr.build_weaver_expectations(
             run_id=6101,
             attempt=2,
             run_status="completed",
             run_conclusion="success",
             jobs=jobs,
+            run_started_at=run_started_at,
         )
         weaver_result = _run_dagger_weaver(
             work_root / "weaver-6101",
@@ -1261,6 +1315,7 @@ def test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e():
             terminal_status="passed",
             terminal_exit_code=0,
             real_check_result=weaver_result,
+            run_started_at=run_started_at,
         )
         term_entry_ref = outcome["term_entry_ref"]
         bound_term = next(
@@ -1283,3 +1338,291 @@ def test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e():
         assert drift["ok"] is False
     finally:
         _rmtree(work_root)
+
+
+def test_issue52_partial_rerun_separates_result_and_executed_inventories():
+    """Run 44713410255 Attempt 2 pattern: reused jobs stay in result_inventory only."""
+    exec_job = {
+        **_sample_job(
+            job_id=136212522105,
+            run_id=44713410255,
+            attempt=2,
+            name="version-metadata",
+            conclusion="success",
+        )["workflow_job"],
+        "created_at": "2026-11-20T09:49:36Z",
+        "started_at": "2026-11-20T09:49:39Z",
+        "completed_at": "2026-11-20T09:50:49Z",
+    }
+    reused_jobs = [
+        {
+            **_sample_job(
+                job_id=jid,
+                run_id=44713410255,
+                attempt=2,
+                name=name,
+                conclusion="success",
+            )["workflow_job"],
+            "created_at": "2026-11-20T09:49:40Z",
+            "started_at": "2026-11-20T09:45:32Z",
+            "completed_at": "2026-11-20T09:47:10Z",
+        }
+        for jid, name in [
+            (136212523496, "python-ci"),
+            (136212524904, "dagger-gate"),
+            (136212602878, "sync-tool-tests"),
+        ]
+    ]
+    all_jobs = [exec_job, *reused_jobs]
+    cap = _normalized_span_capture(
+        run_id=44713410255,
+        attempt=2,
+        run_conclusion="success",
+        jobs=[exec_job],
+    )
+    witness = {
+        "attempt": {
+            "id": 44713410255,
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "success",
+            "run_started_at": "2026-11-20T09:49:34Z",
+            "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+            "previous_attempt_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/44713410255/attempts/1",
+            "repository": {"html_url": "https://github.com/dymzz/engineering-ci"},
+        },
+        "job_pages": [{"total_count": 4, "jobs": all_jobs}],
+    }
+    res = cicd_telemetry.reconcile_attempt_witness_capture(witness, cap)
+    assert res["ok"] is True
+    assert res["result_completed_jobs"] == [
+        "136212522105",
+        "136212523496",
+        "136212524904",
+        "136212602878",
+    ]
+    assert [row["job_id"] for row in res["result_inventory"]] == [
+        "136212522105",
+        "136212523496",
+        "136212524904",
+        "136212602878",
+    ]
+    assert res["executed_jobs"] == ["136212522105"]
+    assert res["reused_jobs"] == [
+        "136212523496",
+        "136212524904",
+        "136212602878",
+    ]
+
+    without_start = copy.deepcopy(witness)
+    without_start["attempt"].pop("run_started_at")
+    unknown_res = cicd_telemetry.reconcile_attempt_witness_capture(without_start, cap)
+    assert unknown_res["ok"] is False
+    assert "execution_attribution_unknown" in unknown_res["errors"]
+    assert unknown_res["task_coverage"] == "execution_attribution_unknown"
+
+    cap_wrong_reuse = _normalized_span_capture(
+        run_id=44713410255,
+        attempt=2,
+        run_conclusion="success",
+        jobs=[exec_job, reused_jobs[0]],
+    )
+    bad = cicd_telemetry.reconcile_attempt_witness_capture(witness, cap_wrong_reuse)
+    assert bad["ok"] is False
+    assert "wrong_reuse_attribution" in bad["errors"]
+
+
+def test_issue52_gate_chain_rejects_exit0_when_terminal_correlation_fails(tmp_path):
+    """P1-D: terminal-live-check exit 0 + failed correlation/gate cannot pass #66-C/#63/#61."""
+    jobs = [
+        _sample_job(
+            job_id=8401, run_id=7006, attempt=1, name="lint", conclusion="success"
+        )["workflow_job"]
+    ]
+    cap = _normalized_span_capture(
+        run_id=7006, attempt=1, run_conclusion="success", jobs=jobs
+    )
+    outcome = _run_issue52_gate_chain(
+        stage_dir=tmp_path / "corr-fail",
+        run_id=7006,
+        attempt=1,
+        run_conclusion="success",
+        jobs=jobs,
+        capture=cap,
+        terminal_status="passed",
+        terminal_exit_code=0,
+        gate_status="failed",
+        gate_exit_code=1,
+        terminal_correlation_status="failed",
+        terminal_correlation_reason="weaver_terminal_correlation_failed",
+    )
+    bound_term = next(
+        e
+        for e in outcome["receipt"]["entries"]
+        if e["expected_check_ref"] == outcome["term_entry_ref"]
+    )
+    assert bound_term["binding_status"] == "insufficient"
+    assert bound_term["reason"] == "terminal_correlation_unproven"
+    assert bound_term["native_satisfaction"]["status"] == "unsatisfied"
+    assert bound_term["selected_result_ids"] == []
+    admitted_term = next(
+        e
+        for e in outcome["admission"]["entries"]
+        if e["expected_check_ref"] == outcome["term_entry_ref"]
+    )
+    assert admitted_term["status"] == "unsatisfied"
+    assert admitted_term["obligation_status"] == "unsatisfied"
+    assert outcome["admission"]["status"] != "admitted"
+    assert outcome["admission"]["summary"]["admitted"] == 0
+    assert outcome["post_assessment"]["status"] == "blocked"
+    assert outcome["post_stage"]["status"] == "rejected"
+
+
+def test_issue52_negative_wrong_attempt_missing_root_and_scope_mismatch(tmp_path):
+    """P1-D: explicit negative coverage for wrong Attempt, Missing Root, and Scope mismatch."""
+    jobs = [
+        _sample_job(
+            job_id=8501, run_id=7007, attempt=2, name="tests", conclusion="success"
+        )["workflow_job"]
+    ]
+    wrong_cap = _normalized_span_capture(
+        run_id=7007, attempt=1, run_conclusion="success", jobs=jobs
+    )
+    witness = {
+        "attempt": {
+            "id": 7007,
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "success",
+            "run_started_at": "2026-11-10T10:00:01Z",
+            "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+            "previous_attempt_url": "https://api.github.com/repos/dymzz/engineering-ci/actions/runs/7007/attempts/1",
+            "repository": {"html_url": "https://github.com/dymzz/engineering-ci"},
+        },
+        "job_pages": [{"total_count": 1, "jobs": jobs}],
+    }
+    wrong_attempt = cicd_telemetry.reconcile_attempt_witness_capture(witness, wrong_cap)
+    assert wrong_attempt["ok"] is False
+    assert "root_trace_id_mismatch" in wrong_attempt["errors"]
+    assert "root_span_id_mismatch" in wrong_attempt["errors"]
+
+    # Missing Root Span in githubreceiver capture fails #52 witness reconciliation.
+    cap_no_root = _normalized_span_capture(
+        run_id=7007, attempt=2, run_conclusion="success", jobs=jobs
+    )
+    cap_no_root = copy.deepcopy(cap_no_root)
+    for rs in cap_no_root.get("resourceSpans", []):
+        for ss in rs.get("scopeSpans", []):
+            ss["spans"] = [s for s in ss.get("spans", []) if s.get("parentSpanId")]
+    no_root = cicd_telemetry.reconcile_attempt_witness_capture(witness, cap_no_root)
+    assert no_root["ok"] is False
+    assert "root_span_missing" in no_root["errors"]
+
+    # Scope / Source subject mismatch refuses Terminal Expected Binding.
+    repo_root = tmp_path / "repo"
+    expected_plan, _ = _prepare_git_expected_plans(repo_root)
+    post_expected = expected_plan["expected_checks"]
+    term_entry = next(
+        item for item in post_expected["checks"] if item["name"] == "weaver_terminal"
+    )
+    closure_dir = tmp_path / "closure"
+    shutil.copytree(WEAVER_FIXTURE_DIR, closure_dir)
+    shutil.copy2(WEAVER_MATCHER_TOML, closure_dir / ".weaver.toml")
+    (closure_dir / "capture.json").write_text(
+        json.dumps(
+            _normalized_span_capture(
+                run_id=7007, attempt=2, run_conclusion="success", jobs=jobs
+            )
+        ),
+        encoding="utf-8",
+    )
+    (closure_dir / "expected.json").write_text(
+        json.dumps(
+            gr.build_weaver_expectations(
+                run_id=7007,
+                attempt=2,
+                run_status="completed",
+                run_conclusion="success",
+                jobs=jobs,
+                run_started_at="2026-11-10T10:00:01Z",
+            )
+        ),
+        encoding="utf-8",
+    )
+    (closure_dir / "ci-weaver.toml").write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'registry = "registry"',
+                'registry_manifest = "registry-sha256.json"',
+                'matcher_config = ".weaver.toml"',
+                f"expected_matchers = {json.dumps(gr.expected_matchers_for_jobs(jobs))}",
+                'otlp = "capture.json"',
+                'expectations = "expected.json"',
+                'advice_policies = "advice-policies"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    plan = selection.post_completion_plan(
+        root=closure_dir,
+        config_path=closure_dir / "pyproject.toml",
+        weaver_config="ci-weaver.toml",
+        run_id="7007/2",
+        attempt=2,
+        result="success",
+    )
+    sealed = te.seal_phase_witness(
+        scope_id=post_expected["scope_id"],
+        expected_set_ref=post_expected["expected_set_ref"],
+        phase=check_contract.POST_COMPLETION_PHASE,
+        profile_ref=PROFILE_REF,
+        profile_revision=PROFILE_REVISION,
+        issuer_ref=PHASE_WITNESS_ISSUER,
+        validated_at=EVALUATED_AT,
+        domain_complete=True,
+    )
+    bad_binding = te.bind_terminal_expected(
+        post_expected,
+        plan=plan,
+        completed_run={
+            "run_id": "7007/2",
+            "attempt": 2,
+            "result": "success",
+            "status": "completed",
+            "source": "github_attempt_api",
+            "subject": {
+                "declared_target_tree": "0" * 40,
+                "head_commit": term_entry["event_ref"].get("head_commit"),
+                "base_commit": term_entry["event_ref"].get("base_commit"),
+                "head_ref": term_entry["event_ref"].get("head_ref"),
+                "base_ref": term_entry["event_ref"].get("base_ref"),
+                "expected_check_ref": term_entry["expected_check_ref"],
+                "scope_id": post_expected["scope_id"],
+            },
+        },
+        root=closure_dir,
+        expected_authority=lambda _ctx: {
+            "accepted": True,
+            "status": "authorized",
+            "authority_ref": AUTHORITY_REF,
+        },
+        completed_run_authority=lambda _ctx: {
+            "accepted": True,
+            "status": "authorized",
+            "subject_verified": True,
+            "authority_ref": AUTHORITY_REF,
+        },
+        phase_witness=sealed,
+        phase_witness_authority=lambda _ctx: {
+            "accepted": True,
+            "status": "authorized",
+            "authority_ref": AUTHORITY_REF,
+        },
+        projection_git=expected_plan["git"],
+        expected_plan=expected_plan,
+        expected_root=repo_root,
+    )
+    assert bad_binding["authorized"] is False
+    assert "terminal_subject_declared_target_tree_mismatch" in bad_binding["reasons"]

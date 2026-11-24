@@ -1517,6 +1517,8 @@ def test_observed_upper_bound_without_budget_keeps_tasks_and_withholds_root():
 
     report = cicd_telemetry.produce(
         facts,
+        source="github_api",
+        github_api_fetched=True,
         end_time_mode=cicd_telemetry.END_TIME_WITNESS,
         terminal_observed_at_ns=observed,
         terminal_status="completed",
@@ -1579,6 +1581,8 @@ def test_observed_upper_bound_rejects_observation_before_jobs():
     facts = complete_facts(run_completed_at_ns=None, run_status="completed")
     report = cicd_telemetry.produce(
         facts,
+        source="github_api",
+        github_api_fetched=True,
         end_time_mode=cicd_telemetry.END_TIME_WITNESS,
         terminal_observed_at_ns=JOB_END - 1,
         terminal_status="completed",
@@ -1606,6 +1610,8 @@ def test_observed_attempt_without_jobs_records_a_weak_lower_bound():
     )
     withheld = cicd_telemetry.produce(
         facts,
+        source="github_api",
+        github_api_fetched=True,
         end_time_mode=cicd_telemetry.END_TIME_WITNESS,
         terminal_observed_at_ns=observed,
         completed_jobs_total=0,
@@ -1718,6 +1724,8 @@ def test_observed_root_requires_api_completed_status():
     )
     report = cicd_telemetry.produce(
         facts,
+        source="github_api",
+        github_api_fetched=True,
         end_time_mode=cicd_telemetry.END_TIME_WITNESS,
         terminal_observed_at_ns=JOB_END + 5_000_000_000,
         terminal_status="completed",
@@ -1730,6 +1738,8 @@ def test_event_api_status_conflict_blocks_observed_root():
     facts = complete_facts(run_completed_at_ns=None, run_status="completed")
     report = cicd_telemetry.produce(
         facts,
+        source="github_api",
+        github_api_fetched=True,
         end_time_mode=cicd_telemetry.END_TIME_WITNESS,
         terminal_observed_at_ns=JOB_END + 5_000_000_000,
         event_status="in_progress",
@@ -2439,6 +2449,7 @@ def test_producer_does_not_hide_a_duplicate_job_witness():
     produced = cicd_telemetry.produce(
         run,
         source="github_api",
+        github_api_fetched=True,
         task_facts=jobs,
         completed_jobs_total=4,
         job_selection="all_completed",
@@ -2528,3 +2539,174 @@ def test_v8_identity_note_is_a_file_check_not_a_receiver_ack():
         "trusted",
     ):
         assert saved["claims"][claim] is False
+
+
+@pytest.mark.parametrize("zero_jobs", [False, True])
+def test_witness_cli_auto_captures_observation_without_flag(
+    tmp_path, monkeypatch, zero_jobs
+):
+    run, job = _api_run_job_fixture()
+    if zero_jobs:
+        run = {**run, "conclusion": "cancelled"}
+        pages = {"total_count": 0, "jobs": []}
+    else:
+        job = {**job, "run_id": run["id"], "run_attempt": 1}
+        pages = {"total_count": 1, "jobs": [job]}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    fixed_ns = cicd_telemetry.parse_time_ns("2024-01-01T00:05:00Z")
+    monkeypatch.setattr(cicd_telemetry, "time_ns", lambda: fixed_ns)
+    output = tmp_path / "candidate.json"
+    logs_out = tmp_path / "otel-logs.json"
+    code = cicd_telemetry.main(
+        [
+            "--repository",
+            "dymzz/engineering-ci",
+            "--run-id",
+            str(run["id"]),
+            "--attempt",
+            "1",
+            "--output",
+            str(output),
+            "--otlp-logs-json",
+            str(logs_out),
+        ]
+    )
+    assert code == 0
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert saved["claims"]["github_api_fetched"] is True
+    assert saved["claims"]["github_authenticated"] is False
+    assert saved["terminal"]["terminal_confirmed"] is True
+    assert saved["terminal"]["observed_at_ns"] == fixed_ns
+    attempt_logs = [
+        item
+        for item in saved["signals"]["logs"]
+        if item["source"] == "github_attempt_terminal"
+    ]
+    assert len(attempt_logs) == 1
+    assert attempt_logs[0]["time_unix_nano"] == fixed_ns
+    assert logs_out.is_file()
+    if zero_jobs:
+        assert saved["signals"]["logs_source"] == "github_attempt_terminal"
+        assert saved["terminal"]["lower_source"] == "weak_run_start"
+    else:
+        assert saved["signals"]["logs_source"] == "github_job_terminal"
+
+
+@pytest.mark.parametrize("source", ["mapping", "env"])
+def test_non_api_source_cannot_confirm_attempt_terminal(source):
+    facts = complete_facts(run_completed_at_ns=None, run_status="completed")
+    report = cicd_telemetry.produce(
+        facts,
+        source=source,
+        github_api_fetched=False,
+        end_time_mode=cicd_telemetry.END_TIME_WITNESS,
+        terminal_observed_at_ns=JOB_END + 5_000_000_000,
+    )
+    cicd_telemetry.attach_signal_candidates(report)
+    assert report["status"] == "partial"
+    assert report["reason"] == "terminal_source_not_github_api"
+    assert report["terminal"]["terminal_confirmed"] is False
+    assert report["claims"]["github_authenticated"] is False
+    assert report["coverage"]["terminal_check"] == "not_applicable"
+    assert all(
+        item["source"] != "github_attempt_terminal"
+        for item in report["signals"]["logs"]
+    )
+
+
+@pytest.mark.parametrize("zero_jobs", [False, True])
+def test_api_completed_without_run_started_at_still_emits_terminal_log(zero_jobs):
+    facts = complete_facts(
+        run_started_at_ns=None,
+        run_completed_at_ns=None,
+        run_status="completed",
+        run_conclusion="cancelled" if zero_jobs else "success",
+        **(
+            {
+                "job_id": None,
+                "job_name": None,
+                "job_url": None,
+                "job_conclusion": None,
+                "job_started_at_ns": None,
+                "job_completed_at_ns": None,
+            }
+            if zero_jobs
+            else {}
+        ),
+    )
+    observed = JOB_END + 5_000_000_000
+    report = cicd_telemetry.produce(
+        facts,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_WITNESS,
+        terminal_observed_at_ns=observed,
+        completed_jobs_total=0 if zero_jobs else 1,
+        job_selection="none" if zero_jobs else "all_completed",
+        task_facts=[] if zero_jobs else None,
+    )
+    cicd_telemetry.attach_signal_candidates(report)
+    assert report["status"] == "partial"
+    assert report["reason"] == "missing_run_timestamps"
+    assert report["terminal"]["terminal_confirmed"] is True
+    assert report["terminal"]["duration_valid_for_metrics"] is False
+    assert (
+        report["terminal"]["time_precision"] == cicd_telemetry.TIME_PRECISION_UNPROVEN
+    )
+    assert report["otlp_metrics_json"] is None
+    assert any(
+        item["source"] == "github_attempt_terminal"
+        for item in report["signals"]["logs"]
+    )
+    if zero_jobs:
+        assert report["terminal"]["bounds_valid"] is False
+        assert report["terminal"]["clock_quality"] == "unproven"
+    else:
+        assert report["terminal"]["bounds_valid"] is True
+        assert report["terminal"]["end_lower_bound_ns"] == JOB_END
+
+
+def test_production_handoff_defaults_not_verified_and_preserves_otlp_json_file(
+    tmp_path,
+):
+    report = cicd_telemetry.produce(complete_facts())
+    handoff = report["production_handoff"]
+    assert handoff["status"] == "not_verified"
+    assert handoff["local_e2e_proves_production_webhook"] is False
+    assert len(handoff["missing_prerequisites"]) == 5
+
+    only_local = cicd_telemetry.evaluate_receiver_production_handoff(
+        webhook_subscription_verified=True,
+        webhook_hmac_verified=True,
+        live_receiver_ingested=True,
+        otlp_traces_delivered=True,
+        live_consumer_gate_verified=True,
+        local_e2e_only=True,
+    )
+    assert only_local["status"] == "not_verified"
+    workflow = Path(".github/workflows/cicd-telemetry-post-run.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "production_webhook_cutover=" in workflow
+    assert "vars.ECI_GITHUBRECEIVER_PROD_VERIFIED" in workflow
+
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(
+        json.dumps(cicd_telemetry.produce(complete_facts())["facts"]),
+        encoding="utf-8",
+    )
+    sentinel = tmp_path / "existing-otel.json"
+    sentinel.write_text('{"keep": "sentinel"}\n', encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        cicd_telemetry.main(
+            [
+                "--facts",
+                str(facts_path),
+                "--output",
+                str(tmp_path / "out.json"),
+                "--otlp-json",
+                str(sentinel),
+            ]
+        )
+    assert exc.value.code == 2
+    assert sentinel.read_text(encoding="utf-8") == '{"keep": "sentinel"}\n'

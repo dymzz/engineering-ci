@@ -29,6 +29,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import time_ns
 from urllib.parse import urlsplit
 
 from . import github_receiver
@@ -596,7 +597,7 @@ def _observation_interval(
     invalid = None
     if job_count == 0 and completed_jobs_total in {None, 0}:
         lower = run_started_ns
-        lower_source = "weak_run_start"
+        lower_source = "weak_run_start" if run_started_ns is not None else None
     elif (
         job_selection == "job_id"
         or (completed_jobs_total is not None and completed_jobs_total != job_count)
@@ -619,7 +620,18 @@ def _observation_interval(
             job_set_complete=False,
             clock_quality="not_assessed",
         )
-    if lower is None or observed_ns < lower:
+    if lower is None:
+        return _bound_fields(
+            valid=False,
+            reason="missing_run_timestamps",
+            lower=None,
+            lower_source=None,
+            upper=observed_ns,
+            uncertainty=None,
+            job_set_complete=True,
+            clock_quality="unproven",
+        )
+    if observed_ns < lower:
         return _bound_fields(
             valid=False,
             reason="end_bounds_unverified",
@@ -917,6 +929,7 @@ def reconcile_attempt_witness_capture(
     *,
     repository_url=None,
     expect_previous_attempt_link=None,
+    executed_job_ids=None,
 ):
     """Validate an independent GitHub API Attempt Witness against a ``githubreceiver`` capture.
 
@@ -985,9 +998,40 @@ def reconcile_attempt_witness_capture(
             repository_url=repo_url,
             head_sha=run_obj.get("head_sha"),
             expect_previous_attempt_link=expect_link,
+            run_started_at=run_obj.get("run_started_at"),
+            executed_job_ids=executed_job_ids,
         )
     except github_receiver.GitHubReceiverError as error:
         raise TelemetryError(error.code) from None
+
+
+def evaluate_receiver_production_handoff(
+    *,
+    webhook_subscription_verified=False,
+    webhook_hmac_verified=False,
+    live_receiver_ingested=False,
+    otlp_traces_delivered=False,
+    live_consumer_gate_verified=False,
+    local_e2e_only=False,
+):
+    """Fail-closed readiness status for live upstream githubreceiver cutover."""
+    checks = {
+        "webhook_subscription_verified": bool(webhook_subscription_verified),
+        "webhook_hmac_verified": bool(webhook_hmac_verified),
+        "live_receiver_ingested": bool(live_receiver_ingested),
+        "otlp_traces_delivered": bool(otlp_traces_delivered),
+        "live_consumer_gate_verified": bool(live_consumer_gate_verified),
+    }
+    missing = [name for name, passed in checks.items() if not passed]
+    verified = not local_e2e_only and not missing
+    return {
+        "trace_owner": "opentelemetry-collector-contrib/githubreceiver",
+        "duplicate_trace_producer_retired_in_code": True,
+        "status": "verified" if verified else "not_verified",
+        "local_e2e_proves_production_webhook": False,
+        "checks": checks,
+        "missing_prerequisites": missing,
+    }
 
 
 def _task_omit_reason(job_facts):
@@ -1158,6 +1202,7 @@ def produce(
         },
         "resource": {},
         "spans": [],
+        "production_handoff": evaluate_receiver_production_handoff(),
         "otlp_json": None,
         "otlp_logs_json": None,
         "otlp_metrics_json": None,
@@ -1222,60 +1267,70 @@ def produce(
     # mode only checks Attempt/Event/Job consistency and monotonic observation bounds.
     time_source_verified = False
     run_end_source = None
+    api_confirmed_source = source == "github_api" and bool(github_api_fetched)
     if run_result is None and facts.run_conclusion is not None:
         reasons.append("unsupported_run_conclusion")
     elif facts.run_conclusion is None:
         reasons.append("missing_run_terminal_result")
     elif facts.run_bounds_state == "invalid":
         reasons.append("invalid_run_timestamps")
-    elif facts.run_started_at_ns is None:
-        reasons.append("missing_run_timestamps")
-    elif facts.run_status == "completed":
-        if event_status is not None and event_status != facts.run_status:
-            reasons.append("event_api_status_conflict")
-        elif (
-            event_conclusion is not None
-            and facts.run_conclusion is not None
-            and event_conclusion != facts.run_conclusion
-        ):
-            reasons.append("event_api_conclusion_conflict")
-        elif terminal_observed_at_ns is not None:
-            if terminal_observed_at_ns < facts.run_started_at_ns:
-                reasons.append("invalid_terminal_observed_at")
-            else:
-                max_job_end = None
-                for _, job_facts in job_sources:
-                    if job_facts.job_completed_at_ns is None:
-                        continue
-                    if (
-                        max_job_end is None
-                        or job_facts.job_completed_at_ns > max_job_end
-                    ):
-                        max_job_end = job_facts.job_completed_at_ns
-                if max_job_end is not None and terminal_observed_at_ns < max_job_end:
-                    reasons.append("terminal_observed_before_jobs")
-                    reasons.append("end_bounds_unverified")
-                    report["terminal"]["bounds_valid"] = False
-                    report["terminal"]["bounds_invalid_reason"] = (
-                        "end_bounds_unverified"
-                    )
-                    report["terminal"]["clock_quality"] = "rejected"
-                    report["terminal"]["job_set_complete"] = True
+    else:
+        if facts.run_started_at_ns is None:
+            reasons.append("missing_run_timestamps")
+        if facts.run_status == "completed":
+            if event_status is not None and event_status != facts.run_status:
+                reasons.append("event_api_status_conflict")
+            elif (
+                event_conclusion is not None
+                and facts.run_conclusion is not None
+                and event_conclusion != facts.run_conclusion
+            ):
+                reasons.append("event_api_conclusion_conflict")
+            elif terminal_observed_at_ns is not None:
+                if not api_confirmed_source:
+                    reasons.append("terminal_source_not_github_api")
+                elif (
+                    facts.run_started_at_ns is not None
+                    and terminal_observed_at_ns < facts.run_started_at_ns
+                ):
+                    reasons.append("invalid_terminal_observed_at")
                 else:
-                    observation_ready = True
-                    report["terminal"]["terminal_confirmed"] = True
-                    report["terminal"].update(
-                        _observation_interval(
-                            job_sources,
-                            observed_ns=terminal_observed_at_ns,
-                            run_started_ns=facts.run_started_at_ns,
-                            completed_jobs_total=completed_jobs_total,
-                            job_selection=job_selection,
-                            omitted_count=0,
+                    max_job_end = None
+                    for _, job_facts in job_sources:
+                        if job_facts.job_completed_at_ns is None:
+                            continue
+                        if (
+                            max_job_end is None
+                            or job_facts.job_completed_at_ns > max_job_end
+                        ):
+                            max_job_end = job_facts.job_completed_at_ns
+                    if (
+                        max_job_end is not None
+                        and terminal_observed_at_ns < max_job_end
+                    ):
+                        reasons.append("terminal_observed_before_jobs")
+                        reasons.append("end_bounds_unverified")
+                        report["terminal"]["bounds_valid"] = False
+                        report["terminal"]["bounds_invalid_reason"] = (
+                            "end_bounds_unverified"
                         )
-                    )
-    elif facts.run_status is not None:
-        reasons.append("run_not_completed")
+                        report["terminal"]["clock_quality"] = "rejected"
+                        report["terminal"]["job_set_complete"] = True
+                    else:
+                        observation_ready = True
+                        report["terminal"]["terminal_confirmed"] = True
+                        report["terminal"].update(
+                            _observation_interval(
+                                job_sources,
+                                observed_ns=terminal_observed_at_ns,
+                                run_started_ns=facts.run_started_at_ns,
+                                completed_jobs_total=completed_jobs_total,
+                                job_selection=job_selection,
+                                omitted_count=0,
+                            )
+                        )
+        elif facts.run_status is not None:
+            reasons.append("run_not_completed")
 
     report["terminal"]["end_time_quality"] = time_precision
     report["terminal"]["end_time_source"] = run_end_source
@@ -2212,11 +2267,18 @@ def attach_signal_candidates(report):
     """Attach O2/O3 candidate LogRecords and Metrics decisions to the report."""
     logs = build_job_terminal_log_records(report)
     metrics, not_observable = build_metrics_plan(report)
+    log_sources = {item["source"] for item in logs}
+    if not logs:
+        logs_source = None
+    elif log_sources == {"github_attempt_terminal"}:
+        logs_source = "github_attempt_terminal"
+    else:
+        logs_source = "github_job_terminal"
     report["signals"] = {
         "logs": logs,
         "metrics": metrics,
         "metrics_not_observable": not_observable,
-        "logs_source": "github_job_terminal" if logs else None,
+        "logs_source": logs_source,
     }
     report["otlp_logs_json"] = to_otlp_logs_json(report) if logs else None
     report["otlp_metrics_json"] = to_otlp_metrics_json(report) if metrics else None
@@ -2998,6 +3060,8 @@ def main(argv=None):
         terminal_observed_at_ns = parse_time_ns(args.terminal_observed_at)
         if terminal_observed_at_ns is None:
             parser.exit(2, "cicd-telemetry rejected: terminal_observed_at_invalid\n")
+    elif source == "github_api" and github_api_fetched:
+        terminal_observed_at_ns = time_ns()
     else:
         terminal_observed_at_ns = None
     try:

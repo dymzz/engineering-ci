@@ -211,6 +211,8 @@ def test_all_signals_keep_provenance_outside_otlp_attributes(with_observed_times
 
     report = telemetry.produce(
         facts,
+        source="github_api",
+        github_api_fetched=True,
         end_time_mode=telemetry.END_TIME_WITNESS,
         terminal_observed_at_ns=JOB_END + 1 if with_observed_timestamp else None,
         completed_jobs_total=1,
@@ -220,6 +222,7 @@ def test_all_signals_keep_provenance_outside_otlp_attributes(with_observed_times
         phase_intervals=[
             {
                 "state": "executing",
+                "quality": "native_phase_transition",
                 "start_ns": facts.job_started_at_ns,
                 "end_ns": facts.job_completed_at_ns,
             }

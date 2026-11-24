@@ -344,9 +344,12 @@ def test_observed_root_marks_duration_not_observable():
 
     report = cicd_telemetry.produce(
         complete_facts(run_completed_at_ns=None, run_status="completed"),
+        source="github_api",
+        github_api_fetched=True,
         end_time_mode=cicd_telemetry.END_TIME_WITNESS,
         terminal_observed_at_ns=JOB_END + 5_000_000_000,
     )
+    assert report["terminal"]["terminal_confirmed"] is True
     cicd_telemetry.attach_signal_candidates(report)
     assert report["otlp_metrics_json"] is None
     assert any(

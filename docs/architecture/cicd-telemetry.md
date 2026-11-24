@@ -29,17 +29,23 @@ Inputs (first → second slice of the witness CLI):
 | --- | --- | --- |
 | Run start | GitHub `run_started_at` / explicit mapping | Exact Pipeline start when present |
 | Run `updated_at` | GitHub Workflow Run object update time | Provenance / estimate only (`run_updated_at_ns`); **not** promoted to an ECI-certified Attempt completed-at |
-| Terminal observed | Post-run `--terminal-observed-at` in `--end-time-mode witness` | Observation upper bound only (`end_upper_bound_ns`); `time_precision=unproven`, `time_source_verified=false`, `root_emission=not_emitted` |
+| Terminal observed | Explicit `--terminal-observed-at`, or automatic host `time_ns()` after verified GitHub Attempt API fetch (`--end-time-mode witness`) | Observation upper bound only (`end_upper_bound_ns`); requires `source="github_api"` with `github_api_fetched=true`, keeps `time_precision=unproven`, `time_source_verified=false`, `root_emission=not_emitted` |
 | Job bounds | Job `started_at` / `completed_at` | Independent Task completeness & lower-bound monotonicity checks |
 
 Duplicate ECI Trace/Task Span synthesis is retired (`END_TIME_EXACT` and
 `END_TIME_OBSERVED_UPPER_BOUND` raise `duplicate_trace_producer_retired`;
 `report["spans"]` stays `[]` and `otlp_json` stays `None`). Under default
 `--end-time-mode witness`, native Attempt API `run_status=completed` with
-`--terminal-observed-at` records monotonic constraint bounds (last completed Job
-end, or weak Run start when `completed_jobs_total=0`, through the observation
-time) and emits `github_job_terminal` / `github_attempt_terminal` LogRecords
-correlated to the expected `githubreceiver` IDs. Observation before any Job
+`--terminal-observed-at` (or host `time_ns()` automatically captured after
+verified `github_api` fetch) records monotonic constraint bounds (last completed
+Job end, or weak Run start when `completed_jobs_total=0`, through the
+observation time) and emits `github_job_terminal` / `github_attempt_terminal`
+LogRecords correlated to the expected `githubreceiver` IDs. When
+`github_api_fetched=true` and `run_status=completed` has missing
+`run_started_at`, the Attempt terminal observation LogRecord still emits while
+`missing_run_timestamps` keeps `status=partial`, `duration_valid_for_metrics=false`,
+and Histograms `not_observable`/`unproven`. Untrusted `--facts` / `env` inputs
+cannot forge API terminal confirmation (`terminal_source_not_github_api`). Observation before any Job
 `completed_at` fails with `terminal_observed_before_jobs` /
 `end_bounds_unverified`. That LogRecord is not a Pipeline duration, and it is
 not a Weaver result (`time_source_verified=false`, `duration_valid_for_metrics=false`).
@@ -71,7 +77,7 @@ nested `queue-*` / step child spans parented to a Job span are excluded from the
 Job ID set unless they carry `cicd.pipeline.task.run.id` or attach directly to the
 Pipeline Root Span. Duplicate, empty, or non-decimal Job IDs fail explicitly.
 Full webhook capture + Attempt API Witness reconciliation lives in
-`github_receiver.reconcile_github_receiver_trace` and `cicd_telemetry.reconcile_attempt_witness_capture`.
+`github_receiver.reconcile_github_receiver_trace` and `cicd_telemetry.reconcile_attempt_witness_capture` (which forwards Attempt `run_started_at` and optional independent `executed_job_ids` so partial reruns like Run `44713410255` Attempt 2 separate full Attempt `result_inventory` from `executed_jobs` vs `reused_jobs`, rather than inferring execution from `run_attempt` alone).
 
 ### Pipeline Run identity (cross-PR with #74)
 
@@ -233,10 +239,23 @@ complete `#52 -> #74 -> #66-C -> #63 -> #61` verification before gate acceptance
 Post-run entry: `.github/workflows/cicd-telemetry-post-run.yml` listens for
 `workflow_run` completion of `Engineering CI` (and supports
 `workflow_dispatch`). It reads the source Run via Attempt API using the event
-identity, never executes the source PR head, runs `--end-time-mode witness`,
+identity, never executes the source PR head, runs `--end-time-mode witness`
+(auto-capturing host observation time when `--terminal-observed-at` is omitted),
 and uploads witness/logs/metrics artifacts (`--otlp-json` retired). Live
 Collector endpoint wiring remains optional via repository secrets / dispatch
-inputs; absence of a receiver leaves RPC acceptance false.
+inputs; absence of a receiver leaves RPC acceptance false. Code retirement in
+`engineering_ci.cicd_telemetry` is distinct from live production cutover:
+`report["production_handoff"]` defaults to `status=not_verified`
+(`local_e2e_proves_production_webhook=false`), and the workflow records
+`production_webhook_cutover` from `vars.ECI_GITHUBRECEIVER_PROD_VERIFIED`
+(`not_verified` until repository Webhook subscription, HMAC secret, live
+Collector ingress, OTLP delivery, and `#52` consumer gate evidence are verified).
+
+On the `#52 -> #66-C -> #63 -> #61` consumer chain, `reconciliation` additionally
+rejects `weaver_terminal` if `weaver/terminal-live-check` reports Exit `0`
+while `gate_status != "passed"`, `gate_exit_code != 0`, or
+`terminal_correlation_status != "passed"` (`terminal_correlation_unproven`),
+aligning with native tool-contract enforcement.
 
 ### O2 Logs / O3 Metrics & Retired Producer Baseline
 

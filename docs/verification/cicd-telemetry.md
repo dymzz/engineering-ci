@@ -10,7 +10,7 @@ Issue [#52](https://github.com/dymzz/engineering-ci/issues/52).
 | Case | Scope & Command | Verified Result |
 | --- | --- | --- |
 | Upstream `githubreceiver` SemConv audit & OTTL normalization | `uv run --locked pytest -v tests/test_github_receiver.py` (`otelcol-contrib v0.165.0`, live Docker + Dagger Weaver `v1.45.0`) | Unnormalized capture has 27 SemConv violations; OTTL `transform/semconv_v1_45_0` + `filter/drop_raw_webhook_events` passes Weaver with 0 violations (`official_registry_verified=true`) |
-| Full E2E consumer chain (`#52 -> #74 -> #52-D4 -> #66-C -> #63 -> #61 R1/R5`) | `uv run --locked pytest -v tests/test_issue52_githubreceiver_e2e.py` | Signed webhook → `otelcol-contrib` → OTLP/gRPC → Dagger `weaver-artifacts --kind=terminal` → `#52-D4` binding → `#66-C` Reconciliation → `#63` Admission → `#61 R1/R5` PASS; missing binding / native fail / untrusted authority / partial rerun fail closed |
+| Full E2E consumer chain (`#52 -> #74 -> #52-D4 -> #66-C -> #63 -> #61 R1/R5`) | `uv run --locked pytest -v tests/test_issue52_githubreceiver_e2e.py` | Controlled signed webhook → `otelcol-contrib` → OTLP/gRPC → Dagger `weaver-artifacts --kind=terminal` → `#52-D4` binding → `#66-C` Reconciliation → `#63` Admission → `#61 R1/R5` PASS; Run `44713410255` Attempt 2 partial-rerun separation verified; wrong Attempt / missing Root / scope mismatch / Exit 0 + Correlation FAIL fail closed (`production_handoff=not_verified` for live ops cutover) |
 
 ## Witness CLI, duplicate producer retirement & signal transport slice
 
@@ -20,8 +20,10 @@ reference only; ECI's duplicate trace producer is retired (`status=witness_only`
 
 | Case | Input | Expected |
 | --- | --- | --- |
-| Witness default production | Separate run/job conclusions + timestamps + Task URL | `status=witness_only`, `spans=[]`, `trace_producer_retired=true`, `terminal_job_records` populated, `evidence_class=candidate_record` |
-| Retired trace producer requests | `--otlp-json`, `--end-time-mode exact|observed_upper_bound`, or `--max-end-uncertainty-ns` | Rejected with `duplicate_trace_producer_retired` (`SystemExit(2)` in CLI; `TelemetryError` in API) |
+| Witness default production | Separate run/job conclusions + timestamps + Task URL | `status=witness_only`, `spans=[]`, `trace_producer_retired=true`, `terminal_job_records` populated, `evidence_class=candidate_record`, `production_handoff.status=not_verified` |
+| Retired trace producer requests | `--otlp-json`, `--end-time-mode exact|observed_upper_bound`, or `--max-end-uncertainty-ns` | Rejected with `duplicate_trace_producer_retired` (`SystemExit(2)` in CLI; `TelemetryError` in API); pre-existing `--otlp-json` file preserved untouched |
+| Attempt API witness default observation | `--repository` + `--run-id` without `--terminal-observed-at` (incl. zero-job `completed` / `cancelled`) | Auto-captures `time_ns()`, confirms `terminal_confirmed=true`, emits `github_attempt_terminal` LogRecord (missing `run_started_at` stays `status=partial`, `missing_run_timestamps`, `duration_valid_for_metrics=false`) |
+| Forged non-API terminal confirmation | `mapping` / `env` input with `run_status=completed` + `terminal_observed_at_ns` | `terminal_confirmed=false`, no `github_attempt_terminal` LogRecord (`terminal_source_not_github_api`), `github_authenticated=false` |
 | Job success / Run in progress | Job terminal only | `partial` (`missing_run_terminal_result`), `terminal_job_records` kept, `spans=[]` |
 | Missing Run ID / Attempt | Incomplete facts | `incomplete`, no spans/logs, exit 3 |
 | Missing timestamps / unmapped conclusion | Missing bounds or `neutral` / `action_required` / `stale` | `partial` with explicit reason (`missing_run_timestamps` / `unsupported_run_conclusion`), zero valid Job records |
