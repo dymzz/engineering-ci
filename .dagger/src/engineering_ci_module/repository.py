@@ -13,6 +13,7 @@ SOURCE_EXCLUDES = [
     "docs/**/*.md",
     "AGENTS.md",
     ".dagger/AGENTS.md",
+    ".agent",
     "scripts/*.md",
 ]
 

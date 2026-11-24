@@ -110,6 +110,16 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 本仓默认五项 Checks 检查根仓源码；消费者组合既有 `python-*` Functions，
 按自己的源码、范围与策略声明原生 Checks，见[接入示例](../../guides/new-repository.md)。
 
+- 在本仓运行原生 Checks（`dagger check` / `@check`）或 `repository_*` 函数时，参数通过
+  `DefaultPath("/")` 与 `Ignore(...)` 预先裁剪 `.git`、`.venv`、缓存及历史临时目录（当前模块上传约 `4.4 MB`）。
+- 通过 CLI 向独立可复用 `@function` 传入 `--source .`（例如 `actionlint-workflows`、`zizmor-workflows`、
+  `lychee-check`、`tach-check`、`python-*`）时，Dagger `v1.0.0-beta.16` 会在进入函数前由宿主先上传完整 `.` 目录，
+  因此本仓本地调用应使用 Dagger Shell 过滤宿主目录，例如：
+
+```sh
+dagger -c 'src=$(host | directory . --exclude .git --exclude .venv --exclude .dagger/.venv --exclude .dagger/.ruff_cache --exclude .ruff_cache --exclude .pytest_cache); actionlint-workflows --source $src'
+```
+
 ### 按执行位置选择 GitHub 认证入口
 
 engineering-ci 提供工程检查、CI/CD 策略和结果证据；认证由实际执行位置和调用方配置决定。

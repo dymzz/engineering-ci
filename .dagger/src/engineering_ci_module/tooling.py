@@ -75,7 +75,6 @@ SOURCE_NOISE = [
     ".codex",
     ".claude",
     ".agents",
-    ".agent",
     ".idea",
     ".vscode",
     ".DS_Store",
