@@ -3,38 +3,16 @@
 import dagger
 from dagger import dag
 
+from . import tooling
+
 SOURCE_EXCLUDES = [
-    ".git",
-    ".venv",
-    "**/.venv",
-    ".test-tools",
-    ".test-deps",
-    ".tmp",
-    ".log",
-    ".artifacts",
-    "**/__pycache__",
-    "**/.pytest_cache",
-    "**/.ruff_cache",
-    ".coverage*",
-    "core-junit.xml",
-    "core-coverage.xml",
-    "core-coverage.json",
-    ".env",
-    ".env.*",
-    ".secrets",
-    ".aws",
-    ".ssh",
-    ".docker",
-    ".codex",
-    ".claude",
-    ".agents",
-    "**/*.local.toml",
+    *tooling.SOURCE_NOISE,
     "get_vesryn-log_docs.ps1",
     "guides",
+    "design",
     "docs/**/*.md",
     "AGENTS.md",
     ".dagger/AGENTS.md",
-    ".agent",
     "scripts/*.md",
 ]
 
