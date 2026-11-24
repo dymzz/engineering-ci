@@ -3,13 +3,43 @@
 Local verification for [architecture/cicd-telemetry.md](../architecture/cicd-telemetry.md)
 and Issue [#75](https://github.com/dymzz/engineering-ci/issues/75).
 
-## 2026-11-21 current verification decision
+## 2026-11-24 upstream-first direction and #150 interim baseline
 
-The approved `terminal_event` mode records actual GitHub Attempt facts, native Job/Task spans, a terminal LogRecord and its independent API witness. Without an owner-proven Pipeline End, it records `root_emission=not_emitted` and `time_precision=unproven`. The `main@a99efd5` baseline ran `observed_upper_bound`. Check the deployed revision of the post-run Workflow for the mode in use. Dagger Function/Check timestamps cover their actual Dagger operation. [#75 decision](https://github.com/dymzz/engineering-ci/issues/75) · [PR #150](https://github.com/dymzz/engineering-ci/pull/150) · [Post-run Workflow](../../.github/workflows/cicd-telemetry-post-run.yml)
+**Primary target architecture (`#75` / `#52`):** verify authentic signed
+`workflow_run` / `workflow_job` webhooks through official OpenTelemetry Collector
+Contrib `githubreceiver` -> OTLP capture -> pinned SemConv `v1.45.0` Weaver ->
+`#52` consumers (normal, failure, cancelled, zero-job, and full/partial rerun
+cases). Because upstream `githubreceiver` currently declares `sem_conv_version: 1.43.0`
+while ECI pins `SemConv v1.45.0`, live/replay Weaver validation against the pinned
+official Registry is mandatory and never pre-assumed PASS or patched into official
+SemConv files. Retire duplicate ECI GitHub Trace/Task production only after
+official Receiver + `#52` consumer coverage passes end-to-end. [#75 decision](https://github.com/dymzz/engineering-ci/issues/75) · [#52 decision](https://github.com/dymzz/engineering-ci/issues/52)
 
-**Prohibited implementation direction:** treating `updated_at`, last Job end, post-run observation, guessed time intervals or invented `--max-end-uncertainty-ns` budgets as the GitHub Workflow's real Pipeline End, or reopening this route merely to get a #52B Terminal-positive result. #52A Task-only is independently valid; #52B requires a genuinely bound Pipeline Root and remains unverified otherwise. Reuse historical API/Receiver/Weaver evidence and verify only the actual new integration difference.
+**Scoped `#150` interim baseline (`terminal_event`):** The approved
+`terminal_event` mode records actual GitHub Attempt facts, native Job/Task spans,
+a terminal LogRecord (including zero-job Attempts without corrupting existing
+Trace files), and its independent API witness. Without an owner-proven Pipeline
+End, it records `root_emission=not_emitted` and `time_precision=unproven`, and it
+is accepted strictly within that scoped transitional boundary rather than blocked
+on full `githubreceiver` deployment. The `main@a99efd5` baseline ran
+`observed_upper_bound`. Check the deployed revision of the post-run Workflow for
+the mode in use. Dagger Function/Check timestamps cover their actual Dagger
+operation. [PR #150](https://github.com/dymzz/engineering-ci/pull/150) · [Post-run Workflow](../../.github/workflows/cicd-telemetry-post-run.yml)
 
-The table below preserves the contract tests for the historical `observed_upper_bound` behavior at `main@a99efd5`. Acceptance for `terminal_event` uses its native Attempt facts and artifacts. #52B production coverage requires evidence from the actual Pipeline boundary.
+**Prohibited implementation direction:** expanding a rival ECI GitHub
+Root/Task/Step producer to compete with `githubreceiver`, patching `githubreceiver`
+for Schema 9 / legacy `_stable_ids` compatibility, or promoting ECI-authored
+REST `updated_at` polling, last Job end, post-run observation, guessed intervals,
+or invented `--max-end-uncertainty-ns` budgets as a certified GitHub Workflow
+Pipeline End (`time_source_verified=false` remains strict on ECI API/caller
+estimates). #52A Task-only is independently valid; #52B aligns to official
+`githubreceiver` Root/Job/Step IDs or verified Pipeline bounds rather than ECI
+approximate Roots.
+
+The table below preserves the contract tests for the historical ECI
+`observed_upper_bound` behavior at `main@a99efd5`. Acceptance for `terminal_event`
+uses its native Attempt facts and artifacts. End-to-end #75 / #52B coverage
+requires verified `githubreceiver` + SemConv `v1.45.0` + aligned consumer evidence.
 
 ## ECI verification timing (#152)
 

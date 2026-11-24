@@ -28,10 +28,13 @@ Consult relevant documentation and interfaces when working across module boundar
 - Release CLI requests, inspects and waits for that Workflow; Git/PR operations use native Git/gh. Downloads use native gh for explicitly selected Runs.
 - engineering-ci may depend on vesryn-log for CI event recording and vesryn-tool-runtime for actual CI tool contracts and invocation.
 - engineering-ci must not depend directly or transitively on vesryn or vesryn-workflow, including through Log or Tool Runtime.
-- Keep CI instrumentation minimal. Bind timestamps to the execution whose
-  lifecycle was observed. Use the [CI/CD telemetry contract](docs/architecture/cicd-telemetry.md)
-  for allowed timing sources and keep generic log storage, archiving and querying
-  in the logging component.
+- Adopt OpenTelemetry Collector Contrib `githubreceiver` as the upstream-first
+  producer boundary for GitHub Actions Workflow/Job/Step CI/CD traces under the
+  [CI/CD telemetry contract](docs/architecture/cicd-telemetry.md) rather than
+  expanding a duplicate ECI GitHub trace producer. Keep CI instrumentation
+  minimal, bind timestamps to the execution whose lifecycle was observed, validate
+  captures against fixed CI/CD SemConv Weaver, and keep generic log storage,
+  archiving and querying in the logging component.
 - Vesryn and Workflow may consume engineering-ci capabilities;
   reverse dependencies are forbidden.
 - If a forbidden dependency appears necessary, reassess ownership
