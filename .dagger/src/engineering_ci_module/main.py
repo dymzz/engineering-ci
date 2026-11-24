@@ -239,7 +239,9 @@ class EngineeringCi:
     @check
     async def weaver_registry(
         self,
-        source: Annotated[dagger.Directory, DefaultPath("/")],
+        source: Annotated[
+            dagger.Directory, DefaultPath("/"), Ignore(tooling.SOURCE_NOISE)
+        ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
         """Check and package an explicitly selected, fixed local Registry."""
@@ -251,7 +253,9 @@ class EngineeringCi:
     @check
     async def weaver_live(
         self,
-        source: Annotated[dagger.Directory, DefaultPath("/")],
+        source: Annotated[
+            dagger.Directory, DefaultPath("/"), Ignore(tooling.SOURCE_NOISE)
+        ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
         """Validate a completed OTLP capture through Weaver's gRPC receiver."""
@@ -261,7 +265,9 @@ class EngineeringCi:
     @check
     async def weaver_terminal(
         self,
-        source: Annotated[dagger.Directory, DefaultPath("/")],
+        source: Annotated[
+            dagger.Directory, DefaultPath("/"), Ignore(tooling.SOURCE_NOISE)
+        ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
         """Post-completion Pipeline validation; requires explicit terminal evidence."""
@@ -649,15 +655,7 @@ class EngineeringCi:
             .with_directory(
                 "/workspace",
                 source,
-                exclude=[
-                    ".git",
-                    ".venv",
-                    "**/.venv",
-                    "__pycache__",
-                    "**/__pycache__",
-                    ".ruff_cache",
-                    "**/.ruff_cache",
-                ],
+                exclude=list(tooling.SOURCE_NOISE),
             )
             .with_workdir("/workspace")
         )
