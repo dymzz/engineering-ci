@@ -166,15 +166,22 @@ official `githubreceiver` IDs before retiring the duplicate ECI trace producer.
 ### Pipeline Run identity (cross-PR with #74)
 
 Each GitHub Actions **Attempt** is one distinct pipeline execution (own Trace).
-SemConv `cicd.pipeline.run.id` is the stable canonical form
-`{github_run_id}/{run_attempt}` on Resource, Pipeline Span, and Task
-correlation. Raw GitHub Run ID and Attempt remain in `facts.*`,
-`coverage.expected_trace`, and the independent API Witness. Schema 9 omits the
-unregistered `github.actions.run_attempt` attribute. Consumers must compare
-the complete composite ID against the independently declared Run and Attempt,
-then reconcile the Trace/Span IDs with that witness; comparing only the Run
-prefix loses Attempt binding. When GitHub provides `html_url`, it is
-emitted as Recommended `cicd.pipeline.run.url.full`.
+SemConv v1.45.0 defines `cicd.pipeline.run.id` as a string identifying a
+Pipeline Run execution without prescribing GitHub's `{github_run_id}/{run_attempt}`
+encoding. That composite `{github_run_id}/{run_attempt}` form is ECI's
+canonical encoding / normalized consumer contract (emitted on Resource, Pipeline
+Span, and Task correlation by the interim/legacy Schema 9 producer and also
+selected by [PR #155](https://github.com/dymzz/engineering-ci/pull/155)'s
+Collector OTTL `transform/semconv_v1_45_0` normalization, rather than upstream
+`githubreceiver`'s native attribute encoding). Upstream `githubreceiver` native
+IDs (`trace_id`, `root_span_id`, `job_span_id`), Attempt, raw GitHub Run ID
+and Attempt in `facts.*` / `coverage.expected_trace`, and the independent API
+Witness must each be verified separately; `#52` consumers compare the complete
+composite ID against those independent declarations and reconcile Trace/Span IDs
+with that witness—comparing only the Run prefix or inferring upstream raw event
+attribution solely from `cicd.pipeline.run.id` is invalid. Schema 9 omits
+the unregistered `github.actions.run_attempt` attribute. When GitHub provides
+`html_url`, it is emitted as Recommended `cicd.pipeline.run.url.full`.
 
 Job conclusion never becomes Pipeline result. Selection / Required /
 `blocked` / `not_executed` stay in ECI Plan/Report and are never encoded as
@@ -240,7 +247,7 @@ semantic validation.
 | OTLP field | Location | Native source / mapping | Classification and upstream constraint | Producer handling / consumer |
 | --- | --- | --- | --- | --- |
 | `cicd.pipeline.name` | R, P, M | Attempt API `name` / Actions `GITHUB_WORKFLOW` | Official, string human-readable pipeline name, `cicd/registry.yaml` | Keep; #74 native catalog, #52 source agreement |
-| `cicd.pipeline.run.id` | R, P, T, L; M opt-in | GitHub Run ID + positive Attempt | Official string identifying an execution; upstream does not define GitHub's encoding | Keep existing `{run_id}/{attempt}`; independent Expected/Witness must bind the entire value |
+| `cicd.pipeline.run.id` | R, P, T, L; M opt-in | GitHub Run ID + positive Attempt | Official string identifying an execution; SemConv v1.45.0 does not prescribe GitHub's encoding | ECI canonical encoding / normalized consumer contract (`{run_id}/{attempt}` in Schema 9 interim producer and PR #155 OTTL `transform/semconv_v1_45_0`, not native `githubreceiver` encoding); Expected/Witness & native IDs bind separately without inferring raw event attribution from this field alone |
 | `cicd.pipeline.run.url.full` | R, P | Attempt `html_url` / explicit Run URL | Official full Run URL | Keep original; repository path, Run and supplied Attempt suffix must agree |
 | `vcs.repository.url.full` | R | API `repository.html_url`, or supplied server/Run URL origin + `repository.full_name` / `GITHUB_REPOSITORY` | Official string, canonical complete HTTP(S) browser URL; Git URL should omit `.git`, `vcs/registry.yaml` | Use original repository URL when present; verify owner/repo path and all supplied origins; missing origin omits URL with `repository_identity.reason` |
 | `vcs.ref.head.revision` | R, P | API `head_sha` / Actions SHA / explicit mapping | Official string VCS revision, `vcs/registry.yaml` | Keep; source Head SHA remains independently checked; it is not proof of the checked checkout Tree |
