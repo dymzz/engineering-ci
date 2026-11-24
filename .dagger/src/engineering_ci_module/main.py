@@ -950,11 +950,24 @@ class EngineeringCi:
             dependency_packages=dependency_packages,
         )
         if tool == "pyright":
-            # The published Pyright distribution downloads a Node runtime on
-            # first use; caching it keeps that off every later run.
-            container = container.with_mounted_cache(
-                "/root/.cache/pyright-python",
-                dag.cache_volume("engineering-ci-pyright-node"),
+            # Prebuilt Node 26 downloaded by pyright-python requires libatomic1
+            # on Debian trixie-slim; caching the Node download avoids repeat fetches.
+            container = (
+                container.with_exec(["apt-get", "update", "-qq"])
+                .with_exec(
+                    [
+                        "apt-get",
+                        "install",
+                        "-y",
+                        "-qq",
+                        "--no-install-recommends",
+                        "libatomic1",
+                    ]
+                )
+                .with_mounted_cache(
+                    "/root/.cache/pyright-python",
+                    dag.cache_volume("engineering-ci-pyright-node"),
+                )
             )
         result = container.with_exec(
             static.runner_prefix(tool, policy["pinned_version"])
