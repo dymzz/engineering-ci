@@ -141,17 +141,16 @@ jobs:
             fi
           fi
           set +e
-          # Precision policy is explicit: no uncertainty budget, so a late
-          # observation is recorded and is not used as the Root span end.
-          printf '%s\n' 'mode=observed_upper_bound' 'max_end_uncertainty_ns=' \
+          # Duplicate GitHub Trace/Task Span synthesis is retired in favor of
+          # official githubreceiver; ECI emits Witness, Expected inventory, and
+          # correlated Attempt/Job terminal companion records only.
+          printf '%s\n' 'mode=witness_only' 'trace_owner=opentelemetry-collector-contrib/githubreceiver' \
             > artifacts/cicd-telemetry/end-time-policy.txt
           uv run --locked python -m engineering_ci.cicd_telemetry \
             --repository "${SOURCE_REPO}" \
             --run-id "${SOURCE_RUN_ID}" \
             --attempt "${SOURCE_ATTEMPT}" \
-            --end-time-mode observed_upper_bound \
             --output artifacts/cicd-telemetry/candidate.json \
-            --otlp-json artifacts/cicd-telemetry/otel.json \
             --otlp-logs-json artifacts/cicd-telemetry/otel-logs.json \
             --otlp-metrics-json artifacts/cicd-telemetry/otel-metrics.json \
             --json \
