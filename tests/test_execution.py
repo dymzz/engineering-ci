@@ -5692,7 +5692,9 @@ def test_gitfree_export_retains_unverified_members_and_refuses_forged_deletions(
     ) == ("src/gone.py",)
 
 
-def test_host_git_snapshot_retains_unmaterialized_and_unreadable_members(repo):
+def test_host_git_snapshot_retains_unmaterialized_and_unreadable_members(
+    repo, monkeypatch
+):
     from test_reconciliation import make_routing
 
     path, base = repo
@@ -5753,25 +5755,42 @@ def test_host_git_snapshot_retains_unmaterialized_and_unreadable_members(repo):
         != "matched"
     )
 
-    if os.name != "nt":
-        run(path, "checkout", "--", "src/pkg/sub.py")
-        sub_path = path / "src/pkg/sub.py"
-        sub_path.chmod(0)
-        try:
-            unreadable_snaps = execution._prepare_source_snapshots(
-                forged, [], root=path, execution_context="host"
-            )
-            assert unreadable_snaps["kind"] == "full"
-            assert "src/pkg/sub.py" in unreadable_snaps["files"]
-            assert "src/pkg/sub.py" in (
-                unreadable_snaps["binding"].get("unverified_paths") or ()
-            )
-            unreadable_res = execution.build_source_resolution(
-                forged, "whitespace", root=path
-            )
-            assert not unreadable_res.get("verified_deleted_scope")
-        finally:
-            sub_path.chmod(0o644)
+    # Inject deterministic PermissionError at selection.read_source_file for
+    # `src/pkg/sub.py` after restoring it on disk: Git member stays retained,
+    # marked in `unverified_paths`, refused as strong closure, and refused as deleted.
+    run(path, "checkout", "--", "src/pkg/sub.py")
+    real_read_source_file = selection.read_source_file
+
+    def _deny_sub(root, relative):
+        if Path(relative).as_posix() == "src/pkg/sub.py":
+            raise PermissionError("simulated unreadable member")
+        return real_read_source_file(root, relative)
+
+    monkeypatch.setattr(selection, "read_source_file", _deny_sub)
+    unreadable_snaps = execution._prepare_source_snapshots(
+        forged, [], root=path, execution_context="host"
+    )
+    assert unreadable_snaps["kind"] == "full"
+    assert "src/pkg/sub.py" in unreadable_snaps["files"]
+    assert "src/pkg/sub.py" in (
+        unreadable_snaps["binding"].get("unverified_paths") or ()
+    )
+    unreadable_res = execution.build_source_resolution(forged, "whitespace", root=path)
+    assert unreadable_res["source_ref"]["binding_status"] != "byte_tree"
+    assert unreadable_res["source_ref"]["scope_kind"] != "full_input_closure"
+    assert not unreadable_res.get("verified_deleted_scope")
+    unreadable_receipt = reconciliation.reconcile_expected_results(
+        p["expected_checks"],
+        routing=[make_routing(entry)],
+        resolutions=[unreadable_res],
+        observations=[],
+    )
+    assert (
+        next(c for c in unreadable_receipt["entries"] if c["name"] == "whitespace")[
+            "binding_status"
+        ]
+        != "matched"
+    )
 
 
 def test_deleted_path_resolution_with_overlays_and_ignored_reappearance(tmp_path, repo):
