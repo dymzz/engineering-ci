@@ -175,3 +175,59 @@ def test_public_plan_entrypoints_cannot_hide_network_or_command_work_in_function
             )
             for decorator in method.decorator_list
         ), name
+
+
+def test_reusable_source_functions_scope_ignore_while_dual_view_and_plan_keep_raw_source():
+    module = ast.parse((MODULE / "main.py").read_text(encoding="utf-8"))
+    alias = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            getattr(target, "id", None) == "_FilteredSource" for target in node.targets
+        )
+    )
+    assert "Ignore(tooling.SOURCE_NOISE)" in ast.unparse(alias.value)
+
+    root = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == "EngineeringCi"
+    )
+    methods = {node.name: node for node in root.body if hasattr(node, "name")}
+    expected_annotations = {
+        "_FilteredSource": (
+            "python_lint",
+            "python_format_check",
+            "python_vulture",
+            "tach_check",
+            "lychee_check",
+            "python_pyright",
+            "python_deptry",
+            "python_pylint",
+            "python_test_artifacts",
+            "python_test",
+            "python_test_report",
+            "python_test_matrix",
+            "python_test_matrix_report",
+            "python_test_matrix_artifacts",
+        ),
+        "dagger.Directory": (
+            "plan_execution",
+            "execute_plan",
+            "fixture_plan_execution",
+            "actionlint_workflows",
+            "shellcheck_scripts",
+            "zizmor_workflows",
+            "analyze_script_scope",
+            "weaver_artifacts",
+            "weaver_report",
+            "weaver_enforce",
+        ),
+    }
+    for expected, names in expected_annotations.items():
+        for name in names:
+            source_arg = next(
+                arg for arg in methods[name].args.args if arg.arg == "source"
+            )
+            assert ast.unparse(source_arg.annotation) == expected, name
