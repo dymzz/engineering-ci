@@ -1296,3 +1296,111 @@ def test_pre_execution_overlay_subset_digest_uses_effective_view(tmp_path):
         "check_input_closure",
         "full_input_closure",
     }
+
+
+def test_pre_execution_source_proof_and_admission_with_deleted_worktree_path(tmp_path):
+    from engineering_ci import admission
+
+    root, _ = _init_repo(tmp_path)
+    (root / "src" / "pkg" / "gone.py").write_text("GONE = 1\n", encoding="utf-8")
+    _git(root, "add", "src/pkg/gone.py")
+    _git(root, "commit", "-qm", "add file to delete later")
+    base = _git(root, "rev-parse", "HEAD").strip()
+
+    (root / "src" / "pkg" / "gone.py").unlink()
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 99\n", encoding="utf-8")
+    plan = _worktree_plan(root, base)
+    ws_expected = next(
+        c for c in plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+    )
+    expected_digest = ws_expected["source_ref"]["content_digest"]
+
+    proof = execution.build_pre_execution_source_proof(plan, "whitespace", root=root)
+    assert proof["status"] == "verified_candidate_inputs"
+    assert proof["verified_deleted_scope"] == ["src/pkg/gone.py"]
+    assert proof["changed_paths_content_digest"] == expected_digest
+    assert admission._recompute_closure_digest(proof) == proof["closure_digest"]
+
+    strict, reason = admission._derive_strict_expected_from_pre_proof(
+        ws_expected, proof
+    )
+    assert reason is None
+    assert strict is not None
+
+    # Forging/mutating verified_deleted_scope breaks closure digest authentication.
+    tampered = {
+        **proof,
+        "verified_deleted_scope": ["src/pkg/gone.py", "src/pkg/mod.py"],
+    }
+    assert admission._recompute_closure_digest(tampered) != proof["closure_digest"]
+
+
+def test_pre_execution_proof_and_admission_refuse_omitted_link_as_deleted(tmp_path):
+    from test_hooks import make_directory_link
+
+    from engineering_ci import admission
+
+    repo_root, _ = _init_repo(tmp_path, "origin")
+    make_directory_link(repo_root / "dirlink", repo_root / "src")
+    mat_dir = tmp_path / "mat_export"
+    mat_dir.mkdir()
+    for rel in (
+        ".gitignore",
+        "pyproject.toml",
+        "tach.toml",
+        "ci-selection.toml",
+        "ci-hygiene.toml",
+        "ci-sources.toml",
+        "src/pkg/mod.py",
+    ):
+        src = repo_root / rel
+        dst = mat_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+    make_directory_link(mat_dir / "dirlink", mat_dir / "src")
+
+    plan = _worktree_plan(repo_root, _git(repo_root, "rev-parse", "HEAD").strip())
+    forged_plan = {
+        **plan,
+        "git": {
+            **plan["git"],
+            "snapshot": "commit",
+            "tree": "1" * 40,
+            "execution_tree": "1" * 40,
+            "source_tree_id": selection.directory_content_id(mat_dir),
+            "changed_paths": ["dirlink", "src/pkg/mod.py"],
+            "deleted_paths": ["dirlink"],
+            "content_binding": None,
+        },
+        "expected_checks": {
+            **plan["expected_checks"],
+            "checks": [
+                {
+                    **item,
+                    "source_ref": check_contract.source_ref(
+                        "commit",
+                        declared_target_tree="1" * 40,
+                        actual_execution_source="git_commit",
+                        head_commit="2" * 40,
+                        verified_scope=["dirlink", "src/pkg/mod.py"],
+                        scope_kind="changed_paths",
+                        binding_status="identity_only",
+                    ),
+                }
+                for item in plan["expected_checks"]["checks"]
+            ],
+        },
+    }
+    ws_expected = next(
+        c for c in forged_plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+    )
+    proof = execution.build_pre_execution_source_proof(
+        forged_plan, "whitespace", root=mat_dir, execution_context="dagger_export"
+    )
+    assert proof["status"] == "unverified"
+    assert not proof.get("verified_deleted_scope")
+    strict, reason = admission._derive_strict_expected_from_pre_proof(
+        ws_expected, proof
+    )
+    assert strict is None
+    assert reason == "pre_execution_source_unverified"

@@ -926,6 +926,74 @@ def deferred_report(scan_path: str, reason: str) -> dict:
     )
 
 
+def repository_scan_filter_refusal(
+    policy: dict,
+    observed: dict,
+    raw_observed: dict,
+) -> dict | None:
+    """Refuse explicitly when source filtering hides scan targets or problems."""
+    raw_targets = raw_observed.get("targets") or []
+    filtered_targets = observed.get("targets") or []
+    filtered_paths = {
+        entry["path"]
+        for entry in filtered_targets
+        if isinstance(entry, dict) and entry.get("path")
+    }
+    excluded_targets = [
+        entry
+        for entry in raw_targets
+        if isinstance(entry, dict) and entry.get("path") not in filtered_paths
+    ]
+    raw_problems = raw_observed.get("problems") or {}
+    filtered_problems = observed.get("problems") or {}
+    excluded_problems = {
+        path: problem
+        for path, problem in raw_problems.items()
+        if filtered_problems.get(path) != problem
+    }
+    raw_config_problem = raw_observed.get("config_problem")
+    filtered_config_problem = observed.get("config_problem")
+    excluded_config_problem = (
+        raw_config_problem
+        if raw_config_problem and raw_config_problem != filtered_config_problem
+        else None
+    )
+    if (
+        not excluded_targets
+        and not excluded_problems
+        and excluded_config_problem is None
+    ):
+        return None
+    report = repository_scan_refusal(policy, raw_observed) or _shell(
+        policy["tool"],
+        policy["pinned_version"],
+        list(policy["scan_paths"]),
+        "not_executed",
+        "source_filter_excluded_scan_targets",
+    )
+    hidden_reasons = []
+    if excluded_config_problem:
+        hidden_reasons.append(excluded_config_problem)
+    hidden_reasons.extend(excluded_problems.values())
+    report["reason"] = "source_filter_excluded_scan_targets"
+    report["limitations"] = [
+        "source_filter_excluded_scan_targets",
+        *(
+            r
+            for r in hidden_reasons
+            if r and r != "source_filter_excluded_scan_targets"
+        ),
+    ]
+    report["target_sources"] = list(filtered_targets)
+    report["excluded_targets"] = excluded_targets
+    report["target_problems"] = {**filtered_problems, **excluded_problems}
+    if excluded_problems:
+        report["excluded_problems"] = excluded_problems
+    if raw_config_problem:
+        report["config_problem"] = raw_config_problem
+    return report
+
+
 def script_report(
     policy: dict,
     exit_code: int,

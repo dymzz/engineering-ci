@@ -24,6 +24,16 @@
 - 当前处理：继续复用官方编码、HTTP 和有限重试；用官方 Protobuf 消息读取接收确认，不复制上游实现或修改库。
 - 未搜索或提交上游 Issue/PR，未开展额外上游调查。
 
+## OpenTelemetry Collector Contrib `githubreceiver@0.165.0`: `sem_conv_version: 1.43.0` and `workflow_job.id == 0` handling
+
+- Status: confirmed upstream component behavior (`v0.165.0` / `v0.165.1`); no third-party code modified.
+- Seen: 2026-11-24, Issue `#75` native integration verification against `ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea`.
+- Evidence:
+  1. Upstream `metadata.yaml` declares `sem_conv_version: 1.43.0`. Unmodified `githubreceiver` `workflow_run`/`workflow_job` OTLP output audited against pinned SemConv `v1.45.0` via Weaver `0.28.0` yields 27 violations (`type_mismatch` on `cicd.pipeline.run.id`/`cicd.pipeline.task.run.id` int values, `required_attribute_not_present` on Span `cicd.pipeline.result`/`cicd.pipeline.task.*`, `missing_attribute` on `cicd.pipeline.run.status`/`cicd.pipeline.run.task.status`/`cicd.pipeline.worker.*`/`vcs.ref.head`, `illegal_namespace` on `vcs.ref.head.revision.author.*`).
+  2. `Config.Validate()` requires at least one `scrapers` block even when receiving webhooks only.
+  3. With default beta gate `receiver.githubreceiver.UseCheckRunID` enabled, sending a completed `workflow_job` webhook with `id: 0` logs `failed to derive job parent span ID` in `trace_event_handling.go:69`, then `trace_receiver.go:186` calls `td.SpanCount()` on an uninitialized `ptrace.Traces{}` and recovers an HTTP connection panic per request (closing the socket cleanly without emitting spans or crashing the collector).
+- Workaround: configure official `otelcol-contrib` `transform/semconv_v1_45_0` + `filter/drop_raw_webhook_events` processors in `config/otel-collector-github-receiver.yaml` with `include_span_events: true` and valid `scrapers`; reject missing/zero `check_run_id` inputs at ECI boundaries as well. No upstream repository/PR modified.
+
 ## Propel / SQLx：Windows PostgreSQL 本地化错误无法解码
 
 - 状态：用户实际桌面操作报告了协议错误，宿主配置已只读核实；未独立复现 SQLx 连接，未认定为新的上游 Bug。

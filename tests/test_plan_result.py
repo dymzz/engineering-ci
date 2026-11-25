@@ -74,8 +74,10 @@ class MemoryDirectory:
         cur_files, cur_dirs = self._materialize()
         return MemoryDirectory({**cur_files, path: file.data}, dirs=cur_dirs)
 
-    def with_directory(self, prefix, directory):
+    def with_directory(self, prefix, directory, *, exclude=()):
         cur_files, cur_dirs = self._materialize()
+        if exclude:
+            directory = _filter_source_with_patterns(directory, exclude)
         add_files, add_dirs = directory._materialize()
         clean_prefix = prefix.strip("/")
         merged_files = {
@@ -2964,3 +2966,1619 @@ def test_dagger_index_identity_conflicts_still_refuse_early(modules, tmp_path):
     assert rep_wrong["status"] == "not_executed"
     assert rep_wrong["reason"] == "source_tree_mismatch"
     assert rep_wrong["exit_code"] == 4
+
+
+def test_v2_build_data_artifact_reaches_consumer_and_records_filtered_view(modules):
+    _, collector = modules
+    manifest_bytes = b'{"built":true}\n'
+    writer = (
+        "import os; from pathlib import Path; "
+        "target = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / 'build' / 'generated' / 'manifest.json'; "
+        "target.parent.mkdir(parents=True, exist_ok=True); "
+        "target.write_bytes(b'{\"built\":true}\\n')"
+    )
+    action = {"type": "command", "argv": [sys.executable, "-c", writer]}
+    edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+        "consumer_ref": {"kind": "tests"},
+        "dependency_kind": "data",
+        "requires_pass": True,
+        "output_ref": {"kind": "file", "path": "build/generated/manifest.json"},
+        "source_binding_ref": "git",
+        "declaration_ref": _v2_decl("gen"),
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": None,
+    }
+    plan = _v2_dagger_plan(
+        edges=[edge],
+        prerequisites=["gen"],
+        actions={"gen": action},
+        checks=["weaver_registry"],
+    )
+
+    class Native(NativeDouble):
+        def __init__(self):
+            super().__init__()
+            self.test_source = None
+
+        def _bound_public_source(self, source):
+            files, dirs = source._materialize()
+            return MemoryDirectory(
+                {k: v for k, v in files.items() if not k.startswith(".git/")},
+                dirs={d for d in dirs if d != ".git" and not d.startswith(".git/")},
+            )
+
+        def _uv_container(self, source, version):
+            self.test_source = source
+            return self
+
+        async def stdout(self):
+            return json.dumps(
+                {
+                    "executable": sys.executable,
+                    "python": "3.14.0",
+                    "platform": "linux",
+                    "tool_version": "3.14.0",
+                }
+            )
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(
+                {
+                    ".git/HEAD": "ref: refs/heads/main\n",
+                    "ci-selection.toml": "# clean\n",
+                }
+            ),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", report
+    assert native.test_source.files["build/generated/manifest.json"] == manifest_bytes
+    obs = report["tests"]["native_result"]["evidence"]["observation"]
+    assert obs["container_source_filtered"] is True
+    assert (
+        obs["source_directory"]["digest"] != obs["consumed_source_directory"]["digest"]
+    )
+    assert report["tests"]["native_result"]["evidence"]["source_limit"] == (
+        "input_closure_not_proven"
+    )
+
+
+def _filter_source_with_patterns(source_dir, patterns):
+    """Apply Dagger-style exclude patterns to a MemoryDirectory."""
+    import fnmatch
+
+    files, dirs = source_dir._materialize()
+
+    def excluded(rel):
+        parts = rel.split("/")
+        for pat in patterns:
+            if pat.startswith("**/"):
+                sub = pat[3:]
+                if any(fnmatch.fnmatchcase(part, sub) for part in parts):
+                    return True
+                if fnmatch.fnmatchcase(rel, pat) or fnmatch.fnmatchcase(parts[-1], sub):
+                    return True
+            elif fnmatch.fnmatchcase(parts[0], pat) or fnmatch.fnmatchcase(rel, pat):
+                return True
+        return False
+
+    return MemoryDirectory(
+        {k: v for k, v in files.items() if not excluded(k)},
+        dirs={d for d in dirs if not excluded(d)},
+    )
+
+
+def _write_memdir(source_dir, root):
+    """Write a MemoryDirectory synchronously onto a temp Path for container probes."""
+    files, dirs = source_dir._materialize()
+    for rel in sorted(dirs):
+        (root / rel).mkdir(parents=True, exist_ok=True)
+    for rel, raw in sorted(files.items()):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+
+def _make_runtime_unittest_container_class(workspace_root, *, mutate_during_test=None):
+    """Run real `python -m unittest` pre-mounted on `workspace_root` without post-exec hashing."""
+    import subprocess
+
+    class RuntimeContainer:
+        def __init__(
+            self,
+            *,
+            command=None,
+            exit_code_val=0,
+            stdout_text="",
+            stderr_text="",
+        ):
+            self.command = command
+            self.exit_code_val = exit_code_val
+            self.stdout_text = stdout_text
+            self.stderr_text = stderr_text
+
+        def with_exec(self, command, **kwargs):
+            cmd = list(command)
+            if "unittest" in cmd:
+                target_args = cmd[cmd.index("unittest") + 1 :]
+                proc = subprocess.run(
+                    [sys.executable, "-m", "unittest", *target_args],
+                    cwd=workspace_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if mutate_during_test is not None:
+                    mutate_during_test(workspace_root)
+                return RuntimeContainer(
+                    command=cmd,
+                    exit_code_val=proc.returncode,
+                    stdout_text=proc.stdout,
+                    stderr_text=proc.stderr,
+                )
+            if len(cmd) >= 2 and cmd[-2] == "-c" and "importlib.metadata" in cmd[-1]:
+                return RuntimeContainer(
+                    command=cmd,
+                    exit_code_val=0,
+                    stdout_text=json.dumps(
+                        {
+                            "executable": sys.executable,
+                            "python": "3.14.0",
+                            "platform": "linux",
+                            "tool_version": "3.14.0",
+                        }
+                    ),
+                )
+            return RuntimeContainer(command=cmd)
+
+        async def exit_code(self):
+            return self.exit_code_val
+
+        async def stdout(self):
+            return self.stdout_text
+
+        async def stderr(self):
+            return self.stderr_text
+
+    return RuntimeContainer
+
+
+def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviations(
+    modules, tmp_path
+):
+    import importlib
+    import shutil
+
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+
+    raw_files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        "ci-selection.toml": (
+            b'schema_version = 1\ntests_dir = "tests"\nsrc_root = "src"\nframework = "unittest"\n'
+        ),
+        "ci-weaver.toml": b"# weaver\n",
+        ".env.test": b"APP_ENV=testing\n",
+        "config/test.local.toml": b"[service]\nport = 8080\n",
+        ".docker/deploy.sh": b"#!/bin/sh\necho ok\n",
+        "tests/test_controlled.py": (
+            b"import unittest\n"
+            b"from pathlib import Path\n\n"
+            b"class ControlledTest(unittest.TestCase):\n"
+            b"    def test_ok(self):\n"
+            b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=testing\\n')\n"
+        ),
+    }
+    src = tmp_path / "src"
+    for rel, raw in raw_files.items():
+        target = src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    tree_hex = "a" * 40
+    plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=("tests.test_controlled",),
+        checks=("weaver_registry",),
+    )
+    plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": tree_hex,
+        "index_tree": tree_hex,
+        "changed_paths": [".env.test", "config/test.local.toml", ".docker/deploy.sh"],
+        "source_tree_id": real_selection.directory_content_id(src),
+    }
+
+    def run_case(
+        case_dir,
+        *,
+        bind_src=src,
+        mutate_during_test=None,
+        bound_transform=None,
+    ):
+        ws_root = case_dir / "container_ws"
+        ws_root.mkdir(parents=True, exist_ok=True)
+        bound_kwarg_seen = []
+
+        class Native:
+            def _bound_public_source(self, source):
+                filtered = _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+                if bound_transform is not None:
+                    return bound_transform(filtered)
+                return filtered
+
+            def _uv_container(self, source, version, _bound_source=None):
+                bound_kwarg_seen.append(_bound_source is not None)
+                mount = (
+                    _bound_source
+                    if _bound_source is not None
+                    else self._bound_public_source(source)
+                )
+                _write_memdir(mount, ws_root)
+                return _make_runtime_unittest_container_class(
+                    ws_root, mutate_during_test=mutate_during_test
+                )()
+
+            async def weaver_artifacts(self, source, kind, config):
+                return MemoryDirectory(
+                    {
+                        "report.json": json.dumps(
+                            {
+                                "name": "weaver_registry",
+                                "status": "passed",
+                                "exit_code": 0,
+                            }
+                        )
+                    }
+                )
+
+        case_files = {
+            rel: path.read_bytes()
+            for path in bind_src.rglob("*")
+            if path.is_file()
+            for rel in [path.relative_to(bind_src).as_posix()]
+        }
+        plan_case = json.loads(json.dumps(plan))
+        plan_case["git"]["source_tree_id"] = real_selection.directory_content_id(
+            bind_src
+        )
+        saved = asyncio.run(
+            collector.execute(
+                Native(),
+                MemoryFile(json.dumps(plan_case)),
+                MemoryDirectory(case_files),
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+        return json.loads(asyncio.run(saved.report())), bound_kwarg_seen
+
+    # 1. Verified bound source delivers every tree member, isolating only the root
+    # Git Context; runtime test writes/edits in workspace AFTER start do not falsify binding.
+    def _runtime_side_effects(ws):
+        (ws / "runtime_created.log").write_text("runtime output\n", encoding="utf-8")
+        (ws / ".env.test").write_bytes(b"APP_ENV=mutated_by_test_after_start\n")
+
+    ok_report, ok_kwargs = run_case(
+        tmp_path / "ok", mutate_during_test=_runtime_side_effects
+    )
+    assert ok_kwargs == [True]
+    assert ok_report["status"] == "passed", ok_report
+    ok_native = ok_report["tests"]["native_result"]
+    ok_obs = ok_native["evidence"]["observation"]
+    assert ok_obs["container_source_filtered"] is True
+    assert ok_obs["container_source_excludes"] == [".git"]
+    assert ok_obs["equivalence_verified_at"] == "pre_execution"
+    assert ok_obs["source_equivalence_status"] == "verified_equivalent"
+    assert ok_native["source_ref"]["binding_status"] == "byte_tree"
+    assert ok_native["source_ref"]["scope_kind"] == "full_input_closure"
+    assert "source_limit" not in ok_native["evidence"]
+
+    # 2. When a consumer view explicitly filters only .git while matching the bound byte
+    # tree, pre-execution full-tree closure proof verifies equivalence as verified_equivalent.
+    same_src = tmp_path / "same_src"
+    shutil.copytree(src, same_src, ignore=shutil.ignore_patterns(".git"))
+    same_report, _ = run_case(tmp_path / "identical", bind_src=same_src)
+    same_native = same_report["tests"]["native_result"]
+    assert same_native["evidence"]["observation"]["container_source_filtered"] is False
+    assert (
+        same_native["evidence"]["observation"]["source_equivalence_status"]
+        == "unfiltered_identical"
+    )
+    assert same_native["source_ref"]["binding_status"] == "byte_tree"
+    assert "source_limit" not in same_native["evidence"]
+
+    src_memdir = MemoryDirectory(
+        {
+            rel: path.read_bytes()
+            for path in src.rglob("*")
+            if path.is_file()
+            for rel in [path.relative_to(src).as_posix()]
+        }
+    )
+    src_without_git = _filter_source_with_patterns(src_memdir, [".git", ".git/**"])
+
+    class DirectRefusalNative:
+        def __init__(self):
+            self.invocations = 0
+
+        def _uv_container(self, source, version, _bound_source=None):
+            self.invocations += 1
+            ws = tmp_path / f"direct_ws_{self.invocations}"
+            ws.mkdir(parents=True, exist_ok=True)
+            _write_memdir(_bound_source or source, ws)
+            return _make_runtime_unittest_container_class(ws)()
+
+    git_filtered_native = DirectRefusalNative()
+    git_filtered_plan = json.loads(json.dumps(plan))
+    git_filtered_payload, _ = asyncio.run(
+        collector._tests(
+            git_filtered_native,
+            src_memdir,
+            ("tests.test_controlled",),
+            "unittest",
+            "3.14",
+            plan=git_filtered_plan,
+            binding_root=src,
+            consumed_source=src_without_git,
+        )
+    )
+    assert git_filtered_native.invocations == 1
+    assert git_filtered_payload["tests"]["exit_code"] == 0
+    gf_native = git_filtered_payload["tests"]["native_result"]
+    gf_obs = gf_native["evidence"]["observation"]
+    assert gf_obs["container_source_filtered"] is True
+    assert gf_obs["source_equivalence_status"] == "verified_equivalent"
+    assert gf_native["source_ref"]["binding_status"] == "byte_tree"
+    assert "source_limit" not in gf_native["evidence"]
+
+    # 3. P1-01: Bound tracked fixture under a SOURCE_NOISE directory (.ruff_cache/fixture.txt)
+    # actually read by unittest: bare _bound_public_source fails (exit=1), while fixed _tests
+    # delivers the verified bound Directory directly (no strip/restore churn) and passes (exit=0).
+    fix_src = tmp_path / "fix_src"
+    shutil.copytree(src, fix_src)
+    (fix_src / ".ruff_cache").mkdir()
+    (fix_src / ".ruff_cache/fixture.txt").write_bytes(b"fixture-bound=ok\n")
+    (fix_src / "tests/test_controlled.py").write_bytes(
+        b"import unittest\n"
+        b"from pathlib import Path\n\n"
+        b"class ControlledTest(unittest.TestCase):\n"
+        b"    def test_ok(self):\n"
+        b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=testing\\n')\n"
+        b"        self.assertEqual(Path('.ruff_cache/fixture.txt').read_bytes(), b'fixture-bound=ok\\n')\n"
+    )
+    fix_memdir = MemoryDirectory(
+        {
+            rel: path.read_bytes()
+            for path in fix_src.rglob("*")
+            if path.is_file()
+            for rel in [path.relative_to(fix_src).as_posix()]
+        }
+    )
+    bare_filtered = _filter_source_with_patterns(fix_memdir, tooling.SOURCE_NOISE)
+    assert ".ruff_cache/fixture.txt" not in bare_filtered.files
+    bare_ws = tmp_path / "bare_ws"
+    bare_ws.mkdir()
+    _write_memdir(bare_filtered, bare_ws)
+    bare_proc = _make_runtime_unittest_container_class(bare_ws)().with_exec(
+        ["uv", "run", "--no-sync", "python", "-m", "unittest", "tests.test_controlled"]
+    )
+    assert bare_proc.exit_code_val == 1
+    assert "FileNotFoundError" in bare_proc.stderr_text
+
+    # Unfiltered identical source vs fixed direct bound delivery produce the same exit=0.
+    unfiltered_fix_src = tmp_path / "unfiltered_fix_src"
+    shutil.copytree(fix_src, unfiltered_fix_src, ignore=shutil.ignore_patterns(".git"))
+    unfiltered_report, _ = run_case(
+        tmp_path / "unfiltered_fix", bind_src=unfiltered_fix_src
+    )
+    assert unfiltered_report["tests"]["exit_code"] == 0
+    assert unfiltered_report["tests"]["native_result"]["source_ref"][
+        "binding_status"
+    ] == ("byte_tree")
+
+    direct_report, direct_kwargs = run_case(tmp_path / "direct_bound", bind_src=fix_src)
+    assert direct_kwargs == [True]
+    assert direct_report["tests"]["exit_code"] == 0
+    direct_native = direct_report["tests"]["native_result"]
+    direct_obs = direct_native["evidence"]["observation"]
+    assert direct_obs["container_source_filtered"] is True
+    assert direct_obs["container_source_excludes"] == [".git"]
+    assert "restored_bound_paths" not in direct_obs
+    assert direct_obs["source_equivalence_status"] == "verified_equivalent"
+    assert direct_native["source_ref"]["binding_status"] == "byte_tree"
+    assert direct_native["source_ref"]["scope_kind"] == "full_input_closure"
+    assert "source_limit" not in direct_native["evidence"]
+
+    # Known missing bound input refuses BEFORE running unittest (no synthetic exit=1).
+    fix_plan = json.loads(json.dumps(plan))
+    fix_plan["git"]["source_tree_id"] = real_selection.directory_content_id(fix_src)
+    miss_native = DirectRefusalNative()
+    miss_payload, miss_files = asyncio.run(
+        collector._tests(
+            miss_native,
+            fix_memdir,
+            ("tests.test_controlled",),
+            "unittest",
+            "3.14",
+            plan=fix_plan,
+            binding_root=fix_src,
+            consumed_source=bare_filtered,
+        )
+    )
+    assert miss_native.invocations == 0
+    miss_tests = miss_payload["tests"]
+    assert miss_tests["status"] == "not_executed"
+    assert miss_tests["exit_code"] is None
+    assert miss_tests["reason"] == "missing_bound_inputs"
+    assert miss_tests["check_contract"]["status"] == "not_started"
+    assert miss_tests["native_results"] == []
+    assert miss_tests["source_delivery"]["source_equivalence_status"] == (
+        "missing_bound_inputs"
+    )
+    assert miss_tests["source_delivery"]["missing_bound_paths"] == [
+        ".ruff_cache/fixture.txt"
+    ]
+    miss_delivery = json.loads(
+        asyncio.run(miss_files.file("source-delivery.json").contents())
+    )
+    assert miss_delivery["missing_bound_paths"] == [".ruff_cache/fixture.txt"]
+    miss_agg = collector._aggregate(
+        {
+            "tests": miss_tests,
+            "checks": [],
+            "prerequisites": [],
+            "targets": ["tests.test_controlled"],
+        }
+    )
+    assert miss_agg["status"] == "blocked"
+    assert miss_agg["exit_code"] == 5
+    assert miss_agg["reason"] == "missing_bound_inputs"
+
+    # 4. Unexpected extra or tampered pre-exec input in consumed_source ->
+    # refuses BEFORE test execution with not_executed and exact diff paths.
+    extra_native = DirectRefusalNative()
+    extra_payload, _ = asyncio.run(
+        collector._tests(
+            extra_native,
+            src_memdir,
+            ("tests.test_controlled",),
+            "unittest",
+            "3.14",
+            plan=json.loads(json.dumps(plan)),
+            binding_root=src,
+            consumed_source=src_memdir.with_new_file(
+                "unexpected_extra.txt", b"extra pre-exec\n"
+            ),
+        )
+    )
+    assert extra_native.invocations == 0
+    extra_tests = extra_payload["tests"]
+    assert extra_tests["status"] == "not_executed"
+    assert extra_tests["exit_code"] is None
+    assert extra_tests["reason"] == "unexpected_bound_inputs"
+    assert extra_tests["check_contract"]["status"] == "not_started"
+    assert extra_tests["native_results"] == []
+    assert extra_tests["source_delivery"]["unexpected_bound_paths"] == [
+        "unexpected_extra.txt"
+    ]
+
+    mismatch_native = DirectRefusalNative()
+    mismatch_payload, _ = asyncio.run(
+        collector._tests(
+            mismatch_native,
+            src_memdir,
+            ("tests.test_controlled",),
+            "unittest",
+            "3.14",
+            plan=json.loads(json.dumps(plan)),
+            binding_root=src,
+            consumed_source=src_memdir.with_new_file(
+                ".env.test", b"APP_ENV=tampered\n"
+            ),
+        )
+    )
+    assert mismatch_native.invocations == 0
+    assert mismatch_payload["tests"]["status"] == "not_executed"
+    assert mismatch_payload["tests"]["exit_code"] is None
+    assert mismatch_payload["tests"]["reason"] == "mismatched_bound_inputs"
+    assert mismatch_payload["tests"]["source_delivery"]["mismatched_bound_paths"] == [
+        ".env.test"
+    ]
+
+
+def test_v2_data_overlay_applies_after_source_noise_filtering_and_preserves_env_and_local_toml(
+    modules, tmp_path
+):
+    import importlib
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+    env_bytes = b"APP_ENV=overlay\n"
+    local_bytes = b"[overlay]\nport = 9090\n"
+    cache_overlay_bytes = b"overlay-must-survive\n"
+
+    writer = (
+        "import os; from pathlib import Path; "
+        "root = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+        "(root / '.env.test').write_bytes(b'APP_ENV=overlay\\n'); "
+        "(root / 'config').mkdir(parents=True, exist_ok=True); "
+        "(root / 'config' / 'generated.local.toml').write_bytes(b'[overlay]\\nport = 9090\\n'); "
+        "(root / '.ruff_cache').mkdir(parents=True, exist_ok=True); "
+        "(root / '.ruff_cache' / 'generated-data.txt').write_bytes(b'overlay-must-survive\\n')"
+    )
+    action = {"type": "command", "argv": [sys.executable, "-c", writer]}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {"kind": "file", "path": rel},
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+        for rel in (
+            ".env.test",
+            "config/generated.local.toml",
+            ".ruff_cache/generated-data.txt",
+        )
+    ]
+    plan = _v2_dagger_plan(
+        edges=edges,
+        prerequisites=["gen"],
+        actions={"gen": action},
+        tests=("tests.test_overlay_unit",),
+        checks=("weaver_registry",),
+    )
+
+    ws_root = tmp_path / "unittest_ws"
+    ws_root.mkdir(parents=True, exist_ok=True)
+
+    class Native:
+        def __init__(self):
+            self.test_source = None
+            self.bound_kwarg_passed = False
+
+        def _bound_public_source(self, source):
+            return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+
+        # Mirrors real EngineeringCi._uv_container: omits _bound_source -> second filter runs!
+        def _uv_container(self, source, version, _bound_source=None):
+            self.bound_kwarg_passed = _bound_source is not None
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            self.test_source = mounted
+            _write_memdir(mounted, ws_root)
+            return _make_runtime_unittest_container_class(ws_root)()
+
+        async def weaver_artifacts(self, source, kind, config):
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {
+                            "name": "weaver_registry",
+                            "status": "passed",
+                            "exit_code": 0,
+                        }
+                    )
+                }
+            )
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(
+                {
+                    ".git/HEAD": b"ref: refs/heads/main\n",
+                    "ci-selection.toml": b"# clean\n",
+                    "tests/test_overlay_unit.py": (
+                        b"import unittest\n"
+                        b"from pathlib import Path\n\n"
+                        b"class OverlayTest(unittest.TestCase):\n"
+                        b"    def test_reads_all_overlays(self):\n"
+                        b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=overlay\\n')\n"
+                        b"        self.assertEqual(Path('config/generated.local.toml').read_bytes(), b'[overlay]\\nport = 9090\\n')\n"
+                        b"        self.assertEqual(Path('.ruff_cache/generated-data.txt').read_bytes(), b'overlay-must-survive\\n')\n"
+                    ),
+                }
+            ),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", report
+    assert report["tests"]["exit_code"] == 0
+    assert native.bound_kwarg_passed is True
+    assert ".git/HEAD" not in native.test_source.files
+    assert native.test_source.files[".env.test"] == env_bytes
+    assert native.test_source.files["config/generated.local.toml"] == local_bytes
+    assert (
+        native.test_source.files[".ruff_cache/generated-data.txt"]
+        == cache_overlay_bytes
+    )
+    overlay_obs = report["tests"]["native_result"]["evidence"]["observation"]
+    assert overlay_obs["consumed_source_directory"]["digest"] == asyncio.run(
+        native.test_source.digest()
+    )
+    assert report["tests"]["native_result"]["evidence"]["source_limit"] == (
+        "input_closure_not_proven"
+    )
+    assert len(report["tests"]["generated_input_refs"]) == 3
+
+
+def test_v2_data_overlay_on_verified_git_tree_refreshes_consumed_digest_and_verifies_consumer_view(
+    modules, tmp_path
+):
+    import importlib
+
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+
+    base_bytes = b"base-ruff-fixture=ok\n"
+    local_bytes = b"[overlay]\nport = 9090\n"
+    cache_overlay_bytes = b"overlay-must-survive\n"
+
+    writer = (
+        "import os; from pathlib import Path; "
+        "root = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+        "(root / 'config').mkdir(parents=True, exist_ok=True); "
+        "(root / 'config' / 'generated.local.toml').write_bytes(b'[overlay]\\nport = 9090\\n'); "
+        "(root / '.ruff_cache').mkdir(parents=True, exist_ok=True); "
+        "(root / '.ruff_cache' / 'generated-data.txt').write_bytes(b'overlay-must-survive\\n')"
+    )
+    action = {"type": "command", "argv": [sys.executable, "-c", writer]}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {"kind": "file", "path": rel},
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+        for rel in ("config/generated.local.toml", ".ruff_cache/generated-data.txt")
+    ]
+    raw_files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        "ci-selection.toml": b"# clean\n",
+        ".ruff_cache/base.txt": base_bytes,
+        "tests/test_verified_overlay.py": (
+            b"import unittest\n"
+            b"from pathlib import Path\n\n"
+            b"class VerifiedOverlayTest(unittest.TestCase):\n"
+            b"    def test_reads_base_and_overlay(self):\n"
+            b"        self.assertEqual(Path('.ruff_cache/base.txt').read_bytes(), b'base-ruff-fixture=ok\\n')\n"
+            b"        self.assertEqual(Path('config/generated.local.toml').read_bytes(), b'[overlay]\\nport = 9090\\n')\n"
+            b"        self.assertEqual(Path('.ruff_cache/generated-data.txt').read_bytes(), b'overlay-must-survive\\n')\n"
+        ),
+    }
+    base_src = tmp_path / "base_src"
+    for rel, raw in raw_files.items():
+        target = base_src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    tree_hex = "b" * 40
+    plan = _v2_dagger_plan(
+        edges=edges,
+        prerequisites=["gen"],
+        actions={"gen": action},
+        tests=("tests.test_verified_overlay",),
+        checks=("weaver_registry",),
+    )
+    plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": tree_hex,
+        "index_tree": tree_hex,
+        "changed_paths": [".ruff_cache/base.txt"],
+        "source_tree_id": real_selection.directory_content_id(base_src),
+    }
+
+    ws_root = tmp_path / "verified_overlay_ws"
+    ws_root.mkdir(parents=True, exist_ok=True)
+
+    class Native:
+        def __init__(self):
+            self.test_source = None
+            self.bound_kwarg_passed = False
+            self.invocations = 0
+
+        def _bound_public_source(self, source):
+            return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+
+        def _uv_container(self, source, version, _bound_source=None):
+            self.invocations += 1
+            self.bound_kwarg_passed = _bound_source is not None
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            self.test_source = mounted
+            _write_memdir(mounted, ws_root)
+            return _make_runtime_unittest_container_class(ws_root)()
+
+        async def weaver_artifacts(self, source, kind, config):
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {
+                            "name": "weaver_registry",
+                            "status": "passed",
+                            "exit_code": 0,
+                        }
+                    )
+                }
+            )
+
+    native = Native()
+    base_memdir = MemoryDirectory(raw_files)
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            base_memdir,
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", report
+    assert report["tests"]["exit_code"] == 0
+    assert native.bound_kwarg_passed is True
+    assert native.test_source.files[".ruff_cache/base.txt"] == base_bytes
+    assert not any(rel.startswith(".git/") for rel in native.test_source.files)
+    assert native.test_source.files["config/generated.local.toml"] == local_bytes
+    assert (
+        native.test_source.files[".ruff_cache/generated-data.txt"]
+        == cache_overlay_bytes
+    )
+    raw_digest = asyncio.run(base_memdir.digest())
+    mounted_digest = asyncio.run(native.test_source.digest())
+    obs = report["tests"]["native_result"]["evidence"]["observation"]
+    assert obs["consumed_source_directory"]["digest"] == mounted_digest
+    assert obs["consumed_source_directory"]["digest"] != raw_digest
+    assert obs["consumer_view_closure_verified"] is True
+    assert obs["source_equivalence_status"] == "verified_consumer_view"
+    assert len(report["tests"]["generated_input_refs"]) == 2
+
+    # Corrupted overlaid consumer view (missing base fixture or tampered overlay) refuses BEFORE tests.
+    bad_native = Native()
+    bad_consumed = native.test_source.with_new_file(
+        "unexpected_extra.txt", b"corrupt-consumer-view\n"
+    )
+    bad_payload, bad_files = asyncio.run(
+        collector._tests(
+            bad_native,
+            native.test_source,
+            ("tests.test_verified_overlay",),
+            "unittest",
+            "3.14",
+            plan=plan,
+            generated_inputs=report["tests"]["generated_input_refs"],
+            binding_root=base_src,
+            consumed_source=bad_consumed,
+        )
+    )
+    assert bad_native.invocations == 0
+    bad_tests = bad_payload["tests"]
+    assert bad_tests["status"] == "not_executed"
+    assert bad_tests["exit_code"] is None
+    assert bad_tests["reason"] == "unverified_consumer_view"
+    assert bad_tests["check_contract"]["status"] == "not_started"
+    assert bad_tests["native_results"] == []
+    assert bad_tests["source_delivery"]["consumer_view_closure_verified"] is False
+    bad_delivery = json.loads(
+        asyncio.run(bad_files.file("source-delivery.json").contents())
+    )
+    assert bad_delivery["source_equivalence_status"] == "unverified_consumer_view"
+
+
+@pytest.mark.parametrize("framework", ["unittest", "pytest"])
+def test_verified_tree_isolates_root_git_context_from_ordinary_consumers_only(
+    modules, monkeypatch, tmp_path, framework
+):
+    import importlib
+    import shutil
+
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+    adapter = importlib.import_module(collector.__package__ + ".native_results")
+
+    doc_content = b"# Generated Doc\n\nSee [anchor](README.md).\n"
+    local_bytes = b"[overlay]\nport = 9090\n"
+    writer = (
+        "import os; from pathlib import Path; "
+        "root = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+        "(root / 'docs').mkdir(parents=True, exist_ok=True); "
+        f"(root / 'docs' / 'generated.md').write_bytes({doc_content!r}); "
+        "(root / 'config').mkdir(parents=True, exist_ok=True); "
+        f"(root / 'config' / 'generated.local.toml').write_bytes({local_bytes!r})"
+    )
+
+    def edge(consumer_ref, rel, raw):
+        return {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": consumer_ref,
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {
+                "kind": "file",
+                "path": rel,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            },
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+
+    edges = [
+        edge({"kind": "tests"}, "config/generated.local.toml", local_bytes),
+        edge(
+            {"kind": "check", "name": "weaver_registry"},
+            "config/generated.local.toml",
+            local_bytes,
+        ),
+        edge({"kind": "check", "name": "docs"}, "docs/generated.md", doc_content),
+    ]
+    tree_files = {
+        "ci-selection.toml": b"# clean\n",
+        "ci-hygiene.toml": (
+            b"schema_version = 1\n"
+            b'checks = ["docs"]\n'
+            b"[lychee]\n"
+            b'executable = "lychee"\n'
+            b'arguments = ["--offline", "--no-progress"]\n'
+        ),
+        "README.md": b"# Root\n",
+        ".ruff_cache/fixture.txt": b"fixture-bound=ok\n",
+        "tests/test_ctx.py": (
+            b"import unittest\n"
+            b"from pathlib import Path\n\n"
+            b"class GitContextBoundaryTest(unittest.TestCase):\n"
+            b"    def test_tree_members_overlay_without_git_context(self):\n"
+            b"        self.assertFalse(Path('.git').exists())\n"
+            b"        self.assertEqual(Path('.ruff_cache/fixture.txt').read_bytes(), b'fixture-bound=ok\\n')\n"
+            b"        self.assertEqual(Path('config/generated.local.toml').read_bytes(), b'[overlay]\\nport = 9090\\n')\n"
+        ),
+    }
+    git_context = {
+        ".git/HEAD": b"ref: refs/heads/source\n",
+        ".git/index": b"controlled-index\n",
+    }
+    src = tmp_path / "src"
+    for rel, raw in {**tree_files, **git_context}.items():
+        target = src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    plan = _v2_dagger_plan(
+        edges=edges,
+        prerequisites=["gen"],
+        actions={"gen": {"type": "command", "argv": [sys.executable, "-c", writer]}},
+        tests=("tests.test_ctx",),
+        checks=("weaver_registry", "docs"),
+    )
+    plan["selection"]["framework"] = framework
+    plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": "c" * 40,
+        "index_tree": "c" * 40,
+        "changed_paths": ["README.md"],
+        "source_tree_id": real_selection.directory_content_id(src),
+    }
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *a, **kw: (
+            None if cmd in {"lychee", "git"} else real_which(cmd, *a, **kw)
+        ),
+    )
+    ws_root = tmp_path / "ctx_ws"
+    ws_root.mkdir()
+
+    class Native:
+        def __init__(self):
+            self.test_source = None
+            self.weaver_bound = None
+            self.weaver_excludes = None
+            self.git_sources = []
+
+        def _bound_public_source(self, source):
+            return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+
+        def _uv_container(self, source, version, _bound_source=None):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            self.test_source = mounted
+            _write_memdir(mounted, ws_root)
+            return _make_runtime_unittest_container_class(ws_root)()
+
+        async def _run_pytest(
+            self, source, version, target, *, _targets, _bound_source=None
+        ):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            self.test_source = mounted
+            _write_memdir(mounted, ws_root)
+            proc = _make_runtime_unittest_container_class(ws_root)().with_exec(
+                ["uv", "run", "--no-sync", "python", "-m", "unittest", *_targets]
+            )
+            return types.SimpleNamespace(
+                exit_code=await proc.exit_code(),
+                output=await proc.stdout(),
+                xml="<testsuite/>",
+                container=_make_runtime_unittest_container_class(ws_root)(),
+            )
+
+        def _pytest_bundle(self, execution):
+            return MemoryDirectory({"junit.xml": execution.xml, "exit-code.txt": "0\n"})
+
+        async def _weaver_execution(
+            self,
+            source,
+            kind,
+            config,
+            *,
+            context=None,
+            plan=None,
+            generated_inputs=(),
+            _bound_source=None,
+            _source_excludes=None,
+        ):
+            self.weaver_bound = _bound_source
+            self.weaver_excludes = _source_excludes
+            stages = ("registry-check", "registry-package", "registry-local-check")
+            raw = {
+                "name": "weaver_" + kind,
+                "status": "passed",
+                "exit_code": 0,
+                "gate_exit_code": 0,
+                "baseline_required": False,
+                "version": weaver_tool.VERSION,
+                "tool_asset_sha256": weaver_tool.LINUX_SHA256,
+                "source_digest": await _bound_source.digest(),
+                "inputs": {"config_sha256": "c" * 64},
+                "commands": [
+                    {
+                        "argv": ["weaver", "registry", "check"],
+                        "exit_code": 0,
+                        "stdout": stage + ".stdout",
+                        "stderr": stage + ".stderr",
+                    }
+                    for stage in stages
+                ],
+            }
+            files = MemoryDirectory(
+                {
+                    "report.json": json.dumps(raw),
+                    **{
+                        stage + suffix: "controlled native output"
+                        for stage in stages
+                        for suffix in (".stdout", ".stderr")
+                    },
+                }
+            )
+            return await adapter.weaver_result(
+                files,
+                _bound_source,
+                kind,
+                context=context,
+                plan=plan,
+                generated_inputs=generated_inputs,
+                input_source=source,
+                source_excludes=_source_excludes,
+            )
+
+        async def _run_git(self, source, argv_tail):
+            self.git_sources.append(set(source.files))
+            return {
+                "exit_code": 0,
+                "stdout": "README.md\0",
+                "stderr": "",
+                "observation": {"execution_location": "dagger_container"},
+            }
+
+        async def _run_lychee(self, source, argv_tail):
+            return {
+                "exit_code": 0,
+                "stdout": "1 OK\n",
+                "stderr": "",
+                "observation": {
+                    "execution_location": "dagger_container",
+                    "freshness_policy": "native_exec_cache",
+                    "process_started_at": "controlled-process-time",
+                    "origin_execution_attributed": False,
+                },
+            }
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({**tree_files, **git_context}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["tree_verified"] is True, report
+
+    # Ordinary unittest consumer: tracked cache-name fixture + Data Overlay, no Git Context.
+    assert report["tests"]["status"] == "passed", report["tests"]
+    assert report["tests"]["exit_code"] == 0
+    assert not any(rel.startswith(".git/") for rel in native.test_source.files)
+    assert native.test_source.files[".ruff_cache/fixture.txt"] == b"fixture-bound=ok\n"
+    assert native.test_source.files["config/generated.local.toml"] == local_bytes
+    test_obs = report["tests"]["native_result"]["evidence"]["observation"]
+    assert test_obs["container_source_excludes"] == [".git"]
+    assert test_obs["consumer_view_closure_verified"] is True
+    assert test_obs["source_equivalence_status"] == "verified_consumer_view"
+    assert test_obs["consumed_source_directory"]["digest"] == asyncio.run(
+        native.test_source.digest()
+    )
+
+    # Ordinary Weaver consumer: same boundary, actual excludes recorded.
+    assert native.weaver_excludes == tooling.GIT_CONTEXT_EXCLUDES
+    weaver_files = native.weaver_bound.files
+    assert not any(rel.startswith(".git/") for rel in weaver_files)
+    assert weaver_files[".ruff_cache/fixture.txt"] == b"fixture-bound=ok\n"
+    assert weaver_files["config/generated.local.toml"] == local_bytes
+    weaver_check = next(c for c in report["checks"] if c["name"] == "weaver_registry")
+    assert weaver_check["status"] == "passed", weaver_check
+    assert weaver_check["container_source_filtered"] is True
+    assert weaver_check["container_source_excludes"] == [".git"]
+
+    # Git-native consumer keeps the controlled root Git Context.
+    assert native.git_sources, report["checks"]
+    assert all({".git/HEAD", ".git/index"} <= files for files in native.git_sources)
+
+
+def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_targets(
+    monkeypatch, modules, tmp_path
+):
+    import importlib
+
+    from engineering_ci import workflow_analysis
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+    dagger_mod = sys.modules["dagger"]
+
+    class FakeDagDir(MemoryDirectory):
+        def with_directory(self, prefix, directory, *, exclude=()):
+            filtered = _filter_source_with_patterns(directory, exclude)
+            merged = super().with_directory(prefix, filtered)
+            return FakeDagDir(merged.files, dirs=merged.dirs)
+
+    def identity(*args, **kwargs):
+        if args and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda fn: fn
+
+    monkeypatch.setattr(dagger_mod, "function", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "check", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        dagger_mod,
+        "dag",
+        types.SimpleNamespace(directory=lambda: FakeDagDir()),
+        raising=False,
+    )
+    for attr in ("Directory", "Container", "Secret"):
+        if not hasattr(dagger_mod, attr):
+            monkeypatch.setattr(dagger_mod, attr, object, raising=False)
+    spec = importlib.util.spec_from_file_location(
+        collector.__package__ + ".main", MODULE / "main.py"
+    )
+    main_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, main_mod)
+    spec.loader.exec_module(main_mod)
+
+    engine = main_mod.EngineeringCi()
+    scan_calls = []
+
+    class ScanContainer:
+        def __init__(self, source_dir, *, stdout_text="[]", code=0):
+            self.source_dir = source_dir
+            self.stdout_text = stdout_text
+            self.code = code
+
+        def with_new_file(self, path, contents):
+            return ScanContainer(
+                self.source_dir, stdout_text=self.stdout_text, code=self.code
+            )
+
+        def with_exec(self, command, **kwargs):
+            if (
+                len(command) >= 3
+                and command[0] == "python"
+                and "repository_scan_targets" in command[2]
+            ):
+                ws = tmp_path / (
+                    f"scan_{len(scan_calls)}_"
+                    + hashlib.sha256(
+                        json.dumps(
+                            {
+                                k: v.decode("latin1")
+                                for k, v in self.source_dir.files.items()
+                            },
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    ).hexdigest()[:12]
+                )
+                ws.mkdir(parents=True, exist_ok=True)
+                _write_memdir(self.source_dir, ws)
+                policy = json.loads(command[3])
+                observed = workflow_analysis.repository_scan_targets(ws, policy)
+                scan_calls.append(list(self.source_dir.files))
+                return ScanContainer(
+                    self.source_dir,
+                    stdout_text=json.dumps(observed),
+                    code=0,
+                )
+            return ScanContainer(
+                self.source_dir, stdout_text='{"comments": []}', code=0
+            )
+
+        async def stdout(self):
+            return self.stdout_text
+
+        async def stderr(self):
+            return ""
+
+        async def exit_code(self):
+            return self.code
+
+    monkeypatch.setattr(
+        engine,
+        "_uv_tool_container",
+        lambda source, _bound_source=None: ScanContainer(
+            _bound_source if _bound_source is not None else source
+        ),
+    )
+
+    # Case A: .git/HEAD + .docker/deploy.sh + scripts/ok.sh -> both scanned, NO duplicate raw scan!
+    scan_calls.clear()
+    ok_source = MemoryDirectory(
+        {
+            ".git/HEAD": b"ref: refs/heads/main\n",
+            "scripts/ok.sh": b"#!/bin/sh\necho ok\n",
+            ".docker/deploy.sh": b"#!/bin/sh\necho deploy\n",
+        }
+    )
+    ok_report = asyncio.run(
+        engine._run_shellcheck(
+            ok_source, workflow_analysis.shellcheck_policy(scan_paths=["."])
+        )
+    )
+    assert ok_report["outcome"] == "clean", ok_report
+    assert {item["path"] for item in ok_report["target_sources"]} == {
+        ".docker/deploy.sh",
+        "scripts/ok.sh",
+    }
+    assert len(scan_calls) == 1
+
+    # Case B: scripts/ok.sh + .ruff_cache/hidden.sh -> refuse, never pass on subset!
+    hidden_source = MemoryDirectory(
+        {
+            "scripts/ok.sh": b"#!/bin/sh\necho ok\n",
+            ".ruff_cache/hidden.sh": b"#!/bin/sh\necho $unquoted\n",
+        }
+    )
+    refused = asyncio.run(
+        engine._run_shellcheck(
+            hidden_source, workflow_analysis.shellcheck_policy(scan_paths=["."])
+        )
+    )
+    assert refused["outcome"] == "not_executed"
+    assert refused["exit_code"] is None
+    assert refused["reason"] == "source_filter_excluded_scan_targets"
+    assert [t["path"] for t in refused["excluded_targets"]] == [".ruff_cache/hidden.sh"]
+
+    # Case C: ONLY .ruff_cache/hidden.sh -> source_filter_excluded_scan_targets, not no_applicable_scripts.
+    only_hidden = MemoryDirectory({".ruff_cache/hidden.sh": b"#!/bin/sh\necho hi\n"})
+    refused_only = asyncio.run(
+        engine._run_shellcheck(
+            only_hidden, workflow_analysis.shellcheck_policy(scan_paths=["."])
+        )
+    )
+    assert refused_only["outcome"] == "not_executed"
+    assert refused_only["reason"] == "source_filter_excluded_scan_targets"
+
+    # Case D: Comparator detects problems & config_problem using repository_scan_targets's exact keys!
+    anomaly_only = workflow_analysis.repository_scan_filter_refusal(
+        workflow_analysis.shellcheck_policy(scan_paths=["."]),
+        {
+            "targets": [{"path": "scripts/ok.sh"}],
+            "problems": {},
+            "config_problem": None,
+        },
+        {
+            "targets": [{"path": "scripts/ok.sh"}],
+            "problems": {".ruff_cache/escape.sh": "workflow_target_outside_root"},
+            "config_problem": None,
+        },
+    )
+    assert anomaly_only is not None
+    assert anomaly_only["outcome"] == "not_executed"
+    assert anomaly_only["reason"] == "source_filter_excluded_scan_targets"
+    assert anomaly_only["target_problems"] == {
+        ".ruff_cache/escape.sh": "workflow_target_outside_root"
+    }
+    assert anomaly_only["excluded_problems"] == {
+        ".ruff_cache/escape.sh": "workflow_target_outside_root"
+    }
+    assert (
+        tooling.SOURCE_NOISE
+    )  # keeps import explicitly used and checked alongside main_mod
+
+
+def test_pre_execution_metadata_failure_preserves_source_execution_while_mount_failure_blocks(
+    monkeypatch, modules, tmp_path
+):
+    import importlib
+
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+
+    src = tmp_path / "src"
+    raw_files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        "ci-selection.toml": (
+            b'schema_version = 1\ntests_dir = "tests"\nsrc_root = "src"\nframework = "unittest"\n'
+        ),
+        "ci-weaver.toml": b"# weaver\n",
+        ".env.test": b"APP_ENV=meta\n",
+        ".ruff_cache/fixture.txt": b"fixture-meta=ok\n",
+        "tests/test_controlled.py": (
+            b"import unittest\nfrom pathlib import Path\n\n"
+            b"class MetaTest(unittest.TestCase):\n"
+            b"    def test_ok(self):\n"
+            b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=meta\\n')\n"
+            b"        self.assertEqual(Path('.ruff_cache/fixture.txt').read_bytes(), b'fixture-meta=ok\\n')\n"
+        ),
+    }
+    for rel, raw in raw_files.items():
+        target = src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    tree_hex = "a" * 40
+    plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=("tests.test_controlled",),
+        checks=("weaver_registry",),
+    )
+    plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": tree_hex,
+        "index_tree": tree_hex,
+        "changed_paths": [".env.test", ".ruff_cache/fixture.txt"],
+        "source_tree_id": real_selection.directory_content_id(src),
+    }
+
+    class FailingDigestDir(MemoryDirectory):
+        async def digest(self):
+            raise RuntimeError("directory digest rpc failed")
+
+        def with_file(self, path, file):
+            base = super().with_file(path, file)
+            return FailingDigestDir(base.files, dirs=base.dirs)
+
+        def with_new_file(self, path, contents):
+            base = super().with_new_file(path, contents)
+            return FailingDigestDir(base.files, dirs=base.dirs)
+
+    orig_with_directory = MemoryDirectory.with_directory
+
+    def _preserve_failing_digest(self, prefix, directory, *, exclude=()):
+        result = orig_with_directory(self, prefix, directory, exclude=exclude)
+        if isinstance(directory, FailingDigestDir):
+            return FailingDigestDir(result.files, dirs=result.dirs)
+        return result
+
+    monkeypatch.setattr(MemoryDirectory, "with_directory", _preserve_failing_digest)
+
+    # 1. Optional metadata failure (digest RPC error) keeps execution running with limited proof.
+    ws_ok = tmp_path / "ws_meta_fail"
+    ws_ok.mkdir()
+
+    class NativeMetaFail:
+        def _bound_public_source(self, source):
+            filtered = _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+            return FailingDigestDir(filtered.files, dirs=filtered.dirs)
+
+        def _uv_container(self, source, version, _bound_source=None):
+            mount = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            _write_memdir(mount, ws_ok)
+            return _make_runtime_unittest_container_class(ws_ok)()
+
+        async def weaver_artifacts(self, source, kind, config):
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {"name": "weaver_registry", "status": "passed", "exit_code": 0}
+                    )
+                }
+            )
+
+    case_files = {
+        rel: path.read_bytes()
+        for path in src.rglob("*")
+        if path.is_file()
+        for rel in [path.relative_to(src).as_posix()]
+    }
+    saved = asyncio.run(
+        collector.execute(
+            NativeMetaFail(),
+            MemoryFile(json.dumps(plan)),
+            FailingDigestDir(case_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["tests"]["exit_code"] == 0, report
+    native = report["tests"]["native_result"]
+    obs = native["evidence"]["observation"]
+    assert obs["metadata_status"] == "unavailable"
+    assert obs["source_directory"]["status"] == "unavailable"
+    assert obs["consumed_source_directory"]["status"] == "unavailable"
+    assert obs["source_equivalence_status"] == "unproven"
+    assert native["evidence"]["source_limit"] == "input_closure_not_proven"
+    assert native["source_ref"]["binding_status"] == "identity_only"
+
+    # 2. Genuine Source mount failure stops test execution as not_executed blockage.
+    class NativeMountFail(NativeMetaFail):
+        def _uv_container(self, source, version, _bound_source=None):
+            raise RuntimeError("cannot mount /workspace directory")
+
+    blocked = asyncio.run(
+        collector.execute(
+            NativeMountFail(),
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(case_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    blocked_report = json.loads(asyncio.run(blocked.report()))
+    assert blocked_report["tests"]["status"] == "not_executed"
+    assert blocked_report["tests"]["exit_code"] is None
+    assert blocked_report["tests"]["reason"] == "native_execution_error"
+
+
+def test_weaver_result_preserves_native_exit_and_report_when_metadata_fails(
+    modules,
+):
+    import importlib
+
+    _, collector = modules
+    native_results = importlib.import_module(collector.__package__ + ".native_results")
+    plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=("tests.controlled",),
+        checks=("weaver_registry",),
+    )
+
+    def _weaver_raw(exit_code):
+        status = "passed" if exit_code == 0 else "failed"
+        commands = [
+            {
+                "argv": ["weaver", "registry", "check"],
+                "exit_code": exit_code,
+                "stdout": "registry-check.stdout",
+            }
+        ]
+        if exit_code == 0:
+            commands.extend(
+                [
+                    {
+                        "argv": ["weaver", "registry", "package"],
+                        "exit_code": 0,
+                        "stdout": "registry-package.stdout",
+                    },
+                    {
+                        "argv": ["weaver", "registry", "check"],
+                        "exit_code": 0,
+                        "stdout": "registry-local-check.stdout",
+                    },
+                ]
+            )
+        return {
+            "name": "weaver_registry",
+            "status": status,
+            "exit_code": exit_code,
+            "gate_status": status,
+            "gate_exit_code": exit_code,
+            "version": weaver_tool.VERSION,
+            "tool_asset_sha256": weaver_tool.LINUX_SHA256,
+            "baseline_required": False,
+            "source_digest": "sha256:" + "a" * 64,
+            "inputs": {"config_sha256": "b" * 64},
+            "commands": commands,
+        }
+
+    class FailingDigestDir(MemoryDirectory):
+        async def digest(self):
+            raise RuntimeError("metadata transport unavailable")
+
+    # Baseline normal delivery passes cleanly without metadata_errors.
+    base_dir = MemoryDirectory(
+        {"report.json": json.dumps(_weaver_raw(0)), "raw.log": "ok"}
+    )
+    ok_out = asyncio.run(
+        native_results.weaver_result(
+            base_dir,
+            MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+            "registry",
+            plan=plan,
+            input_source=MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+        )
+    )
+    ok_check = json.loads(asyncio.run(ok_out.file("check-result.json").contents()))
+    assert ok_check["status"] == "passed"
+    assert ok_check["check_contract"]["status"] == "valid"
+    assert ok_check["native_satisfaction"]["status"] == "satisfied"
+    assert ok_check["native_results"][0]["native_exit_code"] == 0
+    assert "metadata_status" not in ok_check
+
+    # 1. Native failure (exit=1) + artifact digest failure -> keep native failed/1 & report.json!
+    fail_files = FailingDigestDir(
+        {"report.json": json.dumps(_weaver_raw(1)), "raw.log": "err"}
+    )
+    fail_out = asyncio.run(
+        native_results.weaver_result(
+            fail_files,
+            MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+            "registry",
+            plan=plan,
+            input_source=MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+        )
+    )
+    fail_check = json.loads(asyncio.run(fail_out.file("check-result.json").contents()))
+    assert fail_check["status"] == "failed"
+    assert fail_check["exit_code"] == 1
+    assert fail_check["native_results"][0]["native_exit_code"] == 1
+    assert fail_check["metadata_status"] == "unavailable"
+    assert fail_check["metadata_errors"]["native_artifacts"]["status"] == "unavailable"
+    assert (
+        json.loads(asyncio.run(fail_out.file("report.json").contents()))["exit_code"]
+        == 1
+    )
+    assert asyncio.run(fail_out.file("raw.log").contents()) == "err"
+
+    # 2. Native pass (exit=0) + consumed source digest failure -> keep passed/0, block Gate!
+    src_fail_out = asyncio.run(
+        native_results.weaver_result(
+            base_dir,
+            FailingDigestDir({"ci-weaver.toml": "# clean\n"}),
+            "registry",
+            plan=plan,
+            input_source=MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+        )
+    )
+    src_fail_check = json.loads(
+        asyncio.run(src_fail_out.file("check-result.json").contents())
+    )
+    assert src_fail_check["status"] == "passed"
+    assert src_fail_check["exit_code"] == 0
+    assert src_fail_check["native_results"][0]["native_exit_code"] == 0
+    assert src_fail_check["metadata_status"] == "unavailable"
+    assert (
+        src_fail_check["metadata_errors"]["consumed_source_directory"]["status"]
+        == "unavailable"
+    )
+    blocked_agg = collector._aggregate(
+        {
+            "tests": {"status": "passed", "exit_code": 0},
+            "checks": [src_fail_check],
+            "prerequisites": [],
+            "targets": [],
+        }
+    )
+    assert blocked_agg["status"] == "blocked"
+    assert blocked_agg["reason"] == "weaver_metadata_unavailable"
+
+    # Native failed stays failed at Gate even when metadata also failed!
+    failed_agg = collector._aggregate(
+        {
+            "tests": {"status": "passed", "exit_code": 0},
+            "checks": [fail_check],
+            "prerequisites": [],
+            "targets": [],
+        }
+    )
+    assert failed_agg["status"] == "failed"
+    assert failed_agg["exit_code"] == 1
+
+    # 3. Optional input_source digest failure alone marks partial and preserves passed Gate.
+    opt_fail_out = asyncio.run(
+        native_results.weaver_result(
+            base_dir,
+            MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+            "registry",
+            plan=plan,
+            input_source=FailingDigestDir({"ci-weaver.toml": "# clean\n"}),
+        )
+    )
+    opt_check = json.loads(
+        asyncio.run(opt_fail_out.file("check-result.json").contents())
+    )
+    assert opt_check["status"] == "passed"
+    assert opt_check["metadata_status"] == "partial"
+    assert opt_check["container_source_filtered"] is None
+    assert (
+        opt_check["metadata_errors"]["input_source_directory"]["status"]
+        == "unavailable"
+    )

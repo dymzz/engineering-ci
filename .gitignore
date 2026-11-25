@@ -35,8 +35,12 @@ dist/
 
 # Local logs and temporary files
 /.tmp/
+/.work/
+/.tools/
+/.weaver-74-probe/
 /.log/
 /.artifacts/
+/.tach/
 *.log
 *.tmp
 

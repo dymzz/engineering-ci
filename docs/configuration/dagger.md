@@ -110,6 +110,18 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 本仓默认五项 Checks 检查根仓源码；消费者组合既有 `python-*` Functions，
 按自己的源码、范围与策略声明原生 Checks，见[接入示例](../../guides/new-repository.md)。
 
+- 在本仓运行原生 Checks（`dagger check` / `@check`）或 `repository_*` 函数时，参数通过
+  `DefaultPath("/")` 与 `Ignore(repository.SOURCE_EXCLUDES)` 预先裁剪 `.git`、`.venv`、缓存、本仓临时目录及非 Python 文档/设计目录（当前模块上传约 `4.4 MB`）。
+- 区分四层过滤边界：`.gitignore` 仅约束本地 Git 未跟踪文件；`pyproject.toml` 中的 `[tool.ruff] extend-exclude` 仅作用于本仓 Ruff 检查；`repository.SOURCE_EXCLUDES`（含 `HOST_SECRET_EXCLUDES`、`HOST_LOCAL_EXCLUDES` 与 `WORKSPACE_SCRATCH` 中的 `.pytest_cache`、`.mypy_cache`、`.pyright`、`.tach`、`.lycheecache`、`.DS_Store`、`Thumbs.db` 等）及 `repository.WEAVER_DEFAULT_EXCLUDES` 仅用于本仓默认工作区 `DefaultPath("/")` 预裁剪（包含 `.env`、`.env.*`、`.secrets`、`.aws`、`.ssh`、`.docker`、`**/*.local.toml`、`design`、`build`、`dist`、`.artifacts`、`.work` 等）；公共可复用 `@function` 仅使用历史 `tooling.SOURCE_NOISE`（`.git`、`.venv`/`**/.venv`、`__pycache__`/`**/__pycache__`、`.ruff_cache`/`**/.ruff_cache`），绝不因新增目录或文件名（`.pytest_cache`、`.mypy_cache`、`.pyright`、`.tach`、`.lycheecache`、`.DS_Store`、`Thumbs.db`、`.env.test`、`*.local.toml`、`.docker/*`、`design/`、`build/` 或前置生成交付物）隐式删除明确声明的输入；`shellcheck`/`actionlint`/`zizmor` 当容器存在过滤差时同时核验未过滤源并在发现隐藏扫描目标或问题时显式拒绝。
+- Plan 执行的 Source 交付按实际消费区分三类输入：Plan `source_tree_id` 已验证时，普通 pytest/unittest/Weaver 直接取得已绑定 Directory 的全部 Git Tree 成员（含命中缓存目录名的已跟踪 fixture），仅以 `tooling.GIT_CONTEXT_EXCLUDES` 隔离根 `.git`——该根 Git Context 是为 `forwarding`/`source`/`whitespace` 附加的受控 ODB/Index，Source Content ID 不覆盖它，Git 原生检查继续取得原 Context；合法 Plan Data Overlay（`dag_objects`）叠加在上述成员之上；未验证的 `worktree` Source 才使用 `tooling.SOURCE_NOISE` 后再叠加 Overlay。测试在启动前对最终挂载的 immutable Directory 读取身份并核验闭包：等价时保留 `byte_tree` / `full_input_closure`，Overlay 视图核验为 `verified_consumer_view`；已知输入缺失、不匹配、非常规或多余时不启动测试，返回 `not_executed` 及 `source_delivery` 差异；仅身份 metadata 不可用时照常执行并附加 `source_limit: "input_closure_not_proven"`。实际排除项记录于 `container_source_excludes`。
+- 通过 CLI 对本仓当前目录向独立可复用 `@function` 传入宿主目录时，Dagger `v1.0.0-beta.16` 会在进入函数前先由宿主上传完整目录，本仓默认工作区可按需预先剔除本仓噪声目录，例如：
+
+```sh
+dagger -c 'src=$(host | directory . --exclude .git --exclude .venv --exclude .dagger/.venv --exclude .dagger/.ruff_cache --exclude .ruff_cache --exclude .pytest_cache --exclude .mypy_cache --exclude .pyright --exclude .tach --exclude .lycheecache --exclude .work --exclude .tools --exclude .weaver-74-probe --exclude .test-deps --exclude .test-tools --exclude .artifacts --exclude .log --exclude .tmp --exclude dist --exclude build --exclude htmlcov); actionlint-workflows --source $src'
+```
+
+*(上述宿主排除列表仅适用于本仓默认工作区，不应套用到携带显式 `build/` / `.artifacts/` / `design/` 声明输入或跨仓 Plan 消费的外部项目 `source`。)*
+
 ### 按执行位置选择 GitHub 认证入口
 
 engineering-ci 提供工程检查、CI/CD 策略和结果证据；认证由实际执行位置和调用方配置决定。

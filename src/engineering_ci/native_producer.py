@@ -126,9 +126,16 @@ def test_check(
             1,
             digest=digest({"framework": framework, "targets": list(targets)}),
         )
+        source_ref = binding.get("source_ref")
+        verified_closure = (
+            isinstance(source_ref, dict)
+            and source_ref.get("binding_status") == "byte_tree"
+            and source_ref.get("scope_kind") == "full_input_closure"
+            and bool(source_ref.get("content_digest"))
+        )
         result = check_contract.native_result(
             definition,
-            source=binding.get("source_ref", source),
+            source=source_ref if isinstance(source_ref, dict) else source,
             status=item["status"],
             native_exit_code=item["exit_code"],
             result_origin=origin,
@@ -156,7 +163,11 @@ def test_check(
                 "execution": context,
                 "observation": observation,
                 "verification_implementation": impl,
-                **({} if binding else {"source_limit": "input_closure_not_proven"}),
+                **(
+                    {}
+                    if verified_closure
+                    else {"source_limit": "input_closure_not_proven"}
+                ),
             },
         )
         results.append(result)
@@ -237,6 +248,16 @@ def weaver_check(
                 "environment": raw.get("environment"),
                 "gate_status": raw.get("status"),
                 "gate_exit_code": raw.get("gate_exit_code"),
+                **(
+                    {
+                        "terminal_correlation_status": raw.get(
+                            "terminal_correlation_status"
+                        ),
+                        "terminal_correlation_reason": raw.get("reason"),
+                    }
+                    if stage == "terminal-live-check"
+                    else {}
+                ),
                 "source_limit": "input_closure_not_proven",
             },
         )
