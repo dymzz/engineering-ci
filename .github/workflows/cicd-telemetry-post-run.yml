@@ -157,9 +157,10 @@ jobs:
           )
           Path("artifacts/cicd-telemetry/end-time-policy.txt").write_text(
               "\n".join([
-                  f"mode={policy[\"mode\"]}",
-                  "trace_owner=opentelemetry-collector-contrib/githubreceiver",
-                  f"production_webhook_cutover={policy[\"cutover_status\"]}",
+                  "mode=" + policy["mode"],
+                  "actual_trace_producer=" + policy["actual_trace_producer"],
+                  "target_trace_owner=" + policy["target_trace_owner"],
+                  "production_webhook_cutover=" + policy["cutover_status"],
               ]) + "\n",
               encoding="utf-8",
           )

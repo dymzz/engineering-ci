@@ -1106,12 +1106,16 @@ def select_post_run_cutover_policy(handoff):
             "mode": END_TIME_WITNESS,
             "allow_pre_cutover_trace_fallback": False,
             "emit_otlp_traces": False,
+            "actual_trace_producer": "opentelemetry-collector-contrib/githubreceiver",
+            "target_trace_owner": "opentelemetry-collector-contrib/githubreceiver",
         }
     return {
         "cutover_status": "not_verified",
         "mode": END_TIME_OBSERVED_UPPER_BOUND,
         "allow_pre_cutover_trace_fallback": True,
         "emit_otlp_traces": True,
+        "actual_trace_producer": "eci_core.cicd_telemetry",
+        "target_trace_owner": "opentelemetry-collector-contrib/githubreceiver",
     }
 
 
@@ -1343,10 +1347,28 @@ def produce(
                 else "github_actions_witness_and_companion_signals"
             ),
             "trace_producer_retired": retired,
-            "trace_owner": "opentelemetry-collector-contrib/githubreceiver",
+            "actual_trace_producer": (
+                producer
+                if pre_cutover_active
+                else (
+                    "opentelemetry-collector-contrib/githubreceiver"
+                    if handoff["status"] == "verified"
+                    else "none_emitted_by_eci"
+                )
+            ),
+            "target_trace_owner": "opentelemetry-collector-contrib/githubreceiver",
+            "trace_owner": (
+                producer
+                if pre_cutover_active
+                else "opentelemetry-collector-contrib/githubreceiver"
+            ),
             "semconv_note": (
                 "Attribute names follow public CI/CD SemConv Pipeline/Task Run. "
-                "This companion witness does not emit GitHub Trace/Task Spans or copy the registry pin."
+                + (
+                    "Pre-cutover fallback candidate Spans produced by ECI; upstream githubreceiver cutover is not_verified."
+                    if pre_cutover_active
+                    else "This companion witness does not emit GitHub Trace/Task Spans or copy the registry pin."
+                )
             ),
             "semconv_source": {
                 "official_source_pinned": False,
@@ -3681,11 +3703,22 @@ def main(argv=None):
         }
     export_error = None
     if args.otlp_json is not None:
-        try:
-            write_otlp_json(report, args.otlp_json)
-        except TelemetryError as error:
-            export_error = error
-            sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+        if report.get("otlp_json"):
+            try:
+                write_otlp_json(report, args.otlp_json)
+            except TelemetryError as error:
+                export_error = error
+                sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+        elif (
+            args.allow_pre_cutover_trace_fallback
+            and handoff["status"] != "verified"
+            and args.end_time_mode == END_TIME_OBSERVED_UPPER_BOUND
+            and report["status"] in {"produced", "witness_only", "partial"}
+        ):
+            report["claims"]["otlp_json_skip"] = "no_candidate_spans"
+        else:
+            export_error = TelemetryError("otlp_json_unavailable")
+            sys.stderr.write("cicd-telemetry export failed: otlp_json_unavailable\n")
     if args.otlp_logs_json is not None and export_error is None:
         if report.get("otlp_logs_json"):
             try:

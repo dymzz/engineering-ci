@@ -2773,6 +2773,12 @@ def test_post_run_cutover_behavior_not_verified_vs_verified(tmp_path, monkeypatc
     assert pre_saved["claims"]["trace_producer_retired"] is False
     assert pre_saved["claims"]["otlp_json_prepared"] is True
     assert pre_saved["claims"]["otlp_json_exported"] is True
+    assert pre_saved["producer"]["trace_owner"] == "eci_core.cicd_telemetry"
+    assert pre_saved["producer"]["actual_trace_producer"] == "eci_core.cicd_telemetry"
+    assert (
+        pre_saved["producer"]["target_trace_owner"]
+        == "opentelemetry-collector-contrib/githubreceiver"
+    )
     assert pre_saved["production_handoff"]["status"] == "not_verified"
     assert (
         pre_saved["production_handoff"]["cutover_action"]
@@ -2828,6 +2834,14 @@ def test_post_run_cutover_behavior_not_verified_vs_verified(tmp_path, monkeypatc
     assert ver_saved["claims"]["trace_producer_retired"] is True
     assert ver_saved["otlp_json_prepared"] is False
     assert ver_saved["spans"] == []
+    assert (
+        ver_saved["producer"]["actual_trace_producer"]
+        == "opentelemetry-collector-contrib/githubreceiver"
+    )
+    assert (
+        ver_saved["producer"]["target_trace_owner"]
+        == "opentelemetry-collector-contrib/githubreceiver"
+    )
     assert ver_saved["production_handoff"]["status"] == "verified"
     assert (
         ver_saved["production_handoff"]["cutover_action"] == "retired_to_githubreceiver"
@@ -3002,3 +3016,197 @@ def test_partial_rerun_api_witness_separates_companion_logs_44713410255_pattern(
             task_facts=cov["task_facts"],
             executed_job_ids=["136212523496"],
         )
+
+
+def _extract_post_run_workflow_python_blocks() -> list[str]:
+    workflow_text = Path(".github/workflows/cicd-telemetry-post-run.yml").read_text(
+        encoding="utf-8"
+    )
+    import re
+    import textwrap
+
+    blocks = []
+    for match in re.finditer(
+        r"python -c '\n(.*?)\n\s*'", workflow_text, flags=re.DOTALL
+    ):
+        blocks.append(textwrap.dedent(match.group(1)))
+    for match in re.finditer(r"python -c '([^\n']+)'", workflow_text):
+        blocks.append(match.group(1))
+    assert len(blocks) >= 2
+    return blocks
+
+
+@pytest.mark.parametrize("verified", [False, True])
+def test_workflow_inline_python_compiles_and_executes_real_branches(
+    tmp_path, monkeypatch, verified
+):
+    """P1-07 + P1-08 + P2: embedded workflow python -c blocks compile & execute end-to-end."""
+    import sys
+
+    blocks = _extract_post_run_workflow_python_blocks()
+    for block in blocks:
+        compile(block, ".github/workflows/cicd-telemetry-post-run.yml", "exec")
+
+    env = {
+        "ECI_GITHUBRECEIVER_WEBHOOK_SUBSCRIPTION_VERIFIED": (
+            "true" if verified else "false"
+        ),
+        "ECI_GITHUBRECEIVER_WEBHOOK_HMAC_VERIFIED": "true",
+        "ECI_GITHUBRECEIVER_LIVE_INGESTED": "true" if verified else "false",
+        "ECI_GITHUBRECEIVER_OTLP_TRACES_DELIVERED": "true" if verified else "false",
+        "ECI_GITHUBRECEIVER_CONSUMER_VERIFIED": "true" if verified else "false",
+    }
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "artifacts" / "cicd-telemetry").mkdir(parents=True)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    src_root = str(Path(__file__).resolve().parents[1] / "src")
+    proc_env = {**cicd_telemetry.os.environ, "PYTHONPATH": src_root}
+    proc = subprocess.run(
+        [sys.executable, "-c", blocks[0]],
+        cwd=tmp_path,
+        env=proc_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    handoff_file = tmp_path / "artifacts" / "cicd-telemetry" / "production-handoff.json"
+    policy_file = tmp_path / "artifacts" / "cicd-telemetry" / "end-time-policy.txt"
+    status_proc = subprocess.run(
+        [sys.executable, "-c", blocks[1]],
+        cwd=tmp_path,
+        env=proc_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    cutover_status = status_proc.stdout.strip()
+    policy_lines = dict(
+        line.split("=", 1)
+        for line in policy_file.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert handoff_file.is_file()
+    if verified:
+        assert cutover_status == "verified"
+        assert policy_lines["mode"] == "witness"
+        assert (
+            policy_lines["actual_trace_producer"]
+            == "opentelemetry-collector-contrib/githubreceiver"
+        )
+        assert (
+            policy_lines["target_trace_owner"]
+            == "opentelemetry-collector-contrib/githubreceiver"
+        )
+        assert policy_lines["production_webhook_cutover"] == "verified"
+    else:
+        assert cutover_status == "not_verified"
+        assert policy_lines["mode"] == "observed_upper_bound"
+        assert policy_lines["actual_trace_producer"] == "eci_core.cicd_telemetry"
+        assert (
+            policy_lines["target_trace_owner"]
+            == "opentelemetry-collector-contrib/githubreceiver"
+        )
+        assert policy_lines["production_webhook_cutover"] == "not_verified"
+
+
+@pytest.mark.parametrize("conclusion", ["success", "cancelled"])
+def test_pre_cutover_zero_job_fallback_skips_otel_json_without_blocking_logs(
+    tmp_path, monkeypatch, conclusion
+):
+    """P1-08: not_verified fallback on zero-job completed Attempt (success/cancelled) exports Terminal Logs."""
+    run, _ = _api_run_job_fixture()
+    run = {**run, "status": "completed", "conclusion": conclusion}
+    pages = {"total_count": 0, "jobs": []}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    fixed_ns = cicd_telemetry.parse_time_ns("2024-01-01T00:05:00Z")
+    monkeypatch.setattr(cicd_telemetry, "time_ns", lambda: fixed_ns)
+
+    handoff = cicd_telemetry.evaluate_receiver_production_handoff()
+    policy = cicd_telemetry.select_post_run_cutover_policy(handoff)
+    assert policy["cutover_status"] == "not_verified"
+
+    handoff_path = tmp_path / "production-handoff.json"
+    handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+    out_json = tmp_path / "candidate.json"
+    otel_json = tmp_path / "otel.json"
+    logs_json = tmp_path / "otel-logs.json"
+
+    code = cicd_telemetry.main(
+        [
+            "--repository",
+            "dymzz/engineering-ci",
+            "--run-id",
+            str(run["id"]),
+            "--attempt",
+            "1",
+            "--production-handoff",
+            str(handoff_path),
+            "--allow-pre-cutover-trace-fallback",
+            "--end-time-mode",
+            policy["mode"],
+            "--output",
+            str(out_json),
+            "--otlp-json",
+            str(otel_json),
+            "--otlp-logs-json",
+            str(logs_json),
+        ]
+    )
+    assert code == 0
+    saved = json.loads(out_json.read_text(encoding="utf-8"))
+    assert saved["claims"]["otlp_json_prepared"] is False
+    assert saved["claims"]["otlp_json_exported"] is False
+    assert saved["claims"]["otlp_json_skip"] == "no_candidate_spans"
+    assert saved["claims"]["otlp_logs_prepared"] is True
+    assert saved["claims"]["otlp_logs_exported"] is True
+    assert saved["producer"]["actual_trace_producer"] == "eci_core.cicd_telemetry"
+    assert (
+        saved["producer"]["target_trace_owner"]
+        == "opentelemetry-collector-contrib/githubreceiver"
+    )
+    assert not otel_json.exists()
+    assert logs_json.is_file()
+    log_payload = json.loads(logs_json.read_text(encoding="utf-8"))
+    bodies = [
+        rec["body"]["stringValue"]
+        for rec in log_payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    ]
+    assert any("GitHub Attempt terminal confirmed" in b for b in bodies)
+
+    # Real trace flush error (non-zero spans failing to write otel.json) still fails exit 3
+    # and prevents subsequent log export.
+    _, job = _api_run_job_fixture()
+    job = {**job, "run_id": run["id"], "run_attempt": 1}
+    monkeypatch.setattr(
+        cicd_telemetry,
+        "gh_api_get",
+        _api_attempt_get(run, {"total_count": 1, "jobs": [job]}),
+    )
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("x", encoding="utf-8")
+    blocked_logs = tmp_path / "should-not-write-logs.json"
+    fail_code = cicd_telemetry.main(
+        [
+            "--repository",
+            "dymzz/engineering-ci",
+            "--run-id",
+            str(run["id"]),
+            "--attempt",
+            "1",
+            "--production-handoff",
+            str(handoff_path),
+            "--allow-pre-cutover-trace-fallback",
+            "--end-time-mode",
+            policy["mode"],
+            "--output",
+            str(tmp_path / "fail-candidate.json"),
+            "--otlp-json",
+            str(blocked / "otel.json"),
+            "--otlp-logs-json",
+            str(blocked_logs),
+        ]
+    )
+    assert fail_code == 3
+    assert not blocked_logs.exists()
