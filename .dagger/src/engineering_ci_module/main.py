@@ -63,6 +63,10 @@ class _MatrixExecution:
 # reads it for import resolution while its own packages stay isolated.
 _PROJECT_ENVIRONMENT = "/workspace/.venv/bin/python"
 _DEPTRY_JSON = "/tmp/engineering-ci-deptry.json"
+# Filter historical VCS/venv/cache noise before CLI upload on single-view
+# execution entrypoints; workflow cross-check scanners, Weaver, and Plan keep
+# raw dagger.Directory.
+_FilteredSource = Annotated[dagger.Directory, Ignore(tooling.SOURCE_NOISE)]
 # Reads a file the scan already wrote. A missing file yields empty output,
 # which the classifier turns into an explicit failure rather than a pass.
 _READ_OPTIONAL = (
@@ -761,7 +765,7 @@ class EngineeringCi:
     @function
     async def python_lint(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         lint_path: str = "src",
         git_token: dagger.Secret | None = None,
@@ -792,7 +796,7 @@ class EngineeringCi:
     @function
     async def python_format_check(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         format_path: str = "src",
         git_token: dagger.Secret | None = None,
@@ -1105,7 +1109,7 @@ class EngineeringCi:
     @function
     async def python_vulture(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         scan_path: str = ".",
         min_confidence: int = 0,
@@ -1129,7 +1133,7 @@ class EngineeringCi:
     @function
     async def tach_check(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
     ) -> str:
         """Run pinned Tach inside the existing uv image; Source keeps non-Python files."""
         container = (
@@ -1283,7 +1287,7 @@ class EngineeringCi:
     @function
     async def lychee_check(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         files: str,
     ) -> str:
         """Install and run pinned Lychee inside the cached uv image."""
@@ -1326,7 +1330,7 @@ class EngineeringCi:
     @function
     async def python_pyright(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         scan_path: str = ".",
         config: str = "",
@@ -1359,7 +1363,7 @@ class EngineeringCi:
     @function
     async def python_deptry(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         scan_path: str = "src",
         config: str = "",
@@ -1384,7 +1388,7 @@ class EngineeringCi:
     @function
     async def python_pylint(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         scan_paths: list[str] | None = None,
         min_similarity_lines: int = 4,
@@ -1612,7 +1616,7 @@ class EngineeringCi:
     @function
     async def python_test_artifacts(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         test_path: str = "tests",
         max_failures: int = 10,
@@ -1643,7 +1647,7 @@ class EngineeringCi:
     @function
     async def python_test(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         test_path: str = "tests",
         markers: str = "",
@@ -1668,7 +1672,7 @@ class EngineeringCi:
     @function
     async def python_test_report(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_version: str,
         test_path: str = "tests",
         max_failures: int = 10,
@@ -1891,7 +1895,7 @@ class EngineeringCi:
     @function
     async def python_test_matrix(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_versions: list[str],
         test_path: str = "tests",
         max_failures: int = 10,
@@ -1916,7 +1920,7 @@ class EngineeringCi:
     @function
     async def python_test_matrix_report(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_versions: list[str],
         test_path: str = "tests",
         max_failures: int = 10,
@@ -1941,7 +1945,7 @@ class EngineeringCi:
     @function
     async def python_test_matrix_artifacts(
         self,
-        source: dagger.Directory,
+        source: _FilteredSource,
         python_versions: list[str],
         test_path: str = "tests",
         max_failures: int = 10,
