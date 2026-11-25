@@ -10,6 +10,12 @@ GitHub Actions 和本地 CLI 调用。质量门禁保留原始失败；JSON、Su
 只是执行结果的表现形式，不决定测试是否通过。
 
 Dagger 负责容器、执行图、并发与缓存；GitHub Actions 负责远端 Job DAG、权限与发布条件。
+工程验证的目标是：供消费者复用实际工程检查；对适用 Source 执行正确的原生验证；保持结果、身份、
+来源与证据范围真实；按有权策略完成交付和发布；通过原生缓存、适用的选择、产物与可信证据复用减少重复计算；
+保持组件职责清晰与消费者可维护性。这些是职责目标，不代表各个候选接口或生产授权链已经交付。
+具体设计与实施范围分别见[架构索引](README.md)、[跨组件执行图](../../design/execution-graph/README.md)
+及对应 Issue；任务接续与证据复用见[Agent 指令](agent-instructions.md#task-continuity-and-evidence-reuse)。
+
 Agent Harness、Mining、通用 Workflow 和日志存储、归档、查询由外部项目维护。
 本仓库不提供其兼容转发或旧 Python Provider / Catalog。
 

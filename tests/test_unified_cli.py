@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
         ("hygiene", "engineering_ci.hygiene"),
         ("sources", "engineering_ci.sources"),
         ("execute", "engineering_ci.execution"),
+        ("verify", "engineering_ci.cli.verify"),
         ("cicd-telemetry", "engineering_ci.cicd_telemetry"),
         ("dagger-telemetry", "engineering_ci.dagger_telemetry"),
     ],

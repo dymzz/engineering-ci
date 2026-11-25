@@ -20,7 +20,10 @@ LYCHEE_ASSET = (
 )
 UV_IMAGE = "ghcr.io/astral-sh/uv:python3.14-trixie-slim"
 
-# Check-specific Source construction: remove VCS/virtualenv/cache noise only.
+# Check-specific Source construction: remove historical VCS/virtualenv/cache noise only.
+# Host secret/local/scratch/cache excludes belong in repository.py so public
+# standalone entrypoints (e.g. python_test, python_lint, python_pyright, tach_check,
+# lychee_check, weaver_report) never drop declared consumer inputs by directory name.
 SOURCE_NOISE = [
     ".git",
     ".venv",
@@ -30,3 +33,8 @@ SOURCE_NOISE = [
     ".ruff_cache",
     "**/.ruff_cache",
 ]
+
+# Root Git Context (controlled ODB/Index attached beside a verified Git Tree for
+# Git-native checks). Source Content ID never covers it, so ordinary consumers of
+# a verified tree receive every tree member without this root entry.
+GIT_CONTEXT_EXCLUDES = [".git"]

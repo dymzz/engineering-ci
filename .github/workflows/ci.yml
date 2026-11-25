@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      reverify_a1_capture:
+        description: 'Force live isolated Engine OTLP capture even if telemetry paths did not change'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       coverage:
@@ -137,6 +143,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
           REVERIFY_INPUT: ${{ inputs.reverify_a1_capture }}
@@ -146,8 +153,17 @@ jobs:
           changed_file="$RUNNER_TEMP/a1-changed-files.txt"
           : > "$changed_file"
           pinned_doc_ok="$(python3 -c 'import tomllib; v = tomllib.load(open("dagger-module.toml", "rb"))["engineVersion"]; doc = open("docs/verification/dagger-native-telemetry.md", encoding="utf-8").read(); print("true" if v in doc else "false")')"
+          reverify_ref="$HEAD_SHA"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            reverify_ref="$PR_HEAD_SHA"
+          fi
+          if [[ -z "$reverify_ref" ]] || ! git cat-file -e "${reverify_ref}^{commit}" 2>/dev/null; then
+            echo "::error::Missing or unreadable commit ref for ${EVENT_NAME} explicit reverify check: '${reverify_ref}'" >&2
+            exit 1
+          fi
+          commit_message="$(git log -1 --pretty=%B "$reverify_ref")"
           explicit_flag=""
-          if [[ "$REVERIFY_INPUT" == "true" ]] || git log -1 --pretty=%B "$HEAD_SHA" | grep -q '\[reverify-a1\]'; then
+          if [[ "$REVERIFY_INPUT" == "true" ]] || grep -Fq '[reverify-a1]' <<< "$commit_message"; then
             explicit_flag="--explicit-reverify"
           fi
           base_sha=""

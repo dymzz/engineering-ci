@@ -2,9 +2,11 @@
 
 import asyncio
 import hashlib
+import inspect
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import dagger
@@ -150,8 +152,212 @@ def _aggregate(report):
             reason=delivery.get("reason") or "data_artifact_conflict",
         )
         return report
+    if any(item.get("metadata_status") == "unavailable" for item in checks):
+        report.update(
+            status="blocked",
+            exit_code=5,
+            reason="weaver_metadata_unavailable",
+        )
+        return report
     report.update(status="passed", exit_code=0, reason=None)
     return report
+
+
+def _accepts_bound_source_kwarg(fn, name="_bound_source", *, allow_varkw=True):
+    """Return True when a factory accepts `name` as a keyword argument."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or (
+        allow_varkw
+        and any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
+    )
+
+
+async def _verify_pre_execution_source_closure(
+    source,
+    consumed_source,
+    *,
+    binding_root,
+    snapshots,
+    binding,
+    generated_inputs,
+    source_excludes,
+):
+    """Verify final consumed immutable Directory identity & closure before tests."""
+    from . import native_results
+
+    if consumed_source is None:
+        return True, binding, None
+
+    metadata_errors = {}
+    try:
+        input_ref = await native_results.directory_reference(source)
+    except Exception as error:  # noqa: BLE001 - optional metadata error cannot abort Source consumption
+        input_ref = {"status": "unavailable", "reason": str(error)}
+        metadata_errors["source_directory"] = input_ref
+    try:
+        consumed_ref = await native_results.directory_reference(consumed_source)
+    except Exception as error:  # noqa: BLE001 - optional metadata error cannot abort Source consumption
+        consumed_ref = {"status": "unavailable", "reason": str(error)}
+        metadata_errors["consumed_source_directory"] = consumed_ref
+
+    filtered = (
+        consumed_ref["digest"] != input_ref["digest"]
+        if "digest" in input_ref and "digest" in consumed_ref
+        else None
+    )
+    proof = {
+        "source_directory": input_ref,
+        "consumed_source_directory": consumed_ref,
+        "container_source_filtered": filtered,
+        "equivalence_verified_at": "pre_execution",
+        **({"container_source_excludes": list(source_excludes)} if filtered else {}),
+        **(
+            {"metadata_status": "unavailable", "metadata_errors": metadata_errors}
+            if metadata_errors
+            else {}
+        ),
+    }
+
+    if generated_inputs:
+        if binding_root is None or not hasattr(consumed_source, "export"):
+            proof["source_equivalence_status"] = (
+                "unfiltered_identical" if filtered is False else "unproven"
+            )
+            return True, binding, proof
+        from engineering_ci import execution
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                await consumed_source.export(tmpdir)
+                verified = execution._verify_consumer_view_closure(
+                    binding_root, Path(tmpdir), generated_inputs
+                )
+        except Exception as error:  # noqa: BLE001 - retain proof limit when consumer export unavailable
+            proof["source_equivalence_status"] = "unproven"
+            proof["source_equivalence_reason"] = str(error)
+            return True, binding, proof
+        proof["consumer_view_closure_verified"] = bool(verified)
+        if not verified:
+            proof["source_equivalence_status"] = "unverified_consumer_view"
+            return False, binding, proof
+        if metadata_errors:
+            proof["source_equivalence_status"] = "unproven"
+            proof["source_equivalence_reason"] = "source_metadata_unavailable"
+        else:
+            proof["source_equivalence_status"] = "verified_consumer_view"
+        return True, binding, proof
+
+    has_bound_source_ref = isinstance((binding or {}).get("source_ref"), dict)
+    if not has_bound_source_ref:
+        if filtered is False:
+            proof["source_equivalence_status"] = "unfiltered_identical"
+        return True, binding, proof
+
+    if filtered is False:
+        # Identical immutable Directory digest: reuse verified source proof without re-hashing.
+        proof["source_equivalence_status"] = "unfiltered_identical"
+        return True, binding, proof
+
+    bound_binding = snapshots.get("binding") if isinstance(snapshots, dict) else None
+    if (
+        binding_root is None
+        or not isinstance(snapshots, dict)
+        or snapshots.get("kind") != "full"
+        or not isinstance(bound_binding, dict)
+        or not isinstance(snapshots.get("files"), list)
+        or not hasattr(consumed_source, "export")
+    ):
+        proof["source_equivalence_status"] = "unproven"
+        proof["source_equivalence_reason"] = "pre_execution_export_unavailable"
+        return True, native_results._downgrade_binding_source(binding), proof
+
+    from engineering_ci import execution, selection
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            await consumed_source.export(tmpdir)
+            consumed_dir = Path(tmpdir)
+            base_entries = execution._relative_view_entries(binding_root)
+            consumed_entries = execution._relative_view_entries(consumed_dir)
+            after = selection.worktree_content_binding(
+                consumed_dir, snapshots["files"], require_files=True
+            )
+    except Exception as error:  # noqa: BLE001 - fail closure proof cleanly before test exec
+        proof["source_equivalence_status"] = "unproven"
+        proof["source_equivalence_reason"] = str(error)
+        return True, native_results._downgrade_binding_source(binding), proof
+
+    missing = sorted(
+        p
+        for p, v in base_entries.items()
+        if v[0] == "file" and p not in consumed_entries
+    )
+    unverified = set(after.get("unverified_paths") or ())
+    non_regular = sorted(
+        (unverified - set(missing))
+        | {
+            p
+            for p, v in base_entries.items()
+            if v[0] == "file"
+            and p in consumed_entries
+            and consumed_entries[p][0] != "file"
+        }
+    )
+    mismatched = sorted(
+        p
+        for p, v in base_entries.items()
+        if v[0] == "file"
+        and p not in missing
+        and p not in non_regular
+        and consumed_entries.get(p) != v
+    )
+    unexpected = sorted(p for p in consumed_entries if p not in base_entries)
+    if (
+        not missing
+        and not non_regular
+        and not mismatched
+        and not unexpected
+        and consumed_entries == base_entries
+        and after == bound_binding
+    ):
+        if metadata_errors:
+            proof["source_equivalence_status"] = "unproven"
+            proof["source_equivalence_reason"] = "source_metadata_unavailable"
+            return True, native_results._downgrade_binding_source(binding), proof
+        proof["source_equivalence_status"] = "verified_equivalent"
+        proof["verified_bound_digest"] = after["digest"]
+        return True, binding, proof
+
+    if missing:
+        status = "missing_bound_inputs"
+    elif non_regular:
+        status = "non_regular_bound_inputs"
+    elif mismatched:
+        status = "mismatched_bound_inputs"
+    elif unexpected:
+        status = "unexpected_bound_inputs"
+    else:
+        status = "unproven"
+    proof.update(
+        {
+            "source_equivalence_status": status,
+            **({"missing_bound_paths": missing} if missing else {}),
+            **({"non_regular_bound_paths": non_regular} if non_regular else {}),
+            **({"mismatched_bound_paths": mismatched} if mismatched else {}),
+            **({"unexpected_bound_paths": unexpected} if unexpected else {}),
+        }
+    )
+    known_input_mismatch = bool(missing or non_regular or mismatched or unexpected)
+    return (
+        not known_input_mismatch,
+        native_results._downgrade_binding_source(binding),
+        proof,
+    )
 
 
 async def _tests(
@@ -165,12 +371,116 @@ async def _tests(
     plan=None,
     generated_inputs=(),
     binding_root=None,
+    consumed_source=None,
 ):
     """Use the existing pytest computation, or native unittest, exactly once."""
-    if framework == "pytest":
-        execution = await module._run_pytest(
-            source, python_version, targets[0], _targets=targets
+    from . import native_results, tooling
+
+    source_excludes = (
+        tooling.GIT_CONTEXT_EXCLUDES
+        if binding_root is not None
+        else tooling.SOURCE_NOISE
+    )
+    if consumed_source is None:
+        if binding_root is not None:
+            # Verified bound Directory: deliver every tree member, isolating
+            # only the root Git Context that Source Content ID does not cover.
+            consumed_source = _git_tree_members(source)
+        elif hasattr(module, "_bound_public_source"):
+            consumed_source = module._bound_public_source(source)
+
+    binding = None
+    snapshots = None
+    if binding_root is not None and not generated_inputs:
+        from engineering_ci import execution
+
+        bound_plan = _plan_with_repo_relative_configs(plan)
+        snapshots = execution._prepare_source_snapshots(
+            bound_plan, [], root=binding_root, execution_context="dagger_export"
         )
+        binding = execution.test_input_binding(
+            bound_plan,
+            root=binding_root,
+            execution_context="dagger_export",
+            source_snapshots=snapshots,
+        )
+
+    (
+        delivery_ok,
+        effective_binding,
+        pre_execution_proof,
+    ) = await _verify_pre_execution_source_closure(
+        source,
+        consumed_source,
+        binding_root=binding_root,
+        snapshots=snapshots,
+        binding=binding,
+        generated_inputs=generated_inputs,
+        source_excludes=source_excludes,
+    )
+
+    result_kwargs = (
+        {
+            "consumed_source": consumed_source,
+            "source_excludes": source_excludes,
+            **(
+                {"pre_execution_proof": pre_execution_proof}
+                if pre_execution_proof is not None
+                else {}
+            ),
+        }
+        if consumed_source is not None
+        else {}
+    )
+
+    if not delivery_ok:
+        reason = (pre_execution_proof or {}).get(
+            "source_equivalence_status"
+        ) or "bound_source_delivery_failed"
+        refused_item = {
+            "status": "not_executed",
+            "exit_code": None,
+            "reason": reason,
+            "source_delivery": pre_execution_proof,
+        }
+        files = dag.directory().with_new_file(
+            "source-delivery.json",
+            json.dumps(pre_execution_proof, sort_keys=True) + "\n",
+        )
+        tests_result = await native_results.test_result(
+            refused_item,
+            None,
+            source,
+            framework,
+            targets,
+            artifacts=files,
+            context=context,
+            plan=plan,
+            generated_inputs=generated_inputs,
+            binding=effective_binding,
+            **result_kwargs,
+        )
+        files = files.with_new_file(
+            "check-result.json", json.dumps(tests_result, sort_keys=True)
+        )
+        return {"tests": tests_result, "stdout": "", "stderr": ""}, files
+
+    if framework == "pytest":
+        if consumed_source is not None and _accepts_bound_source_kwarg(
+            module._run_pytest
+        ):
+            execution = await module._run_pytest(
+                source,
+                python_version,
+                targets[0],
+                _targets=targets,
+                _bound_source=consumed_source,
+            )
+        else:
+            run_source = consumed_source if consumed_source is not None else source
+            execution = await module._run_pytest(
+                run_source, python_version, targets[0], _targets=targets
+            )
         code = execution.exit_code
         container = execution.container
         stdout = execution.output
@@ -178,7 +488,16 @@ async def _tests(
         xml = execution.xml
         files = module._pytest_bundle(execution)
     else:
-        container = module._uv_container(source, python_version).with_exec(
+        if consumed_source is not None and _accepts_bound_source_kwarg(
+            module._uv_container
+        ):
+            prepared = module._uv_container(
+                source, python_version, _bound_source=consumed_source
+            )
+        else:
+            mount_source = consumed_source if consumed_source is not None else source
+            prepared = module._uv_container(mount_source, python_version)
+        container = prepared.with_exec(
             ["uv", "run", "--no-sync", "python", "-m", "unittest", *targets],
             expect=dagger.ReturnType.ANY,
         )
@@ -197,22 +516,20 @@ async def _tests(
     }
     if xml is not None:
         payload["junit"] = xml
-    from . import native_results
 
-    binding = None
-    if binding_root is not None and not generated_inputs:
-        from engineering_ci import execution
-
-        bound_plan = _plan_with_repo_relative_configs(plan)
-        snapshots = execution._prepare_source_snapshots(
-            bound_plan, [], root=binding_root, execution_context="dagger_export"
-        )
-        binding = execution.test_input_binding(
-            bound_plan,
-            root=binding_root,
-            execution_context="dagger_export",
-            source_snapshots=snapshots,
-        )
+    result_kwargs = (
+        {
+            "consumed_source": consumed_source,
+            "source_excludes": source_excludes,
+            **(
+                {"pre_execution_proof": pre_execution_proof}
+                if pre_execution_proof is not None
+                else {}
+            ),
+        }
+        if consumed_source is not None
+        else {}
+    )
     payload["tests"] = await native_results.test_result(
         payload["tests"],
         container,
@@ -223,7 +540,8 @@ async def _tests(
         context=context,
         plan=plan,
         generated_inputs=generated_inputs,
-        binding=binding,
+        binding=effective_binding,
+        **result_kwargs,
     )
     files = files.with_new_file(
         "check-result.json", json.dumps(payload["tests"], sort_keys=True)
@@ -242,6 +560,8 @@ async def _weaver(
     *,
     context=None,
     generated_inputs=(),
+    consumed_source=None,
+    source_excludes=None,
 ):
     """Read one original /out Directory; do not rescan for Report or Enforce."""
     from engineering_ci import selection
@@ -278,6 +598,17 @@ async def _weaver(
             )
         config_path = value["post_completion"]["weaver_config"]["path"]
     if hasattr(module, "_weaver_execution"):
+        kwargs = (
+            {"_bound_source": consumed_source} if consumed_source is not None else {}
+        )
+        if (
+            consumed_source is not None
+            and source_excludes is not None
+            and _accepts_bound_source_kwarg(
+                module._weaver_execution, "_source_excludes", allow_varkw=False
+            )
+        ):
+            kwargs["_source_excludes"] = source_excludes
         files = await module._weaver_execution(
             source,
             kind,
@@ -285,6 +616,7 @@ async def _weaver(
             context=context,
             plan=value,
             generated_inputs=generated_inputs,
+            **kwargs,
         )
         native = json.loads(await files.file("check-result.json").contents())
     else:
@@ -315,6 +647,8 @@ async def _native_results(
 ):
     """Collect fixed independent native branches; Engine owns their DAG."""
     from engineering_ci import execution
+
+    from . import tooling
 
     targets = value["selection"]["tests"]
     branches = []
@@ -358,6 +692,15 @@ async def _native_results(
                 weaver_config,
                 report["source_tree_verified"],
                 context=report.get("execution_identity"),
+                **(
+                    {
+                        "consumed_source": _git_tree_members(source),
+                        "source_excludes": tooling.GIT_CONTEXT_EXCLUDES,
+                    }
+                    if report.get("tree_verified") is True
+                    and hasattr(module, "_bound_public_source")
+                    else {}
+                ),
             ),
         )
         for item in selected
@@ -405,6 +748,25 @@ def _overlay_files(target_dir, objects):
         else:
             updated = updated.with_file(rel, obj)
     return updated
+
+
+def _git_tree_members(source):
+    """Exclude only the root Git Context; every verified Git Tree member stays."""
+    from . import tooling
+
+    return dag.directory().with_directory(
+        "/", source, exclude=list(tooling.GIT_CONTEXT_EXCLUDES)
+    )
+
+
+def _overlay_bound_source(module, source, objects):
+    """Filter base caller source before applying Plan Data Overlays."""
+    base = (
+        module._bound_public_source(source)
+        if hasattr(module, "_bound_public_source")
+        else source
+    )
+    return _overlay_files(base, objects)
 
 
 def _bundle_produced(artifacts, produced_objects):
@@ -700,6 +1062,10 @@ async def _execute_dag(
 ):
     """Map v2 pre_execution_pass and data edges directly onto async Dagger work."""
     import tempfile
+
+    from . import tooling
+
+    git_context_excludes = tooling.GIT_CONTEXT_EXCLUDES
     from pathlib import Path
 
     from engineering_ci import execution, selection
@@ -1019,6 +1385,18 @@ async def _execute_dag(
                     (rel, obj_kind, obj) for _, rel, obj_kind, obj in delivered
                 ]
                 consumer_source = _overlay_files(source, dag_objects)
+                if report.get("tree_verified") is True and hasattr(
+                    module, "_bound_public_source"
+                ):
+                    # Ordinary consumers get tree members plus Data Overlay,
+                    # never the root Git Context reserved for Git-native checks.
+                    consumed_source = _overlay_files(
+                        _git_tree_members(source), dag_objects
+                    )
+                elif hasattr(module, "_bound_public_source"):
+                    consumed_source = _overlay_bound_source(module, source, dag_objects)
+                else:
+                    consumed_source = None
                 if name in weaver_checks:
                     native, check_files, metadata = await _weaver(
                         module,
@@ -1030,6 +1408,12 @@ async def _execute_dag(
                         report["source_tree_verified"],
                         context=report.get("execution_identity"),
                         generated_inputs=generated_refs,
+                        consumed_source=consumed_source,
+                        source_excludes=(
+                            git_context_excludes
+                            if report.get("tree_verified") is True
+                            else None
+                        ),
                     )
                     return native, check_files, metadata
                 fs_files = [
@@ -1152,6 +1536,18 @@ async def _execute_dag(
                     (rel, obj_kind, obj) for _, rel, obj_kind, obj in delivered
                 ]
                 consumer_source = _overlay_files(source, dag_objects)
+                if report.get("tree_verified") is True and hasattr(
+                    module, "_bound_public_source"
+                ):
+                    # Ordinary consumers get tree members plus Data Overlay,
+                    # never the root Git Context reserved for Git-native checks.
+                    consumed_source = _overlay_files(
+                        _git_tree_members(source), dag_objects
+                    )
+                elif hasattr(module, "_bound_public_source"):
+                    consumed_source = _overlay_bound_source(module, source, dag_objects)
+                else:
+                    consumed_source = None
                 payload, test_files = await _tests(
                     module,
                     consumer_source,
@@ -1164,6 +1560,7 @@ async def _execute_dag(
                     binding_root=directory
                     if report.get("tree_verified") is True
                     else None,
+                    consumed_source=consumed_source,
                 )
                 return payload, test_files
             if kind == "report_artifacts":
@@ -1501,7 +1898,10 @@ async def execute(
         await source.export(directory)
         from . import native_results
 
-        exported_directory = await native_results.directory_reference(source)
+        try:
+            exported_directory = await native_results.directory_reference(source)
+        except Exception as error:  # noqa: BLE001 - retain exported run when optional directory identity fails
+            exported_directory = {"status": "unavailable", "reason": str(error)}
         exported_content_id = selection.directory_content_id(directory)
         if source_tree_id and execution_tree:
             source_digest = exported_content_id

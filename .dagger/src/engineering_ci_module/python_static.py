@@ -414,9 +414,15 @@ def _pyright_facts(payload: object) -> tuple[list[dict], list[str], str | None]:
         loc_range = item.get("range")
         start = loc_range.get("start") if isinstance(loc_range, dict) else None
         raw_line = start.get("line") if isinstance(start, dict) else None
+        raw_rule = item.get("rule")
+        rule = raw_rule if isinstance(raw_rule, str) else ""
+        category = item.get("category")
+        fallback_rule = (
+            category if isinstance(category, str) and category else "diagnostic"
+        )
         findings.append(
             {
-                "rule": item.get("rule") or item.get("category") or "diagnostic",
+                "rule": rule or fallback_rule,
                 "path": item.get("file") if isinstance(item.get("file"), str) else "",
                 "line": raw_line + 1 if _nonneg_int(raw_line) else None,
                 "message": item.get("message")
@@ -427,7 +433,7 @@ def _pyright_facts(payload: object) -> tuple[list[dict], list[str], str | None]:
                 else "",
             }
         )
-        if item.get("rule") in PYRIGHT_IMPORT_RULES:
+        if rule in PYRIGHT_IMPORT_RULES:
             unresolved += 1
     summary = payload.get("summary")
     if isinstance(summary, dict) and summary.get("filesAnalyzed") == 0:

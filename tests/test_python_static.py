@@ -372,6 +372,36 @@ class PyrightSemanticsTests(unittest.TestCase):
         self.assertEqual(report["reason"], "fatal_error")
         self.assertEqual(report["finding_count"], 1)
 
+    def test_malformed_diagnostic_rule_does_not_crash_facts(self):
+        for bad_rule in (["reportMissingImports"], {"rule": "reportMissingImports"}):
+            payload = json.dumps(
+                {
+                    "version": static.SCANNER_VERSIONS["pyright"],
+                    "generalDiagnostics": [
+                        {
+                            "file": "typed.py",
+                            "severity": "error",
+                            "message": 'Type "str" is not assignable to return type "int"',
+                            "range": {"start": {"line": 5, "character": 11}},
+                            "rule": bad_rule,
+                            "category": ["type"],
+                        }
+                    ],
+                    "summary": {
+                        "filesAnalyzed": 1,
+                        "errorCount": 1,
+                        "warningCount": 0,
+                        "informationCount": 0,
+                    },
+                }
+            )
+            with self.subTest(bad_rule=bad_rule):
+                report = self.report(1, payload)
+                self.assertEqual(report["outcome"], "findings")
+                self.assertEqual(report["finding_count"], 1)
+                self.assertEqual(report["findings"][0]["rule"], "diagnostic")
+                self.assertEqual(report["limitations"], [])
+
 
 class DeptrySemanticsTests(unittest.TestCase):
     def report(self, exit_code, native=""):
@@ -637,8 +667,10 @@ class StdoutJsonChannelTests(unittest.TestCase):
         class FakeContainer:
             def __init__(self, payload_by_tool):
                 self._payload = payload_by_tool
+                self.mounted_caches = []
 
-            def with_mounted_cache(self, *args, **kwargs):
+            def with_mounted_cache(self, target, *args, **kwargs):
+                self.mounted_caches.append(target)
                 return self
 
             def with_exec(self, args, **kwargs):
@@ -711,7 +743,9 @@ class StdoutJsonChannelTests(unittest.TestCase):
                 pyright_container = DualFakeContainer(
                     {"exit_code": 1, "stdout": pyright_payload(), "file_json": ""}
                 )
-                with patch.object(ci, "_uv_container", return_value=pyright_container):
+                with patch.object(
+                    ci, "_uv_container", return_value=pyright_container
+                ) as mock_uv:
                     rep_pyright = asyncio.run(
                         ci._run_static(
                             object(),
@@ -719,6 +753,13 @@ class StdoutJsonChannelTests(unittest.TestCase):
                             static.pyright_policy("src"),
                         )
                     )
+                self.assertEqual(
+                    mock_uv.call_args.kwargs.get("system_packages"),
+                    ("libatomic1",),
+                )
+                self.assertIn(
+                    "/root/.cache/pyright-python", pyright_container.mounted_caches
+                )
                 self.assertEqual(rep_pyright["outcome"], "findings")
                 self.assertTrue(rep_pyright["native_json_available"])
                 self.assertEqual(
@@ -733,7 +774,9 @@ class StdoutJsonChannelTests(unittest.TestCase):
                 pylint_container = DualFakeContainer(
                     {"exit_code": 8, "stdout": pylint_payload(), "file_json": ""}
                 )
-                with patch.object(ci, "_uv_container", return_value=pylint_container):
+                with patch.object(
+                    ci, "_uv_container", return_value=pylint_container
+                ) as mock_uv:
                     rep_pylint = asyncio.run(
                         ci._run_static(
                             object(),
@@ -741,6 +784,8 @@ class StdoutJsonChannelTests(unittest.TestCase):
                             static.pylint_policy(["src"]),
                         )
                     )
+                self.assertEqual(mock_uv.call_args.kwargs.get("system_packages"), ())
+                self.assertEqual(pylint_container.mounted_caches, [])
                 self.assertEqual(rep_pylint["outcome"], "findings")
                 self.assertEqual(rep_pylint["reason"], "duplicate_code_found")
                 self.assertTrue(rep_pylint["native_json_available"])
@@ -753,7 +798,9 @@ class StdoutJsonChannelTests(unittest.TestCase):
                 deptry_container = DualFakeContainer(
                     {"exit_code": 1, "stdout": "", "file_json": deptry_payload()}
                 )
-                with patch.object(ci, "_uv_container", return_value=deptry_container):
+                with patch.object(
+                    ci, "_uv_container", return_value=deptry_container
+                ) as mock_uv:
                     rep_deptry = asyncio.run(
                         ci._run_static(
                             object(),
@@ -762,6 +809,7 @@ class StdoutJsonChannelTests(unittest.TestCase):
                             native_output=main_mod._DEPTRY_JSON,
                         )
                     )
+                self.assertEqual(mock_uv.call_args.kwargs.get("system_packages"), ())
                 self.assertEqual(rep_deptry["outcome"], "findings")
                 self.assertEqual(rep_deptry["findings"][0]["rule"], "DEP002")
                 self.assertEqual(len(calls), 2)
@@ -773,6 +821,129 @@ class StdoutJsonChannelTests(unittest.TestCase):
                         "engineering_ci_module."
                     ):
                         sys.modules.pop(name, None)
+
+
+class SourceBoundaryTests(unittest.TestCase):
+    def test_public_source_noise_keeps_consumer_artifacts_builds_and_design(self):
+        import ast
+
+        tooling_ast = ast.parse((MODULES / "tooling.py").read_text(encoding="utf-8"))
+        source_noise = next(
+            ast.literal_eval(node.value)
+            for node in tooling_ast.body
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == "SOURCE_NOISE" for t in node.targets)
+        )
+        for required_kept in (
+            "build",
+            "dist",
+            ".artifacts",
+            "**/.artifacts",
+            "design",
+            "guides",
+            ".agent",
+            ".work",
+            ".tools",
+            ".tmp",
+            ".log",
+            ".env",
+            ".env.*",
+            ".secrets",
+            ".aws",
+            ".ssh",
+            ".docker",
+            "**/*.local.toml",
+            ".pytest_cache",
+            "**/.pytest_cache",
+            ".mypy_cache",
+            "**/.mypy_cache",
+            ".pyright",
+            "**/.pyright",
+            ".tach",
+            "**/.tach",
+            ".lycheecache",
+            "**/.lycheecache",
+            ".DS_Store",
+            "Thumbs.db",
+        ):
+            self.assertNotIn(required_kept, source_noise)
+        for required_noise in (
+            ".git",
+            ".venv",
+            "**/.venv",
+            "__pycache__",
+            ".ruff_cache",
+        ):
+            self.assertIn(required_noise, source_noise)
+
+        repo_text = (MODULES / "repository.py").read_text(encoding="utf-8")
+        self.assertIn("HOST_SECRET_EXCLUDES", repo_text)
+        self.assertIn("HOST_LOCAL_EXCLUDES", repo_text)
+        self.assertIn("WEAVER_DEFAULT_EXCLUDES", repo_text)
+        for host_only in (
+            ".env.*",
+            ".docker",
+            "**/*.local.toml",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".pyright",
+            ".tach",
+            ".lycheecache",
+            ".DS_Store",
+            "Thumbs.db",
+        ):
+            self.assertIn(host_only, repo_text)
+
+        main_text = (MODULES / "main.py").read_text(encoding="utf-8")
+        main_ast = ast.parse(main_text)
+        root = next(
+            node
+            for node in main_ast.body
+            if isinstance(node, ast.ClassDef) and node.name == "EngineeringCi"
+        )
+        methods = {
+            node.name: ast.get_source_segment(main_text, node) or ""
+            for node in root.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        self.assertNotIn("repository.SOURCE_EXCLUDES", methods["_uv_tool_container"])
+        self.assertIn("_bound_public_source", methods["_uv_tool_container"])
+        self.assertIn("_bound_public_source", methods["_uv_container"])
+        self.assertIn("_bound_public_source", methods["_weaver_execution"])
+        self.assertIn("_bound_public_source", methods["tach_check"])
+        self.assertIn(
+            "repository_scan_filter_refusal", methods["_run_repository_script"]
+        )
+        self.assertIn(
+            "_needs_unfiltered_scan_cross_check", methods["_run_repository_script"]
+        )
+        for weaver_method in ("weaver_registry", "weaver_live", "weaver_terminal"):
+            self.assertIn("WEAVER_DEFAULT_EXCLUDES", methods[weaver_method])
+        # P2-01: system_packages installs libatomic1 inside _uv_container before mounting source
+        self.assertIn("system_packages", methods["_uv_container"])
+        self.assertIn("libatomic1", methods["_run_static"])
+        self.assertIn("libatomic1", methods["_static_fixture_versions"])
+        self.assertIn(
+            "engineering-ci-pyright-node", methods["_static_fixture_versions"]
+        )
+        uv_src = methods["_uv_container"]
+        self.assertLess(uv_src.index("system_packages"), uv_src.index('"/workspace"'))
+
+        plan_exec_text = (MODULES / "plan_execution.py").read_text(encoding="utf-8")
+        self.assertIn("_overlay_bound_source", plan_exec_text)
+        self.assertIn("_git_tree_members", plan_exec_text)
+        self.assertIn("GIT_CONTEXT_EXCLUDES", plan_exec_text)
+        self.assertIn("_verify_pre_execution_source_closure", plan_exec_text)
+        self.assertNotIn("_restore_missing_bound_files", plan_exec_text)
+        self.assertIn("source_delivery", plan_exec_text)
+        self.assertIn("_accepts_bound_source_kwarg", plan_exec_text)
+        native_results_text = (MODULES / "native_results.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("_downgrade_binding_source", native_results_text)
+        self.assertIn("pre_execution_proof", native_results_text)
+        self.assertIn("metadata_errors", native_results_text)
+        self.assertNotIn("_WORKSPACE_CLOSURE_PROBE", native_results_text)
 
 
 if __name__ == "__main__":

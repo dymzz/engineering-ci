@@ -47,4 +47,17 @@ exclude = ["tests/fixtures/python-app"]
 
 [tool.ruff]
 target-version = "py311"
-extend-exclude = [".dagger/sdk", ".test-tools", ".artifacts", ".log"]
+extend-exclude = [
+    ".dagger/sdk",
+    ".dagger/.venv",
+    ".test-tools",
+    ".test-deps",
+    ".artifacts",
+    ".log",
+    ".tmp",
+    ".work",
+    ".tools",
+    ".weaver-74-probe",
+    "dist",
+    "build",
+]

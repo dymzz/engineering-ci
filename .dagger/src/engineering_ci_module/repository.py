@@ -3,34 +3,82 @@
 import dagger
 from dagger import dag
 
-SOURCE_EXCLUDES = [
-    ".git",
-    ".venv",
-    "**/.venv",
-    ".test-tools",
-    ".test-deps",
-    ".tmp",
-    ".log",
-    ".artifacts",
-    "**/__pycache__",
+from . import tooling
+
+WORKSPACE_SCRATCH = [
+    ".pytest_cache",
     "**/.pytest_cache",
-    "**/.ruff_cache",
+    ".mypy_cache",
+    "**/.mypy_cache",
+    ".pyright",
+    "**/.pyright",
+    ".tach",
+    "**/.tach",
+    ".lycheecache",
+    "**/.lycheecache",
+    ".DS_Store",
+    "Thumbs.db",
+    ".test-tools",
+    "**/.test-tools",
+    ".test-deps",
+    "**/.test-deps",
+    ".tmp",
+    "**/.tmp",
+    ".log",
+    "**/.log",
+    ".work",
+    "**/.work",
+    ".tools",
+    "**/.tools",
+    ".weaver-74-probe",
+    "**/.weaver-74-probe",
+    ".artifacts",
+    "**/.artifacts",
+    "dist",
+    "build",
+    "*.egg-info",
+    "**/*.egg-info",
+    "htmlcov",
     ".coverage*",
     "core-junit.xml",
     "core-coverage.xml",
     "core-coverage.json",
+    ".codex",
+    ".claude",
+    ".agents",
+    ".idea",
+    ".vscode",
+]
+
+HOST_SECRET_EXCLUDES = [
     ".env",
     ".env.*",
     ".secrets",
     ".aws",
     ".ssh",
+]
+
+HOST_LOCAL_EXCLUDES = [
     ".docker",
-    ".codex",
-    ".claude",
-    ".agents",
     "**/*.local.toml",
+]
+
+WEAVER_DEFAULT_EXCLUDES = [
+    *tooling.SOURCE_NOISE,
+    ".env",
+    ".secrets",
+    ".aws",
+    ".ssh",
+]
+
+SOURCE_EXCLUDES = [
+    *tooling.SOURCE_NOISE,
+    *HOST_SECRET_EXCLUDES,
+    *HOST_LOCAL_EXCLUDES,
+    *WORKSPACE_SCRATCH,
     "get_vesryn-log_docs.ps1",
     "guides",
+    "design",
     "docs/**/*.md",
     "AGENTS.md",
     ".dagger/AGENTS.md",

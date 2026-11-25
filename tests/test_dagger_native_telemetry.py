@@ -6,9 +6,13 @@ import copy
 import gzip
 import hashlib
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import unittest
 import urllib.error
@@ -1785,6 +1789,269 @@ class A1LiveScopeGitPathEdgeTests(unittest.TestCase):
             'git -c core.quotePath=false diff -z --no-renames --name-only "${base_sha}...${HEAD_SHA}"',
             ci_yml,
         )
+
+    def test_ci_workflow_reverify_uses_pr_head_and_supports_workflow_dispatch(
+        self,
+    ) -> None:
+        ci_path = (
+            Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
+        )
+        ci_yml = ci_path.read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", ci_yml)
+        self.assertIn("PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}", ci_yml)
+        self.assertIn("HEAD_SHA: ${{ github.sha }}", ci_yml)
+        self.assertIn("reverify_a1_capture:", ci_yml)
+
+        step_marker = "      - name: Determine A.1 live capture scope\n"
+        self.assertIn(step_marker, ci_yml)
+        after_step = ci_yml.split(step_marker, 1)[1]
+        run_match = re.search(
+            r"\n        run: \|\n((?:          .*\n|\s*\n)+)", after_step
+        )
+        self.assertIsNotNone(
+            run_match, "Determine A.1 live capture scope run script missing"
+        )
+        assert run_match is not None
+        step_script = textwrap.dedent(run_match.group(1))
+
+        bash_exe: str | None = None
+        if sys.platform == "win32":
+            git_exe = shutil.which("git")
+            if git_exe:
+                git_root = Path(git_exe).resolve().parent.parent
+                for rel in ("bin/bash.exe", "usr/bin/bash.exe"):
+                    candidate = git_root / rel
+                    if candidate.is_file():
+                        bash_exe = str(candidate)
+                        break
+        else:
+            bash_exe = shutil.which("bash")
+            if bash_exe is None:
+                self.fail("bash is required on non-Windows runners")
+        if bash_exe is None:
+            self.skipTest("Git Bash not found on Windows")
+
+        def parse_outputs(text: str) -> dict[str, str]:
+            parsed: dict[str, str] = {}
+            for line in text.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    parsed[k] = v
+            return parsed
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            repo.mkdir()
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+
+            py_shim = bin_dir / "python3"
+            py_shim.write_text(
+                '#!/bin/sh\nexec "$ECI_TEST_PYTHON" "$@"\n', encoding="utf-8"
+            )
+            uv_shim = bin_dir / "uv"
+            uv_shim.write_text(
+                "#!/bin/sh\n"
+                'exec "$ECI_TEST_PYTHON" -c \'\n'
+                "import subprocess, sys\n"
+                "args = sys.argv[1:]\n"
+                'if args[:1] == ["run"]: args = args[1:]\n'
+                'while args and args[0].startswith("-"): args = args[1:]\n'
+                'if args[:1] in (["python"], ["python3"]): args = args[1:]\n'
+                "raise SystemExit(subprocess.call([sys.executable, *args]))\n"
+                '\' "$@"\n',
+                encoding="utf-8",
+            )
+            os.chmod(py_shim, 0o755)
+            os.chmod(uv_shim, 0o755)
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", *args],
+                    cwd=repo,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.name", "ECI Test")
+            git("config", "user.email", "eci@example.invalid")
+            (repo / "docs/verification").mkdir(parents=True)
+            (repo / "dagger-module.toml").write_text(
+                'engineVersion = "v1.0.0-beta.16"\n', encoding="utf-8"
+            )
+            (repo / "docs/verification/dagger-native-telemetry.md").write_text(
+                "Engine: v1.0.0-beta.16\n", encoding="utf-8"
+            )
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "base")
+            base_sha = git("rev-parse", "HEAD")
+
+            # Case 1: pull_request where PR HEAD contains [reverify-a1] while ephemeral
+            # GitHub test merge commit lacks the tag, and only README.md changed.
+            git("checkout", "-q", "-b", "pr-reverify", base_sha)
+            (repo / "README.md").write_text("docs touch\n", encoding="utf-8")
+            git("add", "README.md")
+            git("commit", "-q", "-m", "docs: clarify [reverify-a1] downstream check")
+            pr_reverify_head = git("rev-parse", "HEAD")
+
+            git("checkout", "-q", "--detach", base_sha)
+            git(
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                "-m",
+                f"Merge {pr_reverify_head} into {base_sha}",
+                pr_reverify_head,
+            )
+            merge_reverify_sha = git("rev-parse", "HEAD")
+
+            # Case 2: unmarked PR HEAD stays offline (even if test merge commit mentions tag).
+            git("checkout", "-q", "-b", "pr-unmarked", base_sha)
+            (repo / "README.md").write_text("plain docs change\n", encoding="utf-8")
+            git("add", "README.md")
+            git("commit", "-q", "-m", "docs: plain update without reverify tag")
+            pr_unmarked_head = git("rev-parse", "HEAD")
+
+            git("checkout", "-q", "--detach", base_sha)
+            git(
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                "-m",
+                f"Merge {pr_unmarked_head} into {base_sha} [reverify-a1]",
+                pr_unmarked_head,
+            )
+            merge_unmarked_sha = git("rev-parse", "HEAD")
+
+            # Case 3: push event commit with [reverify-a1]
+            git("checkout", "-q", "-b", "main-push", base_sha)
+            (repo / "README.md").write_text("main doc update\n", encoding="utf-8")
+            git("add", "README.md")
+            git("commit", "-q", "-m", "docs: push commit with [reverify-a1]")
+            push_head = git("rev-parse", "HEAD")
+
+            def run_scope_step(case_name: str, extra_env: dict[str, str]):
+                case_temp = root / f"temp-{case_name}"
+                case_temp.mkdir()
+                gh_out = root / f"gh-{case_name}.txt"
+                gh_out.write_text("", encoding="utf-8")
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
+                        "PYTHONPATH": str(SRC),
+                        "ECI_TEST_PYTHON": sys.executable,
+                        "RUNNER_TEMP": str(case_temp),
+                        "GITHUB_OUTPUT": str(gh_out),
+                        "EVENT_NAME": "",
+                        "PR_BASE_SHA": "",
+                        "PR_HEAD_SHA": "",
+                        "PUSH_BEFORE_SHA": "",
+                        "HEAD_SHA": "",
+                        "REVERIFY_INPUT": "",
+                    }
+                )
+                env.update(extra_env)
+                proc = subprocess.run(
+                    [bash_exe, "-c", step_script],
+                    cwd=repo,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                return proc, case_temp, gh_out
+
+            proc_pr_yes, temp_pr_yes, gh_pr_yes = run_scope_step(
+                "pr_reverify",
+                {
+                    "EVENT_NAME": "pull_request",
+                    "PR_BASE_SHA": base_sha,
+                    "PR_HEAD_SHA": pr_reverify_head,
+                    "HEAD_SHA": merge_reverify_sha,
+                },
+            )
+            self.assertEqual(proc_pr_yes.returncode, 0, proc_pr_yes.stderr)
+            self.assertEqual(
+                parse_outputs(gh_pr_yes.read_text(encoding="utf-8")),
+                {
+                    "run_live_capture": "true",
+                    "reason": "explicit_reverify_requested",
+                    "evidence_level": "pending_native_capture",
+                },
+            )
+            dec_yes = json.loads(
+                (temp_pr_yes / "a1-scope-decision.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(dec_yes["inspected_changed_paths"], ["README.md"])
+
+            proc_pr_no, temp_pr_no, gh_pr_no = run_scope_step(
+                "pr_unmarked",
+                {
+                    "EVENT_NAME": "pull_request",
+                    "PR_BASE_SHA": base_sha,
+                    "PR_HEAD_SHA": pr_unmarked_head,
+                    "HEAD_SHA": merge_unmarked_sha,
+                },
+            )
+            self.assertEqual(proc_pr_no.returncode, 0, proc_pr_no.stderr)
+            self.assertEqual(
+                parse_outputs(gh_pr_no.read_text(encoding="utf-8")),
+                {
+                    "run_live_capture": "false",
+                    "reason": "unaffected_paths_offline_contract_only",
+                    "evidence_level": "offline_contract_only",
+                },
+            )
+            dec_no = json.loads(
+                (temp_pr_no / "a1-scope-decision.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(dec_no["inspected_changed_paths"], ["README.md"])
+
+            proc_missing, _, gh_missing = run_scope_step(
+                "pr_missing_head",
+                {
+                    "EVENT_NAME": "pull_request",
+                    "PR_BASE_SHA": base_sha,
+                    "PR_HEAD_SHA": "0" * 40,
+                    "HEAD_SHA": merge_unmarked_sha,
+                },
+            )
+            self.assertNotEqual(proc_missing.returncode, 0)
+            self.assertIn("Missing or unreadable commit ref", proc_missing.stderr)
+            self.assertEqual(gh_missing.read_text(encoding="utf-8"), "")
+
+            proc_push, _, gh_push = run_scope_step(
+                "push_reverify",
+                {
+                    "EVENT_NAME": "push",
+                    "PUSH_BEFORE_SHA": base_sha,
+                    "HEAD_SHA": push_head,
+                },
+            )
+            self.assertEqual(proc_push.returncode, 0, proc_push.stderr)
+            self.assertEqual(
+                parse_outputs(gh_push.read_text(encoding="utf-8"))["reason"],
+                "explicit_reverify_requested",
+            )
+
+            proc_dispatch, _, gh_dispatch = run_scope_step(
+                "workflow_dispatch",
+                {
+                    "EVENT_NAME": "workflow_dispatch",
+                    "HEAD_SHA": pr_unmarked_head,
+                    "REVERIFY_INPUT": "true",
+                },
+            )
+            self.assertEqual(proc_dispatch.returncode, 0, proc_dispatch.stderr)
+            self.assertEqual(
+                parse_outputs(gh_dispatch.read_text(encoding="utf-8"))["reason"],
+                "explicit_reverify_requested",
+            )
 
     def test_dagger_toml_only_change_triggers_live_capture_and_unrelated_stays_offline(
         self,
