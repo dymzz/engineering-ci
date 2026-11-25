@@ -2745,7 +2745,6 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
     assert trunc_entry["native_status"] == "passed"
 
 
-<<<<<<< HEAD
 def test_dagger_index_separates_identity_only_from_source_bound_host_checks(
     modules, tmp_path
 ):
