@@ -165,15 +165,13 @@ async def _tests(
     plan=None,
     generated_inputs=(),
     binding_root=None,
+    consumed_source=None,
 ):
     """Use the existing pytest computation, or native unittest, exactly once."""
     from . import tooling
 
-    consumed_source = (
-        module._bound_public_source(source)
-        if hasattr(module, "_bound_public_source")
-        else None
-    )
+    if consumed_source is None and hasattr(module, "_bound_public_source"):
+        consumed_source = module._bound_public_source(source)
     if framework == "pytest":
         kwargs = (
             {"_bound_source": consumed_source} if consumed_source is not None else {}
@@ -211,6 +209,7 @@ async def _tests(
     from . import native_results
 
     binding = None
+    snapshots = None
     if binding_root is not None and not generated_inputs:
         from engineering_ci import execution
 
@@ -225,10 +224,12 @@ async def _tests(
             source_snapshots=snapshots,
         )
 
+    bound_binding = snapshots.get("binding") if isinstance(snapshots, dict) else None
     result_kwargs = (
         {
             "consumed_source": consumed_source,
             "source_excludes": tooling.SOURCE_NOISE,
+            **({"bound_binding": bound_binding} if bound_binding is not None else {}),
         }
         if consumed_source is not None
         else {}
@@ -263,6 +264,7 @@ async def _weaver(
     *,
     context=None,
     generated_inputs=(),
+    consumed_source=None,
 ):
     """Read one original /out Directory; do not rescan for Report or Enforce."""
     from engineering_ci import selection
@@ -299,6 +301,9 @@ async def _weaver(
             )
         config_path = value["post_completion"]["weaver_config"]["path"]
     if hasattr(module, "_weaver_execution"):
+        kwargs = (
+            {"_bound_source": consumed_source} if consumed_source is not None else {}
+        )
         files = await module._weaver_execution(
             source,
             kind,
@@ -306,6 +311,7 @@ async def _weaver(
             context=context,
             plan=value,
             generated_inputs=generated_inputs,
+            **kwargs,
         )
         native = json.loads(await files.file("check-result.json").contents())
     else:
@@ -426,6 +432,16 @@ def _overlay_files(target_dir, objects):
         else:
             updated = updated.with_file(rel, obj)
     return updated
+
+
+def _overlay_bound_source(module, source, objects):
+    """Filter base caller source before applying Plan Data Overlays."""
+    base = (
+        module._bound_public_source(source)
+        if hasattr(module, "_bound_public_source")
+        else source
+    )
+    return _overlay_files(base, objects)
 
 
 def _bundle_produced(artifacts, produced_objects):
@@ -1040,6 +1056,11 @@ async def _execute_dag(
                     (rel, obj_kind, obj) for _, rel, obj_kind, obj in delivered
                 ]
                 consumer_source = _overlay_files(source, dag_objects)
+                consumed_source = (
+                    _overlay_bound_source(module, source, dag_objects)
+                    if hasattr(module, "_bound_public_source")
+                    else None
+                )
                 if name in weaver_checks:
                     native, check_files, metadata = await _weaver(
                         module,
@@ -1051,6 +1072,7 @@ async def _execute_dag(
                         report["source_tree_verified"],
                         context=report.get("execution_identity"),
                         generated_inputs=generated_refs,
+                        consumed_source=consumed_source,
                     )
                     return native, check_files, metadata
                 fs_files = [
@@ -1173,6 +1195,11 @@ async def _execute_dag(
                     (rel, obj_kind, obj) for _, rel, obj_kind, obj in delivered
                 ]
                 consumer_source = _overlay_files(source, dag_objects)
+                consumed_source = (
+                    _overlay_bound_source(module, source, dag_objects)
+                    if hasattr(module, "_bound_public_source")
+                    else None
+                )
                 payload, test_files = await _tests(
                     module,
                     consumer_source,
@@ -1185,6 +1212,7 @@ async def _execute_dag(
                     binding_root=directory
                     if report.get("tree_verified") is True
                     else None,
+                    consumed_source=consumed_source,
                 )
                 return payload, test_files
             if kind == "report_artifacts":

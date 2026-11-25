@@ -112,7 +112,7 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 
 - 在本仓运行原生 Checks（`dagger check` / `@check`）或 `repository_*` 函数时，参数通过
   `DefaultPath("/")` 与 `Ignore(repository.SOURCE_EXCLUDES)` 预先裁剪 `.git`、`.venv`、缓存、本仓临时目录及非 Python 文档/设计目录（当前模块上传约 `4.4 MB`）。
-- 区分四层过滤边界：`.gitignore` 仅约束本地 Git 未跟踪文件；`pyproject.toml` 中的 `[tool.ruff] extend-exclude` 仅作用于本仓 Ruff 检查；`repository.SOURCE_EXCLUDES` 仅用于本仓默认工作区（包含 `design`、`build`、`dist`、`.artifacts`、`.work` 等）；公共可复用 `@function`（以及 Plan overlay 后的 `consumer_source`）仅使用通用最小噪声 `tooling.SOURCE_NOISE`（Git/虚拟环境/工具缓存/敏感文件），绝不删除消费者项目源码、`design/` 目标、`build/` 产物或 `.artifacts/` 绑定输入（证据中同时区分传入 `source` 与容器内过滤后消费目录摘要）。
+- 区分四层过滤边界：`.gitignore` 仅约束本地 Git 未跟踪文件；`pyproject.toml` 中的 `[tool.ruff] extend-exclude` 仅作用于本仓 Ruff 检查；`repository.SOURCE_EXCLUDES`（含 `HOST_SECRET_EXCLUDES` / `HOST_LOCAL_EXCLUDES`）及 `repository.WEAVER_DEFAULT_EXCLUDES` 仅用于本仓默认工作区 `DefaultPath("/")` 预裁剪（包含 `.env`、`.env.*`、`.secrets`、`.aws`、`.ssh`、`.docker`、`**/*.local.toml`、`design`、`build`、`dist`、`.artifacts`、`.work` 等）；公共可复用 `@function` 仅使用通用最小 VCS/虚拟环境/缓存/系统噪声 `tooling.SOURCE_NOISE`，且 Plan Data Overlay（`dag_objects`）在基线 `source` 过滤之后再叠加，绝不按文件名猜测裁剪消费者 `.env.test`、`*.local.toml`、`.docker/*`、`design/`、`build/` 或前置生成交付物；`shellcheck`/`actionlint`/`zizmor` 当容器存在过滤差时同时核验未过滤源并在发现隐藏扫描目标或问题时显式拒绝，测试绑定仅在容器内 `/workspace` 常规文件 SHA-256 与预期闭包完全等价时才保留 `byte_tree` / `full_input_closure`，否则保留原生退出/输出并显式降级且附加 `source_limit: "input_closure_not_proven"`。
 - 通过 CLI 对本仓当前目录向独立可复用 `@function` 传入宿主目录时，Dagger `v1.0.0-beta.16` 会在进入函数前先由宿主上传完整目录，本仓默认工作区可按需预先剔除本仓噪声目录，例如：
 
 ```sh

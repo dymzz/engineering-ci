@@ -926,6 +926,59 @@ def deferred_report(scan_path: str, reason: str) -> dict:
     )
 
 
+def repository_scan_filter_refusal(
+    policy: dict,
+    observed: dict,
+    raw_observed: dict,
+) -> dict | None:
+    """Refuse explicitly when source noise filtering drops scan targets or problems."""
+    raw_targets = raw_observed.get("targets") or []
+    filtered_paths = {
+        entry["path"]
+        for entry in (observed.get("targets") or [])
+        if isinstance(entry, dict) and entry.get("path")
+    }
+    excluded_targets = [
+        entry
+        for entry in raw_targets
+        if isinstance(entry, dict) and entry.get("path") not in filtered_paths
+    ]
+    raw_target_problems = raw_observed.get("target_problems") or {}
+    filtered_target_problems = observed.get("target_problems") or {}
+    missing_target_problems = {
+        path: problem
+        for path, problem in raw_target_problems.items()
+        if path not in filtered_target_problems
+    }
+    raw_config_problems = raw_observed.get("config_problems") or {}
+    filtered_config_problems = observed.get("config_problems") or {}
+    missing_config_problems = {
+        path: problem
+        for path, problem in raw_config_problems.items()
+        if path not in filtered_config_problems
+    }
+    if (
+        not excluded_targets
+        and not missing_target_problems
+        and not missing_config_problems
+    ):
+        return None
+    report = _shell(
+        policy["tool"],
+        policy["pinned_version"],
+        list(policy["scan_paths"]),
+        "not_executed",
+        "source_filter_excluded_scan_targets",
+    )
+    report["target_sources"] = list(observed.get("targets") or [])
+    report["excluded_targets"] = excluded_targets
+    if raw_target_problems:
+        report["target_problems"] = raw_target_problems
+    if raw_config_problems:
+        report["config_problems"] = raw_config_problems
+    return report
+
+
 def script_report(
     policy: dict,
     exit_code: int,

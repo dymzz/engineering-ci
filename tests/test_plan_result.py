@@ -3047,3 +3047,510 @@ def test_v2_build_data_artifact_reaches_consumer_and_records_filtered_view(modul
     assert report["tests"]["native_result"]["evidence"]["source_limit"] == (
         "input_closure_not_proven"
     )
+
+
+def _filter_source_with_patterns(source_dir, patterns):
+    """Apply Dagger-style exclude patterns to a MemoryDirectory."""
+    import fnmatch
+
+    files, dirs = source_dir._materialize()
+
+    def excluded(rel):
+        parts = rel.split("/")
+        for pat in patterns:
+            if pat.startswith("**/"):
+                sub = pat[3:]
+                if any(fnmatch.fnmatchcase(part, sub) for part in parts):
+                    return True
+                if fnmatch.fnmatchcase(rel, pat) or fnmatch.fnmatchcase(parts[-1], sub):
+                    return True
+            elif fnmatch.fnmatchcase(parts[0], pat) or fnmatch.fnmatchcase(rel, pat):
+                return True
+        return False
+
+    return MemoryDirectory(
+        {k: v for k, v in files.items() if not excluded(k)},
+        dirs={d for d in dirs if not excluded(d)},
+    )
+
+
+def _write_memdir(source_dir, root):
+    """Write a MemoryDirectory synchronously onto a temp Path for container probes."""
+    files, dirs = source_dir._materialize()
+    for rel in sorted(dirs):
+        (root / rel).mkdir(parents=True, exist_ok=True)
+    for rel, raw in sorted(files.items()):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+
+def _make_probe_container_class(workspace_root, tmp_dir, *, override_files=None):
+    """Test double that executes the real closure probe against materialized files."""
+
+    class ProbeContainer:
+        def __init__(self, *, command=None, injected=None):
+            self.command = command
+            self.injected = dict(injected or {})
+
+        def with_new_file(self, path, contents):
+            updated = dict(self.injected)
+            updated[path] = contents
+            return ProbeContainer(command=self.command, injected=updated)
+
+        def with_exec(self, command, **kwargs):
+            return ProbeContainer(command=list(command), injected=self.injected)
+
+        async def exit_code(self):
+            return 0
+
+        async def stdout(self):
+            cmd = self.command or []
+            if len(cmd) >= 2 and cmd[-2] == "-c":
+                code = cmd[-1]
+                if "importlib.metadata" in code:
+                    return json.dumps(
+                        {
+                            "executable": sys.executable,
+                            "python": "3.14.0",
+                            "platform": "linux",
+                            "tool_version": "3.14.0",
+                        }
+                    )
+                if "/tmp/eci-expected-paths.json" in code:
+                    expected_file = tmp_dir / "eci-expected-paths.json"
+                    expected_file.write_text(
+                        self.injected["/tmp/eci-expected-paths.json"],
+                        encoding="utf-8",
+                    )
+                    if override_files is not None:
+                        override_files(workspace_root)
+                    patched = code.replace(
+                        "'/workspace'", repr(str(workspace_root))
+                    ).replace(
+                        "'/tmp/eci-expected-paths.json'",
+                        repr(str(expected_file)),
+                    )
+                    proc = await asyncio.create_subprocess_exec(
+                        sys.executable,
+                        "-I",
+                        "-c",
+                        patched,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    out, err = await proc.communicate()
+                    if proc.returncode != 0:
+                        raise RuntimeError(err.decode("utf-8", "replace"))
+                    return out.decode("utf-8")
+            return "1 passed\n"
+
+        async def stderr(self):
+            return ""
+
+    return ProbeContainer
+
+
+def test_bound_public_source_and_closure_probe_preserve_or_downgrade_binding(
+    modules, tmp_path
+):
+    import importlib
+
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+
+    raw_files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        "ci-selection.toml": (
+            b'schema_version = 1\ntests_dir = "tests"\nsrc_root = "src"\nframework = "unittest"\n'
+        ),
+        "ci-weaver.toml": b"# weaver\n",
+        ".env.test": b"APP_ENV=testing\n",
+        "config/test.local.toml": b"[service]\nport = 8080\n",
+        ".docker/deploy.sh": b"#!/bin/sh\necho ok\n",
+        "tests/controlled.py": b"def test_ok():\n    assert True\n",
+    }
+    src = tmp_path / "src"
+    for rel, raw in raw_files.items():
+        target = src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    tree_hex = "a" * 40
+    plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=("tests/controlled.py",),
+        checks=("weaver_registry",),
+    )
+    plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": tree_hex,
+        "index_tree": tree_hex,
+        "changed_paths": [".env.test", "config/test.local.toml", ".docker/deploy.sh"],
+        "source_tree_id": real_selection.directory_content_id(src),
+    }
+
+    def run_case(case_dir, *, override_files=None, with_probe=True, bind_src=src):
+        ws_root = case_dir / "container_ws"
+        ws_root.mkdir(parents=True, exist_ok=True)
+        captured_sources = []
+
+        class Native:
+            def __init__(self):
+                self.test_invocations = 0
+
+            def _bound_public_source(self, source):
+                return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+
+            def _uv_container(self, source, version):
+                captured_sources.append(source)
+                _write_memdir(source, ws_root)
+                if with_probe:
+                    return _make_probe_container_class(
+                        ws_root, case_dir, override_files=override_files
+                    )()
+                return _ContractTestContainer(self)
+
+            async def weaver_artifacts(self, source, kind, config):
+                return MemoryDirectory(
+                    {
+                        "report.json": json.dumps(
+                            {
+                                "name": "weaver_registry",
+                                "status": "passed",
+                                "exit_code": 0,
+                            }
+                        )
+                    }
+                )
+
+        case_files = {
+            rel: path.read_bytes()
+            for path in bind_src.rglob("*")
+            if path.is_file()
+            for rel in [path.relative_to(bind_src).as_posix()]
+        }
+        plan_case = json.loads(json.dumps(plan))
+        plan_case["git"]["source_tree_id"] = real_selection.directory_content_id(
+            bind_src
+        )
+        saved = asyncio.run(
+            collector.execute(
+                Native(),
+                MemoryFile(json.dumps(plan_case)),
+                MemoryDirectory(case_files),
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+        return json.loads(asyncio.run(saved.report())), captured_sources
+
+    # 1. Filtered base (.git dropped), but all bound inputs intact in /workspace.
+    ok_report, ok_sources = run_case(tmp_path / "ok")
+    assert ok_report["status"] == "passed", ok_report
+    assert ".env.test" in ok_sources[0].files
+    assert "config/test.local.toml" in ok_sources[0].files
+    assert ".docker/deploy.sh" in ok_sources[0].files
+    ok_native = ok_report["tests"]["native_result"]
+    ok_obs = ok_native["evidence"]["observation"]
+    assert ok_obs["container_source_filtered"] is True
+    assert ok_obs["source_equivalence_status"] == "verified_equivalent"
+    assert ok_native["source_ref"]["binding_status"] == "byte_tree"
+    assert ok_native["source_ref"]["scope_kind"] == "full_input_closure"
+    assert "source_limit" not in ok_native["evidence"]
+
+    # 2. Filtered/missing bound input in container -> retain native exit=0 + downgrade binding.
+    miss_report, _ = run_case(
+        tmp_path / "missing",
+        override_files=lambda root: (root / ".env.test").unlink(),
+    )
+    assert miss_report["tests"]["exit_code"] == 0
+    miss_native = miss_report["tests"]["native_result"]
+    assert miss_native["evidence"]["observation"]["source_equivalence_status"] == (
+        "missing_bound_inputs"
+    )
+    assert miss_native["evidence"]["observation"]["missing_bound_paths"] == [
+        ".env.test"
+    ]
+    assert miss_native["evidence"]["source_limit"] == "input_closure_not_proven"
+    assert miss_native["source_ref"]["binding_status"] == "identity_only"
+    assert miss_native["source_ref"]["scope_kind"] == "changed_paths"
+
+    # 3. 1-byte mismatch inside container -> retain native exit=0 + downgrade binding.
+    bad_report, _ = run_case(
+        tmp_path / "mismatch",
+        override_files=lambda root: (root / ".env.test").write_bytes(
+            b"APP_ENV=tampered\n"
+        ),
+    )
+    assert bad_report["tests"]["exit_code"] == 0
+    bad_native = bad_report["tests"]["native_result"]
+    assert bad_native["evidence"]["observation"]["source_equivalence_status"] == (
+        "mismatched_bound_inputs"
+    )
+    assert bad_native["evidence"]["observation"]["mismatched_bound_paths"] == [
+        ".env.test"
+    ]
+    assert bad_native["evidence"]["source_limit"] == "input_closure_not_proven"
+    assert bad_native["source_ref"]["binding_status"] == "identity_only"
+
+    # 4. Container mock without with_new_file probe cannot fabricate closure proof when filtered.
+    unproven_report, _ = run_case(tmp_path / "unproven", with_probe=False)
+    unproven_native = unproven_report["tests"]["native_result"]
+    assert unproven_native["evidence"]["observation"]["source_equivalence_status"] == (
+        "unproven"
+    )
+    assert unproven_native["evidence"]["source_limit"] == "input_closure_not_proven"
+    assert unproven_native["source_ref"]["binding_status"] == "identity_only"
+
+
+def test_v2_data_overlay_applies_after_source_noise_filtering_and_preserves_env_and_local_toml(
+    modules,
+):
+    import importlib
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+    env_bytes = b"APP_ENV=overlay\n"
+    local_bytes = b"[overlay]\nport = 9090\n"
+    cache_overlay_bytes = b"overlay-must-survive\n"
+
+    writer = (
+        "import os; from pathlib import Path; "
+        "root = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+        "(root / '.env.test').write_bytes(b'APP_ENV=overlay\\n'); "
+        "(root / 'config').mkdir(parents=True, exist_ok=True); "
+        "(root / 'config' / 'generated.local.toml').write_bytes(b'[overlay]\\nport = 9090\\n'); "
+        "(root / '.ruff_cache').mkdir(parents=True, exist_ok=True); "
+        "(root / '.ruff_cache' / 'generated-data.txt').write_bytes(b'overlay-must-survive\\n')"
+    )
+    action = {"type": "command", "argv": [sys.executable, "-c", writer]}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {"kind": "file", "path": rel},
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+        for rel in (
+            ".env.test",
+            "config/generated.local.toml",
+            ".ruff_cache/generated-data.txt",
+        )
+    ]
+    plan = _v2_dagger_plan(
+        edges=edges,
+        prerequisites=["gen"],
+        actions={"gen": action},
+        checks=["weaver_registry"],
+    )
+
+    class Native(NativeDouble):
+        def __init__(self):
+            super().__init__()
+            self.test_source = None
+
+        def _bound_public_source(self, source):
+            return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+
+        def _uv_container(self, source, version):
+            self.test_source = source
+            return self
+
+        async def stdout(self):
+            return json.dumps(
+                {
+                    "executable": sys.executable,
+                    "python": "3.14.0",
+                    "platform": "linux",
+                    "tool_version": "3.14.0",
+                }
+            )
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(
+                {
+                    ".git/HEAD": "ref: refs/heads/main\n",
+                    "ci-selection.toml": "# clean\n",
+                }
+            ),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", report
+    assert ".git/HEAD" not in native.test_source.files
+    assert native.test_source.files[".env.test"] == env_bytes
+    assert native.test_source.files["config/generated.local.toml"] == local_bytes
+    # Overlaying after base noise filtering guarantees producer outputs are never stripped.
+    assert (
+        native.test_source.files[".ruff_cache/generated-data.txt"]
+        == cache_overlay_bytes
+    )
+    assert report["tests"]["native_result"]["evidence"]["source_limit"] == (
+        "input_closure_not_proven"
+    )
+    assert len(report["tests"]["generated_input_refs"]) == 3
+
+
+def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_targets(
+    monkeypatch, modules, tmp_path
+):
+    import importlib
+
+    from engineering_ci import workflow_analysis
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+    dagger_mod = sys.modules["dagger"]
+
+    def identity(*args, **kwargs):
+        if args and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda fn: fn
+
+    monkeypatch.setattr(dagger_mod, "function", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "check", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    for attr in ("Directory", "Container", "Secret"):
+        if not hasattr(dagger_mod, attr):
+            monkeypatch.setattr(dagger_mod, attr, object, raising=False)
+    spec = importlib.util.spec_from_file_location(
+        collector.__package__ + ".main", MODULE / "main.py"
+    )
+    main_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, main_mod)
+    spec.loader.exec_module(main_mod)
+
+    engine = main_mod.EngineeringCi()
+    monkeypatch.setattr(
+        engine,
+        "_bound_public_source",
+        lambda source: _filter_source_with_patterns(source, tooling.SOURCE_NOISE),
+    )
+
+    class ScanContainer:
+        def __init__(self, source_dir, *, stdout_text="[]", code=0):
+            self.source_dir = source_dir
+            self.stdout_text = stdout_text
+            self.code = code
+
+        def with_new_file(self, path, contents):
+            return ScanContainer(
+                self.source_dir, stdout_text=self.stdout_text, code=self.code
+            )
+
+        def with_exec(self, command, **kwargs):
+            if (
+                len(command) >= 3
+                and command[0] == "python"
+                and "repository_scan_targets" in command[2]
+            ):
+                ws = tmp_path / (
+                    "scan_"
+                    + hashlib.sha256(
+                        json.dumps(
+                            {
+                                k: v.decode("latin1")
+                                for k, v in self.source_dir.files.items()
+                            },
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    ).hexdigest()[:12]
+                )
+                ws.mkdir(parents=True, exist_ok=True)
+                _write_memdir(self.source_dir, ws)
+                policy = json.loads(command[3])
+                observed = workflow_analysis.repository_scan_targets(ws, policy)
+                return ScanContainer(
+                    self.source_dir,
+                    stdout_text=json.dumps(observed),
+                    code=0,
+                )
+            return ScanContainer(
+                self.source_dir, stdout_text='{"comments": []}', code=0
+            )
+
+        async def stdout(self):
+            return self.stdout_text
+
+        async def stderr(self):
+            return ""
+
+        async def exit_code(self):
+            return self.code
+
+    monkeypatch.setattr(
+        engine,
+        "_uv_tool_container",
+        lambda source, _bound_source=None: ScanContainer(
+            _bound_source if _bound_source is not None else source
+        ),
+    )
+
+    # Case A: .docker/deploy.sh + scripts/ok.sh + .git/HEAD -> both shell scripts scanned!
+    ok_source = MemoryDirectory(
+        {
+            ".git/HEAD": b"ref: refs/heads/main\n",
+            "scripts/ok.sh": b"#!/bin/sh\necho ok\n",
+            ".docker/deploy.sh": b"#!/bin/sh\necho deploy\n",
+        }
+    )
+    ok_report = asyncio.run(
+        engine._run_shellcheck(
+            ok_source, workflow_analysis.shellcheck_policy(scan_paths=["."])
+        )
+    )
+    assert ok_report["outcome"] == "clean", ok_report
+    assert {item["path"] for item in ok_report["target_sources"]} == {
+        ".docker/deploy.sh",
+        "scripts/ok.sh",
+    }
+
+    # Case B: scripts/ok.sh + .ruff_cache/hidden.sh -> refuse, never pass on subset!
+    hidden_source = MemoryDirectory(
+        {
+            "scripts/ok.sh": b"#!/bin/sh\necho ok\n",
+            ".ruff_cache/hidden.sh": b"#!/bin/sh\necho $unquoted\n",
+        }
+    )
+    refused = asyncio.run(
+        engine._run_shellcheck(
+            hidden_source, workflow_analysis.shellcheck_policy(scan_paths=["."])
+        )
+    )
+    assert refused["outcome"] == "not_executed"
+    assert refused["exit_code"] is None
+    assert refused["reason"] == "source_filter_excluded_scan_targets"
+    assert [t["path"] for t in refused["excluded_targets"]] == [".ruff_cache/hidden.sh"]
+
+    # Case C: ONLY .ruff_cache/hidden.sh -> source_filter_excluded_scan_targets, not no_applicable_scripts.
+    only_hidden = MemoryDirectory({".ruff_cache/hidden.sh": b"#!/bin/sh\necho hi\n"})
+    refused_only = asyncio.run(
+        engine._run_shellcheck(
+            only_hidden, workflow_analysis.shellcheck_policy(scan_paths=["."])
+        )
+    )
+    assert refused_only["outcome"] == "not_executed"
+    assert refused_only["reason"] == "source_filter_excluded_scan_targets"

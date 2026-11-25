@@ -38,8 +38,31 @@ WORKSPACE_SCRATCH = [
     ".vscode",
 ]
 
+HOST_SECRET_EXCLUDES = [
+    ".env",
+    ".env.*",
+    ".secrets",
+    ".aws",
+    ".ssh",
+]
+
+HOST_LOCAL_EXCLUDES = [
+    ".docker",
+    "**/*.local.toml",
+]
+
+WEAVER_DEFAULT_EXCLUDES = [
+    *tooling.SOURCE_NOISE,
+    ".env",
+    ".secrets",
+    ".aws",
+    ".ssh",
+]
+
 SOURCE_EXCLUDES = [
     *tooling.SOURCE_NOISE,
+    *HOST_SECRET_EXCLUDES,
+    *HOST_LOCAL_EXCLUDES,
     *WORKSPACE_SCRATCH,
     "get_vesryn-log_docs.ps1",
     "guides",

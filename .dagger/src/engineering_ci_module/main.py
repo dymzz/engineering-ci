@@ -174,23 +174,36 @@ class EngineeringCi:
         return await self._weaver_execution(source, kind, config_path)
 
     def _bound_public_source(self, source: dagger.Directory) -> dagger.Directory:
-        """Bind caller source with generic VCS/cache/secret exclusions only.
+        """Bind caller source with generic VCS/cache/OS exclusions only.
 
-        Never strips project source, declared targets, Plan overlays (e.g.
-        ``build/``), or explicitly bound Weaver inputs (e.g. ``.artifacts/``).
+        Never guesses project filenames such as ``.env.*``, ``*.local.toml``,
+        or ``.docker/*``, and never strips Plan overlays or consumer targets;
+        host credential/local excludes live in ``repository.py``.
         """
         return dag.directory().with_directory(
             "/", source, exclude=list(tooling.SOURCE_NOISE)
         )
 
     async def _weaver_execution(
-        self, source, kind, config_path, *, context=None, plan=None, generated_inputs=()
+        self,
+        source,
+        kind,
+        config_path,
+        *,
+        context=None,
+        plan=None,
+        generated_inputs=(),
+        _bound_source=None,
     ):
         from . import native_results
 
         if kind not in {"registry", "sample", "live", "terminal"}:
             raise ValueError("Unknown Weaver check")
-        bound = self._bound_public_source(source)
+        bound = (
+            _bound_source
+            if _bound_source is not None
+            else self._bound_public_source(source)
+        )
         result = (
             self._weaver_container()
             .with_directory("/workspace", bound)
@@ -250,7 +263,9 @@ class EngineeringCi:
     async def weaver_registry(
         self,
         source: Annotated[
-            dagger.Directory, DefaultPath("/"), Ignore(tooling.SOURCE_NOISE)
+            dagger.Directory,
+            DefaultPath("/"),
+            Ignore(repository.WEAVER_DEFAULT_EXCLUDES),
         ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
@@ -264,7 +279,9 @@ class EngineeringCi:
     async def weaver_live(
         self,
         source: Annotated[
-            dagger.Directory, DefaultPath("/"), Ignore(tooling.SOURCE_NOISE)
+            dagger.Directory,
+            DefaultPath("/"),
+            Ignore(repository.WEAVER_DEFAULT_EXCLUDES),
         ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
@@ -276,7 +293,9 @@ class EngineeringCi:
     async def weaver_terminal(
         self,
         source: Annotated[
-            dagger.Directory, DefaultPath("/"), Ignore(tooling.SOURCE_NOISE)
+            dagger.Directory,
+            DefaultPath("/"),
+            Ignore(repository.WEAVER_DEFAULT_EXCLUDES),
         ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
@@ -799,27 +818,51 @@ class EngineeringCi:
         from engineering_ci import workflow_analysis
 
         bound = self._bound_public_source(source)
+        input_digest = await source.digest()
+        consumed_digest = await bound.digest()
+        container_source_filtered = consumed_digest != input_digest
         container = self._uv_tool_container(source, _bound_source=bound)
+        scan_source = Path(workflow_analysis.__file__).read_text(encoding="utf-8")
+        scan_command = [
+            "python",
+            "-c",
+            (
+                "import json, sys; sys.path.insert(0, '/tmp'); "
+                "from eci_scan_source import repository_scan_targets; "
+                "print(json.dumps(repository_scan_targets('/workspace', json.loads(sys.argv[1]))))"
+            ),
+            json.dumps(policy),
+        ]
         # Inspect the exact filtered mount in the same immutable container
         # snapshot used by the native tool.
         inspected = container.with_new_file(
             "/tmp/eci_scan_source.py",
-            Path(workflow_analysis.__file__).read_text(encoding="utf-8"),
-        ).with_exec(
-            [
-                "python",
-                "-c",
-                (
-                    "import json, sys; sys.path.insert(0, '/tmp'); "
-                    "from eci_scan_source import repository_scan_targets; "
-                    "print(json.dumps(repository_scan_targets('/workspace', json.loads(sys.argv[1]))))"
-                ),
-                json.dumps(policy),
-            ]
-        )
+            scan_source,
+        ).with_exec(scan_command)
         observed = json.loads(await inspected.stdout())
+        if container_source_filtered:
+            raw_container = self._uv_tool_container(source, _bound_source=source)
+            raw_inspected = raw_container.with_new_file(
+                "/tmp/eci_scan_source.py",
+                scan_source,
+            ).with_exec(scan_command)
+            raw_observed = json.loads(await raw_inspected.stdout())
+            filter_refusal = workflow_analysis.repository_scan_filter_refusal(
+                policy, observed, raw_observed
+            )
+            if filter_refusal is not None:
+                filter_refusal["source_directory_digest"] = input_digest
+                filter_refusal["consumed_directory_digest"] = consumed_digest
+                filter_refusal["container_source_filtered"] = True
+                filter_refusal["container_source_excludes"] = list(tooling.SOURCE_NOISE)
+                return filter_refusal
         refusal = workflow_analysis.repository_scan_refusal(policy, observed)
         if refusal is not None:
+            refusal["source_directory_digest"] = input_digest
+            refusal["consumed_directory_digest"] = consumed_digest
+            refusal["container_source_filtered"] = container_source_filtered
+            if container_source_filtered:
+                refusal["container_source_excludes"] = list(tooling.SOURCE_NOISE)
             return refusal
         policy = {
             **policy,
@@ -841,12 +884,10 @@ class EngineeringCi:
             or stdout.lstrip().startswith("[")
             else "",
         )
-        input_digest = await source.digest()
-        consumed_digest = await bound.digest()
         report["target_sources"] = observed["targets"]
         report["source_directory_digest"] = input_digest
         report["consumed_directory_digest"] = consumed_digest
-        report["container_source_filtered"] = consumed_digest != input_digest
+        report["container_source_filtered"] = container_source_filtered
         if report["container_source_filtered"]:
             report["container_source_excludes"] = list(tooling.SOURCE_NOISE)
         return report

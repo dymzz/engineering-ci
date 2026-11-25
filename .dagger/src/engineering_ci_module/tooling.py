@@ -20,9 +20,10 @@ LYCHEE_ASSET = (
 )
 UV_IMAGE = "ghcr.io/astral-sh/uv:python3.14-trixie-slim"
 
-# Generic VCS, virtualenv, tool cache, and sensitive credential exclusions safe
-# for public reusable functions and Plan-overlaid consumer sources.
-# Repository-specific scratch/build/doc excludes live in repository.py instead.
+# Generic VCS, virtualenv, bytecode/tool cache, and OS metadata exclusions safe
+# for public reusable functions and Plan-overlaid consumer base sources.
+# Host secret/local excludes belong in repository.py so public consumer inputs
+# (e.g. .env.test, *.local.toml, .docker/*) are never dropped implicitly.
 SOURCE_NOISE = [
     ".git",
     ".venv",
@@ -41,13 +42,6 @@ SOURCE_NOISE = [
     "**/.tach",
     ".lycheecache",
     "**/.lycheecache",
-    ".env",
-    ".env.*",
-    ".secrets",
-    ".aws",
-    ".ssh",
-    ".docker",
-    "**/*.local.toml",
     ".DS_Store",
     "Thumbs.db",
 ]
