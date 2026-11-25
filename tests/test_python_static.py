@@ -473,6 +473,9 @@ class SourceBoundaryTests(unittest.TestCase):
         self.assertIn(
             "repository_scan_filter_refusal", methods["_run_repository_script"]
         )
+        self.assertIn(
+            "_needs_unfiltered_scan_cross_check", methods["_run_repository_script"]
+        )
         for weaver_method in ("weaver_registry", "weaver_live", "weaver_terminal"):
             self.assertIn("WEAVER_DEFAULT_EXCLUDES", methods[weaver_method])
         # P2-01: system_packages installs libatomic1 inside _uv_container before mounting source
@@ -483,10 +486,14 @@ class SourceBoundaryTests(unittest.TestCase):
 
         plan_exec_text = (MODULES / "plan_execution.py").read_text(encoding="utf-8")
         self.assertIn("_overlay_bound_source", plan_exec_text)
+        self.assertIn("_verify_pre_execution_source_closure", plan_exec_text)
+        self.assertIn("_accepts_bound_source_kwarg", plan_exec_text)
         native_results_text = (MODULES / "native_results.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("_verify_bound_container_closure", native_results_text)
+        self.assertIn("_downgrade_binding_source", native_results_text)
+        self.assertIn("pre_execution_proof", native_results_text)
+        self.assertNotIn("_WORKSPACE_CLOSURE_PROBE", native_results_text)
 
 
 if __name__ == "__main__":

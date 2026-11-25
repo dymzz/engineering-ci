@@ -2,9 +2,11 @@
 
 import asyncio
 import hashlib
+import inspect
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import dagger
@@ -154,6 +156,165 @@ def _aggregate(report):
     return report
 
 
+def _accepts_bound_source_kwarg(fn):
+    """Return True when a container factory accepts `_bound_source`."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "_bound_source" in params or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
+
+
+async def _verify_pre_execution_source_closure(
+    source,
+    consumed_source,
+    *,
+    binding_root,
+    snapshots,
+    binding,
+    generated_inputs,
+    source_excludes,
+):
+    """Verify full consumed Directory equivalence BEFORE running native tests."""
+    from . import native_results
+
+    if consumed_source is None:
+        return binding, None
+
+    input_ref = await native_results.directory_reference(source)
+    consumed_ref = await native_results.directory_reference(consumed_source)
+    filtered = consumed_ref["digest"] != input_ref["digest"]
+    proof = {
+        "source_directory": input_ref,
+        "consumed_source_directory": consumed_ref,
+        "container_source_filtered": filtered,
+        "equivalence_verified_at": "pre_execution",
+        **({"container_source_excludes": list(source_excludes)} if filtered else {}),
+    }
+
+    has_bound_source_ref = isinstance((binding or {}).get("source_ref"), dict)
+    if not filtered:
+        # Identical immutable Directory digest: reuse verified source proof without re-hashing.
+        if has_bound_source_ref or (generated_inputs and binding_root is not None):
+            proof["source_equivalence_status"] = "unfiltered_identical"
+        return binding, proof
+
+    if generated_inputs:
+        if binding_root is None or not hasattr(consumed_source, "export"):
+            proof["source_equivalence_status"] = "unproven"
+            return binding, proof
+        from engineering_ci import execution
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                await consumed_source.export(tmpdir)
+                consumed_dir = Path(tmpdir)
+                verified = execution._verify_consumer_view_closure(
+                    binding_root, consumed_dir, generated_inputs
+                )
+        except Exception as error:  # noqa: BLE001 - retain executed test on pre-exec export error
+            proof["source_equivalence_status"] = "unproven"
+            proof["source_equivalence_reason"] = str(error)
+            return binding, proof
+        proof["consumer_view_closure_verified"] = bool(verified)
+        proof["source_equivalence_status"] = (
+            "verified_consumer_view" if verified else "unverified_consumer_view"
+        )
+        return binding, proof
+
+    if not has_bound_source_ref:
+        return binding, proof
+
+    bound_binding = snapshots.get("binding") if isinstance(snapshots, dict) else None
+    if (
+        binding_root is None
+        or not isinstance(snapshots, dict)
+        or snapshots.get("kind") != "full"
+        or not isinstance(bound_binding, dict)
+        or not isinstance(snapshots.get("files"), list)
+        or not hasattr(consumed_source, "export")
+    ):
+        proof["source_equivalence_status"] = "unproven"
+        proof["source_equivalence_reason"] = "pre_execution_export_unavailable"
+        return native_results._downgrade_binding_source(binding), proof
+
+    from engineering_ci import execution, selection
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            await consumed_source.export(tmpdir)
+            consumed_dir = Path(tmpdir)
+            base_entries = execution._relative_view_entries(binding_root)
+            consumed_entries = execution._relative_view_entries(consumed_dir)
+            after = selection.worktree_content_binding(
+                consumed_dir, snapshots["files"], require_files=True
+            )
+    except Exception as error:  # noqa: BLE001 - fail closure proof cleanly before test exec
+        proof["source_equivalence_status"] = "unproven"
+        proof["source_equivalence_reason"] = str(error)
+        return native_results._downgrade_binding_source(binding), proof
+
+    missing = sorted(
+        p
+        for p, v in base_entries.items()
+        if v[0] == "file" and p not in consumed_entries
+    )
+    unverified = set(after.get("unverified_paths") or ())
+    non_regular = sorted(
+        (unverified - set(missing))
+        | {
+            p
+            for p, v in base_entries.items()
+            if v[0] == "file"
+            and p in consumed_entries
+            and consumed_entries[p][0] != "file"
+        }
+    )
+    mismatched = sorted(
+        p
+        for p, v in base_entries.items()
+        if v[0] == "file"
+        and p not in missing
+        and p not in non_regular
+        and consumed_entries.get(p) != v
+    )
+    unexpected = sorted(p for p in consumed_entries if p not in base_entries)
+    if (
+        not missing
+        and not non_regular
+        and not mismatched
+        and not unexpected
+        and consumed_entries == base_entries
+        and after == bound_binding
+    ):
+        proof["source_equivalence_status"] = "verified_equivalent"
+        proof["verified_bound_digest"] = after["digest"]
+        return binding, proof
+
+    if missing:
+        status = "missing_bound_inputs"
+    elif non_regular:
+        status = "non_regular_bound_inputs"
+    elif mismatched:
+        status = "mismatched_bound_inputs"
+    elif unexpected:
+        status = "unexpected_bound_inputs"
+    else:
+        status = "unproven"
+    proof.update(
+        {
+            "source_equivalence_status": status,
+            **({"missing_bound_paths": missing} if missing else {}),
+            **({"non_regular_bound_paths": non_regular} if non_regular else {}),
+            **({"mismatched_bound_paths": mismatched} if mismatched else {}),
+            **({"unexpected_bound_paths": unexpected} if unexpected else {}),
+        }
+    )
+    return native_results._downgrade_binding_source(binding), proof
+
+
 async def _tests(
     module,
     source,
@@ -168,10 +329,37 @@ async def _tests(
     consumed_source=None,
 ):
     """Use the existing pytest computation, or native unittest, exactly once."""
-    from . import tooling
+    from . import native_results, tooling
 
     if consumed_source is None and hasattr(module, "_bound_public_source"):
         consumed_source = module._bound_public_source(source)
+
+    binding = None
+    snapshots = None
+    if binding_root is not None and not generated_inputs:
+        from engineering_ci import execution
+
+        bound_plan = _plan_with_repo_relative_configs(plan)
+        snapshots = execution._prepare_source_snapshots(
+            bound_plan, [], root=binding_root, execution_context="dagger_export"
+        )
+        binding = execution.test_input_binding(
+            bound_plan,
+            root=binding_root,
+            execution_context="dagger_export",
+            source_snapshots=snapshots,
+        )
+
+    effective_binding, pre_execution_proof = await _verify_pre_execution_source_closure(
+        source,
+        consumed_source,
+        binding_root=binding_root,
+        snapshots=snapshots,
+        binding=binding,
+        generated_inputs=generated_inputs,
+        source_excludes=tooling.SOURCE_NOISE,
+    )
+
     if framework == "pytest":
         kwargs = (
             {"_bound_source": consumed_source} if consumed_source is not None else {}
@@ -186,8 +374,16 @@ async def _tests(
         xml = execution.xml
         files = module._pytest_bundle(execution)
     else:
-        mount_source = consumed_source if consumed_source is not None else source
-        container = module._uv_container(mount_source, python_version).with_exec(
+        if consumed_source is not None and _accepts_bound_source_kwarg(
+            module._uv_container
+        ):
+            prepared = module._uv_container(
+                source, python_version, _bound_source=consumed_source
+            )
+        else:
+            mount_source = consumed_source if consumed_source is not None else source
+            prepared = module._uv_container(mount_source, python_version)
+        container = prepared.with_exec(
             ["uv", "run", "--no-sync", "python", "-m", "unittest", *targets],
             expect=dagger.ReturnType.ANY,
         )
@@ -206,30 +402,16 @@ async def _tests(
     }
     if xml is not None:
         payload["junit"] = xml
-    from . import native_results
 
-    binding = None
-    snapshots = None
-    if binding_root is not None and not generated_inputs:
-        from engineering_ci import execution
-
-        bound_plan = _plan_with_repo_relative_configs(plan)
-        snapshots = execution._prepare_source_snapshots(
-            bound_plan, [], root=binding_root, execution_context="dagger_export"
-        )
-        binding = execution.test_input_binding(
-            bound_plan,
-            root=binding_root,
-            execution_context="dagger_export",
-            source_snapshots=snapshots,
-        )
-
-    bound_binding = snapshots.get("binding") if isinstance(snapshots, dict) else None
     result_kwargs = (
         {
             "consumed_source": consumed_source,
             "source_excludes": tooling.SOURCE_NOISE,
-            **({"bound_binding": bound_binding} if bound_binding is not None else {}),
+            **(
+                {"pre_execution_proof": pre_execution_proof}
+                if pre_execution_proof is not None
+                else {}
+            ),
         }
         if consumed_source is not None
         else {}
@@ -244,7 +426,7 @@ async def _tests(
         context=context,
         plan=plan,
         generated_inputs=generated_inputs,
-        binding=binding,
+        binding=effective_binding,
         **result_kwargs,
     )
     files = files.with_new_file(

@@ -931,11 +931,12 @@ def repository_scan_filter_refusal(
     observed: dict,
     raw_observed: dict,
 ) -> dict | None:
-    """Refuse explicitly when source noise filtering drops scan targets or problems."""
+    """Refuse explicitly when source filtering hides scan targets or problems."""
     raw_targets = raw_observed.get("targets") or []
+    filtered_targets = observed.get("targets") or []
     filtered_paths = {
         entry["path"]
-        for entry in (observed.get("targets") or [])
+        for entry in filtered_targets
         if isinstance(entry, dict) and entry.get("path")
     }
     excluded_targets = [
@@ -943,39 +944,53 @@ def repository_scan_filter_refusal(
         for entry in raw_targets
         if isinstance(entry, dict) and entry.get("path") not in filtered_paths
     ]
-    raw_target_problems = raw_observed.get("target_problems") or {}
-    filtered_target_problems = observed.get("target_problems") or {}
-    missing_target_problems = {
+    raw_problems = raw_observed.get("problems") or {}
+    filtered_problems = observed.get("problems") or {}
+    excluded_problems = {
         path: problem
-        for path, problem in raw_target_problems.items()
-        if path not in filtered_target_problems
+        for path, problem in raw_problems.items()
+        if filtered_problems.get(path) != problem
     }
-    raw_config_problems = raw_observed.get("config_problems") or {}
-    filtered_config_problems = observed.get("config_problems") or {}
-    missing_config_problems = {
-        path: problem
-        for path, problem in raw_config_problems.items()
-        if path not in filtered_config_problems
-    }
+    raw_config_problem = raw_observed.get("config_problem")
+    filtered_config_problem = observed.get("config_problem")
+    excluded_config_problem = (
+        raw_config_problem
+        if raw_config_problem and raw_config_problem != filtered_config_problem
+        else None
+    )
     if (
         not excluded_targets
-        and not missing_target_problems
-        and not missing_config_problems
+        and not excluded_problems
+        and excluded_config_problem is None
     ):
         return None
-    report = _shell(
+    report = repository_scan_refusal(policy, raw_observed) or _shell(
         policy["tool"],
         policy["pinned_version"],
         list(policy["scan_paths"]),
         "not_executed",
         "source_filter_excluded_scan_targets",
     )
-    report["target_sources"] = list(observed.get("targets") or [])
+    hidden_reasons = []
+    if excluded_config_problem:
+        hidden_reasons.append(excluded_config_problem)
+    hidden_reasons.extend(excluded_problems.values())
+    report["reason"] = "source_filter_excluded_scan_targets"
+    report["limitations"] = [
+        "source_filter_excluded_scan_targets",
+        *(
+            r
+            for r in hidden_reasons
+            if r and r != "source_filter_excluded_scan_targets"
+        ),
+    ]
+    report["target_sources"] = list(filtered_targets)
     report["excluded_targets"] = excluded_targets
-    if raw_target_problems:
-        report["target_problems"] = raw_target_problems
-    if raw_config_problems:
-        report["config_problems"] = raw_config_problems
+    report["target_problems"] = {**filtered_problems, **excluded_problems}
+    if excluded_problems:
+        report["excluded_problems"] = excluded_problems
+    if raw_config_problem:
+        report["config_problem"] = raw_config_problem
     return report
 
 

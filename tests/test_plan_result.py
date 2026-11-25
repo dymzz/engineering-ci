@@ -3085,76 +3085,75 @@ def _write_memdir(source_dir, root):
         target.write_bytes(raw)
 
 
-def _make_probe_container_class(workspace_root, tmp_dir, *, override_files=None):
-    """Test double that executes the real closure probe against materialized files."""
+def _make_runtime_unittest_container_class(workspace_root, *, mutate_during_test=None):
+    """Run real `python -m unittest` pre-mounted on `workspace_root` without post-exec hashing."""
+    import subprocess
 
-    class ProbeContainer:
-        def __init__(self, *, command=None, injected=None):
+    class RuntimeContainer:
+        def __init__(
+            self,
+            *,
+            command=None,
+            exit_code_val=0,
+            stdout_text="",
+            stderr_text="",
+        ):
             self.command = command
-            self.injected = dict(injected or {})
-
-        def with_new_file(self, path, contents):
-            updated = dict(self.injected)
-            updated[path] = contents
-            return ProbeContainer(command=self.command, injected=updated)
+            self.exit_code_val = exit_code_val
+            self.stdout_text = stdout_text
+            self.stderr_text = stderr_text
 
         def with_exec(self, command, **kwargs):
-            return ProbeContainer(command=list(command), injected=self.injected)
-
-        async def exit_code(self):
-            return 0
-
-        async def stdout(self):
-            cmd = self.command or []
-            if len(cmd) >= 2 and cmd[-2] == "-c":
-                code = cmd[-1]
-                if "importlib.metadata" in code:
-                    return json.dumps(
+            cmd = list(command)
+            if "unittest" in cmd:
+                target_args = cmd[cmd.index("unittest") + 1 :]
+                proc = subprocess.run(
+                    [sys.executable, "-m", "unittest", *target_args],
+                    cwd=workspace_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if mutate_during_test is not None:
+                    mutate_during_test(workspace_root)
+                return RuntimeContainer(
+                    command=cmd,
+                    exit_code_val=proc.returncode,
+                    stdout_text=proc.stdout,
+                    stderr_text=proc.stderr,
+                )
+            if len(cmd) >= 2 and cmd[-2] == "-c" and "importlib.metadata" in cmd[-1]:
+                return RuntimeContainer(
+                    command=cmd,
+                    exit_code_val=0,
+                    stdout_text=json.dumps(
                         {
                             "executable": sys.executable,
                             "python": "3.14.0",
                             "platform": "linux",
                             "tool_version": "3.14.0",
                         }
-                    )
-                if "/tmp/eci-expected-paths.json" in code:
-                    expected_file = tmp_dir / "eci-expected-paths.json"
-                    expected_file.write_text(
-                        self.injected["/tmp/eci-expected-paths.json"],
-                        encoding="utf-8",
-                    )
-                    if override_files is not None:
-                        override_files(workspace_root)
-                    patched = code.replace(
-                        "'/workspace'", repr(str(workspace_root))
-                    ).replace(
-                        "'/tmp/eci-expected-paths.json'",
-                        repr(str(expected_file)),
-                    )
-                    proc = await asyncio.create_subprocess_exec(
-                        sys.executable,
-                        "-I",
-                        "-c",
-                        patched,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    out, err = await proc.communicate()
-                    if proc.returncode != 0:
-                        raise RuntimeError(err.decode("utf-8", "replace"))
-                    return out.decode("utf-8")
-            return "1 passed\n"
+                    ),
+                )
+            return RuntimeContainer(command=cmd)
+
+        async def exit_code(self):
+            return self.exit_code_val
+
+        async def stdout(self):
+            return self.stdout_text
 
         async def stderr(self):
-            return ""
+            return self.stderr_text
 
-    return ProbeContainer
+    return RuntimeContainer
 
 
-def test_bound_public_source_and_closure_probe_preserve_or_downgrade_binding(
+def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviations(
     modules, tmp_path
 ):
     import importlib
+    import shutil
 
     from engineering_ci import selection as real_selection
 
@@ -3170,7 +3169,13 @@ def test_bound_public_source_and_closure_probe_preserve_or_downgrade_binding(
         ".env.test": b"APP_ENV=testing\n",
         "config/test.local.toml": b"[service]\nport = 8080\n",
         ".docker/deploy.sh": b"#!/bin/sh\necho ok\n",
-        "tests/controlled.py": b"def test_ok():\n    assert True\n",
+        "tests/test_controlled.py": (
+            b"import unittest\n"
+            b"from pathlib import Path\n\n"
+            b"class ControlledTest(unittest.TestCase):\n"
+            b"    def test_ok(self):\n"
+            b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=testing\\n')\n"
+        ),
     }
     src = tmp_path / "src"
     for rel, raw in raw_files.items():
@@ -3183,7 +3188,7 @@ def test_bound_public_source_and_closure_probe_preserve_or_downgrade_binding(
         edges=[],
         prerequisites=[],
         actions={},
-        tests=("tests/controlled.py",),
+        tests=("tests.test_controlled",),
         checks=("weaver_registry",),
     )
     plan["git"] = {
@@ -3198,26 +3203,35 @@ def test_bound_public_source_and_closure_probe_preserve_or_downgrade_binding(
         "source_tree_id": real_selection.directory_content_id(src),
     }
 
-    def run_case(case_dir, *, override_files=None, with_probe=True, bind_src=src):
+    def run_case(
+        case_dir,
+        *,
+        bind_src=src,
+        mutate_during_test=None,
+        bound_transform=None,
+    ):
         ws_root = case_dir / "container_ws"
         ws_root.mkdir(parents=True, exist_ok=True)
-        captured_sources = []
+        bound_kwarg_seen = []
 
         class Native:
-            def __init__(self):
-                self.test_invocations = 0
-
             def _bound_public_source(self, source):
-                return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+                filtered = _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+                if bound_transform is not None:
+                    return bound_transform(filtered)
+                return filtered
 
-            def _uv_container(self, source, version):
-                captured_sources.append(source)
-                _write_memdir(source, ws_root)
-                if with_probe:
-                    return _make_probe_container_class(
-                        ws_root, case_dir, override_files=override_files
-                    )()
-                return _ContractTestContainer(self)
+            def _uv_container(self, source, version, _bound_source=None):
+                bound_kwarg_seen.append(_bound_source is not None)
+                mount = (
+                    _bound_source
+                    if _bound_source is not None
+                    else self._bound_public_source(source)
+                )
+                _write_memdir(mount, ws_root)
+                return _make_runtime_unittest_container_class(
+                    ws_root, mutate_during_test=mutate_during_test
+                )()
 
             async def weaver_artifacts(self, source, kind, config):
                 return MemoryDirectory(
@@ -3251,69 +3265,84 @@ def test_bound_public_source_and_closure_probe_preserve_or_downgrade_binding(
                 "ci-weaver.toml",
             )
         )
-        return json.loads(asyncio.run(saved.report())), captured_sources
+        return json.loads(asyncio.run(saved.report())), bound_kwarg_seen
 
-    # 1. Filtered base (.git dropped), but all bound inputs intact in /workspace.
-    ok_report, ok_sources = run_case(tmp_path / "ok")
+    # 1. Pre-exec proof succeeds on immutable consumed_source despite .git filtering;
+    # runtime test writes/edits in workspace AFTER start do not falsify pre-exec binding.
+    def _runtime_side_effects(ws):
+        (ws / "runtime_created.log").write_text("runtime output\n", encoding="utf-8")
+        (ws / ".env.test").write_bytes(b"APP_ENV=mutated_by_test_after_start\n")
+
+    ok_report, ok_kwargs = run_case(
+        tmp_path / "ok", mutate_during_test=_runtime_side_effects
+    )
+    assert ok_kwargs == [True]
     assert ok_report["status"] == "passed", ok_report
-    assert ".env.test" in ok_sources[0].files
-    assert "config/test.local.toml" in ok_sources[0].files
-    assert ".docker/deploy.sh" in ok_sources[0].files
     ok_native = ok_report["tests"]["native_result"]
     ok_obs = ok_native["evidence"]["observation"]
     assert ok_obs["container_source_filtered"] is True
+    assert ok_obs["equivalence_verified_at"] == "pre_execution"
     assert ok_obs["source_equivalence_status"] == "verified_equivalent"
     assert ok_native["source_ref"]["binding_status"] == "byte_tree"
     assert ok_native["source_ref"]["scope_kind"] == "full_input_closure"
     assert "source_limit" not in ok_native["evidence"]
 
-    # 2. Filtered/missing bound input in container -> retain native exit=0 + downgrade binding.
-    miss_report, _ = run_case(
-        tmp_path / "missing",
-        override_files=lambda root: (root / ".env.test").unlink(),
+    # 2. Unfiltered identical immutable Directory digest -> skip redundant re-hash.
+    same_src = tmp_path / "same_src"
+    shutil.copytree(src, same_src, ignore=shutil.ignore_patterns(".git"))
+    same_report, _ = run_case(tmp_path / "identical", bind_src=same_src)
+    same_native = same_report["tests"]["native_result"]
+    assert same_native["evidence"]["observation"]["container_source_filtered"] is False
+    assert (
+        same_native["evidence"]["observation"]["source_equivalence_status"]
+        == "unfiltered_identical"
     )
+    assert same_native["source_ref"]["binding_status"] == "byte_tree"
+    assert "source_limit" not in same_native["evidence"]
+
+    # 3. Missing bound input (.ruff_cache/bound.txt) stripped by SOURCE_NOISE pre-execution ->
+    # retain native exit=0 and downgrade binding with source_limit.
+    miss_src = tmp_path / "miss_src"
+    shutil.copytree(src, miss_src)
+    (miss_src / ".ruff_cache").mkdir()
+    (miss_src / ".ruff_cache/bound.txt").write_bytes(b"bound-cache\n")
+    miss_report, _ = run_case(tmp_path / "missing", bind_src=miss_src)
     assert miss_report["tests"]["exit_code"] == 0
     miss_native = miss_report["tests"]["native_result"]
-    assert miss_native["evidence"]["observation"]["source_equivalence_status"] == (
-        "missing_bound_inputs"
+    assert (
+        miss_native["evidence"]["observation"]["source_equivalence_status"]
+        == "missing_bound_inputs"
     )
     assert miss_native["evidence"]["observation"]["missing_bound_paths"] == [
-        ".env.test"
+        ".ruff_cache/bound.txt"
     ]
     assert miss_native["evidence"]["source_limit"] == "input_closure_not_proven"
     assert miss_native["source_ref"]["binding_status"] == "identity_only"
     assert miss_native["source_ref"]["scope_kind"] == "changed_paths"
 
-    # 3. 1-byte mismatch inside container -> retain native exit=0 + downgrade binding.
-    bad_report, _ = run_case(
-        tmp_path / "mismatch",
-        override_files=lambda root: (root / ".env.test").write_bytes(
-            b"APP_ENV=tampered\n"
+    # 4. Unexpected extra file pre-execution in consumed_source ->
+    # caught by full-tree closure check (not expected-paths-only), downgraded cleanly.
+    extra_report, _ = run_case(
+        tmp_path / "extra",
+        bound_transform=lambda d: d.with_new_file(
+            "unexpected_extra.txt", b"extra pre-exec\n"
         ),
     )
-    assert bad_report["tests"]["exit_code"] == 0
-    bad_native = bad_report["tests"]["native_result"]
-    assert bad_native["evidence"]["observation"]["source_equivalence_status"] == (
-        "mismatched_bound_inputs"
+    assert extra_report["tests"]["exit_code"] == 0
+    extra_native = extra_report["tests"]["native_result"]
+    assert (
+        extra_native["evidence"]["observation"]["source_equivalence_status"]
+        == "unexpected_bound_inputs"
     )
-    assert bad_native["evidence"]["observation"]["mismatched_bound_paths"] == [
-        ".env.test"
+    assert extra_native["evidence"]["observation"]["unexpected_bound_paths"] == [
+        "unexpected_extra.txt"
     ]
-    assert bad_native["evidence"]["source_limit"] == "input_closure_not_proven"
-    assert bad_native["source_ref"]["binding_status"] == "identity_only"
-
-    # 4. Container mock without with_new_file probe cannot fabricate closure proof when filtered.
-    unproven_report, _ = run_case(tmp_path / "unproven", with_probe=False)
-    unproven_native = unproven_report["tests"]["native_result"]
-    assert unproven_native["evidence"]["observation"]["source_equivalence_status"] == (
-        "unproven"
-    )
-    assert unproven_native["evidence"]["source_limit"] == "input_closure_not_proven"
-    assert unproven_native["source_ref"]["binding_status"] == "identity_only"
+    assert extra_native["evidence"]["source_limit"] == "input_closure_not_proven"
+    assert extra_native["source_ref"]["binding_status"] == "identity_only"
 
 
 def test_v2_data_overlay_applies_after_source_noise_filtering_and_preserves_env_and_local_toml(
-    modules,
+    modules, tmp_path
 ):
     import importlib
 
@@ -3356,28 +3385,43 @@ def test_v2_data_overlay_applies_after_source_noise_filtering_and_preserves_env_
         edges=edges,
         prerequisites=["gen"],
         actions={"gen": action},
-        checks=["weaver_registry"],
+        tests=("tests.test_overlay_unit",),
+        checks=("weaver_registry",),
     )
 
-    class Native(NativeDouble):
+    ws_root = tmp_path / "unittest_ws"
+    ws_root.mkdir(parents=True, exist_ok=True)
+
+    class Native:
         def __init__(self):
-            super().__init__()
             self.test_source = None
+            self.bound_kwarg_passed = False
 
         def _bound_public_source(self, source):
             return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
 
-        def _uv_container(self, source, version):
-            self.test_source = source
-            return self
+        # Mirrors real EngineeringCi._uv_container: omits _bound_source -> second filter runs!
+        def _uv_container(self, source, version, _bound_source=None):
+            self.bound_kwarg_passed = _bound_source is not None
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            self.test_source = mounted
+            _write_memdir(mounted, ws_root)
+            return _make_runtime_unittest_container_class(ws_root)()
 
-        async def stdout(self):
-            return json.dumps(
+        async def weaver_artifacts(self, source, kind, config):
+            return MemoryDirectory(
                 {
-                    "executable": sys.executable,
-                    "python": "3.14.0",
-                    "platform": "linux",
-                    "tool_version": "3.14.0",
+                    "report.json": json.dumps(
+                        {
+                            "name": "weaver_registry",
+                            "status": "passed",
+                            "exit_code": 0,
+                        }
+                    )
                 }
             )
 
@@ -3388,8 +3432,17 @@ def test_v2_data_overlay_applies_after_source_noise_filtering_and_preserves_env_
             MemoryFile(json.dumps(plan)),
             MemoryDirectory(
                 {
-                    ".git/HEAD": "ref: refs/heads/main\n",
-                    "ci-selection.toml": "# clean\n",
+                    ".git/HEAD": b"ref: refs/heads/main\n",
+                    "ci-selection.toml": b"# clean\n",
+                    "tests/test_overlay_unit.py": (
+                        b"import unittest\n"
+                        b"from pathlib import Path\n\n"
+                        b"class OverlayTest(unittest.TestCase):\n"
+                        b"    def test_reads_all_overlays(self):\n"
+                        b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=overlay\\n')\n"
+                        b"        self.assertEqual(Path('config/generated.local.toml').read_bytes(), b'[overlay]\\nport = 9090\\n')\n"
+                        b"        self.assertEqual(Path('.ruff_cache/generated-data.txt').read_bytes(), b'overlay-must-survive\\n')\n"
+                    ),
                 }
             ),
             "3.14",
@@ -3398,10 +3451,11 @@ def test_v2_data_overlay_applies_after_source_noise_filtering_and_preserves_env_
     )
     report = json.loads(asyncio.run(saved.report()))
     assert report["status"] == "passed", report
+    assert report["tests"]["exit_code"] == 0
+    assert native.bound_kwarg_passed is True
     assert ".git/HEAD" not in native.test_source.files
     assert native.test_source.files[".env.test"] == env_bytes
     assert native.test_source.files["config/generated.local.toml"] == local_bytes
-    # Overlaying after base noise filtering guarantees producer outputs are never stripped.
     assert (
         native.test_source.files[".ruff_cache/generated-data.txt"]
         == cache_overlay_bytes
@@ -3423,6 +3477,12 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
     tooling = importlib.import_module(collector.__package__ + ".tooling")
     dagger_mod = sys.modules["dagger"]
 
+    class FakeDagDir(MemoryDirectory):
+        def with_directory(self, prefix, directory, *, exclude=()):
+            filtered = _filter_source_with_patterns(directory, exclude)
+            merged = super().with_directory(prefix, filtered)
+            return FakeDagDir(merged.files, dirs=merged.dirs)
+
     def identity(*args, **kwargs):
         if args and callable(args[0]) and not kwargs:
             return args[0]
@@ -3433,6 +3493,12 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
     monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
     monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        dagger_mod,
+        "dag",
+        types.SimpleNamespace(directory=lambda: FakeDagDir()),
+        raising=False,
+    )
     for attr in ("Directory", "Container", "Secret"):
         if not hasattr(dagger_mod, attr):
             monkeypatch.setattr(dagger_mod, attr, object, raising=False)
@@ -3444,11 +3510,7 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
     spec.loader.exec_module(main_mod)
 
     engine = main_mod.EngineeringCi()
-    monkeypatch.setattr(
-        engine,
-        "_bound_public_source",
-        lambda source: _filter_source_with_patterns(source, tooling.SOURCE_NOISE),
-    )
+    scan_calls = []
 
     class ScanContainer:
         def __init__(self, source_dir, *, stdout_text="[]", code=0):
@@ -3468,7 +3530,7 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
                 and "repository_scan_targets" in command[2]
             ):
                 ws = tmp_path / (
-                    "scan_"
+                    f"scan_{len(scan_calls)}_"
                     + hashlib.sha256(
                         json.dumps(
                             {
@@ -3483,6 +3545,7 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
                 _write_memdir(self.source_dir, ws)
                 policy = json.loads(command[3])
                 observed = workflow_analysis.repository_scan_targets(ws, policy)
+                scan_calls.append(list(self.source_dir.files))
                 return ScanContainer(
                     self.source_dir,
                     stdout_text=json.dumps(observed),
@@ -3509,7 +3572,8 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
         ),
     )
 
-    # Case A: .docker/deploy.sh + scripts/ok.sh + .git/HEAD -> both shell scripts scanned!
+    # Case A: .git/HEAD + .docker/deploy.sh + scripts/ok.sh -> both scanned, NO duplicate raw scan!
+    scan_calls.clear()
     ok_source = MemoryDirectory(
         {
             ".git/HEAD": b"ref: refs/heads/main\n",
@@ -3527,6 +3591,7 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
         ".docker/deploy.sh",
         "scripts/ok.sh",
     }
+    assert len(scan_calls) == 1
 
     # Case B: scripts/ok.sh + .ruff_cache/hidden.sh -> refuse, never pass on subset!
     hidden_source = MemoryDirectory(
@@ -3554,3 +3619,30 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
     )
     assert refused_only["outcome"] == "not_executed"
     assert refused_only["reason"] == "source_filter_excluded_scan_targets"
+
+    # Case D: Comparator detects problems & config_problem using repository_scan_targets's exact keys!
+    anomaly_only = workflow_analysis.repository_scan_filter_refusal(
+        workflow_analysis.shellcheck_policy(scan_paths=["."]),
+        {
+            "targets": [{"path": "scripts/ok.sh"}],
+            "problems": {},
+            "config_problem": None,
+        },
+        {
+            "targets": [{"path": "scripts/ok.sh"}],
+            "problems": {".ruff_cache/escape.sh": "workflow_target_outside_root"},
+            "config_problem": None,
+        },
+    )
+    assert anomaly_only is not None
+    assert anomaly_only["outcome"] == "not_executed"
+    assert anomaly_only["reason"] == "source_filter_excluded_scan_targets"
+    assert anomaly_only["target_problems"] == {
+        ".ruff_cache/escape.sh": "workflow_target_outside_root"
+    }
+    assert anomaly_only["excluded_problems"] == {
+        ".ruff_cache/escape.sh": "workflow_target_outside_root"
+    }
+    assert (
+        tooling.SOURCE_NOISE
+    )  # keeps import explicitly used and checked alongside main_mod

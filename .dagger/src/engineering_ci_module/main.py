@@ -173,6 +173,15 @@ class EngineeringCi:
         """Export one Weaver execution, its native logs, package and report."""
         return await self._weaver_execution(source, kind, config_path)
 
+    _SCAN_SKIPPED_NOISE = (
+        ".git",
+        ".venv",
+        "**/.venv",
+        "__pycache__",
+        "**/__pycache__",
+    )
+    _SCAN_SKIPPED_PARTS = frozenset({".git", ".venv", "__pycache__"})
+
     def _bound_public_source(self, source: dagger.Directory) -> dagger.Directory:
         """Bind caller source with generic VCS/cache/OS exclusions only.
 
@@ -183,6 +192,27 @@ class EngineeringCi:
         return dag.directory().with_directory(
             "/", source, exclude=list(tooling.SOURCE_NOISE)
         )
+
+    def _scan_equivalent_source(self, source: dagger.Directory) -> dagger.Directory:
+        """Bind source excluding only segments always skipped by scan discovery."""
+        return dag.directory().with_directory(
+            "/", source, exclude=list(self._SCAN_SKIPPED_NOISE)
+        )
+
+    async def _needs_unfiltered_scan_cross_check(
+        self, source: dagger.Directory, bound: dagger.Directory, policy: dict
+    ) -> bool:
+        """Skip duplicate raw scan unless filter removed discoverable dirs/paths."""
+        configured = [*policy.get("scan_paths", ()), policy.get("config") or ""]
+        if any(
+            part in self._SCAN_SKIPPED_PARTS
+            for raw in configured
+            if raw
+            for part in str(raw).replace("\\", "/").split("/")
+        ):
+            return True
+        scan_equivalent = self._scan_equivalent_source(source)
+        return await bound.digest() != await scan_equivalent.digest()
 
     async def _weaver_execution(
         self,
@@ -840,7 +870,9 @@ class EngineeringCi:
             scan_source,
         ).with_exec(scan_command)
         observed = json.loads(await inspected.stdout())
-        if container_source_filtered:
+        if container_source_filtered and await self._needs_unfiltered_scan_cross_check(
+            source, bound, policy
+        ):
             raw_container = self._uv_tool_container(source, _bound_source=source)
             raw_inspected = raw_container.with_new_file(
                 "/tmp/eci_scan_source.py",
