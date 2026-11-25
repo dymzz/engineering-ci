@@ -2687,8 +2687,9 @@ def test_production_handoff_defaults_not_verified_and_preserves_otlp_json_file(
     workflow = Path(".github/workflows/cicd-telemetry-post-run.yml").read_text(
         encoding="utf-8"
     )
-    assert "production_webhook_cutover=" in workflow
-    assert "vars.ECI_GITHUBRECEIVER_PROD_VERIFIED" in workflow
+    assert "ECI_GITHUBRECEIVER_WEBHOOK_SUBSCRIPTION_VERIFIED" in workflow
+    assert "select_post_run_cutover_policy" in workflow
+    assert "--allow-pre-cutover-trace-fallback" in workflow
 
     facts_path = tmp_path / "facts.json"
     facts_path.write_text(
@@ -2710,3 +2711,294 @@ def test_production_handoff_defaults_not_verified_and_preserves_otlp_json_file(
         )
     assert exc.value.code == 2
     assert sentinel.read_text(encoding="utf-8") == '{"keep": "sentinel"}\n'
+
+
+def test_post_run_cutover_behavior_not_verified_vs_verified(tmp_path, monkeypatch):
+    """P1-04: not_verified retains working Trace fallback; verified activates retirement."""
+    run, job = _api_run_job_fixture()
+    job = {**job, "run_id": run["id"], "run_attempt": 1}
+    pages = {"total_count": 1, "jobs": [job]}
+    monkeypatch.setattr(cicd_telemetry, "gh_api_get", _api_attempt_get(run, pages))
+    fixed_ns = cicd_telemetry.parse_time_ns("2024-01-01T00:05:00Z")
+    monkeypatch.setattr(cicd_telemetry, "time_ns", lambda: fixed_ns)
+
+    # 1) Partial / local_e2e_only readiness stays not_verified and retains otel.json Trace output.
+    unverified_handoff = cicd_telemetry.evaluate_receiver_production_handoff_env(
+        {
+            "ECI_GITHUBRECEIVER_WEBHOOK_SUBSCRIPTION_VERIFIED": "true",
+            "ECI_GITHUBRECEIVER_WEBHOOK_HMAC_VERIFIED": "true",
+            "ECI_GITHUBRECEIVER_LIVE_INGESTED": "false",
+            "ECI_GITHUBRECEIVER_OTLP_TRACES_DELIVERED": "false",
+            "ECI_GITHUBRECEIVER_CONSUMER_VERIFIED": "false",
+        }
+    )
+    policy_unverified = cicd_telemetry.select_post_run_cutover_policy(
+        unverified_handoff
+    )
+    assert unverified_handoff["status"] == "not_verified"
+    assert policy_unverified["allow_pre_cutover_trace_fallback"] is True
+
+    pre_dir = tmp_path / "pre-cutover"
+    pre_handoff_path = pre_dir / "production-handoff.json"
+    pre_dir.mkdir(parents=True)
+    pre_handoff_path.write_text(json.dumps(unverified_handoff), encoding="utf-8")
+    pre_out = pre_dir / "candidate.json"
+    pre_otel = pre_dir / "otel.json"
+    pre_logs = pre_dir / "otel-logs.json"
+    assert (
+        cicd_telemetry.main(
+            [
+                "--repository",
+                "dymzz/engineering-ci",
+                "--run-id",
+                str(run["id"]),
+                "--attempt",
+                "1",
+                "--production-handoff",
+                str(pre_handoff_path),
+                "--allow-pre-cutover-trace-fallback",
+                "--end-time-mode",
+                policy_unverified["mode"],
+                "--output",
+                str(pre_out),
+                "--otlp-json",
+                str(pre_otel),
+                "--otlp-logs-json",
+                str(pre_logs),
+            ]
+        )
+        == 0
+    )
+    pre_saved = json.loads(pre_out.read_text(encoding="utf-8"))
+    assert pre_saved["claims"]["trace_producer_retired"] is False
+    assert pre_saved["claims"]["otlp_json_prepared"] is True
+    assert pre_saved["claims"]["otlp_json_exported"] is True
+    assert pre_saved["production_handoff"]["status"] == "not_verified"
+    assert (
+        pre_saved["production_handoff"]["cutover_action"]
+        == "retained_pre_cutover_trace_fallback"
+    )
+    assert len(pre_saved["spans"]) == 1
+    assert pre_otel.is_file() and pre_logs.is_file()
+
+    # 2) Verified production handoff enforces witness mode and refuses fallback / --otlp-json.
+    verified_handoff = cicd_telemetry.evaluate_receiver_production_handoff_env(
+        {
+            "ECI_GITHUBRECEIVER_WEBHOOK_SUBSCRIPTION_VERIFIED": "true",
+            "ECI_GITHUBRECEIVER_WEBHOOK_HMAC_VERIFIED": "true",
+            "ECI_GITHUBRECEIVER_LIVE_INGESTED": "true",
+            "ECI_GITHUBRECEIVER_OTLP_TRACES_DELIVERED": "true",
+            "ECI_GITHUBRECEIVER_CONSUMER_VERIFIED": "true",
+        }
+    )
+    policy_verified = cicd_telemetry.select_post_run_cutover_policy(verified_handoff)
+    assert verified_handoff["status"] == "verified"
+    assert policy_verified["mode"] == cicd_telemetry.END_TIME_WITNESS
+    assert policy_verified["allow_pre_cutover_trace_fallback"] is False
+
+    ver_dir = tmp_path / "verified-cutover"
+    ver_dir.mkdir(parents=True)
+    ver_handoff_path = ver_dir / "production-handoff.json"
+    ver_handoff_path.write_text(json.dumps(verified_handoff), encoding="utf-8")
+    ver_out = ver_dir / "candidate.json"
+    ver_otel = ver_dir / "otel.json"
+    ver_logs = ver_dir / "otel-logs.json"
+    assert (
+        cicd_telemetry.main(
+            [
+                "--repository",
+                "dymzz/engineering-ci",
+                "--run-id",
+                str(run["id"]),
+                "--attempt",
+                "1",
+                "--production-handoff",
+                str(ver_handoff_path),
+                "--end-time-mode",
+                policy_verified["mode"],
+                "--output",
+                str(ver_out),
+                "--otlp-logs-json",
+                str(ver_logs),
+            ]
+        )
+        == 0
+    )
+    ver_saved = json.loads(ver_out.read_text(encoding="utf-8"))
+    assert ver_saved["claims"]["trace_producer_retired"] is True
+    assert ver_saved["otlp_json_prepared"] is False
+    assert ver_saved["spans"] == []
+    assert ver_saved["production_handoff"]["status"] == "verified"
+    assert (
+        ver_saved["production_handoff"]["cutover_action"] == "retired_to_githubreceiver"
+    )
+    assert any(
+        item["source"] == "github_attempt_terminal"
+        for item in ver_saved["signals"]["logs"]
+    )
+    assert not ver_otel.exists()
+
+    with pytest.raises(SystemExit) as refused:
+        cicd_telemetry.main(
+            [
+                "--repository",
+                "dymzz/engineering-ci",
+                "--run-id",
+                str(run["id"]),
+                "--attempt",
+                "1",
+                "--production-handoff",
+                str(ver_handoff_path),
+                "--allow-pre-cutover-trace-fallback",
+                "--end-time-mode",
+                cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+                "--output",
+                str(ver_dir / "refused.json"),
+                "--otlp-json",
+                str(ver_otel),
+            ]
+        )
+    assert refused.value.code == 2
+    assert not ver_otel.exists()
+
+
+def test_partial_rerun_api_witness_separates_companion_logs_44713410255_pattern(
+    monkeypatch,
+):
+    """P1-06 + P2: Run 44713410255 Attempt 2 reused jobs never emit Attempt 2 Job Terminal Logs."""
+    run = {
+        "id": 44713410255,
+        "name": "Engineering CI",
+        "run_attempt": 2,
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": "7ea85c24a62e65a9384a0abe9eb541ca54064cbc",
+        "run_started_at": "2026-11-20T09:49:34Z",
+        "updated_at": "2026-11-20T09:50:55Z",
+        "html_url": "https://github.com/dymzz/engineering-ci/actions/runs/44713410255",
+        "repository": {"full_name": "dymzz/engineering-ci"},
+    }
+
+    def mk_job(jid, name, started, completed):
+        return {
+            "id": jid,
+            "run_id": 44713410255,
+            "run_attempt": 2,
+            "name": name,
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-11-20T09:49:36Z",
+            "started_at": started,
+            "completed_at": completed,
+            "html_url": f"https://github.com/dymzz/engineering-ci/actions/runs/44713410255/job/{jid}",
+        }
+
+    exec_job = mk_job(
+        136212522105, "version-metadata", "2026-11-20T09:49:39Z", "2026-11-20T09:50:49Z"
+    )
+    reused_jobs = [
+        mk_job(
+            136212523496, "python-ci", "2026-11-20T09:45:32Z", "2026-11-20T09:47:10Z"
+        ),
+        mk_job(
+            136212524904, "dagger-gate", "2026-11-20T09:45:32Z", "2026-11-20T09:47:10Z"
+        ),
+        mk_job(
+            136212602878,
+            "sync-tool-tests",
+            "2026-11-20T09:45:32Z",
+            "2026-11-20T09:47:10Z",
+        ),
+    ]
+    pages = {"total_count": 4, "jobs": [exec_job, *reused_jobs]}
+    facts, cov = cicd_telemetry.fetch_github_run_job(
+        "dymzz/engineering-ci",
+        44713410255,
+        attempt=2,
+        api_get=_api_attempt_get(run, pages),
+    )
+    observed = cicd_telemetry.parse_time_ns("2026-11-20T09:51:00Z")
+    report = cicd_telemetry.produce(
+        facts,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_WITNESS,
+        terminal_observed_at_ns=observed,
+        completed_jobs_total=cov["completed_jobs_total"],
+        job_selection=cov["job_selection"],
+        task_facts=cov["task_facts"],
+        expected_job_stubs=cov["expected_job_stubs"],
+        api_jobs_snapshot=cov["api_jobs_snapshot"],
+    )
+    cicd_telemetry.attach_signal_candidates(report)
+    assert report["status"] == "witness_only"
+    assert len(report["result_inventory"]) == 4
+    assert [r["job_id"] for r in report["terminal_job_records"]] == ["136212522105"]
+    assert [r["job_id"] for r in report["reused_job_records"]] == [
+        "136212523496",
+        "136212524904",
+        "136212602878",
+    ]
+    assert all(
+        r["trace_id"] is None and r["span_id"] is None
+        for r in report["reused_job_records"]
+    )
+    job_logs = [
+        item
+        for item in report["signals"]["logs"]
+        if item["source"] == "github_job_terminal"
+    ]
+    assert len(job_logs) == 1
+    assert job_logs[0]["attributes"]["cicd.pipeline.task.run.id"] == "136212522105"
+    assert job_logs[0]["provenance"]["execution_attribution"] == "executed_in_attempt"
+    assert job_logs[0]["provenance"]["execution_attribution_source"] == "run_started_at"
+    assert any(
+        item["source"] == "github_attempt_terminal"
+        for item in report["signals"]["logs"]
+    )
+
+    # Without run_started_at or executed_job_ids, Attempt 2 attribution stays unproven/unknown.
+    no_start_run = {k: v for k, v in run.items() if k != "run_started_at"}
+    facts_u, cov_u = cicd_telemetry.fetch_github_run_job(
+        "dymzz/engineering-ci",
+        44713410255,
+        attempt=2,
+        api_get=_api_attempt_get(no_start_run, pages),
+    )
+    report_u = cicd_telemetry.produce(
+        facts_u,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_WITNESS,
+        terminal_observed_at_ns=observed,
+        completed_jobs_total=cov_u["completed_jobs_total"],
+        job_selection=cov_u["job_selection"],
+        task_facts=cov_u["task_facts"],
+        expected_job_stubs=cov_u["expected_job_stubs"],
+        api_jobs_snapshot=cov_u["api_jobs_snapshot"],
+    )
+    cicd_telemetry.attach_signal_candidates(report_u)
+    assert report_u["status"] == "partial"
+    assert report_u["coverage"]["execution_attribution_status"] == "unknown"
+    assert report_u["terminal_job_records"] == []
+    assert len(report_u["unknown_execution_jobs"]) == 4
+    assert all(
+        item["source"] != "github_job_terminal" for item in report_u["signals"]["logs"]
+    )
+    assert any(
+        item["source"] == "github_attempt_terminal"
+        for item in report_u["signals"]["logs"]
+    )
+
+    with pytest.raises(cicd_telemetry.TelemetryError, match="wrong_reuse_attribution"):
+        cicd_telemetry.produce(
+            facts,
+            source="github_api",
+            github_api_fetched=True,
+            end_time_mode=cicd_telemetry.END_TIME_WITNESS,
+            terminal_observed_at_ns=observed,
+            completed_jobs_total=cov["completed_jobs_total"],
+            job_selection=cov["job_selection"],
+            task_facts=cov["task_facts"],
+            executed_job_ids=["136212523496"],
+        )

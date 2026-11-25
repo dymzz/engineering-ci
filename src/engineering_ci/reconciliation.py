@@ -1377,32 +1377,6 @@ def _unsatisfied_status(reasons):
     return "insufficient"
 
 
-def _terminal_live_result_correlated(eligible, selected_ids):
-    """Fail closed if selected weaver_terminal live witness lacks correlation proof."""
-    by_id = {result["result_id"]: result for result, _ in eligible}
-    checked = False
-    for result_id in selected_ids:
-        result = by_id.get(result_id)
-        if not isinstance(result, dict):
-            return False
-        tool = result.get("tool") or {}
-        if tool.get("access_id") != "weaver/terminal-live-check":
-            continue
-        checked = True
-        evidence = result.get("evidence") or {}
-        if evidence.get("gate_status") != "passed":
-            return False
-        gate_exit = evidence.get("gate_exit_code")
-        if type(gate_exit) is not int or gate_exit != 0:
-            return False
-        if (
-            "terminal_correlation_status" in evidence
-            and evidence.get("terminal_correlation_status") != "passed"
-        ):
-            return False
-    return checked
-
-
 def _reconcile_entry(
     entry,
     binding,
@@ -1764,19 +1738,6 @@ def _reconcile_entry(
             unknown_fields=["native_satisfaction"],
         )
         return output
-    if (
-        entry.get("name") == "weaver_terminal"
-        and decision.get("status") == "satisfied"
-        and not _terminal_live_result_correlated(
-            eligible, list(decision.get("selected_result_ids") or ())
-        )
-    ):
-        decision = {
-            **decision,
-            "status": "unsatisfied",
-            "reason": "terminal_correlation_unproven",
-            "selected_result_ids": [],
-        }
     output["native_satisfaction"] = decision
     if decision["status"] == "satisfied":
         selected_ids = list(decision.get("selected_result_ids") or ())

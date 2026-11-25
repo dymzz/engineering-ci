@@ -234,10 +234,11 @@ def _make_weaver_terminal_report(
     run_ref: str,
     attempt_ref: str,
     rule_ref: dict,
-    terminal_correlation_status: str | None = None,
+    terminal_correlation_status: str | None = "passed",
     terminal_correlation_reason: str | None = None,
     gate_status: str | None = None,
     gate_exit_code: int | None = None,
+    omit_terminal_correlation: bool = False,
 ) -> tuple[dict, dict, dict]:
     definition = check_contract.definition_for("weaver_terminal")
     native_results = []
@@ -280,19 +281,20 @@ def _make_weaver_terminal_report(
                 gate_exit_code if is_last and gate_exit_code is not None else step_exit
             ),
         }
-        if is_last:
-            evidence["terminal_correlation_status"] = (
+        if is_last and not omit_terminal_correlation:
+            resolved_corr = (
                 terminal_correlation_status
                 if terminal_correlation_status is not None
                 else ("passed" if step_status == "passed" else "failed")
             )
+            if terminal_correlation_status == "passed" and step_status != "passed":
+                resolved_corr = "failed"
+            evidence["terminal_correlation_status"] = resolved_corr
             evidence["terminal_correlation_reason"] = (
                 terminal_correlation_reason
                 if terminal_correlation_reason is not None
                 else (
-                    "ok"
-                    if evidence["terminal_correlation_status"] == "passed"
-                    else "terminal_correlation_failed"
+                    "ok" if resolved_corr == "passed" else "terminal_correlation_failed"
                 )
             )
         step_res = check_contract.native_result(
@@ -357,10 +359,11 @@ def _run_issue52_gate_chain(
     trust_authorized: bool = True,
     run_started_at: str | None = "2026-11-10T10:00:01Z",
     executed_job_ids: list[int | str] | None = None,
-    terminal_correlation_status: str | None = None,
+    terminal_correlation_status: str | None = "passed",
     terminal_correlation_reason: str | None = None,
     gate_status: str | None = None,
     gate_exit_code: int | None = None,
+    omit_terminal_correlation: bool = False,
 ) -> dict:
     """Execute #52 -> #74 -> #66-C -> #63 -> #61 prior/post Required gate chain."""
     closure_dir = stage_dir / "closure"
@@ -657,6 +660,7 @@ def _run_issue52_gate_chain(
             terminal_correlation_reason=terminal_correlation_reason,
             gate_status=gate_status,
             gate_exit_code=gate_exit_code,
+            omit_terminal_correlation=omit_terminal_correlation,
         )
 
     native_results = list(exec_report["checks"][0]["native_results"])
@@ -1473,6 +1477,59 @@ def test_issue52_gate_chain_rejects_exit0_when_terminal_correlation_fails(tmp_pa
     assert admitted_term["status"] == "unsatisfied"
     assert admitted_term["obligation_status"] == "unsatisfied"
     assert outcome["admission"]["status"] != "admitted"
+    assert outcome["admission"]["summary"]["admitted"] == 0
+    assert outcome["post_assessment"]["status"] == "blocked"
+    assert outcome["post_stage"]["status"] == "rejected"
+
+
+@pytest.mark.parametrize(
+    "corr_kwargs",
+    [
+        {"omit_terminal_correlation": True},
+        {"terminal_correlation_status": "not_executed"},
+        {"terminal_correlation_status": "unknown"},
+    ],
+)
+def test_issue52_gate_chain_rejects_exit0_gate_passed_when_correlation_missing_or_unproven(
+    tmp_path, corr_kwargs
+):
+    """P1-05: exit 0 + gate passed without terminal_correlation_status=='passed' fails closed."""
+    jobs = [
+        _sample_job(
+            job_id=8411, run_id=7008, attempt=1, name="lint", conclusion="success"
+        )["workflow_job"]
+    ]
+    cap = _normalized_span_capture(
+        run_id=7008, attempt=1, run_conclusion="success", jobs=jobs
+    )
+    outcome = _run_issue52_gate_chain(
+        stage_dir=tmp_path / "corr-missing",
+        run_id=7008,
+        attempt=1,
+        run_conclusion="success",
+        jobs=jobs,
+        capture=cap,
+        terminal_status="passed",
+        terminal_exit_code=0,
+        gate_status="passed",
+        gate_exit_code=0,
+        **corr_kwargs,
+    )
+    bound_term = next(
+        e
+        for e in outcome["receipt"]["entries"]
+        if e["expected_check_ref"] == outcome["term_entry_ref"]
+    )
+    assert bound_term["binding_status"] == "insufficient"
+    assert bound_term["reason"] == "terminal_correlation_unproven"
+    assert bound_term["native_satisfaction"]["status"] == "unsatisfied"
+    assert bound_term["selected_result_ids"] == []
+    admitted_term = next(
+        e
+        for e in outcome["admission"]["entries"]
+        if e["expected_check_ref"] == outcome["term_entry_ref"]
+    )
+    assert admitted_term["status"] == "unsatisfied"
     assert outcome["admission"]["summary"]["admitted"] == 0
     assert outcome["post_assessment"]["status"] == "blocked"
     assert outcome["post_stage"]["status"] == "rejected"

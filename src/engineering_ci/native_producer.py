@@ -228,6 +228,16 @@ def weaver_check(
                 "environment": raw.get("environment"),
                 "gate_status": raw.get("status"),
                 "gate_exit_code": raw.get("gate_exit_code"),
+                **(
+                    {
+                        "terminal_correlation_status": raw.get(
+                            "terminal_correlation_status"
+                        ),
+                        "terminal_correlation_reason": raw.get("reason"),
+                    }
+                    if stage == "terminal-live-check"
+                    else {}
+                ),
                 "source_limit": "input_closure_not_proven",
             },
         )

@@ -1568,6 +1568,17 @@ def _consumed_result_ids(result):
     }
 
 
+def _terminal_correlation_passed(result):
+    evidence = result.get("evidence") or {}
+    gate_exit = evidence.get("gate_exit_code")
+    return (
+        evidence.get("terminal_correlation_status") == "passed"
+        and evidence.get("gate_status") == "passed"
+        and type(gate_exit) is int
+        and gate_exit == 0
+    )
+
+
 def evaluate_check_satisfaction(definition, results, *, expected=None):
     """Select native witnesses for every ToolRequirement and its prerequisites.
 
@@ -1665,7 +1676,12 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
     }
     passing = {
         key: sorted(
-            (item for item in choices if item["status"] == "passed"),
+            (
+                item
+                for item in choices
+                if item["status"] == "passed"
+                and (key != "terminal-live-check" or _terminal_correlation_passed(item))
+            ),
             key=lambda item: item["result_id"],
         )
         for key, choices in candidates.items()
@@ -1738,6 +1754,12 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
             "status": "unsatisfied",
             "reason": "result_missing" if not choices else "result_not_passed",
         }
+        if (
+            key == "terminal-live-check"
+            and not passing[key]
+            and any(item["status"] == "passed" for item in choices)
+        ):
+            entry["reason"] = "terminal_correlation_unproven"
         picked = tool_witness[key] if tool_witness is not None else None
         if picked is None:
             for candidate in passing[key]:

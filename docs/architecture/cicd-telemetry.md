@@ -77,14 +77,15 @@ nested `queue-*` / step child spans parented to a Job span are excluded from the
 Job ID set unless they carry `cicd.pipeline.task.run.id` or attach directly to the
 Pipeline Root Span. Duplicate, empty, or non-decimal Job IDs fail explicitly.
 Full webhook capture + Attempt API Witness reconciliation lives in
-`github_receiver.reconcile_github_receiver_trace` and `cicd_telemetry.reconcile_attempt_witness_capture` (which forwards Attempt `run_started_at` and optional independent `executed_job_ids` so partial reruns like Run `44713410255` Attempt 2 separate full Attempt `result_inventory` from `executed_jobs` vs `reused_jobs`, rather than inferring execution from `run_attempt` alone).
+`github_receiver.reconcile_github_receiver_trace` and `cicd_telemetry.reconcile_attempt_witness_capture` (which forwards Attempt `run_started_at` and optional independent `executed_job_ids` so partial reruns like Run `44713410255` Attempt 2 separate full Attempt `result_inventory` from `executed_jobs` vs `reused_jobs`, rather than inferring execution from `run_attempt` alone). Likewise, `cicd_telemetry.produce()` reuses `github_receiver.partition_witness_jobs()` so `result_inventory` preserves the full API completed Job inventory (retaining `execution_attribution` and exact `execution_attribution_source` without upgrading timestamp attribution to authenticated webhook claims), while `terminal_job_records` and `github_job_terminal` LogRecords are emitted only for `executed_in_attempt` jobs (`reused_job_records` carry `trace_id=null`/`span_id=null`, and unproven Attempt `> 1` jobs fail attribution with `execution_attribution_unknown` and `status=partial`).
 
 ### Pipeline Run identity (cross-PR with #74)
 
-Each GitHub Actions **Attempt** is one distinct pipeline execution (own Trace).
-SemConv `cicd.pipeline.run.id` is the stable canonical form
-`{github_run_id}/{run_attempt}` on Resource, Pipeline Span, and Task
-correlation. Raw GitHub Run ID and Attempt remain in `facts.*`,
+OpenTelemetry CI/CD SemConv v1.45.0 specifies `cicd.pipeline.run.id` as a string
+execution identifier without prescribing GitHub's wire encoding. Each GitHub
+Actions **Attempt** is one distinct pipeline execution (own Trace), and ECI's
+normalized form `{github_run_id}/{run_attempt}` aligns on Resource, Pipeline
+Span, Task/Log correlation, and `githubreceiver` OTTL normalization. Raw GitHub Run ID and Attempt remain in `facts.*`,
 `coverage.expected_trace`, and the independent API Witness. Schema 9 omits the
 unregistered `github.actions.run_attempt` attribute. Consumers must compare
 the complete composite ID against the independently declared Run and Attempt,
@@ -239,23 +240,16 @@ complete `#52 -> #74 -> #66-C -> #63 -> #61` verification before gate acceptance
 Post-run entry: `.github/workflows/cicd-telemetry-post-run.yml` listens for
 `workflow_run` completion of `Engineering CI` (and supports
 `workflow_dispatch`). It reads the source Run via Attempt API using the event
-identity, never executes the source PR head, runs `--end-time-mode witness`
-(auto-capturing host observation time when `--terminal-observed-at` is omitted),
-and uploads witness/logs/metrics artifacts (`--otlp-json` retired). Live
-Collector endpoint wiring remains optional via repository secrets / dispatch
-inputs; absence of a receiver leaves RPC acceptance false. Code retirement in
-`engineering_ci.cicd_telemetry` is distinct from live production cutover:
-`report["production_handoff"]` defaults to `status=not_verified`
-(`local_e2e_proves_production_webhook=false`), and the workflow records
-`production_webhook_cutover` from `vars.ECI_GITHUBRECEIVER_PROD_VERIFIED`
-(`not_verified` until repository Webhook subscription, HMAC secret, live
-Collector ingress, OTLP delivery, and `#52` consumer gate evidence are verified).
+identity, never executes the source PR head, and evaluates
+`evaluate_receiver_production_handoff_env()` + `select_post_run_cutover_policy()`
+over the five explicit production cutover variables (`ECI_GITHUBRECEIVER_WEBHOOK_SUBSCRIPTION_VERIFIED`,
+`ECI_GITHUBRECEIVER_WEBHOOK_HMAC_VERIFIED`, `ECI_GITHUBRECEIVER_LIVE_INGESTED`,
+`ECI_GITHUBRECEIVER_OTLP_TRACES_DELIVERED`, `ECI_GITHUBRECEIVER_CONSUMER_VERIFIED`):
 
-On the `#52 -> #66-C -> #63 -> #61` consumer chain, `reconciliation` additionally
-rejects `weaver_terminal` if `weaver/terminal-live-check` reports Exit `0`
-while `gate_status != "passed"`, `gate_exit_code != 0`, or
-`terminal_correlation_status != "passed"` (`terminal_correlation_unproven`),
-aligning with native tool-contract enforcement.
+- While `production_handoff.status == "not_verified"`, the workflow runs `--allow-pre-cutover-trace-fallback --end-time-mode observed_upper_bound --otlp-json artifacts/cicd-telemetry/otel.json` so existing Trace output is **not** silently disabled before live Webhook cutover.
+- Only once all five checks are `verified` does the workflow switch to `--end-time-mode witness` without `--otlp-json` (`trace_producer_retired=true`), auto-capturing host observation time when `--terminal-observed-at` is omitted and refusing pre-cutover fallback / `--otlp-json` with `duplicate_trace_producer_retired`. Live Collector endpoint wiring remains optional via repository secrets / dispatch inputs; absence of a receiver leaves RPC acceptance false. `local_e2e_proves_production_webhook` remains `false`.
+
+On the `#52 -> #74 -> #66-C -> #63 -> #61` consumer chain, `native_producer` emits `terminal_correlation_status` on `weaver/terminal-live-check`, and `check_contract.evaluate_check_satisfaction()` (consumed uniformly by both `#66-C` Reconciliation and `#63` Admission without a parallel gate) requires `terminal_correlation_status == "passed"`, `gate_status == "passed"`, and `gate_exit_code == 0`; missing, `unknown`, `not_executed`, or `failed` correlation fails closed with `terminal_correlation_unproven`.
 
 ### O2 Logs / O3 Metrics & Retired Producer Baseline
 
