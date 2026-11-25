@@ -320,21 +320,111 @@ def _vulture_facts(stdout: str) -> tuple[list[dict], list[str], None]:
     return findings, [], None
 
 
+_PYLINT_VALID_TYPES = frozenset(
+    {"fatal", "error", "warning", "refactor", "convention", "info"}
+)
+_PYRIGHT_VALID_SEVERITIES = frozenset({"error", "warning", "information"})
+
+
+def _nonneg_int(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _valid_pyright_diagnostic(item: object) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if not isinstance(item.get("file"), str):
+        return False
+    severity = item.get("severity")
+    if not isinstance(severity, str) or severity not in _PYRIGHT_VALID_SEVERITIES:
+        return False
+    message = item.get("message")
+    if not isinstance(message, str) or not message:
+        return False
+    if "range" in item:
+        loc_range = item["range"]
+        if not isinstance(loc_range, dict):
+            return False
+        start = loc_range.get("start")
+        if not isinstance(start, dict) or not _nonneg_int(start.get("line")):
+            return False
+        if "character" in start and not _nonneg_int(start.get("character")):
+            return False
+    return True
+
+
+def _pyright_report_valid(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    version = payload.get("version")
+    if not isinstance(version, str) or not version.strip():
+        return False
+    diagnostics = payload.get("generalDiagnostics")
+    if not isinstance(diagnostics, list) or not all(
+        _valid_pyright_diagnostic(item) for item in diagnostics
+    ):
+        return False
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return False
+    if not all(
+        _nonneg_int(summary.get(key))
+        for key in (
+            "filesAnalyzed",
+            "errorCount",
+            "warningCount",
+            "informationCount",
+        )
+    ):
+        return False
+    error_count = sum(1 for item in diagnostics if item.get("severity") == "error")
+    return summary["errorCount"] == error_count
+
+
+def _valid_pylint_diagnostic(item: object) -> bool:
+    if not isinstance(item, dict):
+        return False
+    kind = item.get("type")
+    if not isinstance(kind, str) or kind not in _PYLINT_VALID_TYPES:
+        return False
+    if not isinstance(item.get("path"), str) or not _nonneg_int(item.get("line")):
+        return False
+    for key in ("symbol", "message-id"):
+        val = item.get(key)
+        if not isinstance(val, str) or not val.strip():
+            return False
+    message = item.get("message")
+    return isinstance(message, str) and bool(message)
+
+
+def _pylint_report_valid(payload: object) -> bool:
+    return isinstance(payload, list) and all(
+        _valid_pylint_diagnostic(item) for item in payload
+    )
+
+
 def _pyright_facts(payload: object) -> tuple[list[dict], list[str], str | None]:
     if not isinstance(payload, dict):
         return [], [], None
     limitations, findings, unresolved = [], [], 0
-    for item in payload.get("generalDiagnostics") or []:
+    raw_diagnostics = payload.get("generalDiagnostics")
+    for item in raw_diagnostics if isinstance(raw_diagnostics, list) else ():
         if not isinstance(item, dict):
             continue
-        start = (item.get("range") or {}).get("start") or {}
+        loc_range = item.get("range")
+        start = loc_range.get("start") if isinstance(loc_range, dict) else None
+        raw_line = start.get("line") if isinstance(start, dict) else None
         findings.append(
             {
                 "rule": item.get("rule") or item.get("category") or "diagnostic",
-                "path": item.get("file") or "",
-                "line": start.get("line", 0) + 1,
-                "message": item.get("message") or "",
-                "severity": item.get("severity") or "",
+                "path": item.get("file") if isinstance(item.get("file"), str) else "",
+                "line": raw_line + 1 if _nonneg_int(raw_line) else None,
+                "message": item.get("message")
+                if isinstance(item.get("message"), str)
+                else "",
+                "severity": item.get("severity")
+                if isinstance(item.get("severity"), str)
+                else "",
             }
         )
         if item.get("rule") in PYRIGHT_IMPORT_RULES:
@@ -350,7 +440,12 @@ def _pyright_facts(payload: object) -> tuple[list[dict], list[str], str | None]:
             f"{unresolved} import(s) did not resolve in the check environment; "
             "type results for those modules are incomplete"
         )
-    return findings, limitations, payload.get("version")
+    if not _pyright_report_valid(payload):
+        limitations.append(
+            "pyright native structured report is missing required fields or has invalid types"
+        )
+    version = payload.get("version")
+    return findings, limitations, version if isinstance(version, str) else None
 
 
 def _deptry_facts(payload: object) -> tuple[list[dict], list[str], None]:
@@ -389,7 +484,12 @@ def _pylint_facts(payload: object) -> tuple[list[dict], list[str], None]:
                 "symbol": item.get("symbol") or "",
             }
         )
-    return findings, [], None
+    limitations = (
+        []
+        if _pylint_report_valid(payload)
+        else ["pylint native structured report is missing required fields or invalid"]
+    )
+    return findings, limitations, None
 
 
 FACTS = {
@@ -411,13 +511,17 @@ def _classify_vulture(exit_code, findings, native, limitations) -> tuple[str, st
 
 def _classify_pyright(exit_code, findings, native, limitations) -> tuple[str, str]:
     if exit_code == 0:
-        if not isinstance(native, dict):
+        if not _pyright_report_valid(native) or native["summary"]["errorCount"] != 0:
             return "failure", "pyright_report_unavailable"
-        if any("analyzed 0 files" in item for item in limitations):
+        if native["summary"]["filesAnalyzed"] == 0:
             return "not_executed", "no_applicable_source"
         return "clean", "no_type_errors"
     if exit_code == 1:
-        if not isinstance(native, dict):
+        if (
+            not _pyright_report_valid(native)
+            or native["summary"]["errorCount"] == 0
+            or not findings
+        ):
             return "failure", "pyright_report_unavailable"
         return "findings", "type_errors_reported"
     return "failure", _PYRIGHT_FAILURES.get(exit_code, "pyright_execution_error")
@@ -437,13 +541,15 @@ def _classify_deptry(exit_code, findings, native, limitations) -> tuple[str, str
 
 def _classify_pylint(exit_code, findings, native, limitations) -> tuple[str, str]:
     if exit_code == 0:
+        if not _pylint_report_valid(native) or native:
+            return "failure", "pylint_report_unavailable"
         return "clean", "no_duplicate_code"
     if exit_code & _PYLINT_FAILURE_BITS:
         return "failure", "pylint_execution_error"
     if exit_code & _PYLINT_FINDING_BITS:
-        # Findings without the structured report would drop the native
-        # diagnostics, so treat missing output as a failure instead.
-        if isinstance(native, list):
+        # Findings without a valid non-empty structured report would drop the
+        # native diagnostics, so treat missing/corrupted output as a failure.
+        if _pylint_report_valid(native) and native:
             return "findings", "duplicate_code_found"
         return "failure", "pylint_report_unavailable"
     return "failure", "unknown_pylint_exit_code"

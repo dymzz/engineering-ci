@@ -140,6 +140,7 @@ A1_LIVE_SENSITIVE_FILES = frozenset(
         "src/engineering_ci/cicd_telemetry.py",
         "tests/test_dagger_native_telemetry.py",
         "dagger.json",
+        "dagger.toml",
         "dagger-module.toml",
         "pyproject.toml",
         "uv.lock",
@@ -264,7 +265,7 @@ def select_a1_capture_scope(
             "schema_version": CONTRACT_VERSION,
             "run_live_capture": True,
             "evidence_level": "pending_native_capture",
-            "reason": f"changed:{matched_paths[0]}",
+            "reason": "sensitive_paths_changed",
             "matched_paths": matched_paths,
             "inspected_changed_paths": normalized,
         }
@@ -3193,17 +3194,40 @@ def main(argv: list[str] | None = None) -> int:
         if args.output:
             _atomic_write_json(args.output, decision)
         if args.github_output:
-            args.github_output.parent.mkdir(parents=True, exist_ok=True)
-            with args.github_output.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    f"run_live_capture={'true' if decision['run_live_capture'] else 'false'}\n"
-                )
-                handle.write(f"reason={decision['reason']}\n")
-                handle.write(f"evidence_level={decision['evidence_level']}\n")
+            _write_github_outputs(
+                args.github_output,
+                {
+                    "run_live_capture": (
+                        "true" if decision["run_live_capture"] else "false"
+                    ),
+                    "reason": str(decision["reason"]),
+                    "evidence_level": str(decision["evidence_level"]),
+                },
+            )
         print(json.dumps(decision, indent=2, sort_keys=True))
         return 0
     parser.error(f"unknown subcommand: {args.subcommand}")
     return 2
+
+
+def _write_github_outputs(path: Path, outputs: dict[str, str]) -> None:
+    """Write outputs safely using single-line key=value or unique heredoc delimiters."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for key, value in outputs.items():
+            if not key or any(ch in key for ch in ("=", "\n", "\r", "\0")):
+                raise ValueError(f"invalid GitHub output key: {key!r}")
+            if "\0" in value:
+                raise ValueError(f"NUL byte not permitted in GitHub output {key!r}")
+            if "\n" not in value and "\r" not in value:
+                handle.write(f"{key}={value}\n")
+                continue
+            delimiter = "__ECI_EOF__"
+            index = 0
+            while delimiter in value:
+                index += 1
+                delimiter = f"__ECI_EOF_{index}__"
+            handle.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
 
 
 if __name__ == "__main__":

@@ -1786,6 +1786,226 @@ class A1LiveScopeGitPathEdgeTests(unittest.TestCase):
             ci_yml,
         )
 
+    def test_dagger_toml_only_change_triggers_live_capture_and_unrelated_stays_offline(
+        self,
+    ) -> None:
+        decision = dt.select_a1_capture_scope(["dagger.toml"])
+        self.assertTrue(decision["run_live_capture"])
+        self.assertEqual(decision["matched_paths"], ["dagger.toml"])
+        self.assertEqual(decision["reason"], "sensitive_paths_changed")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+
+            def git(*args: str) -> bytes:
+                return subprocess.run(
+                    ["git", *args], cwd=repo, check=True, capture_output=True
+                ).stdout
+
+            git("init", "-q")
+            git("config", "user.name", "ECI Test")
+            git("config", "user.email", "eci@example.invalid")
+            (repo / "dagger.toml").write_text("[modules.root]\n", encoding="utf-8")
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "base")
+            base_sha = git("rev-parse", "HEAD").decode("utf-8").strip()
+
+            (repo / "dagger.toml").write_text(
+                "[modules.root]\nsource = '.'\n", encoding="utf-8"
+            )
+            git("add", "dagger.toml")
+            git("commit", "-q", "-m", "update workspace dagger.toml")
+            head_sha = git("rev-parse", "HEAD").decode("utf-8").strip()
+
+            changed_bin = Path(tmpdir) / "dagger-toml.bin"
+            changed_bin.write_bytes(
+                git(
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "-z",
+                    "--no-renames",
+                    "--name-only",
+                    f"{base_sha}...{head_sha}",
+                )
+            )
+            out_json = Path(tmpdir) / "decision.json"
+            self.assertEqual(
+                dt.main(
+                    [
+                        "a1-scope",
+                        "--changed-files-file",
+                        str(changed_bin),
+                        "--output",
+                        str(out_json),
+                    ]
+                ),
+                0,
+            )
+            parsed = json.loads(out_json.read_text(encoding="utf-8"))
+            self.assertTrue(parsed["run_live_capture"])
+            self.assertEqual(parsed["matched_paths"], ["dagger.toml"])
+            self.assertEqual(parsed["reason"], "sensitive_paths_changed")
+
+            (repo / "README.md").write_text("doc edit\n", encoding="utf-8")
+            git("add", "README.md")
+            git("commit", "-q", "-m", "docs only")
+            doc_sha = git("rev-parse", "HEAD").decode("utf-8").strip()
+            doc_bin = Path(tmpdir) / "docs.bin"
+            doc_bin.write_bytes(
+                git(
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "-z",
+                    "--no-renames",
+                    "--name-only",
+                    f"{head_sha}...{doc_sha}",
+                )
+            )
+            doc_json = Path(tmpdir) / "doc-decision.json"
+            dt.main(
+                [
+                    "a1-scope",
+                    "--changed-files-file",
+                    str(doc_bin),
+                    "--output",
+                    str(doc_json),
+                ]
+            )
+            doc_parsed = json.loads(doc_json.read_text(encoding="utf-8"))
+            self.assertFalse(doc_parsed["run_live_capture"])
+            self.assertEqual(
+                doc_parsed["reason"], "unaffected_paths_offline_contract_only"
+            )
+
+    def test_newline_in_git_path_does_not_inject_github_output_control_fields(
+        self,
+    ) -> None:
+        def parse_github_output(text: str) -> dict[str, str]:
+            # Mirror Actions Runner FileCommandManager key=value & <<delimiter rules.
+            parsed: dict[str, str] = {}
+            lines = text.splitlines()
+            idx = 0
+            while idx < len(lines):
+                line = lines[idx]
+                if "<<" in line:
+                    key, delimiter = line.split("<<", 1)
+                    idx += 1
+                    buf = []
+                    while idx < len(lines) and lines[idx] != delimiter:
+                        buf.append(lines[idx])
+                        idx += 1
+                    parsed[key] = "\n".join(buf)
+                elif "=" in line:
+                    key, val = line.split("=", 1)
+                    parsed[key] = val
+                idx += 1
+            return parsed
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+
+            def git(*args: str, inp: bytes | None = None) -> bytes:
+                return subprocess.run(
+                    ["git", *args],
+                    cwd=repo,
+                    input=inp,
+                    check=True,
+                    capture_output=True,
+                ).stdout
+
+            git("init", "-q")
+            git("config", "user.name", "ECI Test")
+            git("config", "user.email", "eci@example.invalid")
+            blob = git("hash-object", "-w", "--stdin", inp=b"x = 1\n").strip().decode()
+            base_tree = (
+                git("mktree", "-z", inp=f"100644 blob {blob}\tREADME.md\x00".encode())
+                .strip()
+                .decode()
+            )
+            base_commit = git("commit-tree", base_tree, "-m", "base").strip().decode()
+
+            evil_leaf = "evil\nrun_live_capture=false\necho=injected.py"
+            inner_tree = (
+                git("mktree", "-z", inp=f"100644 blob {blob}\t{evil_leaf}\x00".encode())
+                .strip()
+                .decode()
+            )
+            head_tree = (
+                git(
+                    "mktree",
+                    "-z",
+                    inp=f"040000 tree {inner_tree}\t.dagger\x00".encode(),
+                )
+                .strip()
+                .decode()
+            )
+            head_commit = (
+                git("commit-tree", head_tree, "-p", base_commit, "-m", "newline path")
+                .strip()
+                .decode()
+            )
+
+            diff_file = Path(tmpdir) / "newline.bin"
+            diff_file.write_bytes(
+                git(
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "-z",
+                    "--no-renames",
+                    "--name-only",
+                    f"{base_commit}...{head_commit}",
+                )
+            )
+            gh_out = Path(tmpdir) / "github_output.txt"
+            out_json = Path(tmpdir) / "scope.json"
+            self.assertEqual(
+                dt.main(
+                    [
+                        "a1-scope",
+                        "--changed-files-file",
+                        str(diff_file),
+                        "--github-output",
+                        str(gh_out),
+                        "--output",
+                        str(out_json),
+                    ]
+                ),
+                0,
+            )
+
+            gh_text = gh_out.read_text(encoding="utf-8")
+            outputs = parse_github_output(gh_text)
+            self.assertEqual(
+                outputs,
+                {
+                    "run_live_capture": "true",
+                    "reason": "sensitive_paths_changed",
+                    "evidence_level": "pending_native_capture",
+                },
+            )
+            self.assertEqual(len(gh_text.splitlines()), 3)
+
+            decision = json.loads(out_json.read_text(encoding="utf-8"))
+            self.assertEqual(decision["matched_paths"], [f".dagger/{evil_leaf}"])
+
+            multiline_out = Path(tmpdir) / "multiline_output.txt"
+            dt._write_github_outputs(
+                multiline_out,
+                {"detail": "line1\n__ECI_EOF__\nrun_live_capture=false"},
+            )
+            self.assertEqual(
+                parse_github_output(multiline_out.read_text(encoding="utf-8")),
+                {"detail": "line1\n__ECI_EOF__\nrun_live_capture=false"},
+            )
+            with self.assertRaises(ValueError):
+                dt._write_github_outputs(multiline_out, {"bad": "a\x00b"})
+
 
 if __name__ == "__main__":
     unittest.main()

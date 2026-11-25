@@ -60,10 +60,10 @@ outcomes and integers in CI.
 | vulture | `0` | no dead code | `clean` |
 | vulture | `3` | dead code reported | `findings` |
 | vulture | `1` | unparsable file or missing path | `failure` |
-| pyright | `0` with structured JSON report | no diagnostics | `clean` |
+| pyright | `0` with valid structured JSON report | no diagnostics | `clean` |
 | pyright | `0` with `filesAnalyzed: 0` | nothing applicable was analysed | `not_executed` |
-| pyright | `0` or `1` without a structured JSON object | structured output unavailable | `failure` |
-| pyright | `1` with structured JSON report | type errors reported | `findings` |
+| pyright | `0` or `1` without a valid structured JSON report (missing/invalid `summary`, `generalDiagnostics`, or consistent error counts) | structured output unavailable | `failure` |
+| pyright | `1` with valid structured JSON report and diagnostics | type errors reported | `findings` |
 | pyright | `2` | fatal error | `failure` |
 | pyright | `3` | configuration could not be parsed | `failure` |
 | pyright | `4` | path does not exist | `failure` |
@@ -71,8 +71,10 @@ outcomes and integers in CI.
 | deptry | `1` with a structured report | dependency issues reported | `findings` |
 | deptry | `1` without a structured report | uncaught exception | `failure` |
 | deptry | `2` | invalid input or usage | `failure` |
-| pylint | `0` | no duplicate code | `clean` |
-| pylint | `4`/`8`/`16` bits | warning, refactor or convention messages | `findings` |
+| pylint | `0` with valid empty JSON array `[]` | no duplicate code | `clean` |
+| pylint | `0` without valid empty JSON array `[]` (empty/invalid/truncated JSON or unexpected payload) | structured output unavailable | `failure` |
+| pylint | `4`/`8`/`16` bits with valid structured JSON diagnostics | warning, refactor or convention messages | `findings` |
+| pylint | `4`/`8`/`16` bits without valid structured JSON diagnostics | structured output unavailable | `failure` |
 | pylint | `1`/`2`/`32` bits | fatal, error or usage failure | `failure` |
 
 Three consequences are load-bearing:

@@ -285,6 +285,93 @@ class PyrightSemanticsTests(unittest.TestCase):
         self.assertFalse(report["native_json_available"])
         self.assertTrue(any("not valid JSON" in x for x in report["limitations"]))
 
+    def test_incomplete_or_inconsistent_pyright_reports_fail_closed(self):
+        invalid_cases = [
+            (0, ""),
+            (0, "{}"),
+            (1, "{}"),
+            (0, "[]"),
+            (0, json.dumps({"version": "1.1.414", "generalDiagnostics": []})),
+            (1, json.dumps({"version": "1.1.414", "generalDiagnostics": []})),
+            (
+                0,
+                json.dumps(
+                    {
+                        "generalDiagnostics": [],
+                        "summary": {
+                            "filesAnalyzed": 1,
+                            "errorCount": 0,
+                            "warningCount": 0,
+                            "informationCount": 0,
+                        },
+                    }
+                ),
+            ),
+            (
+                0,
+                json.dumps(
+                    {
+                        "version": "1.1.414",
+                        "generalDiagnostics": [],
+                        "summary": {
+                            "filesAnalyzed": "1",
+                            "errorCount": 0,
+                            "warningCount": 0,
+                            "informationCount": 0,
+                        },
+                    }
+                ),
+            ),
+            (
+                1,
+                json.dumps(
+                    {
+                        "version": "1.1.414",
+                        "generalDiagnostics": [{"rule": "reportReturnType"}],
+                        "summary": {
+                            "filesAnalyzed": 1,
+                            "errorCount": 1,
+                            "warningCount": 0,
+                            "informationCount": 0,
+                        },
+                    }
+                ),
+            ),
+            (0, pyright_payload(errors=1, files=1)),
+            (1, pyright_payload(errors=0, files=1)),
+            (
+                0,
+                json.dumps(
+                    {
+                        "version": "1.1.414",
+                        "generalDiagnostics": [],
+                        "summary": {
+                            "filesAnalyzed": 1,
+                            "errorCount": 0,
+                            "warningCount": 0,
+                            "informationCount": 0,
+                        },
+                        "padding": "x" * (static.MAX_NATIVE_BYTES + 10),
+                    }
+                ),
+            ),
+        ]
+        for code, raw in invalid_cases:
+            with self.subTest(code=code, raw=raw[:80]):
+                report = self.report(code, raw)
+                self.assertEqual(report["outcome"], "failure")
+                self.assertEqual(report["reason"], "pyright_report_unavailable")
+                self.assertEqual(report["exit_code"], code)
+                if len(raw.encode("utf-8")) > static.MAX_NATIVE_BYTES:
+                    self.assertTrue(report["native_truncated"])
+                    self.assertIsNone(report["native_json"])
+
+    def test_fatal_error_preserves_available_diagnostics_without_passing(self):
+        report = self.report(2, pyright_payload(errors=1, files=1))
+        self.assertEqual(report["outcome"], "failure")
+        self.assertEqual(report["reason"], "fatal_error")
+        self.assertEqual(report["finding_count"], 1)
+
 
 class DeptrySemanticsTests(unittest.TestCase):
     def report(self, exit_code, native=""):
@@ -345,8 +432,54 @@ class PylintSemanticsTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "failure")
 
     def test_zero_is_clean_and_unknown_bits_are_failures(self):
-        self.assertEqual(self.report(0)["outcome"], "clean")
+        self.assertEqual(self.report(0, "[]")["outcome"], "clean")
         self.assertEqual(self.report(64)["reason"], "unknown_pylint_exit_code")
+
+    def test_invalid_empty_or_inconsistent_pylint_reports_fail_closed(self):
+        invalid_cases = [
+            (0, ""),
+            (0, "{}"),
+            (0, "{not json"),
+            (0, "true"),
+            (0, pylint_payload()),
+            (0, json.dumps([123])),
+            (8, "[]"),
+            (8, "{}"),
+            (8, "{not json"),
+            (8, json.dumps([{"path": "dup_a.py"}])),
+            (
+                8,
+                json.dumps(
+                    [
+                        {
+                            "type": "refactor",
+                            "line": "5",
+                            "path": "dup_a.py",
+                            "symbol": "duplicate-code",
+                            "message": "Similar lines in 2 files",
+                            "message-id": "R0801",
+                        }
+                    ]
+                ),
+            ),
+            (
+                0,
+                json.dumps([{"padding": "y" * (static.MAX_NATIVE_BYTES + 10)}]),
+            ),
+            (
+                8,
+                json.dumps([{"padding": "y" * (static.MAX_NATIVE_BYTES + 10)}]),
+            ),
+        ]
+        for code, raw in invalid_cases:
+            with self.subTest(code=code, raw=raw[:80]):
+                report = self.report(code, raw)
+                self.assertEqual(report["outcome"], "failure")
+                self.assertEqual(report["reason"], "pylint_report_unavailable")
+                self.assertEqual(report["exit_code"], code)
+                if len(raw.encode("utf-8")) > static.MAX_NATIVE_BYTES:
+                    self.assertTrue(report["native_truncated"])
+                    self.assertIsNone(report["native_json"])
 
 
 class ReportShapeTests(unittest.TestCase):
@@ -430,13 +563,36 @@ class StdoutJsonChannelTests(unittest.TestCase):
         self.assertEqual(pyright_empty_scope["outcome"], "not_executed")
         self.assertEqual(pyright_empty_scope["reason"], "no_applicable_source")
 
-        for code, bad_stdout in ((0, ""), (1, "{not json")):
+        pyright_clean = static.static_report(
+            static.pyright_policy("."), 0, stdout=pyright_payload(errors=0, files=1)
+        )
+        self.assertEqual(pyright_clean["outcome"], "clean")
+
+        pylint_clean = static.static_report(
+            static.pylint_policy(["src"]), 0, stdout="[]"
+        )
+        self.assertEqual(pylint_clean["outcome"], "clean")
+
+        for code, bad_stdout in (
+            (0, ""),
+            (0, "{}"),
+            (1, "{}"),
+            (1, "{not json"),
+        ):
             with self.subTest(code=code, bad_stdout=bad_stdout):
                 failed = static.static_report(
                     static.pyright_policy("."), code, stdout=bad_stdout
                 )
                 self.assertEqual(failed["outcome"], "failure")
                 self.assertEqual(failed["reason"], "pyright_report_unavailable")
+
+        for code, bad_stdout in ((0, ""), (0, "{}"), (0, "{bad"), (8, "[]")):
+            with self.subTest(pylint_code=code, bad_stdout=bad_stdout):
+                failed = static.static_report(
+                    static.pylint_policy(["src"]), code, stdout=bad_stdout
+                )
+                self.assertEqual(failed["outcome"], "failure")
+                self.assertEqual(failed["reason"], "pylint_report_unavailable")
 
         pylint_findings = static.static_report(
             static.pylint_policy(["src"]), 8, stdout=pylint_payload()
