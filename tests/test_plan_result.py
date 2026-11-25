@@ -74,8 +74,10 @@ class MemoryDirectory:
         cur_files, cur_dirs = self._materialize()
         return MemoryDirectory({**cur_files, path: file.data}, dirs=cur_dirs)
 
-    def with_directory(self, prefix, directory):
+    def with_directory(self, prefix, directory, *, exclude=()):
         cur_files, cur_dirs = self._materialize()
+        if exclude:
+            directory = _filter_source_with_patterns(directory, exclude)
         add_files, add_dirs = directory._materialize()
         clean_prefix = prefix.strip("/")
         merged_files = {
@@ -3267,8 +3269,8 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
         )
         return json.loads(asyncio.run(saved.report())), bound_kwarg_seen
 
-    # 1. Bound source with verified source_tree_id delivers source directly without noise
-    # stripping; runtime test writes/edits in workspace AFTER start do not falsify binding.
+    # 1. Verified bound source delivers every tree member, isolating only the root
+    # Git Context; runtime test writes/edits in workspace AFTER start do not falsify binding.
     def _runtime_side_effects(ws):
         (ws / "runtime_created.log").write_text("runtime output\n", encoding="utf-8")
         (ws / ".env.test").write_bytes(b"APP_ENV=mutated_by_test_after_start\n")
@@ -3280,9 +3282,10 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
     assert ok_report["status"] == "passed", ok_report
     ok_native = ok_report["tests"]["native_result"]
     ok_obs = ok_native["evidence"]["observation"]
-    assert ok_obs["container_source_filtered"] is False
+    assert ok_obs["container_source_filtered"] is True
+    assert ok_obs["container_source_excludes"] == [".git"]
     assert ok_obs["equivalence_verified_at"] == "pre_execution"
-    assert ok_obs["source_equivalence_status"] == "unfiltered_identical"
+    assert ok_obs["source_equivalence_status"] == "verified_equivalent"
     assert ok_native["source_ref"]["binding_status"] == "byte_tree"
     assert ok_native["source_ref"]["scope_kind"] == "full_input_closure"
     assert "source_limit" not in ok_native["evidence"]
@@ -3395,9 +3398,10 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
     assert direct_report["tests"]["exit_code"] == 0
     direct_native = direct_report["tests"]["native_result"]
     direct_obs = direct_native["evidence"]["observation"]
-    assert direct_obs["container_source_filtered"] is False
+    assert direct_obs["container_source_filtered"] is True
+    assert direct_obs["container_source_excludes"] == [".git"]
     assert "restored_bound_paths" not in direct_obs
-    assert direct_obs["source_equivalence_status"] == "unfiltered_identical"
+    assert direct_obs["source_equivalence_status"] == "verified_equivalent"
     assert direct_native["source_ref"]["binding_status"] == "byte_tree"
     assert direct_native["source_ref"]["scope_kind"] == "full_input_closure"
     assert "source_limit" not in direct_native["evidence"]
@@ -3759,6 +3763,7 @@ def test_v2_data_overlay_on_verified_git_tree_refreshes_consumed_digest_and_veri
     assert report["tests"]["exit_code"] == 0
     assert native.bound_kwarg_passed is True
     assert native.test_source.files[".ruff_cache/base.txt"] == base_bytes
+    assert not any(rel.startswith(".git/") for rel in native.test_source.files)
     assert native.test_source.files["config/generated.local.toml"] == local_bytes
     assert (
         native.test_source.files[".ruff_cache/generated-data.txt"]
@@ -3803,6 +3808,283 @@ def test_v2_data_overlay_on_verified_git_tree_refreshes_consumed_digest_and_veri
         asyncio.run(bad_files.file("source-delivery.json").contents())
     )
     assert bad_delivery["source_equivalence_status"] == "unverified_consumer_view"
+
+
+@pytest.mark.parametrize("framework", ["unittest", "pytest"])
+def test_verified_tree_isolates_root_git_context_from_ordinary_consumers_only(
+    modules, monkeypatch, tmp_path, framework
+):
+    import importlib
+    import shutil
+
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+    adapter = importlib.import_module(collector.__package__ + ".native_results")
+
+    doc_content = b"# Generated Doc\n\nSee [anchor](README.md).\n"
+    local_bytes = b"[overlay]\nport = 9090\n"
+    writer = (
+        "import os; from pathlib import Path; "
+        "root = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+        "(root / 'docs').mkdir(parents=True, exist_ok=True); "
+        f"(root / 'docs' / 'generated.md').write_bytes({doc_content!r}); "
+        "(root / 'config').mkdir(parents=True, exist_ok=True); "
+        f"(root / 'config' / 'generated.local.toml').write_bytes({local_bytes!r})"
+    )
+
+    def edge(consumer_ref, rel, raw):
+        return {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": consumer_ref,
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {
+                "kind": "file",
+                "path": rel,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            },
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+
+    edges = [
+        edge({"kind": "tests"}, "config/generated.local.toml", local_bytes),
+        edge(
+            {"kind": "check", "name": "weaver_registry"},
+            "config/generated.local.toml",
+            local_bytes,
+        ),
+        edge({"kind": "check", "name": "docs"}, "docs/generated.md", doc_content),
+    ]
+    tree_files = {
+        "ci-selection.toml": b"# clean\n",
+        "ci-hygiene.toml": (
+            b"schema_version = 1\n"
+            b'checks = ["docs"]\n'
+            b"[lychee]\n"
+            b'executable = "lychee"\n'
+            b'arguments = ["--offline", "--no-progress"]\n'
+        ),
+        "README.md": b"# Root\n",
+        ".ruff_cache/fixture.txt": b"fixture-bound=ok\n",
+        "tests/test_ctx.py": (
+            b"import unittest\n"
+            b"from pathlib import Path\n\n"
+            b"class GitContextBoundaryTest(unittest.TestCase):\n"
+            b"    def test_tree_members_overlay_without_git_context(self):\n"
+            b"        self.assertFalse(Path('.git').exists())\n"
+            b"        self.assertEqual(Path('.ruff_cache/fixture.txt').read_bytes(), b'fixture-bound=ok\\n')\n"
+            b"        self.assertEqual(Path('config/generated.local.toml').read_bytes(), b'[overlay]\\nport = 9090\\n')\n"
+        ),
+    }
+    git_context = {
+        ".git/HEAD": b"ref: refs/heads/source\n",
+        ".git/index": b"controlled-index\n",
+    }
+    src = tmp_path / "src"
+    for rel, raw in {**tree_files, **git_context}.items():
+        target = src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    plan = _v2_dagger_plan(
+        edges=edges,
+        prerequisites=["gen"],
+        actions={"gen": {"type": "command", "argv": [sys.executable, "-c", writer]}},
+        tests=("tests.test_ctx",),
+        checks=("weaver_registry", "docs"),
+    )
+    plan["selection"]["framework"] = framework
+    plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": "c" * 40,
+        "index_tree": "c" * 40,
+        "changed_paths": ["README.md"],
+        "source_tree_id": real_selection.directory_content_id(src),
+    }
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *a, **kw: (
+            None if cmd in {"lychee", "git"} else real_which(cmd, *a, **kw)
+        ),
+    )
+    ws_root = tmp_path / "ctx_ws"
+    ws_root.mkdir()
+
+    class Native:
+        def __init__(self):
+            self.test_source = None
+            self.weaver_bound = None
+            self.weaver_excludes = None
+            self.git_sources = []
+
+        def _bound_public_source(self, source):
+            return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+
+        def _uv_container(self, source, version, _bound_source=None):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            self.test_source = mounted
+            _write_memdir(mounted, ws_root)
+            return _make_runtime_unittest_container_class(ws_root)()
+
+        async def _run_pytest(
+            self, source, version, target, *, _targets, _bound_source=None
+        ):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            self.test_source = mounted
+            _write_memdir(mounted, ws_root)
+            proc = _make_runtime_unittest_container_class(ws_root)().with_exec(
+                ["uv", "run", "--no-sync", "python", "-m", "unittest", *_targets]
+            )
+            return types.SimpleNamespace(
+                exit_code=await proc.exit_code(),
+                output=await proc.stdout(),
+                xml="<testsuite/>",
+                container=_make_runtime_unittest_container_class(ws_root)(),
+            )
+
+        def _pytest_bundle(self, execution):
+            return MemoryDirectory({"junit.xml": execution.xml, "exit-code.txt": "0\n"})
+
+        async def _weaver_execution(
+            self,
+            source,
+            kind,
+            config,
+            *,
+            context=None,
+            plan=None,
+            generated_inputs=(),
+            _bound_source=None,
+            _source_excludes=None,
+        ):
+            self.weaver_bound = _bound_source
+            self.weaver_excludes = _source_excludes
+            stages = ("registry-check", "registry-package", "registry-local-check")
+            raw = {
+                "name": "weaver_" + kind,
+                "status": "passed",
+                "exit_code": 0,
+                "gate_exit_code": 0,
+                "baseline_required": False,
+                "version": weaver_tool.VERSION,
+                "tool_asset_sha256": weaver_tool.LINUX_SHA256,
+                "source_digest": await _bound_source.digest(),
+                "inputs": {"config_sha256": "c" * 64},
+                "commands": [
+                    {
+                        "argv": ["weaver", "registry", "check"],
+                        "exit_code": 0,
+                        "stdout": stage + ".stdout",
+                        "stderr": stage + ".stderr",
+                    }
+                    for stage in stages
+                ],
+            }
+            files = MemoryDirectory(
+                {
+                    "report.json": json.dumps(raw),
+                    **{
+                        stage + suffix: "controlled native output"
+                        for stage in stages
+                        for suffix in (".stdout", ".stderr")
+                    },
+                }
+            )
+            return await adapter.weaver_result(
+                files,
+                _bound_source,
+                kind,
+                context=context,
+                plan=plan,
+                generated_inputs=generated_inputs,
+                input_source=source,
+                source_excludes=_source_excludes,
+            )
+
+        async def _run_git(self, source, argv_tail):
+            self.git_sources.append(set(source.files))
+            return {
+                "exit_code": 0,
+                "stdout": "README.md\0",
+                "stderr": "",
+                "observation": {"execution_location": "dagger_container"},
+            }
+
+        async def _run_lychee(self, source, argv_tail):
+            return {
+                "exit_code": 0,
+                "stdout": "1 OK\n",
+                "stderr": "",
+                "observation": {
+                    "execution_location": "dagger_container",
+                    "freshness_policy": "native_exec_cache",
+                    "process_started_at": "controlled-process-time",
+                    "origin_execution_attributed": False,
+                },
+            }
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory({**tree_files, **git_context}),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["tree_verified"] is True, report
+
+    # Ordinary unittest consumer: tracked cache-name fixture + Data Overlay, no Git Context.
+    assert report["tests"]["status"] == "passed", report["tests"]
+    assert report["tests"]["exit_code"] == 0
+    assert not any(rel.startswith(".git/") for rel in native.test_source.files)
+    assert native.test_source.files[".ruff_cache/fixture.txt"] == b"fixture-bound=ok\n"
+    assert native.test_source.files["config/generated.local.toml"] == local_bytes
+    test_obs = report["tests"]["native_result"]["evidence"]["observation"]
+    assert test_obs["container_source_excludes"] == [".git"]
+    assert test_obs["consumer_view_closure_verified"] is True
+    assert test_obs["source_equivalence_status"] == "verified_consumer_view"
+    assert test_obs["consumed_source_directory"]["digest"] == asyncio.run(
+        native.test_source.digest()
+    )
+
+    # Ordinary Weaver consumer: same boundary, actual excludes recorded.
+    assert native.weaver_excludes == tooling.GIT_CONTEXT_EXCLUDES
+    weaver_files = native.weaver_bound.files
+    assert not any(rel.startswith(".git/") for rel in weaver_files)
+    assert weaver_files[".ruff_cache/fixture.txt"] == b"fixture-bound=ok\n"
+    assert weaver_files["config/generated.local.toml"] == local_bytes
+    weaver_check = next(c for c in report["checks"] if c["name"] == "weaver_registry")
+    assert weaver_check["status"] == "passed", weaver_check
+    assert weaver_check["container_source_filtered"] is True
+    assert weaver_check["container_source_excludes"] == [".git"]
+
+    # Git-native consumer keeps the controlled root Git Context.
+    assert native.git_sources, report["checks"]
+    assert all({".git/HEAD", ".git/index"} <= files for files in native.git_sources)
 
 
 def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_targets(
@@ -3988,7 +4270,7 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
 
 
 def test_pre_execution_metadata_failure_preserves_source_execution_while_mount_failure_blocks(
-    modules, tmp_path
+    monkeypatch, modules, tmp_path
 ):
     import importlib
 
@@ -4050,6 +4332,16 @@ def test_pre_execution_metadata_failure_preserves_source_execution_while_mount_f
         def with_new_file(self, path, contents):
             base = super().with_new_file(path, contents)
             return FailingDigestDir(base.files, dirs=base.dirs)
+
+    orig_with_directory = MemoryDirectory.with_directory
+
+    def _preserve_failing_digest(self, prefix, directory, *, exclude=()):
+        result = orig_with_directory(self, prefix, directory, exclude=exclude)
+        if isinstance(directory, FailingDigestDir):
+            return FailingDigestDir(result.files, dirs=result.dirs)
+        return result
+
+    monkeypatch.setattr(MemoryDirectory, "with_directory", _preserve_failing_digest)
 
     # 1. Optional metadata failure (digest RPC error) keeps execution running with limited proof.
     ws_ok = tmp_path / "ws_meta_fail"

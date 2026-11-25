@@ -45,3 +45,8 @@ SOURCE_NOISE = [
     ".DS_Store",
     "Thumbs.db",
 ]
+
+# Root Git Context (controlled ODB/Index attached beside a verified Git Tree for
+# Git-native checks). Source Content ID never covers it, so ordinary consumers of
+# a verified tree receive every tree member without this root entry.
+GIT_CONTEXT_EXCLUDES = [".git"]

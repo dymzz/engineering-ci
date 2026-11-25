@@ -486,6 +486,8 @@ class SourceBoundaryTests(unittest.TestCase):
 
         plan_exec_text = (MODULES / "plan_execution.py").read_text(encoding="utf-8")
         self.assertIn("_overlay_bound_source", plan_exec_text)
+        self.assertIn("_git_tree_members", plan_exec_text)
+        self.assertIn("GIT_CONTEXT_EXCLUDES", plan_exec_text)
         self.assertIn("_verify_pre_execution_source_closure", plan_exec_text)
         self.assertNotIn("_restore_missing_bound_files", plan_exec_text)
         self.assertIn("source_delivery", plan_exec_text)

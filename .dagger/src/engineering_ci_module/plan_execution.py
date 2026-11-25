@@ -163,14 +163,17 @@ def _aggregate(report):
     return report
 
 
-def _accepts_bound_source_kwarg(fn):
-    """Return True when a container factory accepts `_bound_source`."""
+def _accepts_bound_source_kwarg(fn, name="_bound_source", *, allow_varkw=True):
+    """Return True when a factory accepts `name` as a keyword argument."""
     try:
         params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return False
-    return "_bound_source" in params or any(
-        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    return name in params or (
+        allow_varkw
+        and any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
     )
 
 
@@ -373,10 +376,16 @@ async def _tests(
     """Use the existing pytest computation, or native unittest, exactly once."""
     from . import native_results, tooling
 
+    source_excludes = (
+        tooling.GIT_CONTEXT_EXCLUDES
+        if binding_root is not None
+        else tooling.SOURCE_NOISE
+    )
     if consumed_source is None:
         if binding_root is not None:
-            # Verified bound immutable Directory: deliver directly without noise stripping.
-            consumed_source = source
+            # Verified bound Directory: deliver every tree member, isolating
+            # only the root Git Context that Source Content ID does not cover.
+            consumed_source = _git_tree_members(source)
         elif hasattr(module, "_bound_public_source"):
             consumed_source = module._bound_public_source(source)
 
@@ -407,13 +416,13 @@ async def _tests(
         snapshots=snapshots,
         binding=binding,
         generated_inputs=generated_inputs,
-        source_excludes=tooling.SOURCE_NOISE,
+        source_excludes=source_excludes,
     )
 
     result_kwargs = (
         {
             "consumed_source": consumed_source,
-            "source_excludes": tooling.SOURCE_NOISE,
+            "source_excludes": source_excludes,
             **(
                 {"pre_execution_proof": pre_execution_proof}
                 if pre_execution_proof is not None
@@ -457,12 +466,21 @@ async def _tests(
         return {"tests": tests_result, "stdout": "", "stderr": ""}, files
 
     if framework == "pytest":
-        kwargs = (
-            {"_bound_source": consumed_source} if consumed_source is not None else {}
-        )
-        execution = await module._run_pytest(
-            source, python_version, targets[0], _targets=targets, **kwargs
-        )
+        if consumed_source is not None and _accepts_bound_source_kwarg(
+            module._run_pytest
+        ):
+            execution = await module._run_pytest(
+                source,
+                python_version,
+                targets[0],
+                _targets=targets,
+                _bound_source=consumed_source,
+            )
+        else:
+            run_source = consumed_source if consumed_source is not None else source
+            execution = await module._run_pytest(
+                run_source, python_version, targets[0], _targets=targets
+            )
         code = execution.exit_code
         container = execution.container
         stdout = execution.output
@@ -502,7 +520,7 @@ async def _tests(
     result_kwargs = (
         {
             "consumed_source": consumed_source,
-            "source_excludes": tooling.SOURCE_NOISE,
+            "source_excludes": source_excludes,
             **(
                 {"pre_execution_proof": pre_execution_proof}
                 if pre_execution_proof is not None
@@ -543,6 +561,7 @@ async def _weaver(
     context=None,
     generated_inputs=(),
     consumed_source=None,
+    source_excludes=None,
 ):
     """Read one original /out Directory; do not rescan for Report or Enforce."""
     from engineering_ci import selection
@@ -582,6 +601,14 @@ async def _weaver(
         kwargs = (
             {"_bound_source": consumed_source} if consumed_source is not None else {}
         )
+        if (
+            consumed_source is not None
+            and source_excludes is not None
+            and _accepts_bound_source_kwarg(
+                module._weaver_execution, "_source_excludes", allow_varkw=False
+            )
+        ):
+            kwargs["_source_excludes"] = source_excludes
         files = await module._weaver_execution(
             source,
             kind,
@@ -620,6 +647,8 @@ async def _native_results(
 ):
     """Collect fixed independent native branches; Engine owns their DAG."""
     from engineering_ci import execution
+
+    from . import tooling
 
     targets = value["selection"]["tests"]
     branches = []
@@ -663,6 +692,15 @@ async def _native_results(
                 weaver_config,
                 report["source_tree_verified"],
                 context=report.get("execution_identity"),
+                **(
+                    {
+                        "consumed_source": _git_tree_members(source),
+                        "source_excludes": tooling.GIT_CONTEXT_EXCLUDES,
+                    }
+                    if report.get("tree_verified") is True
+                    and hasattr(module, "_bound_public_source")
+                    else {}
+                ),
             ),
         )
         for item in selected
@@ -710,6 +748,15 @@ def _overlay_files(target_dir, objects):
         else:
             updated = updated.with_file(rel, obj)
     return updated
+
+
+def _git_tree_members(source):
+    """Exclude only the root Git Context; every verified Git Tree member stays."""
+    from . import tooling
+
+    return dag.directory().with_directory(
+        "/", source, exclude=list(tooling.GIT_CONTEXT_EXCLUDES)
+    )
 
 
 def _overlay_bound_source(module, source, objects):
@@ -1015,6 +1062,10 @@ async def _execute_dag(
 ):
     """Map v2 pre_execution_pass and data edges directly onto async Dagger work."""
     import tempfile
+
+    from . import tooling
+
+    git_context_excludes = tooling.GIT_CONTEXT_EXCLUDES
     from pathlib import Path
 
     from engineering_ci import execution, selection
@@ -1337,7 +1388,11 @@ async def _execute_dag(
                 if report.get("tree_verified") is True and hasattr(
                     module, "_bound_public_source"
                 ):
-                    consumed_source = consumer_source
+                    # Ordinary consumers get tree members plus Data Overlay,
+                    # never the root Git Context reserved for Git-native checks.
+                    consumed_source = _overlay_files(
+                        _git_tree_members(source), dag_objects
+                    )
                 elif hasattr(module, "_bound_public_source"):
                     consumed_source = _overlay_bound_source(module, source, dag_objects)
                 else:
@@ -1354,6 +1409,11 @@ async def _execute_dag(
                         context=report.get("execution_identity"),
                         generated_inputs=generated_refs,
                         consumed_source=consumed_source,
+                        source_excludes=(
+                            git_context_excludes
+                            if report.get("tree_verified") is True
+                            else None
+                        ),
                     )
                     return native, check_files, metadata
                 fs_files = [
@@ -1479,7 +1539,11 @@ async def _execute_dag(
                 if report.get("tree_verified") is True and hasattr(
                     module, "_bound_public_source"
                 ):
-                    consumed_source = consumer_source
+                    # Ordinary consumers get tree members plus Data Overlay,
+                    # never the root Git Context reserved for Git-native checks.
+                    consumed_source = _overlay_files(
+                        _git_tree_members(source), dag_objects
+                    )
                 elif hasattr(module, "_bound_public_source"):
                     consumed_source = _overlay_bound_source(module, source, dag_objects)
                 else:

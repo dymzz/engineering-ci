@@ -224,6 +224,7 @@ class EngineeringCi:
         plan=None,
         generated_inputs=(),
         _bound_source=None,
+        _source_excludes=None,
     ):
         from . import native_results
 
@@ -253,7 +254,9 @@ class EngineeringCi:
             plan=plan,
             generated_inputs=generated_inputs,
             input_source=source,
-            source_excludes=tooling.SOURCE_NOISE,
+            source_excludes=(
+                tooling.SOURCE_NOISE if _source_excludes is None else _source_excludes
+            ),
         )
 
     @function
