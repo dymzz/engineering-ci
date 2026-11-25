@@ -140,6 +140,7 @@ A1_LIVE_SENSITIVE_FILES = frozenset(
         "src/engineering_ci/cicd_telemetry.py",
         "tests/test_dagger_native_telemetry.py",
         "dagger.json",
+        "dagger.toml",
         "dagger-module.toml",
         "pyproject.toml",
         "uv.lock",
@@ -152,6 +153,66 @@ A1_LIVE_SENSITIVE_PREFIXES = (
 )
 
 
+_GIT_C_ESCAPES = {
+    "a": b"\a",
+    "b": b"\b",
+    "t": b"\t",
+    "n": b"\n",
+    "v": b"\v",
+    "f": b"\f",
+    "r": b"\r",
+    '"': b'"',
+    "\\": b"\\",
+}
+
+
+def _unescape_git_quoted_path(raw: str) -> str:
+    """Decode Git C-style quoted paths if ``core.quotePath`` escaped characters."""
+    if not (len(raw) >= 2 and raw.startswith('"') and raw.endswith('"')):
+        return raw
+    inner = raw[1:-1]
+    out = bytearray()
+    idx = 0
+    while idx < len(inner):
+        ch = inner[idx]
+        if ch != "\\" or idx + 1 >= len(inner):
+            out.extend(ch.encode("utf-8"))
+            idx += 1
+            continue
+        nxt = inner[idx + 1]
+        if nxt in _GIT_C_ESCAPES:
+            out.extend(_GIT_C_ESCAPES[nxt])
+            idx += 2
+        elif idx + 3 < len(inner) and all(
+            digit in "01234567" for digit in inner[idx + 1 : idx + 4]
+        ):
+            out.append(int(inner[idx + 1 : idx + 4], 8))
+            idx += 4
+        else:
+            out.extend(("\\" + nxt).encode("utf-8"))
+            idx += 2
+    return out.decode("utf-8", errors="replace")
+
+
+def _normalize_a1_changed_path(raw: str) -> str:
+    """Normalize a Git changed path without stripping leading dots from hidden paths."""
+    norm = _unescape_git_quoted_path(raw.strip()).replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm.lstrip("/")
+
+
+def _read_changed_paths_file(path: Path) -> list[str]:
+    raw = path.read_bytes()
+    if b"\x00" in raw:
+        return [
+            chunk.decode("utf-8", errors="replace")
+            for chunk in raw.split(b"\x00")
+            if chunk
+        ]
+    return raw.decode("utf-8", errors="replace").splitlines()
+
+
 def select_a1_capture_scope(
     changed_paths: list[str],
     *,
@@ -161,9 +222,9 @@ def select_a1_capture_scope(
 ) -> dict[str, Any]:
     """Classify whether A.1 CI must run 3 live Engine captures or offline contract regression."""
     normalized = [
-        path.replace("\\", "/").strip().lstrip("./")
+        norm
         for path in changed_paths
-        if path and path.strip()
+        if path and path.strip() and (norm := _normalize_a1_changed_path(path))
     ]
     matched_paths: list[str] = []
     for path in normalized:
@@ -204,7 +265,7 @@ def select_a1_capture_scope(
             "schema_version": CONTRACT_VERSION,
             "run_live_capture": True,
             "evidence_level": "pending_native_capture",
-            "reason": f"changed:{matched_paths[0]}",
+            "reason": "sensitive_paths_changed",
             "matched_paths": matched_paths,
             "inspected_changed_paths": normalized,
         }
@@ -3123,11 +3184,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.subcommand == "a1-scope":
         changed_paths = list(args.changed_file)
         if args.changed_files_file and args.changed_files_file.is_file():
-            changed_paths.extend(
-                args.changed_files_file.read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines()
-            )
+            changed_paths.extend(_read_changed_paths_file(args.changed_files_file))
         decision = select_a1_capture_scope(
             changed_paths,
             explicit_reverify=args.explicit_reverify,
@@ -3137,17 +3194,40 @@ def main(argv: list[str] | None = None) -> int:
         if args.output:
             _atomic_write_json(args.output, decision)
         if args.github_output:
-            args.github_output.parent.mkdir(parents=True, exist_ok=True)
-            with args.github_output.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    f"run_live_capture={'true' if decision['run_live_capture'] else 'false'}\n"
-                )
-                handle.write(f"reason={decision['reason']}\n")
-                handle.write(f"evidence_level={decision['evidence_level']}\n")
+            _write_github_outputs(
+                args.github_output,
+                {
+                    "run_live_capture": (
+                        "true" if decision["run_live_capture"] else "false"
+                    ),
+                    "reason": str(decision["reason"]),
+                    "evidence_level": str(decision["evidence_level"]),
+                },
+            )
         print(json.dumps(decision, indent=2, sort_keys=True))
         return 0
     parser.error(f"unknown subcommand: {args.subcommand}")
     return 2
+
+
+def _write_github_outputs(path: Path, outputs: dict[str, str]) -> None:
+    """Write outputs safely using single-line key=value or unique heredoc delimiters."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for key, value in outputs.items():
+            if not key or any(ch in key for ch in ("=", "\n", "\r", "\0")):
+                raise ValueError(f"invalid GitHub output key: {key!r}")
+            if "\0" in value:
+                raise ValueError(f"NUL byte not permitted in GitHub output {key!r}")
+            if "\n" not in value and "\r" not in value:
+                handle.write(f"{key}={value}\n")
+                continue
+            delimiter = "__ECI_EOF__"
+            index = 0
+            while delimiter in value:
+                index += 1
+                delimiter = f"__ECI_EOF_{index}__"
+            handle.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
 
 
 if __name__ == "__main__":

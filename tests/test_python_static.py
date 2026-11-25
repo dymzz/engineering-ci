@@ -1,9 +1,13 @@
 """Pinned scanner policy, native exit-code semantics and report shaping."""
 
+import asyncio
 import importlib.util
 import json
+import sys
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ROOT / ".dagger/src/engineering_ci_module"
@@ -281,6 +285,123 @@ class PyrightSemanticsTests(unittest.TestCase):
         self.assertFalse(report["native_json_available"])
         self.assertTrue(any("not valid JSON" in x for x in report["limitations"]))
 
+    def test_incomplete_or_inconsistent_pyright_reports_fail_closed(self):
+        invalid_cases = [
+            (0, ""),
+            (0, "{}"),
+            (1, "{}"),
+            (0, "[]"),
+            (0, json.dumps({"version": "1.1.414", "generalDiagnostics": []})),
+            (1, json.dumps({"version": "1.1.414", "generalDiagnostics": []})),
+            (
+                0,
+                json.dumps(
+                    {
+                        "generalDiagnostics": [],
+                        "summary": {
+                            "filesAnalyzed": 1,
+                            "errorCount": 0,
+                            "warningCount": 0,
+                            "informationCount": 0,
+                        },
+                    }
+                ),
+            ),
+            (
+                0,
+                json.dumps(
+                    {
+                        "version": "1.1.414",
+                        "generalDiagnostics": [],
+                        "summary": {
+                            "filesAnalyzed": "1",
+                            "errorCount": 0,
+                            "warningCount": 0,
+                            "informationCount": 0,
+                        },
+                    }
+                ),
+            ),
+            (
+                1,
+                json.dumps(
+                    {
+                        "version": "1.1.414",
+                        "generalDiagnostics": [{"rule": "reportReturnType"}],
+                        "summary": {
+                            "filesAnalyzed": 1,
+                            "errorCount": 1,
+                            "warningCount": 0,
+                            "informationCount": 0,
+                        },
+                    }
+                ),
+            ),
+            (0, pyright_payload(errors=1, files=1)),
+            (1, pyright_payload(errors=0, files=1)),
+            (
+                0,
+                json.dumps(
+                    {
+                        "version": "1.1.414",
+                        "generalDiagnostics": [],
+                        "summary": {
+                            "filesAnalyzed": 1,
+                            "errorCount": 0,
+                            "warningCount": 0,
+                            "informationCount": 0,
+                        },
+                        "padding": "x" * (static.MAX_NATIVE_BYTES + 10),
+                    }
+                ),
+            ),
+        ]
+        for code, raw in invalid_cases:
+            with self.subTest(code=code, raw=raw[:80]):
+                report = self.report(code, raw)
+                self.assertEqual(report["outcome"], "failure")
+                self.assertEqual(report["reason"], "pyright_report_unavailable")
+                self.assertEqual(report["exit_code"], code)
+                if len(raw.encode("utf-8")) > static.MAX_NATIVE_BYTES:
+                    self.assertTrue(report["native_truncated"])
+                    self.assertIsNone(report["native_json"])
+
+    def test_fatal_error_preserves_available_diagnostics_without_passing(self):
+        report = self.report(2, pyright_payload(errors=1, files=1))
+        self.assertEqual(report["outcome"], "failure")
+        self.assertEqual(report["reason"], "fatal_error")
+        self.assertEqual(report["finding_count"], 1)
+
+    def test_malformed_diagnostic_rule_does_not_crash_facts(self):
+        for bad_rule in (["reportMissingImports"], {"rule": "reportMissingImports"}):
+            payload = json.dumps(
+                {
+                    "version": static.SCANNER_VERSIONS["pyright"],
+                    "generalDiagnostics": [
+                        {
+                            "file": "typed.py",
+                            "severity": "error",
+                            "message": 'Type "str" is not assignable to return type "int"',
+                            "range": {"start": {"line": 5, "character": 11}},
+                            "rule": bad_rule,
+                            "category": ["type"],
+                        }
+                    ],
+                    "summary": {
+                        "filesAnalyzed": 1,
+                        "errorCount": 1,
+                        "warningCount": 0,
+                        "informationCount": 0,
+                    },
+                }
+            )
+            with self.subTest(bad_rule=bad_rule):
+                report = self.report(1, payload)
+                self.assertEqual(report["outcome"], "findings")
+                self.assertEqual(report["finding_count"], 1)
+                self.assertEqual(report["findings"][0]["rule"], "diagnostic")
+                self.assertEqual(report["limitations"], [])
+
 
 class DeptrySemanticsTests(unittest.TestCase):
     def report(self, exit_code, native=""):
@@ -341,8 +462,54 @@ class PylintSemanticsTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "failure")
 
     def test_zero_is_clean_and_unknown_bits_are_failures(self):
-        self.assertEqual(self.report(0)["outcome"], "clean")
+        self.assertEqual(self.report(0, "[]")["outcome"], "clean")
         self.assertEqual(self.report(64)["reason"], "unknown_pylint_exit_code")
+
+    def test_invalid_empty_or_inconsistent_pylint_reports_fail_closed(self):
+        invalid_cases = [
+            (0, ""),
+            (0, "{}"),
+            (0, "{not json"),
+            (0, "true"),
+            (0, pylint_payload()),
+            (0, json.dumps([123])),
+            (8, "[]"),
+            (8, "{}"),
+            (8, "{not json"),
+            (8, json.dumps([{"path": "dup_a.py"}])),
+            (
+                8,
+                json.dumps(
+                    [
+                        {
+                            "type": "refactor",
+                            "line": "5",
+                            "path": "dup_a.py",
+                            "symbol": "duplicate-code",
+                            "message": "Similar lines in 2 files",
+                            "message-id": "R0801",
+                        }
+                    ]
+                ),
+            ),
+            (
+                0,
+                json.dumps([{"padding": "y" * (static.MAX_NATIVE_BYTES + 10)}]),
+            ),
+            (
+                8,
+                json.dumps([{"padding": "y" * (static.MAX_NATIVE_BYTES + 10)}]),
+            ),
+        ]
+        for code, raw in invalid_cases:
+            with self.subTest(code=code, raw=raw[:80]):
+                report = self.report(code, raw)
+                self.assertEqual(report["outcome"], "failure")
+                self.assertEqual(report["reason"], "pylint_report_unavailable")
+                self.assertEqual(report["exit_code"], code)
+                if len(raw.encode("utf-8")) > static.MAX_NATIVE_BYTES:
+                    self.assertTrue(report["native_truncated"])
+                    self.assertIsNone(report["native_json"])
 
 
 class ReportShapeTests(unittest.TestCase):
@@ -403,6 +570,257 @@ class SummaryTests(unittest.TestCase):
         summary = static.findings_summary(report)
         self.assertIn("(failure)", summary)
         self.assertIn("ImportError", summary)
+
+
+class StdoutJsonChannelTests(unittest.TestCase):
+    def test_pyright_and_pylint_consume_stdout_json_when_native_raw_empty(self):
+        pyright_findings = static.static_report(
+            static.pyright_policy("."), 1, stdout=pyright_payload()
+        )
+        self.assertEqual(pyright_findings["outcome"], "findings")
+        self.assertTrue(pyright_findings["native_json_available"])
+        self.assertEqual(
+            pyright_findings["observed_version"], static.SCANNER_VERSIONS["pyright"]
+        )
+        self.assertEqual(pyright_findings["findings"][0]["rule"], "reportReturnType")
+        self.assertEqual(pyright_findings["findings"][0]["line"], 6)
+
+        pyright_empty_scope = static.static_report(
+            static.pyright_policy("."),
+            0,
+            stdout=pyright_payload(errors=0, files=0),
+        )
+        self.assertEqual(pyright_empty_scope["outcome"], "not_executed")
+        self.assertEqual(pyright_empty_scope["reason"], "no_applicable_source")
+
+        pyright_clean = static.static_report(
+            static.pyright_policy("."), 0, stdout=pyright_payload(errors=0, files=1)
+        )
+        self.assertEqual(pyright_clean["outcome"], "clean")
+
+        pylint_clean = static.static_report(
+            static.pylint_policy(["src"]), 0, stdout="[]"
+        )
+        self.assertEqual(pylint_clean["outcome"], "clean")
+
+        for code, bad_stdout in (
+            (0, ""),
+            (0, "{}"),
+            (1, "{}"),
+            (1, "{not json"),
+        ):
+            with self.subTest(code=code, bad_stdout=bad_stdout):
+                failed = static.static_report(
+                    static.pyright_policy("."), code, stdout=bad_stdout
+                )
+                self.assertEqual(failed["outcome"], "failure")
+                self.assertEqual(failed["reason"], "pyright_report_unavailable")
+
+        for code, bad_stdout in ((0, ""), (0, "{}"), (0, "{bad"), (8, "[]")):
+            with self.subTest(pylint_code=code, bad_stdout=bad_stdout):
+                failed = static.static_report(
+                    static.pylint_policy(["src"]), code, stdout=bad_stdout
+                )
+                self.assertEqual(failed["outcome"], "failure")
+                self.assertEqual(failed["reason"], "pylint_report_unavailable")
+
+        pylint_findings = static.static_report(
+            static.pylint_policy(["src"]), 8, stdout=pylint_payload()
+        )
+        self.assertEqual(pylint_findings["outcome"], "findings")
+        self.assertEqual(pylint_findings["reason"], "duplicate_code_found")
+        self.assertTrue(pylint_findings["native_json_available"])
+        self.assertEqual(pylint_findings["findings"][0]["rule"], "R0801")
+
+    def test_deptry_keeps_file_json_channel_distinct_from_stdout(self):
+        stdout_only = static.static_report(
+            static.deptry_policy("src"), 1, stdout=deptry_payload(), native_raw=""
+        )
+        self.assertEqual(stdout_only["outcome"], "failure")
+        self.assertEqual(stdout_only["reason"], "deptry_execution_error")
+        self.assertFalse(stdout_only["native_json_available"])
+
+        from_file = static.static_report(
+            static.deptry_policy("src"), 1, stdout="", native_raw=deptry_payload()
+        )
+        self.assertEqual(from_file["outcome"], "findings")
+        self.assertTrue(from_file["native_json_available"])
+        self.assertEqual(from_file["findings"][0]["rule"], "DEP002")
+
+    def test_dagger_run_static_routes_stdout_json_and_deptry_file_channel(self):
+        dagger_stub = types.ModuleType("dagger")
+        dagger_stub.DefaultPath = lambda p: p
+        dagger_stub.Ignore = lambda *p: p
+        dagger_stub.check = lambda fn: fn
+        dagger_stub.function = lambda fn=None, **kw: fn if fn else (lambda f: f)
+        dagger_stub.object_type = lambda cls=None, **kw: cls if cls else (lambda c: c)
+        dagger_stub.field = lambda *a, **kw: None
+        dagger_stub.ReturnType = types.SimpleNamespace(ANY="ANY")
+        dagger_stub.Directory = object
+        dagger_stub.Secret = object
+        dagger_stub.Container = object
+        dagger_stub.File = object
+        dagger_stub.dag = types.SimpleNamespace(cache_volume=lambda name: name)
+
+        calls = []
+
+        class FakeContainer:
+            def __init__(self, payload_by_tool):
+                self._payload = payload_by_tool
+                self.mounted_caches = []
+
+            def with_mounted_cache(self, target, *args, **kwargs):
+                self.mounted_caches.append(target)
+                return self
+
+            def with_exec(self, args, **kwargs):
+                calls.append(list(args))
+                if len(args) >= 4 and args[:2] == ["python", "-c"]:
+                    return FakeExecResult(0, self._payload["file_json"], "")
+                return FakeExecResult(
+                    self._payload["exit_code"],
+                    self._payload["stdout"],
+                    self._payload.get("stderr", ""),
+                )
+
+        class FakeExecResult:
+            def __init__(self, code, stdout_text, stderr_text):
+                self._code = code
+                self._stdout = stdout_text
+                self._stderr = stderr_text
+
+            def with_exec(self, args, **kwargs):
+                calls.append(list(args))
+                return FakeExecResult(0, self._stdout_file(), "")
+
+            def _stdout_file(self):
+                return self._stderr
+
+            async def exit_code(self):
+                return self._code
+
+            async def stdout(self):
+                return self._stdout
+
+            async def stderr(self):
+                return self._stderr
+
+        class DualExecResult(FakeExecResult):
+            def __init__(self, code, stdout_text, stderr_text, file_json):
+                super().__init__(code, stdout_text, stderr_text)
+                self._file_json = file_json
+
+            def _stdout_file(self):
+                return self._file_json
+
+        class DualFakeContainer(FakeContainer):
+            def with_exec(self, args, **kwargs):
+                calls.append(list(args))
+                return DualExecResult(
+                    self._payload["exit_code"],
+                    self._payload["stdout"],
+                    self._payload.get("stderr", ""),
+                    self._payload.get("file_json", ""),
+                )
+
+        parent_src = str((ROOT / ".dagger/src").resolve())
+        with (
+            patch.dict(sys.modules, {"dagger": dagger_stub}),
+            patch.object(sys, "path", [parent_src, *sys.path]),
+        ):
+            for name in list(sys.modules):
+                if name == "engineering_ci_module" or name.startswith(
+                    "engineering_ci_module."
+                ):
+                    sys.modules.pop(name, None)
+            import engineering_ci_module.main as main_mod
+
+            try:
+                ci = main_mod.EngineeringCi()
+
+                # Pyright stdout JSON:
+                calls.clear()
+                pyright_container = DualFakeContainer(
+                    {"exit_code": 1, "stdout": pyright_payload(), "file_json": ""}
+                )
+                with patch.object(
+                    ci, "_uv_container", return_value=pyright_container
+                ) as mock_uv:
+                    rep_pyright = asyncio.run(
+                        ci._run_static(
+                            object(),
+                            "3.14",
+                            static.pyright_policy("src"),
+                        )
+                    )
+                self.assertEqual(
+                    mock_uv.call_args.kwargs.get("system_packages"),
+                    ("libatomic1",),
+                )
+                self.assertIn(
+                    "/root/.cache/pyright-python", pyright_container.mounted_caches
+                )
+                self.assertEqual(rep_pyright["outcome"], "findings")
+                self.assertTrue(rep_pyright["native_json_available"])
+                self.assertEqual(
+                    rep_pyright["observed_version"], static.SCANNER_VERSIONS["pyright"]
+                )
+                self.assertEqual(rep_pyright["findings"][0]["rule"], "reportReturnType")
+                self.assertEqual(len(calls), 1)
+                self.assertIn("--outputjson", calls[0])
+
+                # Pylint stdout JSON:
+                calls.clear()
+                pylint_container = DualFakeContainer(
+                    {"exit_code": 8, "stdout": pylint_payload(), "file_json": ""}
+                )
+                with patch.object(
+                    ci, "_uv_container", return_value=pylint_container
+                ) as mock_uv:
+                    rep_pylint = asyncio.run(
+                        ci._run_static(
+                            object(),
+                            "3.14",
+                            static.pylint_policy(["src"]),
+                        )
+                    )
+                self.assertEqual(mock_uv.call_args.kwargs.get("system_packages"), ())
+                self.assertEqual(pylint_container.mounted_caches, [])
+                self.assertEqual(rep_pylint["outcome"], "findings")
+                self.assertEqual(rep_pylint["reason"], "duplicate_code_found")
+                self.assertTrue(rep_pylint["native_json_available"])
+                self.assertEqual(rep_pylint["findings"][0]["rule"], "R0801")
+                self.assertEqual(len(calls), 1)
+                self.assertIn("--output-format=json", calls[0])
+
+                # Deptry keeps file-based native_output channel distinct from stdout:
+                calls.clear()
+                deptry_container = DualFakeContainer(
+                    {"exit_code": 1, "stdout": "", "file_json": deptry_payload()}
+                )
+                with patch.object(
+                    ci, "_uv_container", return_value=deptry_container
+                ) as mock_uv:
+                    rep_deptry = asyncio.run(
+                        ci._run_static(
+                            object(),
+                            "3.14",
+                            static.deptry_policy("src"),
+                            native_output=main_mod._DEPTRY_JSON,
+                        )
+                    )
+                self.assertEqual(mock_uv.call_args.kwargs.get("system_packages"), ())
+                self.assertEqual(rep_deptry["outcome"], "findings")
+                self.assertEqual(rep_deptry["findings"][0]["rule"], "DEP002")
+                self.assertEqual(len(calls), 2)
+                self.assertIn("--json-output", calls[0])
+                self.assertEqual(calls[1][:2], ["python", "-c"])
+            finally:
+                for name in list(sys.modules):
+                    if name == "engineering_ci_module" or name.startswith(
+                        "engineering_ci_module."
+                    ):
+                        sys.modules.pop(name, None)
 
 
 class SourceBoundaryTests(unittest.TestCase):
@@ -504,6 +922,10 @@ class SourceBoundaryTests(unittest.TestCase):
         # P2-01: system_packages installs libatomic1 inside _uv_container before mounting source
         self.assertIn("system_packages", methods["_uv_container"])
         self.assertIn("libatomic1", methods["_run_static"])
+        self.assertIn("libatomic1", methods["_static_fixture_versions"])
+        self.assertIn(
+            "engineering-ci-pyright-node", methods["_static_fixture_versions"]
+        )
         uv_src = methods["_uv_container"]
         self.assertLess(uv_src.index("system_packages"), uv_src.index('"/workspace"'))
 

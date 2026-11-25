@@ -609,7 +609,15 @@ class ManualReleaseTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertNotIn("workflow_run:", workflow)
         self.assertIn("workflow_dispatch:", workflow)
-        self.assertNotIn("workflow_dispatch:", ci)
+        self.assertIn("workflow_dispatch:", ci)
+        self.assertIn("reverify_a1_capture:", ci)
+        self.assertNotIn("contents: write", ci)
+        for probe_input in (
+            "pytest_probe_scenario",
+            "quality_probe_scenario",
+            "matrix_probe_scenario",
+        ):
+            self.assertNotIn(probe_input, ci)
         self.assertNotIn("dagger call", ci)
         self.assertNotIn("docker pull", ci)
         self.assertIn("check --engineering-ci --check=tests", ci)

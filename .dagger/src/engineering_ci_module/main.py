@@ -1082,17 +1082,23 @@ class EngineeringCi:
             + static.ARGUMENTS[tool](policy, native_output),
             expect=dagger.ReturnType.ANY,
         )
+        stdout = await result.stdout()
+        stderr = await result.stderr()
         native_raw = ""
         if native_output:
             native_raw = await result.with_exec(
                 ["python", "-c", _READ_OPTIONAL, native_output],
                 expect=dagger.ReturnType.ANY,
             ).stdout()
+        elif tool in static.STDOUT_JSON_TOOLS:
+            # Pyright (--outputjson) and Pylint (--output-format=json) emit their
+            # structured report directly to stdout from the same execution.
+            native_raw = stdout
         return static.static_report(
             policy,
             await result.exit_code(),
-            await result.stdout(),
-            await result.stderr(),
+            stdout,
+            stderr,
             native_raw,
         )
 
@@ -2505,9 +2511,18 @@ def pytest_sessionfinish(session, exitstatus):
 
     async def _static_fixture_versions(self, source, python_version):
         """Confirm uvx resolved each pinned version instead of trusting it."""
-        container = self._uv_container(source, python_version)
+        base_container = self._uv_container(source, python_version)
+        pyright_container = self._uv_container(
+            source,
+            python_version,
+            system_packages=("libatomic1",),
+        ).with_mounted_cache(
+            "/root/.cache/pyright-python",
+            dag.cache_volume("engineering-ci-pyright-node"),
+        )
         observed = {}
         for tool, pinned in static.SCANNER_VERSIONS.items():
+            container = pyright_container if tool == "pyright" else base_container
             result = container.with_exec(
                 static.runner_prefix(tool, pinned) + ["--version"],
                 expect=dagger.ReturnType.ANY,
@@ -2595,6 +2610,15 @@ def pytest_sessionfinish(session, exitstatus):
             f"Vulture lost the dead-code diagnostic: {reports['vulture-dead']['findings']}",
         )
         require(
+            reports["pyright-clean"]["native_json_available"]
+            and reports["pyright-type-error"]["native_json_available"]
+            and any(
+                item["rule"] == "reportReturnType"
+                for item in reports["pyright-type-error"]["findings"]
+            ),
+            f"Pyright lost structured diagnostics: {reports['pyright-type-error']}",
+        )
+        require(
             reports["pyright-type-error"]["observed_version"]
             == static.SCANNER_VERSIONS["pyright"],
             "Pyright did not report its own version alongside the diagnostics",
@@ -2618,6 +2642,11 @@ def pytest_sessionfinish(session, exitstatus):
         duplicated = reports["pylint-duplicate"]
         # pylint emits one R0801 per duplicate group and names both members
         # inside that single message, so the count stays at one.
+        require(
+            reports["pylint-clean"]["native_json_available"]
+            and duplicated["native_json_available"],
+            f"Pylint lost structured JSON output: {duplicated}",
+        )
         duplicate_text = " ".join(
             f"{item['message']} {item.get('symbol') or ''}"
             for item in duplicated["findings"]
