@@ -405,5 +405,124 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("ImportError", summary)
 
 
+class SourceBoundaryTests(unittest.TestCase):
+    def test_public_source_noise_keeps_consumer_artifacts_builds_and_design(self):
+        import ast
+
+        tooling_ast = ast.parse((MODULES / "tooling.py").read_text(encoding="utf-8"))
+        source_noise = next(
+            ast.literal_eval(node.value)
+            for node in tooling_ast.body
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == "SOURCE_NOISE" for t in node.targets)
+        )
+        for required_kept in (
+            "build",
+            "dist",
+            ".artifacts",
+            "**/.artifacts",
+            "design",
+            "guides",
+            ".agent",
+            ".work",
+            ".tools",
+            ".tmp",
+            ".log",
+            ".env",
+            ".env.*",
+            ".secrets",
+            ".aws",
+            ".ssh",
+            ".docker",
+            "**/*.local.toml",
+            ".pytest_cache",
+            "**/.pytest_cache",
+            ".mypy_cache",
+            "**/.mypy_cache",
+            ".pyright",
+            "**/.pyright",
+            ".tach",
+            "**/.tach",
+            ".lycheecache",
+            "**/.lycheecache",
+            ".DS_Store",
+            "Thumbs.db",
+        ):
+            self.assertNotIn(required_kept, source_noise)
+        for required_noise in (
+            ".git",
+            ".venv",
+            "**/.venv",
+            "__pycache__",
+            ".ruff_cache",
+        ):
+            self.assertIn(required_noise, source_noise)
+
+        repo_text = (MODULES / "repository.py").read_text(encoding="utf-8")
+        self.assertIn("HOST_SECRET_EXCLUDES", repo_text)
+        self.assertIn("HOST_LOCAL_EXCLUDES", repo_text)
+        self.assertIn("WEAVER_DEFAULT_EXCLUDES", repo_text)
+        for host_only in (
+            ".env.*",
+            ".docker",
+            "**/*.local.toml",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".pyright",
+            ".tach",
+            ".lycheecache",
+            ".DS_Store",
+            "Thumbs.db",
+        ):
+            self.assertIn(host_only, repo_text)
+
+        main_text = (MODULES / "main.py").read_text(encoding="utf-8")
+        main_ast = ast.parse(main_text)
+        root = next(
+            node
+            for node in main_ast.body
+            if isinstance(node, ast.ClassDef) and node.name == "EngineeringCi"
+        )
+        methods = {
+            node.name: ast.get_source_segment(main_text, node) or ""
+            for node in root.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        self.assertNotIn("repository.SOURCE_EXCLUDES", methods["_uv_tool_container"])
+        self.assertIn("_bound_public_source", methods["_uv_tool_container"])
+        self.assertIn("_bound_public_source", methods["_uv_container"])
+        self.assertIn("_bound_public_source", methods["_weaver_execution"])
+        self.assertIn("_bound_public_source", methods["tach_check"])
+        self.assertIn(
+            "repository_scan_filter_refusal", methods["_run_repository_script"]
+        )
+        self.assertIn(
+            "_needs_unfiltered_scan_cross_check", methods["_run_repository_script"]
+        )
+        for weaver_method in ("weaver_registry", "weaver_live", "weaver_terminal"):
+            self.assertIn("WEAVER_DEFAULT_EXCLUDES", methods[weaver_method])
+        # P2-01: system_packages installs libatomic1 inside _uv_container before mounting source
+        self.assertIn("system_packages", methods["_uv_container"])
+        self.assertIn("libatomic1", methods["_run_static"])
+        uv_src = methods["_uv_container"]
+        self.assertLess(uv_src.index("system_packages"), uv_src.index('"/workspace"'))
+
+        plan_exec_text = (MODULES / "plan_execution.py").read_text(encoding="utf-8")
+        self.assertIn("_overlay_bound_source", plan_exec_text)
+        self.assertIn("_git_tree_members", plan_exec_text)
+        self.assertIn("GIT_CONTEXT_EXCLUDES", plan_exec_text)
+        self.assertIn("_verify_pre_execution_source_closure", plan_exec_text)
+        self.assertNotIn("_restore_missing_bound_files", plan_exec_text)
+        self.assertIn("source_delivery", plan_exec_text)
+        self.assertIn("_accepts_bound_source_kwarg", plan_exec_text)
+        native_results_text = (MODULES / "native_results.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("_downgrade_binding_source", native_results_text)
+        self.assertIn("pre_execution_proof", native_results_text)
+        self.assertIn("metadata_errors", native_results_text)
+        self.assertNotIn("_WORKSPACE_CLOSURE_PROBE", native_results_text)
+
+
 if __name__ == "__main__":
     unittest.main()

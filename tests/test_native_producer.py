@@ -356,3 +356,27 @@ def test_generated_input_identity_participates_in_native_result_digest(producer,
         a["result_id"] != b["result_id"]
         for a, b in zip(first["native_results"], second["native_results"], strict=True)
     )
+
+
+def test_partial_binding_without_verified_byte_tree_still_emits_source_limit():
+    item = native_producer.test_check(
+        {"status": "passed", "exit_code": 0},
+        framework="pytest",
+        targets=["tests.test_controlled"],
+        observation={"executable": "python", "tool_version": "9.0"},
+        source=SOURCE,
+        context=CONTEXT,
+        impl=IMPL,
+        binding={
+            "rule_ref": check_contract.rule_ref("selected-pytest", 1, digest="a" * 64),
+            "source_ref": {
+                **SOURCE,
+                "binding_status": "identity_only",
+                "scope_kind": "changed_paths",
+                "verified_input_scope": [],
+            },
+        },
+    )
+    assert (
+        item["native_result"]["evidence"]["source_limit"] == "input_closure_not_proven"
+    )

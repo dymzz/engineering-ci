@@ -173,15 +173,67 @@ class EngineeringCi:
         """Export one Weaver execution, its native logs, package and report."""
         return await self._weaver_execution(source, kind, config_path)
 
+    _SCAN_SKIPPED_NOISE = (
+        ".git",
+        ".venv",
+        "**/.venv",
+        "__pycache__",
+        "**/__pycache__",
+    )
+    _SCAN_SKIPPED_PARTS = frozenset({".git", ".venv", "__pycache__"})
+
+    def _bound_public_source(self, source: dagger.Directory) -> dagger.Directory:
+        """Bind caller source with generic VCS/cache/OS exclusions only.
+
+        Never guesses project filenames such as ``.env.*``, ``*.local.toml``,
+        or ``.docker/*``, and never strips Plan overlays or consumer targets;
+        host credential/local excludes live in ``repository.py``.
+        """
+        return dag.directory().with_directory(
+            "/", source, exclude=list(tooling.SOURCE_NOISE)
+        )
+
+    def _scan_equivalent_source(self, source: dagger.Directory) -> dagger.Directory:
+        """Bind source excluding only segments always skipped by scan discovery."""
+        return dag.directory().with_directory(
+            "/", source, exclude=list(self._SCAN_SKIPPED_NOISE)
+        )
+
+    async def _needs_unfiltered_scan_cross_check(
+        self, source: dagger.Directory, bound: dagger.Directory, policy: dict
+    ) -> bool:
+        """Skip duplicate raw scan unless filter removed discoverable dirs/paths."""
+        configured = [*policy.get("scan_paths", ()), policy.get("config") or ""]
+        if any(
+            part in self._SCAN_SKIPPED_PARTS
+            for raw in configured
+            if raw
+            for part in str(raw).replace("\\", "/").split("/")
+        ):
+            return True
+        scan_equivalent = self._scan_equivalent_source(source)
+        return await bound.digest() != await scan_equivalent.digest()
+
     async def _weaver_execution(
-        self, source, kind, config_path, *, context=None, plan=None, generated_inputs=()
+        self,
+        source,
+        kind,
+        config_path,
+        *,
+        context=None,
+        plan=None,
+        generated_inputs=(),
+        _bound_source=None,
+        _source_excludes=None,
     ):
         from . import native_results
 
         if kind not in {"registry", "sample", "live", "terminal"}:
             raise ValueError("Unknown Weaver check")
-        bound = dag.directory().with_directory(
-            "/", source, exclude=list(tooling.SOURCE_NOISE)
+        bound = (
+            _bound_source
+            if _bound_source is not None
+            else self._bound_public_source(source)
         )
         result = (
             self._weaver_container()
@@ -201,6 +253,10 @@ class EngineeringCi:
             context=context,
             plan=plan,
             generated_inputs=generated_inputs,
+            input_source=source,
+            source_excludes=(
+                tooling.SOURCE_NOISE if _source_excludes is None else _source_excludes
+            ),
         )
 
     @function
@@ -219,6 +275,8 @@ class EngineeringCi:
         report = json.loads(await self.weaver_report(source, kind, config_path))
         if report["status"] != "passed":
             raise ValueError(f"{report['name']}: {report['reason']}")
+        if kind != "sample" and report.get("metadata_status") == "unavailable":
+            raise ValueError(f"{report['name']}: metadata_unavailable")
         if kind != "sample" and (
             report.get("check_contract", {}).get("status") != "valid"
             or report.get("native_satisfaction", {}).get("status") != "satisfied"
@@ -239,7 +297,11 @@ class EngineeringCi:
     @check
     async def weaver_registry(
         self,
-        source: Annotated[dagger.Directory, DefaultPath("/")],
+        source: Annotated[
+            dagger.Directory,
+            DefaultPath("/"),
+            Ignore(repository.WEAVER_DEFAULT_EXCLUDES),
+        ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
         """Check and package an explicitly selected, fixed local Registry."""
@@ -251,7 +313,11 @@ class EngineeringCi:
     @check
     async def weaver_live(
         self,
-        source: Annotated[dagger.Directory, DefaultPath("/")],
+        source: Annotated[
+            dagger.Directory,
+            DefaultPath("/"),
+            Ignore(repository.WEAVER_DEFAULT_EXCLUDES),
+        ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
         """Validate a completed OTLP capture through Weaver's gRPC receiver."""
@@ -261,7 +327,11 @@ class EngineeringCi:
     @check
     async def weaver_terminal(
         self,
-        source: Annotated[dagger.Directory, DefaultPath("/")],
+        source: Annotated[
+            dagger.Directory,
+            DefaultPath("/"),
+            Ignore(repository.WEAVER_DEFAULT_EXCLUDES),
+        ],
         config_path: str = "ci-weaver.toml",
     ) -> None:
         """Post-completion Pipeline validation; requires explicit terminal evidence."""
@@ -620,6 +690,9 @@ class EngineeringCi:
         sync_dependencies: bool = True,
         git_token: dagger.Secret | None = None,
         dependency_packages: dagger.Directory | None = None,
+        *,
+        _bound_source: dagger.Directory | None = None,
+        system_packages: tuple[str, ...] = (),
     ) -> dagger.Container:
         """Create an isolated uv environment for a Python project."""
 
@@ -636,8 +709,24 @@ class EngineeringCi:
         if dependency_packages is not None and git_token is not None:
             raise ValueError("Local dependency packages do not accept Git credentials")
         base = dag.container().from_(image)
+        if system_packages:
+            base = base.with_exec(["apt-get", "update", "-qq"]).with_exec(
+                [
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "-qq",
+                    "--no-install-recommends",
+                    *system_packages,
+                ]
+            )
         if git_token is not None:
             base = prepare_private_git(base)
+        bound = (
+            _bound_source
+            if _bound_source is not None
+            else self._bound_public_source(source)
+        )
         container = (
             base.with_env_variable("UV_NO_MANAGED_PYTHON", "1")
             .with_env_variable("UV_PYTHON_DOWNLOADS", "0")
@@ -646,19 +735,7 @@ class EngineeringCi:
                 dag.cache_volume(f"engineering-ci-uv-python{python_version}"),
             )
             .with_env_variable("UV_LINK_MODE", "copy")
-            .with_directory(
-                "/workspace",
-                source,
-                exclude=[
-                    ".git",
-                    ".venv",
-                    "**/.venv",
-                    "__pycache__",
-                    "**/__pycache__",
-                    ".ruff_cache",
-                    "**/.ruff_cache",
-                ],
-            )
+            .with_directory("/workspace", bound)
             .with_workdir("/workspace")
         )
         if dependency_packages is not None:
@@ -744,7 +821,17 @@ class EngineeringCi:
             .stdout()
         )
 
-    def _uv_tool_container(self, source: dagger.Directory) -> dagger.Container:
+    def _uv_tool_container(
+        self,
+        source: dagger.Directory,
+        *,
+        _bound_source: dagger.Directory | None = None,
+    ) -> dagger.Container:
+        bound = (
+            _bound_source
+            if _bound_source is not None
+            else self._bound_public_source(source)
+        )
         return (
             dag.container()
             .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
@@ -754,7 +841,7 @@ class EngineeringCi:
             .with_env_variable("UV_LINK_MODE", "copy")
             .with_env_variable("UV_PYTHON_DOWNLOADS", "never")
             .without_env_variable("SHELLCHECK_OPTS")
-            .with_directory("/workspace", source, exclude=repository.SOURCE_EXCLUDES)
+            .with_directory("/workspace", bound)
             .with_workdir("/workspace")
         )
 
@@ -765,27 +852,54 @@ class EngineeringCi:
     async def _run_repository_script(self, source, policy, arguments, tool_key):
         from engineering_ci import workflow_analysis
 
-        container = self._uv_tool_container(source)
+        bound = self._bound_public_source(source)
+        input_digest = await source.digest()
+        consumed_digest = await bound.digest()
+        container_source_filtered = consumed_digest != input_digest
+        container = self._uv_tool_container(source, _bound_source=bound)
+        scan_source = Path(workflow_analysis.__file__).read_text(encoding="utf-8")
+        scan_command = [
+            "python",
+            "-c",
+            (
+                "import json, sys; sys.path.insert(0, '/tmp'); "
+                "from eci_scan_source import repository_scan_targets; "
+                "print(json.dumps(repository_scan_targets('/workspace', json.loads(sys.argv[1]))))"
+            ),
+            json.dumps(policy),
+        ]
         # Inspect the exact filtered mount in the same immutable container
         # snapshot used by the native tool.
         inspected = container.with_new_file(
             "/tmp/eci_scan_source.py",
-            Path(workflow_analysis.__file__).read_text(encoding="utf-8"),
-        ).with_exec(
-            [
-                "python",
-                "-c",
-                (
-                    "import json, sys; sys.path.insert(0, '/tmp'); "
-                    "from eci_scan_source import repository_scan_targets; "
-                    "print(json.dumps(repository_scan_targets('/workspace', json.loads(sys.argv[1]))))"
-                ),
-                json.dumps(policy),
-            ]
-        )
+            scan_source,
+        ).with_exec(scan_command)
         observed = json.loads(await inspected.stdout())
+        if container_source_filtered and await self._needs_unfiltered_scan_cross_check(
+            source, bound, policy
+        ):
+            raw_container = self._uv_tool_container(source, _bound_source=source)
+            raw_inspected = raw_container.with_new_file(
+                "/tmp/eci_scan_source.py",
+                scan_source,
+            ).with_exec(scan_command)
+            raw_observed = json.loads(await raw_inspected.stdout())
+            filter_refusal = workflow_analysis.repository_scan_filter_refusal(
+                policy, observed, raw_observed
+            )
+            if filter_refusal is not None:
+                filter_refusal["source_directory_digest"] = input_digest
+                filter_refusal["consumed_directory_digest"] = consumed_digest
+                filter_refusal["container_source_filtered"] = True
+                filter_refusal["container_source_excludes"] = list(tooling.SOURCE_NOISE)
+                return filter_refusal
         refusal = workflow_analysis.repository_scan_refusal(policy, observed)
         if refusal is not None:
+            refusal["source_directory_digest"] = input_digest
+            refusal["consumed_directory_digest"] = consumed_digest
+            refusal["container_source_filtered"] = container_source_filtered
+            if container_source_filtered:
+                refusal["container_source_excludes"] = list(tooling.SOURCE_NOISE)
             return refusal
         policy = {
             **policy,
@@ -808,7 +922,11 @@ class EngineeringCi:
             else "",
         )
         report["target_sources"] = observed["targets"]
-        report["source_directory_digest"] = await source.digest()
+        report["source_directory_digest"] = input_digest
+        report["consumed_directory_digest"] = consumed_digest
+        report["container_source_filtered"] = container_source_filtered
+        if report["container_source_filtered"]:
+            report["container_source_excludes"] = list(tooling.SOURCE_NOISE)
         return report
 
     async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
@@ -950,10 +1068,11 @@ class EngineeringCi:
             python_version,
             git_token=git_token,
             dependency_packages=dependency_packages,
+            system_packages=("libatomic1",) if tool == "pyright" else (),
         )
         if tool == "pyright":
-            # The published Pyright distribution downloads a Node runtime on
-            # first use; caching it keeps that off every later run.
+            # Libatomic1 is installed on the base image in _uv_container before
+            # mounting source; caching the Node download avoids repeat fetches.
             container = container.with_mounted_cache(
                 "/root/.cache/pyright-python",
                 dag.cache_volume("engineering-ci-pyright-node"),
@@ -1016,7 +1135,7 @@ class EngineeringCi:
                 "/root/.cache/uv",
                 dag.cache_volume("engineering-ci-uv-native-tools"),
             )
-            .with_directory("/workspace", source, exclude=list(tooling.SOURCE_NOISE))
+            .with_directory("/workspace", self._bound_public_source(source))
             .with_workdir("/workspace")
         )
         result = container.with_exec(
@@ -1296,6 +1415,7 @@ class EngineeringCi:
         git_token: dagger.Secret | None = None,
         dependency_packages: dagger.Directory | None = None,
         _targets: list[str] | None = None,
+        _bound_source: dagger.Directory | None = None,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
         report_path = "/tmp/engineering-ci-pytest.xml"
@@ -1310,6 +1430,7 @@ class EngineeringCi:
                 python_version,
                 git_token=git_token,
                 dependency_packages=dependency_packages,
+                _bound_source=_bound_source,
             )
         )
         arguments = pytest_arguments(policy, report_path)
