@@ -435,6 +435,18 @@ class SourceBoundaryTests(unittest.TestCase):
             ".ssh",
             ".docker",
             "**/*.local.toml",
+            ".pytest_cache",
+            "**/.pytest_cache",
+            ".mypy_cache",
+            "**/.mypy_cache",
+            ".pyright",
+            "**/.pyright",
+            ".tach",
+            "**/.tach",
+            ".lycheecache",
+            "**/.lycheecache",
+            ".DS_Store",
+            "Thumbs.db",
         ):
             self.assertNotIn(required_kept, source_noise)
         for required_noise in (
@@ -450,7 +462,18 @@ class SourceBoundaryTests(unittest.TestCase):
         self.assertIn("HOST_SECRET_EXCLUDES", repo_text)
         self.assertIn("HOST_LOCAL_EXCLUDES", repo_text)
         self.assertIn("WEAVER_DEFAULT_EXCLUDES", repo_text)
-        for host_only in (".env.*", ".docker", "**/*.local.toml"):
+        for host_only in (
+            ".env.*",
+            ".docker",
+            "**/*.local.toml",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".pyright",
+            ".tach",
+            ".lycheecache",
+            ".DS_Store",
+            "Thumbs.db",
+        ):
             self.assertIn(host_only, repo_text)
 
         main_text = (MODULES / "main.py").read_text(encoding="utf-8")

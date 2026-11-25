@@ -20,10 +20,10 @@ LYCHEE_ASSET = (
 )
 UV_IMAGE = "ghcr.io/astral-sh/uv:python3.14-trixie-slim"
 
-# Generic VCS, virtualenv, bytecode/tool cache, and OS metadata exclusions safe
-# for public reusable functions and Plan-overlaid consumer base sources.
-# Host secret/local excludes belong in repository.py so public consumer inputs
-# (e.g. .env.test, *.local.toml, .docker/*) are never dropped implicitly.
+# Check-specific Source construction: remove historical VCS/virtualenv/cache noise only.
+# Host secret/local/scratch/cache excludes belong in repository.py so public
+# standalone entrypoints (e.g. python_test, python_lint, python_pyright, tach_check,
+# lychee_check, weaver_report) never drop declared consumer inputs by directory name.
 SOURCE_NOISE = [
     ".git",
     ".venv",
@@ -32,18 +32,6 @@ SOURCE_NOISE = [
     "**/__pycache__",
     ".ruff_cache",
     "**/.ruff_cache",
-    ".pytest_cache",
-    "**/.pytest_cache",
-    ".mypy_cache",
-    "**/.mypy_cache",
-    ".pyright",
-    "**/.pyright",
-    ".tach",
-    "**/.tach",
-    ".lycheecache",
-    "**/.lycheecache",
-    ".DS_Store",
-    "Thumbs.db",
 ]
 
 # Root Git Context (controlled ODB/Index attached beside a verified Git Tree for

@@ -6,6 +6,18 @@ from dagger import dag
 from . import tooling
 
 WORKSPACE_SCRATCH = [
+    ".pytest_cache",
+    "**/.pytest_cache",
+    ".mypy_cache",
+    "**/.mypy_cache",
+    ".pyright",
+    "**/.pyright",
+    ".tach",
+    "**/.tach",
+    ".lycheecache",
+    "**/.lycheecache",
+    ".DS_Store",
+    "Thumbs.db",
     ".test-tools",
     "**/.test-tools",
     ".test-deps",
