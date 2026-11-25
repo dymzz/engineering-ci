@@ -1,0 +1,20 @@
+# Weaver v2 live-check matcher configuration for official OTel githubreceiver
+# traces normalized to pinned SemConv v1.45.0.
+#
+# Matches any workflow Pipeline Root span (`kind == "server"`) and Job Task
+# span (`cicd.pipeline.task.run.id` on `internal` spans) while excluding Step
+# and Queue child spans from Task Required checks. Zero finding filters.
+[live-check]
+search_all_attributes = true
+
+[[live-check.matchers]]
+id = "gh.pipeline"
+sample_type = "span"
+when = 'kind == "server"'
+signal = "cicd.pipeline.run.server"
+
+[[live-check.matchers]]
+id = "gh.task"
+sample_type = "span"
+when = 'kind == "internal" && "cicd.pipeline.task.run.id" in attributes'
+signal = "cicd.pipeline.task.internal"
