@@ -337,6 +337,8 @@ def _push_plans(root, binding):
             or git.get("tree") != ref["tree"]
             or git.get("execution_tree") != ref["tree"]
             or git.get("ref_action") != ref["ref_action"]
+            or git.get("changed_paths") != list(ref["paths"])
+            or git.get("deleted_paths") != list(ref["deleted_paths"])
         ):
             raise hooks.HookEventError("hook_push_plan_source_mismatch")
     return prepared, refs

@@ -3487,3 +3487,93 @@ def test_issue109_expected_failures_complete_and_requirement_reason():
     expect_invalid(
         fwd_missing_complete, "receipt_satisfaction_expected_failures_invalid"
     )
+
+
+def test_reconcile_verified_deleted_scope_validation_and_guards():
+    source_expected = {
+        "snapshot": "push",
+        "declared_target_tree": "3" * 40,
+        "actual_execution_source": "unknown",
+        "head_commit": "2" * 40,
+        "verified_input_scope": ["docs/guide.md", "docs/removed.md"],
+        "scope_kind": "changed_paths",
+        "binding_status": "identity_only",
+    }
+    entry = make_entry(
+        name="whitespace",
+        rule_ref=RULE_WS,
+        source=source_expected,
+        baseline_ref={"base_commit": "1" * 40},
+    )
+    full_source = check_contract.source_ref(
+        "push",
+        declared_target_tree="3" * 40,
+        actual_execution_source="worktree",
+        head_commit="2" * 40,
+        content_digest="c" * 64,
+        verified_scope=["docs/guide.md", "ci-hygiene.toml"],
+        scope_kind="full_input_closure",
+        binding_status="content_digest",
+    )
+
+    valid_res = make_resolution(
+        entry,
+        rule=RULE_WS,
+        source=full_source,
+        baseline={"base_commit": "1" * 40},
+    )
+    valid_res["verified_deleted_scope"] = ["docs/removed.md"]
+    strict, status, reason = reconciliation.derive_strict_expected(entry, valid_res)
+    assert (status, reason) == ("matched", None)
+    assert strict["source_ref"] == full_source
+
+    # Leaving another uncovered existing path still fails closed.
+    incomplete_res = copy.deepcopy(valid_res)
+    incomplete_res["source_ref"]["verified_input_scope"] = ["ci-hygiene.toml"]
+    assert reconciliation.derive_strict_expected(entry, incomplete_res) == (
+        None,
+        "insufficient",
+        "expected_input_scope_uncovered",
+    )
+
+    # Contradiction (deleted path also present in verified_input_scope) fails closed.
+    contradicted = copy.deepcopy(valid_res)
+    contradicted["verified_deleted_scope"] = ["docs/guide.md"]
+    assert reconciliation.derive_strict_expected(entry, contradicted) == (
+        None,
+        "insufficient",
+        "resolution_deleted_scope_contradicted",
+    )
+
+    # Unproven closure cannot waive uncovered paths via verified_deleted_scope.
+    weak_res = make_resolution(
+        entry,
+        rule=RULE_WS,
+        source=source_expected,
+        baseline={"base_commit": "1" * 40},
+    )
+    weak_res["verified_deleted_scope"] = ["docs/removed.md"]
+    assert reconciliation.derive_strict_expected(entry, weak_res) == (
+        None,
+        "insufficient",
+        "resolution_deleted_scope_unproven",
+    )
+
+    # Malformed verified_deleted_scope is rejected both in derive and normalize.
+    for bad in ("docs/removed.md", ["../escape.py"], ["a.py", "a.py"], [""]):
+        bad_res = copy.deepcopy(valid_res)
+        bad_res["verified_deleted_scope"] = bad
+        assert reconciliation.derive_strict_expected(entry, bad_res) == (
+            None,
+            "insufficient",
+            "resolution_deleted_scope_invalid",
+        )
+        with pytest.raises(
+            reconciliation.ReconciliationError, match="resolution_deleted_scope_invalid"
+        ):
+            reconciliation.reconcile_expected_results(
+                make_projection([entry], event=EVENT, source=source_expected),
+                routing=[make_routing(entry)],
+                resolutions=[bad_res],
+                observations=[],
+            )

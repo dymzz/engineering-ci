@@ -1937,6 +1937,10 @@ def _recompute_closure_digest(proof):
         "changed_paths_content_digest": proof.get("changed_paths_content_digest"),
         "overlay_subset_paths": list(proof.get("overlay_subset_paths") or ()),
     }
+    if "verified_deleted_scope" in proof:
+        payload["verified_deleted_scope"] = list(
+            proof.get("verified_deleted_scope") or ()
+        )
     return _digest(payload)
 
 
@@ -2191,6 +2195,10 @@ def _derive_strict_expected_from_pre_proof(expected_entry, pre_proof):
         "baseline_ref": copy.deepcopy(pre_proof.get("baseline_ref")),
         "changed_paths_content_digest": pre_proof.get("changed_paths_content_digest"),
     }
+    if "verified_deleted_scope" in pre_proof:
+        resolved["verified_deleted_scope"] = copy.deepcopy(
+            pre_proof.get("verified_deleted_scope")
+        )
     strict, status, reason = reconciliation.derive_strict_expected(
         expected_entry, resolved
     )

@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import PureWindowsPath
 
 from . import check_contract, expected_checks, terminal_expected
 
@@ -118,6 +119,23 @@ def _optional_text(value, code):
     if value is None:
         return None
     return _text(value, code)
+
+
+def _verified_deleted_paths(value, code):
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(path, str)
+        or not path
+        or "\\" in path
+        or "\0" in path
+        or PureWindowsPath(path).drive
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+        for path in value
+    ):
+        raise ReconciliationError(code)
+    normalized = [str(path).replace("\\", "/") for path in value]
+    if len(set(normalized)) != len(normalized):
+        raise ReconciliationError(code)
+    return normalized
 
 
 def _sha256_ref(value, code):
@@ -777,6 +795,10 @@ def _normalize_resolutions(resolutions, expected_refs):
         prod_ident = item.get("producer_execution_identity")
         if prod_ident is not None and not isinstance(prod_ident, dict):
             raise ReconciliationError("resolution_producer_identity_invalid")
+        if item.get("verified_deleted_scope") is not None:
+            _verified_deleted_paths(
+                item["verified_deleted_scope"], "resolution_deleted_scope_invalid"
+            )
         normalized[ref] = dict(item)
     return normalized
 
@@ -1042,8 +1064,30 @@ def derive_strict_expected(entry, resolved):
             return None, "insufficient", f"expected_source_{key}_mismatch"
     exp_scope_set = set(expected_source.get("verified_input_scope") or ())
     res_scope_set = set(resolved_source.get("verified_input_scope") or ())
-    if exp_scope_set - res_scope_set:
+    raw_deleted = resolved.get("verified_deleted_scope")
+    verified_absent = set()
+    if raw_deleted is not None:
+        try:
+            deleted_list = _verified_deleted_paths(
+                raw_deleted, "resolution_deleted_scope_invalid"
+            )
+        except ReconciliationError as error:
+            return None, "insufficient", error.code
+        if (
+            expected_source.get("scope_kind") != "changed_paths"
+            or resolved_source.get("scope_kind")
+            not in {"check_input_closure", "full_input_closure"}
+            or resolved_source.get("binding_status")
+            not in {"byte_tree", "content_digest"}
+        ):
+            return None, "insufficient", "resolution_deleted_scope_unproven"
+        verified_absent = set(deleted_list)
+        if verified_absent & res_scope_set:
+            return None, "insufficient", "resolution_deleted_scope_contradicted"
+    uncovered = exp_scope_set - res_scope_set
+    if uncovered - verified_absent:
         return None, "insufficient", "expected_input_scope_uncovered"
+    covered_exp_scope = exp_scope_set - verified_absent
     if expected_source.get("content_digest") is not None:
         exp_digest = expected_source["content_digest"]
         res_digest = resolved_source.get("content_digest")
@@ -1051,7 +1095,10 @@ def derive_strict_expected(entry, resolved):
             expected_source.get("scope_kind") == "changed_paths"
             and resolved_source.get("scope_kind")
             in {"check_input_closure", "full_input_closure"}
-            and exp_scope_set < res_scope_set
+            and (
+                covered_exp_scope < res_scope_set
+                or (bool(verified_absent) and covered_exp_scope <= res_scope_set)
+            )
         )
         if exp_digest != res_digest and not (
             expanded_closure

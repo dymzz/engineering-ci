@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,7 @@ from . import (
     sources,
     workflow_analysis,
 )
-from ._paths import source_file_present
+from ._paths import SourcePathError, source_file_present
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -3193,32 +3194,81 @@ def _closure_paths_for_check(
     return sorted(paths)
 
 
+def _all_source_entries(root):
+    """Enumerate every materialized member under root without following links."""
+    resolved_root = Path(root).resolve()
+    if not resolved_root.is_dir():
+        return None
+    members = []
+
+    def _walk(directory, prefix):
+        try:
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda item: item.name)
+        except OSError:
+            return False
+        for entry in entries:
+            name = entry.name
+            if not prefix and name == ".git":
+                continue
+            rel = f"{prefix}/{name}" if prefix else name
+            try:
+                info = os.lstat(entry.path)
+            except OSError:
+                return False
+            is_link = stat.S_ISLNK(info.st_mode) or bool(
+                getattr(info, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            )
+            if is_link:
+                members.append(rel)
+            elif stat.S_ISDIR(info.st_mode):
+                if not _walk(entry.path, rel):
+                    return False
+            else:
+                members.append(rel)
+        return True
+
+    if not _walk(resolved_root, ""):
+        return None
+    return sorted(set(members))
+
+
 def _tree_files_for_snapshot(plan, root, execution_context):
     git = plan.get("git") or {}
     snapshot = str(git.get("snapshot") or "worktree")
-    if execution_context == "host" and snapshot == "index":
-        env = (
-            {"GIT_INDEX_FILE": str(Path(git["index_file"]).resolve())}
-            if git.get("index_file")
-            else None
-        )
-        listed = selection._git(root, "ls-files", "-z", env=env)
-        if listed.returncode != 0:
-            return None
-        return sorted({p for p in listed.stdout.split("\0") if p})
-    if (
-        execution_context == "host"
-        and snapshot in {"commit", "push", "pr_merge"}
-        and (git.get("execution_tree") or git.get("tree") or git.get("merge_tree"))
-    ):
-        tree_oid = git.get("execution_tree") or git.get("tree") or git.get("merge_tree")
-        listed = selection._git(root, "ls-tree", "-r", "--name-only", "-z", tree_oid)
-        if listed.returncode == 0:
+    if execution_context == "host" and selection._resolve_git_dir(root) is not None:
+        if snapshot == "index":
+            env = (
+                {"GIT_INDEX_FILE": str(Path(git["index_file"]).resolve())}
+                if git.get("index_file")
+                else None
+            )
+            listed = selection._git(root, "ls-files", "-z", env=env)
+            if listed.returncode != 0:
+                return None
+            return sorted({p for p in listed.stdout.split("\0") if p})
+        if snapshot in {"commit", "push", "pr_merge"}:
+            tree_oid = (
+                git.get("execution_tree") or git.get("tree") or git.get("merge_tree")
+            )
+            if not tree_oid:
+                return None
+            listed = selection._git(
+                root, "ls-tree", "-r", "--name-only", "-z", tree_oid
+            )
+            if listed.returncode != 0:
+                return None
             return sorted(p for p in listed.stdout.split("\0") if p)
-        if selection._resolve_git_dir(root) is not None:
+    source_tree_id = git.get("source_tree_id")
+    if _is_hex64(source_tree_id):
+        try:
+            actual_tree_id = selection.directory_content_id(root)
+        except (OSError, SourcePathError):
             return None
-    if git.get("source_tree_id"):
-        return sorted(_relative_existing_files(root, "."))
+        if actual_tree_id != source_tree_id:
+            return None
+        return _all_source_entries(root)
     return None
 
 
@@ -3687,7 +3737,7 @@ def _snapshot_binding_for_check(snapshots, check_name):
     return None
 
 
-def _subset_digest_from_binding(binding, subset_paths):
+def _subset_digest_from_binding(binding, subset_paths, *, absent_paths=()):
     """Digest a path subset using an existing snapshot binding's path hashes.
 
     Uses the same canonical encoding as ``selection.worktree_content_binding`` so
@@ -3698,14 +3748,103 @@ def _subset_digest_from_binding(binding, subset_paths):
     if not subset_paths:
         return None
     paths = binding["paths"]
+    absent = {str(item).replace("\\", "/") for item in (absent_paths or ())}
     entries = {}
     for path in sorted({str(item).replace("\\", "/") for item in subset_paths}):
-        if path not in paths:
+        if path in paths:
+            entries[path] = paths[path]
+        elif path in absent:
+            entries[path] = None
+        else:
             return None
-        entries[path] = paths[path]
     return hashlib.sha256(
         json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _verified_deleted_scope(
+    plan,
+    expected_source,
+    resolved_source,
+    snapshots,
+    *,
+    root,
+    execution_context,
+    verified_overlay_paths=(),
+):
+    """Return deleted changed paths proven absent in the verified target snapshot."""
+    if (
+        not isinstance(expected_source, dict)
+        or not isinstance(resolved_source, dict)
+        or expected_source.get("scope_kind") != "changed_paths"
+        or resolved_source.get("scope_kind")
+        not in {"check_input_closure", "full_input_closure"}
+        or resolved_source.get("binding_status") not in {"byte_tree", "content_digest"}
+    ):
+        return ()
+    git = plan.get("git") or {}
+    declared_deleted = {
+        str(path).replace("\\", "/")
+        for path in (git.get("deleted_paths") or ())
+        if isinstance(path, str) and path
+    }
+    snapshot = str(git.get("snapshot") or "worktree")
+    exp_scope = {
+        str(path).replace("\\", "/")
+        for path in (expected_source.get("verified_input_scope") or ())
+        if isinstance(path, str) and path
+    }
+    res_scope = {
+        str(path).replace("\\", "/")
+        for path in (resolved_source.get("verified_input_scope") or ())
+        if isinstance(path, str) and path
+    }
+    root_path = Path(root)
+    overlays = {
+        str(path).replace("\\", "/")
+        for path in (verified_overlay_paths or ())
+        if isinstance(path, str) and path
+    }
+    if isinstance(snapshots, dict) and snapshots.get("kind") == "full":
+        if not declared_deleted:
+            return ()
+        candidates = sorted((exp_scope & declared_deleted) - res_scope)
+        if not candidates:
+            return ()
+        tree_files = {
+            str(path).replace("\\", "/") for path in (snapshots.get("files") or ())
+        }
+        return tuple(
+            path
+            for path in candidates
+            if path not in tree_files
+            and not _overlay_intersects_subset(overlays, [path])
+        )
+    if snapshot != "worktree":
+        return ()
+    content_binding = git.get("content_binding") or {}
+    binding_paths = content_binding.get("paths")
+    unverified_binding = {
+        str(path).replace("\\", "/")
+        for path in (content_binding.get("unverified_paths") or ())
+        if isinstance(path, str) and path
+    }
+    candidates = sorted(exp_scope - res_scope)
+    if not candidates:
+        return ()
+    verified = []
+    for path in candidates:
+        if _overlay_intersects_subset(overlays, [path]) or path in unverified_binding:
+            continue
+        if isinstance(binding_paths, dict):
+            if path not in binding_paths or binding_paths[path] is not None:
+                continue
+        elif path not in declared_deleted:
+            continue
+        if source_file_present(root_path, path):
+            continue
+        verified.append(path)
+    return tuple(verified)
 
 
 def _overlay_intersects_subset(overlay_paths, subset_paths):
@@ -4382,6 +4521,7 @@ def build_pre_execution_source_proof(
     unproven_reason = None
     changed_paths_content_digest = None
     overlay_subset_paths = ()
+    verified_deleted = ()
     try:
         if verified_files:
             temporary, effective_root = build_consumer_view(
@@ -4432,6 +4572,15 @@ def build_pre_execution_source_proof(
                 if isinstance(matched_expected, dict)
                 else None
             )
+            verified_deleted = _verified_deleted_scope(
+                effective_plan,
+                expected_source,
+                source,
+                snapshots,
+                root=effective_root,
+                execution_context=execution_context,
+                verified_overlay_paths=effective_artifact_paths,
+            )
             if (
                 isinstance(expected_source, dict)
                 and expected_source.get("scope_kind") == "changed_paths"
@@ -4440,7 +4589,11 @@ def build_pre_execution_source_proof(
             ):
                 subset = list(expected_source.get("verified_input_scope") or ())
                 snapshot_binding = _snapshot_binding_for_check(snapshots, check_name)
-                subset_digest = _subset_digest_from_binding(snapshot_binding, subset)
+                subset_digest = _subset_digest_from_binding(
+                    snapshot_binding,
+                    subset,
+                    absent_paths=verified_deleted,
+                )
                 if subset_digest is None:
                     source = None
                     unproven_reason = "pre_execution_changed_paths_digest_unproven"
@@ -4489,7 +4642,9 @@ def build_pre_execution_source_proof(
         "changed_paths_content_digest": changed_paths_content_digest,
         "overlay_subset_paths": list(overlay_subset_paths),
     }
-    return {
+    if verified_deleted:
+        closure_payload["verified_deleted_scope"] = list(verified_deleted)
+    proof = {
         "phase": "pre_execution",
         "check_name": check_name,
         "check_id": definition.check_id if definition is not None else None,
@@ -4517,6 +4672,9 @@ def build_pre_execution_source_proof(
         "overlay_subset_paths": list(overlay_subset_paths),
         "closure_digest": _canonical_sha256(closure_payload),
     }
+    if verified_deleted:
+        proof["verified_deleted_scope"] = list(verified_deleted)
+    return proof
 
 
 def compare_pre_execution_to_historical_result(pre_proof, historical_result):
@@ -5132,12 +5290,23 @@ def build_source_resolution(
             source_ref = _source_reference(eval_plan, effective_execution_context)
         if workflow_check:
             source_ref = _workflow_result_source(scope_item, source_ref)
+        verified_deleted = _verified_deleted_scope(
+            eval_plan,
+            matched_expected.get("source_ref"),
+            source_ref,
+            snapshots,
+            root=work_root,
+            execution_context=effective_execution_context,
+            verified_overlay_paths=art_paths,
+        )
         receipt_payload = {
             "scope_id": expected_scope.get("scope_id"),
             "expected_check_ref": matched_expected["expected_check_ref"],
             "source_ref": source_ref,
             "rule_source_ref": rule_source_ref,
         }
+        if verified_deleted:
+            receipt_payload["verified_deleted_scope"] = list(verified_deleted)
         if workflow_check or gen_refs or whitespace_comparison is not None:
             receipt_payload["input_refs"] = input_refs
         producer_exec_ident = None
@@ -5180,6 +5349,8 @@ def build_source_resolution(
                 "sha256": receipt_sha,
             },
         }
+        if verified_deleted:
+            item["verified_deleted_scope"] = list(verified_deleted)
         if handoff_verified is not None:
             item["producer_artifact_handoff_id"] = handoff_verified["handoff_id"]
             if producer_exec_ident is not None:
