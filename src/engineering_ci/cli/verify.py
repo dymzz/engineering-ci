@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -57,6 +58,10 @@ def _verify(out):
     stdout_path = invocation / "lefthook.stdout"
     stderr_path = invocation / "lefthook.stderr"
     print(f"verify: running lefthook verify (outputs: {invocation})", file=sys.stderr)
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    previous_sigbreak = signal.getsignal(sigbreak) if sigbreak is not None else None
+    if sigbreak is not None:
+        signal.signal(sigbreak, signal.default_int_handler)
     try:
         with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
             started_at_ns = time_ns()
@@ -73,6 +78,9 @@ def _verify(out):
             file=sys.stderr,
         )
         return 130
+    finally:
+        if sigbreak is not None:
+            signal.signal(sigbreak, previous_sigbreak)
 
     native_exit = result.returncode
     exit_code = native_exit if native_exit >= 0 else 128 - native_exit

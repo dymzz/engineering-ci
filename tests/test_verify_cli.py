@@ -3,8 +3,11 @@
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -184,3 +187,87 @@ def test_verify_runs_real_lefthook_in_isolated_repo(tmp_path, monkeypatch, job_e
     ).read_bytes()
     assert b"sample-out" in combined
     assert b"sample-err" in combined
+
+
+def test_real_subprocess_signal_interrupts_verify_without_receipt(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "verify@example.invalid"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Verify Test"], cwd=repo, check=True)
+    python = sys.executable.replace("\\", "/")
+    marker = repo / "started.flag"
+    (repo / "job.py").write_text(
+        f"""\
+from pathlib import Path
+import sys
+import time
+
+sys.stdout.write("partial-real-out\\n")
+sys.stdout.flush()
+Path({marker.as_posix()!r}).write_text("ready", encoding="utf-8")
+time.sleep(30)
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (repo / "lefthook.yml").write_text(
+        f'min_version: "2.2.2"\nverify:\n  jobs:\n    - name: sample\n      run: >-\n        "{python}" job.py\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    subprocess.run(["git", "add", "lefthook.yml", "job.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+    out = tmp_path / "artifacts"
+    env = dict(os.environ)
+    src_root = str(Path(__file__).resolve().parents[1] / "src")
+    env["PYTHONPATH"] = (
+        f"{src_root}{os.pathsep}{env['PYTHONPATH']}"
+        if env.get("PYTHONPATH")
+        else src_root
+    )
+    popen_kwargs = {}
+    sig = signal.SIGINT
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        sig = signal.CTRL_BREAK_EVENT
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "engineering_ci.cli", "verify", "--out", str(out)],
+        cwd=repo,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **popen_kwargs,
+    )
+    try:
+        deadline = time.monotonic() + 15.0
+        while not marker.is_file():
+            if proc.poll() is not None:
+                raise AssertionError(
+                    f"verify exited early with {proc.returncode}: "
+                    f"{proc.stderr.read().decode('utf-8', 'replace')}"
+                )
+            if time.monotonic() >= deadline:
+                raise TimeoutError("real lefthook verify job did not start in time")
+            time.sleep(0.05)
+        proc.send_signal(sig)
+        stdout_bytes, stderr_bytes = proc.communicate(timeout=15)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    assert proc.returncode == 130, stderr_bytes.decode("utf-8", "replace")
+    (stdout_log,) = out.glob("*/lefthook.stdout")
+    (stderr_log,) = out.glob("*/lefthook.stderr")
+    assert stdout_log.parent == stderr_log.parent
+    assert not list(out.glob("*/verify-timing.json"))
+    err_text = stderr_bytes.decode("utf-8", "replace")
+    assert "verify interrupted; partial outputs in" in err_text
+    assert str(stdout_log.parent) in err_text
+    assert not stdout_bytes.strip()
+    assert marker.is_file()

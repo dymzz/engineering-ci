@@ -117,7 +117,14 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 该命令执行一次原生 `verify`，在独立目录保存 `lefthook.stdout`、
 `lefthook.stderr` 和引用二者摘要的 `verify-timing.json`。保存的是当次
 Lefthook 调用的宿主时钟读数，`time_source_verified=false`。返回原生检查
-退出状态。此命令由操作者显式调用，现有 Actions Job 保持原有执行路径。
+退出状态；调用过程中被中断时返回 `130`、保留已写入的部分输出目录并在
+`stderr` 打印目录路径，不写出 `verify-timing.json` 完成回执。此命令由
+操作者显式调用，现有 Actions Job 保持原有执行路径。
+
+Windows 终端下若遇到 Dagger 非交互调用无输出挂起（历史观察与诊断见
+[上游观察](../.agent/upstream-observations.md#dagger-beta-windows-非交互版本探测挂起)），
+可仅在当前命令进程作用域设置 `$env:FORCE_DARK_MODE = "1"` 后执行，不改动全局环境变量
+（非所有 Windows 调用都会触发该现象，例如当前 `dagger version` 捕获输出测试可在不设置时正常返回）。
 
 ### 审查与合并
 
