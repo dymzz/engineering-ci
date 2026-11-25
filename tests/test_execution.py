@@ -37,7 +37,9 @@ def run(repo, *args):
 @pytest.fixture
 def repo(tmp_path):
     target = tmp_path / "repo"
-    shutil.copytree(FIXTURE, target)
+    # Build regular fixture files without inheriting executable bits from
+    # the host-to-container source import.
+    shutil.copytree(FIXTURE, target, copy_function=shutil.copyfile)
     run(target, "init", "-q", "-b", "main")
     run(target, "config", "user.email", "execution@example.invalid")
     run(target, "config", "user.name", "Execution Test")
@@ -1498,6 +1500,857 @@ require_text_unset = false
     assert report["reason"] == "checks_failed"
     assert report["checks"][0]["status"] == "failed"
     assert report["checks"][0]["reason"] == "source_reconcile_failed"
+
+
+@pytest.mark.parametrize(
+    ("object_format", "content", "native_exit"),
+    [("sha1", b"VALUE = 1\n", 0), ("sha256", b"VALUE = 1 \n", 2)],
+)
+def test_first_commit_index_report_and_reconciliation(
+    tmp_path, object_format, content, native_exit
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, git_source, hook_checks, hooks
+
+    path = tmp_path / "repository"
+    path.mkdir()
+    run(path, "init", "-q", "-b", "main", f"--object-format={object_format}")
+    run(path, "config", "user.email", "execution@example.invalid")
+    run(path, "config", "user.name", "Execution Test")
+    config_path = path / "ci-selection.toml"
+    config_path.write_text(
+        'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
+        'ignored_files = ["ci-selection.toml", "ci-hygiene.toml", '
+        '"ci-effective-profile.json", "tach.toml"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace", "forwarding"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src").mkdir()
+    target = path / "src" / "initial.py"
+    target.write_bytes(content)
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n[[modules]]\npath = "initial"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    names = ["whitespace", "forwarding"]
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="initial-index",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=names,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]} for name in names
+        ],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        domain_complete=True,
+        authority_verified=True,
+    )
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(config_path.read_text(encoding="utf-8").encode("utf-8"))
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8"
+    )
+    run(path, "add", "-A")
+    event = hooks.capture_pre_commit(path)
+    invocation = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    changes = selection.changeset(path, base="HEAD", mode="index")
+    assert changes.complete and "src/initial.py" in changes.paths
+    assert changes.base_commit is None and changes.head_commit is None
+    assert changes.base_tree == event["base_tree"]
+    assert changes.execution_tree == event["index"]["tree"]
+    assert (
+        selection.changeset(path, base="refs/heads/missing", mode="index").error
+        == "head_unresolved"
+    )
+    working = b"VALUE = 2\n" if native_exit else b"VALUE = 2 \n"
+    target.write_bytes(working)
+    (path / "ci-hygiene.toml").write_text("invalid working config", encoding="utf-8")
+    assert hook_checks.prepare(path, binding, split_checks=True)["exit_code"] == 0
+    selected_plan = json.loads(
+        invocation.invocation_path.with_suffix(".plan").read_bytes()
+    )["plan"]
+    assert selected_plan["selection"]["status"] == "no_tests"
+    expected = selected_plan["expected_checks"]
+    assert hook_checks.skip_index_job(binding, "check-index")
+    assert hook_checks.skip_index_job(binding, "check-source")
+    assert not hook_checks.skip_index_job(binding, "check-whitespace")
+    assert not hook_checks.skip_index_job(binding, "check-forwarding")
+    reports = [
+        hook_checks.run_checks(path, binding, job_ref=job)
+        for job in ("check-whitespace", "check-forwarding")
+    ]
+    assert [report["status"] for report in reports] == [
+        "failed" if native_exit else "passed",
+        "passed",
+    ]
+    checks = {entry["name"]: entry for report in reports for entry in report["checks"]}
+    assert [[item["name"] for item in report["checks"]] for report in reports] == [
+        ["whitespace"],
+        ["forwarding"],
+    ]
+    assert checks["whitespace"]["exit_code"] == native_exit
+    assert checks["forwarding"]["status"] == "passed"
+    baseline = {"base_tree": event["base_tree"], "baseline_status": "unborn"}
+    assert checks["whitespace"]["native_result"]["baseline_ref"] == baseline
+    assert expected["event_ref"]["base_tree"] == event["base_tree"]
+
+    with pytest.raises(hooks.HookEventError, match="hook_final_result_missing"):
+        hook_checks.consume_index_result(path, binding)
+    outcome = hook_checks.reconcile(path, binding)
+    receipt = outcome["receipt"]
+    reconciliation.validate_receipt(receipt)
+    assert receipt["trusted"] is False
+    assert receipt["required"] is False
+    assert receipt["evidence_admission"] == "not_evaluated"
+    assert receipt["required_gate"] == "not_evaluated"
+    entries = {entry["name"]: entry for entry in receipt["entries"]}
+    assert entries["forwarding"]["binding_status"] == "matched"
+    assert entries["whitespace"]["binding_status"] == (
+        "insufficient" if native_exit else "matched"
+    )
+    assert all(
+        entry["scheduler_ref"] is None and entry["effective_config_ref"] is None
+        for entry in receipt["entries"]
+    )
+    expected_identity = hook_checks._identity(binding)
+    for job in ("check-whitespace", "check-forwarding"):
+        activation = json.loads(
+            binding.invocation_path.with_suffix(f".activation-{job}").read_bytes()
+        )
+        assert activation == expected_identity
+    assert entries["forwarding"]["evidence_refs"]["baseline_source_ref"]["name"] == (
+        "git-odb-empty-tree"
+    )
+    assert reconciliation.hook_exit_code([receipt]) == (1 if native_exit else 0)
+    assert hook_checks.consume_index_result(path, binding)["exit_code"] == int(
+        bool(native_exit)
+    )
+    assert bool(outcome["exit_code"]) == bool(native_exit)
+    assert target.read_bytes() == working
+
+    if not native_exit:
+        from test_admission import JOB_ISSUER, policy_for
+
+        from engineering_ci import admission
+
+        local_reports = []
+        local_job_receipts = []
+        for job in ("check-whitespace", "check-forwarding"):
+            recorded = json.loads(
+                binding.invocation_path.with_suffix(f".execution-{job}").read_bytes()
+            )
+            local_reports.append(recorded["report"])
+            _route, observation = hook_checks._observe(
+                selected_plan,
+                recorded,
+                expected,
+                recorded["report"],
+                job,
+                job,
+                native_dagger=False,
+            )
+            local_job_receipts.append(observation["job_receipt"])
+        admitted = admission.admit_evidence(
+            expected,
+            receipt,
+            reports=local_reports,
+            job_receipts=local_job_receipts,
+            policy=policy_for(issuer=JOB_ISSUER),
+            authority=lambda _ctx: True,
+        )
+        for item in admitted["entries"]:
+            assert item["admitted"] is False
+            assert item["origin_status"] == "unverified", item
+            assert "verification_implementation_missing" in item["reasons"], item
+
+    with git_source.materialized_tree(path, changes.index_tree) as (source, _):
+        exported = tmp_path / "dagger-index"
+        shutil.copytree(source, exported, ignore=shutil.ignore_patterns(".git"))
+        git_source.add_git_context(source, exported, selected_plan["git"])
+        resolved = execution.build_source_resolution(
+            selected_plan, "whitespace", root=source, execution_context="dagger_export"
+        )
+    run(exported, "config", "--local", "core.whitespace", "-blank-at-eol")
+    attributes = exported / ".git" / "info" / "attributes"
+    attributes.parent.mkdir(parents=True, exist_ok=True)
+    attributes.write_bytes(b"*.py -whitespace\n")
+    report = execution.execute(
+        selected_plan, root=exported, execution_context="dagger_export"
+    )
+    whitespace = _whitespace_result(report)
+    native = whitespace["native_result"]
+    assert whitespace["exit_code"] == native_exit
+    assert native["source_ref"] == resolved["source_ref"]
+    assert native["source_ref"]["binding_status"] == "byte_tree"
+    comparison = next(
+        ref
+        for ref in native["input_refs"]
+        if ref["kind"] == "git_whitespace_comparison"
+    )
+    assert comparison in resolved["input_refs"]
+    assert comparison["base_tree"] == changes.base_tree
+    assert comparison["target_tree"] == changes.index_tree
+    assert comparison["git_config"]["core.whitespace"] is None
+    entry = next(item for item in expected["checks"] if item["name"] == "whitespace")
+    strict, status, reason = reconciliation.derive_strict_expected(entry, resolved)
+    assert (status, reason) == ("matched", None)
+    assert check_contract.evaluate_expected_satisfaction([native], strict)[
+        "status"
+    ] == ("unsatisfied" if native_exit else "satisfied")
+
+    if not native_exit:
+        wrong_comparison = {
+            **comparison,
+            "git_config": {
+                **comparison["git_config"],
+                "core.whitespace": "-blank-at-eol",
+            },
+        }
+        strict["input_refs"] = [
+            wrong_comparison if ref == comparison else ref
+            for ref in strict["input_refs"]
+        ]
+        assert (
+            check_contract.evaluate_expected_satisfaction([native], strict)["status"]
+            == "unsatisfied"
+        )
+
+        alternates = exported / ".git" / "objects" / "info" / "alternates"
+        alternates.write_bytes(b"unapproved-object-store\n")
+        unconfined = execution.execute(
+            selected_plan, root=exported, execution_context="dagger_export"
+        )
+        check = _whitespace_result(unconfined)
+        assert check["status"] == "not_executed"
+        assert check["reason"] == "whitespace_comparison_inputs_unverified"
+        assert "whitespace_export_object_store_not_self_contained" in check["stderr"]
+
+        filtered = hooks.persist_event(path, event)
+        filtered_binding = hooks.load_invocation_binding(filtered.invocation_path)
+        hook_checks.prepare(path, filtered_binding, split_checks=True)
+        hook_checks.run_checks(path, filtered_binding, job_ref="check-forwarding")
+        filtered_outcome = hook_checks.reconcile(path, filtered_binding)
+        assert filtered_outcome["exit_code"] != 0
+        filtered_entries = {
+            entry["name"]: entry for entry in filtered_outcome["receipt"]["entries"]
+        }
+        assert filtered_entries["whitespace"]["binding_status"] != "matched"
+        assert filtered_entries["forwarding"]["binding_status"] == "matched"
+
+        replay = hooks.persist_event(path, event)
+        replay_binding = hooks.load_invocation_binding(replay.invocation_path)
+        hook_checks.prepare(path, replay_binding, split_checks=True)
+        for job in ("check-whitespace", "check-forwarding"):
+            hook_checks.run_checks(path, replay_binding, job_ref=job)
+        assert hook_checks.reconcile(path, replay_binding)["exit_code"] == 0
+        current = replay.invocation_path.with_suffix(".execution-check-whitespace")
+        wrapper = json.loads(current.read_bytes())
+        previous = json.loads(
+            invocation.invocation_path.with_suffix(
+                ".execution-check-whitespace"
+            ).read_bytes()
+        )
+        wrapper.update(
+            report=previous["report"], report_digest=previous["report_digest"]
+        )
+        current.write_bytes(hooks.canonical_event_bytes(wrapper))
+        with pytest.raises(hooks.HookEventError, match="hook_final_report_mismatch"):
+            hook_checks.consume_index_result(path, replay_binding)
+
+        invalid_plan = json.loads(json.dumps(selected_plan))
+        invalid_plan["git"]["base_tree"] = changes.index_tree
+        assert execution.execute(invalid_plan, root=path)["reason"] == (
+            "index_unborn_baseline_invalid"
+        )
+        run(path, "commit", "-qm", "first commit")
+        assert execution.execute(selected_plan, root=path)["reason"] == (
+            "index_unborn_baseline_stale"
+        )
+
+
+def test_push_reconciles_each_target_with_its_approved_profile(tmp_path):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    run(root, "init", "-q", "-b", "main")
+    run(root, "config", "user.email", "execution@example.invalid")
+    run(root, "config", "user.name", "Execution Test")
+    config = root / "ci-selection.toml"
+    selection_config = (
+        'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
+        '[push]\nnew_ref_baseline = "refs/heads/baseline"\n'
+        'effective_profiles = ["push-create.json", "push-update.json"]\n'
+    )
+    (root / "ci-hygiene.toml").write_bytes(
+        b'schema_version = 1\nchecks = ["whitespace"]\n'
+    )
+    (root / "src").mkdir()
+    source = root / "src" / "sample.py"
+    source.write_bytes(b"VALUE = 1\n")
+    (root / "tach.toml").write_bytes(
+        b'source_roots = ["src"]\n[[modules]]\npath = "sample"\ndepends_on = []\n'
+    )
+    approvals = []
+    for action, branch in (("create", "topic"), ("update", "main")):
+        target = f"refs/heads/{branch}"
+        profile = expected_checks.build_effective_profile(
+            profile_ref=check_contract.profile_ref("eci/local-push", "1.0.0"),
+            profile_revision=action,
+            approval_source="governance-signed",
+            effective_at="2026-11-16T00:00:00Z",
+            evaluated_at="2026-11-16T00:00:00Z",
+            context="push",
+            action=action,
+            target=target,
+            declared_checks=["whitespace"],
+            required_obligations=[
+                {
+                    "obligation_ref": "req-whitespace",
+                    "check_names": ["whitespace"],
+                    "target_refs": [target],
+                }
+            ],
+            domain_complete=True,
+            authority_verified=True,
+        )
+        config.write_bytes(selection_config.encode())
+        _attach_effective_profile_policy(config, profile)
+        approvals.append(
+            config.read_text(encoding="utf-8").split("[effective_profile]")[1]
+        )
+        filename = f"push-{action}.json"
+        (root / filename).write_text(json.dumps(profile), encoding="utf-8")
+    config.write_bytes(
+        (
+            selection_config
+            + "".join(f"\n[[effective_profile]]{part}" for part in approvals)
+        ).encode()
+    )
+    run(root, "add", "-A")
+    run(root, "commit", "-qm", "approved fixture policies")
+    baseline = run(root, "rev-parse", "HEAD").strip()
+    run(root, "branch", "baseline")
+    run(root, "switch", "-c", "topic")
+    source.write_bytes(b"VALUE = 2\n")
+    run(root, "add", "src/sample.py")
+    run(root, "commit", "-qm", "topic change")
+    topic = run(root, "rev-parse", "HEAD").strip()
+    run(root, "switch", "main")
+    source.write_bytes(b"VALUE = 3 \n")
+    run(root, "add", "src/sample.py")
+    run(root, "commit", "-qm", "main change")
+    head = run(root, "rev-parse", "HEAD").strip()
+    source.write_bytes(b"VALUE = 9\n")
+    config.write_bytes(b"invalid working policy\n")
+    event = hooks.capture_pre_push(
+        root,
+        "origin",
+        "remote repo",
+        f"refs/heads/topic {topic} refs/heads/topic {'0' * len(topic)}\n"
+        f"refs/heads/main {head} refs/heads/main {baseline}\n",
+    )
+    invocation = hooks.persist_event(root, event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    prepared = hook_checks.prepare_push(root, binding, require_plan=True)
+    assert prepared["exit_code"] == 0
+    assert [ref["after"] for ref in prepared["references"]] == [topic, head]
+    assert prepared["references"][0]["before"] == baseline
+    reports = hook_checks.run_push_checks(root, binding)["references"]
+    assert [ref["report"]["status"] for ref in reports] == ["passed", "failed"], [
+        ref["report"]["reason"] for ref in reports
+    ]
+    with pytest.raises(hooks.HookEventError, match="hook_final_result_missing"):
+        hook_checks.consume_push_result(root, binding)
+    outcome = hook_checks.reconcile_push(root, binding)
+    assert outcome["exit_code"] != 0
+    assert binding.invocation_path.with_suffix(".activation").is_file()
+    assert [ref["receipt"]["status"] for ref in outcome["references"]] == [
+        "matched",
+        "partial",
+    ]
+    for ref in outcome["references"]:
+        assert ref["receipt"]["trusted"] is False
+        assert all(
+            entry["scheduler_ref"] is None and entry["effective_config_ref"] is None
+            for entry in ref["receipt"]["entries"]
+        )
+    assert hook_checks.consume_push_result(root, binding)["exit_code"] == 1
+    assert source.read_bytes() == b"VALUE = 9\n"
+
+
+def test_dagger_index_binding_requires_matching_export(tmp_path):
+    source = tmp_path / "pyproject.toml"
+    source.write_bytes(b"staged project\n")
+    tree = "a" * 40
+    git = {"snapshot": "index", "index_tree": tree, "execution_tree": tree}
+
+    def binding():
+        return execution._verify_git_execution_binding(
+            {"git": git}, tmp_path, execution_context="dagger_export"
+        )
+
+    assert binding() == (False, "dagger_export_index_source_unverified", tree)
+    git["source_tree_id"] = selection.directory_content_id(tmp_path)
+    assert binding() == (True, None, tree)
+    source.write_bytes(b"working copy project\n")
+    assert binding() == (False, "source_tree_mismatch", tree)
+
+
+def _fixture_tach(tmp_path, monkeypatch):
+    if shutil.which("tach") is not None:
+        return True
+    if os.name == "nt":
+        return False
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir(exist_ok=True)
+    tach = shim_dir / "tach"
+    tach.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    tach.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim_dir), prepend=os.pathsep)
+    return True
+
+
+def test_index_plan_checks_read_staged_bytes_across_check_families(
+    tmp_path, monkeypatch
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, git_source, hook_checks, hooks
+
+    path = tmp_path / "repository"
+    path.mkdir()
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "execution@example.invalid")
+    run(path, "config", "user.name", "Execution Test")
+    config_path = path / "ci-selection.toml"
+    base_selection = (
+        "schema_version = 1\n"
+        'framework = "unittest"\n'
+        'checks = ["hygiene", "source"]\n'
+        "strict_modules = false\n"
+        "coverage_required = false\n"
+        'ignored_files = ["ci-selection.toml", "ci-hygiene.toml", "ci-sources.toml", '
+        '"ci-effective-profile.json", "tach.toml"]\n'
+        "[check_scope]\n"
+        'source_prefixes = ["data/"]\n'
+        "[[non_code_rules]]\n"
+        'prefix = "data/"\n'
+        "tests = []\n"
+        'reason = "data input"\n'
+    )
+    config_path.write_text(base_selection, encoding="utf-8", newline="\n")
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace", "forwarding"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "ci-sources.toml").write_text(
+        "schema_version = 1\n"
+        'manifest = "data/catalog/manifest.json"\n'
+        'acquired_roots = ["data/acquired"]\n'
+        "exempt_paths = []\n"
+        "environment_prefixes = []\n"
+        "require_text_unset = false\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "data/acquired").mkdir(parents=True)
+    (path / "data/catalog").mkdir(parents=True)
+    (path / "data/acquired/a.bin").write_bytes(b"v1\n")
+    (path / "data/catalog/manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(b"v1\n").hexdigest(),
+                    "size_bytes": 3,
+                }
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src").mkdir()
+    (path / "src" / "other.py").write_text(
+        "VALUE = 1\n", encoding="utf-8", newline="\n"
+    )
+    target = path / "src" / "initial.py"
+    target.write_text("def compute():\n    return 1\n", encoding="utf-8", newline="\n")
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n'
+        '[[modules]]\npath = "initial"\ndepends_on = []\n'
+        '[[modules]]\npath = "other"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "initial baseline")
+
+    target.write_text("def compute():\n    return 2\n", encoding="utf-8", newline="\n")
+    names = ["whitespace", "forwarding", "source"]
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="multi-check-index",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=names,
+        required_obligations=[
+            {
+                "obligation_ref": f"req-{name}",
+                "check_names": [name],
+                "allow_inapplicable": True,
+            }
+            for name in names
+        ],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        domain_complete=True,
+        authority_verified=True,
+    )
+    config_path.write_text(base_selection, encoding="utf-8", newline="\n")
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(config_path.read_text(encoding="utf-8").encode("utf-8"))
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8", newline="\n"
+    )
+    run(path, "add", "-A")
+
+    # Mutate unstaged working tree with violations across whitespace, forwarding, source and unittest.
+    dirty_py = b"from other import VALUE as compute \n"
+    dirty_bin = b"corrupted-worktree-bytes\n"
+    target.write_bytes(dirty_py)
+    (path / "data/acquired/a.bin").write_bytes(dirty_bin)
+    (path / "ci-hygiene.toml").write_text("invalid working hygiene", encoding="utf-8")
+    (path / "ci-sources.toml").write_text("invalid working sources", encoding="utf-8")
+
+    event = hooks.capture_pre_commit(path)
+    invocation = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+    report = hook_checks.run_checks(path, binding)
+    assert report["status"] == "passed", report
+    checks = {entry["name"]: entry for entry in report["checks"]}
+    assert {name: checks[name]["status"] for name in ("whitespace", "forwarding")} == {
+        "whitespace": "passed",
+        "forwarding": "passed",
+    }
+    outcome = hook_checks.reconcile(path, binding)
+    assert outcome["exit_code"] == 0, outcome
+    receipt = outcome["receipt"]
+    reconciliation.validate_receipt(receipt)
+    assert receipt["trusted"] is False
+    assert receipt["required"] is False
+    assert receipt["evidence_admission"] == "not_evaluated"
+    assert receipt["required_gate"] == "not_evaluated"
+    entries = {entry["name"]: entry for entry in receipt["entries"]}
+    assert entries["whitespace"]["binding_status"] == "matched"
+    assert entries["forwarding"]["binding_status"] == "matched"
+    assert entries["source"]["binding_status"] == "not_applicable"
+    assert hook_checks.consume_index_result(path, binding)["exit_code"] == 0
+    assert target.read_bytes() == dirty_py
+    assert (path / "data/acquired/a.bin").read_bytes() == dirty_bin
+
+    # Also verify source check + selected tests + Dagger export execution read the staged Index bytes (Index=B),
+    # not the broken unstaged worktree bytes (Worktree=C).
+    (path / "data/acquired/a.bin").write_bytes(b"v2\n")
+    (path / "data/catalog/manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "data/acquired/a.bin",
+                    "sha256": hashlib.sha256(b"v2\n").hexdigest(),
+                    "size_bytes": 3,
+                }
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "tests").mkdir()
+    test_file = path / "tests" / "test_initial.py"
+    test_file.write_text(
+        "import unittest\nfrom initial import compute\n\n\n"
+        "class InitialTest(unittest.TestCase):\n"
+        "    def test_compute(self):\n"
+        "        self.assertEqual(compute(), 2)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    config_path.write_text(
+        base_selection + '\n[module_tests]\n"initial" = ["tests.test_initial"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    all_checks = [*names, "unittest"]
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="multi-check-index-with-tests",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=all_checks,
+        required_obligations=[
+            {"obligation_ref": f"req-{name}", "check_names": [name]}
+            for name in all_checks
+        ],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(config_path.read_text(encoding="utf-8").encode("utf-8"))
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8", newline="\n"
+    )
+    (path / ".gitattributes").write_bytes(b"*.txt text eol=crlf\n")
+    (path / "note.txt").write_bytes(b"staged bytes\n")
+    run(
+        path,
+        "add",
+        "data/acquired/a.bin",
+        "data/catalog/manifest.json",
+        "tests/test_initial.py",
+        "ci-selection.toml",
+        "ci-effective-profile.json",
+        ".gitattributes",
+        "note.txt",
+    )
+    (path / "data/acquired/a.bin").write_bytes(dirty_bin)
+    test_event = hooks.capture_pre_commit(path)
+    # This process test exercises the Hook handoff. A POSIX fixture supplies
+    # Tach's process exit when the binary is absent in the core test image.
+    if _fixture_tach(tmp_path, monkeypatch):
+        invocation = hooks.persist_event(path, test_event)
+        binding = hooks.load_invocation_binding(invocation.invocation_path)
+        assert hook_checks.prepare(path, binding)["exit_code"] == 0
+        report = hook_checks.run_checks(path, binding)
+        assert report["exit_code"] == 0, report
+        outcome = hook_checks.reconcile(path, binding)
+        assert outcome["exit_code"] == 0, outcome
+        assert {
+            entry["name"]: entry["binding_status"]
+            for entry in outcome["receipt"]["entries"]
+        } == dict.fromkeys(all_checks, "matched")
+        assert outcome["receipt"]["trusted"] is False
+        assert hook_checks.consume_index_result(path, binding)["exit_code"] == 0
+    with git_source.materialized_tree(
+        path, test_event["index"]["tree"], head=test_event["head_commit"]
+    ) as (materialized, _):
+        assert (materialized / "note.txt").read_bytes() == b"staged bytes\n"
+        assert selection.tree_content_id(
+            path, test_event["index"]["tree"]
+        ) == selection.directory_content_id(materialized)
+        cfg = selection.load_config(materialized / "ci-selection.toml")
+        cs = selection.changeset(materialized, base="HEAD", mode="index")
+        chosen = selection.select(cs, cfg, root=materialized)
+        test_plan = selection.plan(
+            chosen,
+            config=cfg,
+            config_path=materialized / "ci-selection.toml",
+            root=materialized,
+            tach_validation={
+                "status": "passed",
+                "tach_sha256": selection._digest(materialized / cfg.tach),
+                "source_tree": chosen.changeset.execution_tree or chosen.changeset.tree,
+            },
+        )
+        exported = tmp_path / "exported-index"
+        shutil.copytree(
+            materialized,
+            exported,
+            ignore=shutil.ignore_patterns(".git"),
+        )
+        host_test_report = execution.execute(test_plan, root=materialized)
+        assert host_test_report["status"] == "passed", host_test_report
+        assert host_test_report["tests"]["status"] == "passed"
+        host_checks = {entry["name"]: entry for entry in host_test_report["checks"]}
+        assert host_checks["whitespace"]["status"] == "passed"
+        assert host_checks["forwarding"]["status"] == "passed"
+        assert host_checks["source"]["status"] == "passed"
+    dagger_plan = json.loads(json.dumps(test_plan))
+    dagger_plan.pop("expected_checks", None)
+    dagger_plan["inputs"].pop("hygiene", None)
+    dagger_plan["check_scope"] = [
+        item
+        for item in dagger_plan["check_scope"]
+        if item.get("name") not in {"whitespace", "forwarding"}
+    ]
+    dagger_report = execution.execute(
+        dagger_plan,
+        root=exported,
+        execution_context="dagger_export",
+    )
+    assert dagger_report["status"] == "passed", dagger_report
+    assert dagger_report["tests"]["status"] == "passed"
+    dagger_checks = {entry["name"]: entry for entry in dagger_report["checks"]}
+    assert dagger_checks["source"]["status"] == "passed"
+    assert dagger_checks["unittest"]["status"] == "passed"
+
+
+def test_dagger_hook_requires_explicit_eci_module_pin(tmp_path):
+    from engineering_ci import dagger_plan, hooks
+
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    (consumer / "dagger-module.toml").write_text(
+        'name = "consumer"\n', encoding="utf-8"
+    )
+    with pytest.raises(hooks.HookEventError, match="hook_dagger_module_required"):
+        dagger_plan.module_reference(None, root=consumer)
+    with pytest.raises(
+        hooks.HookEventError, match="hook_dagger_local_module_outside_eci_checkout"
+    ):
+        dagger_plan.module_reference(".", root=consumer)
+    for ref in (
+        "github.com/dymzz/engineering-ci@main",
+        "github.com/example/consumer@" + "c" * 40,
+    ):
+        with pytest.raises(
+            hooks.HookEventError, match="hook_dagger_module_revision_required"
+        ):
+            dagger_plan.module_reference(ref, root=consumer)
+    pinned = "github.com/dymzz/engineering-ci@" + "c" * 40
+    assert dagger_plan.module_reference(pinned, root=consumer) == pinned
+
+
+def test_dagger_local_module_requires_a_registered_eci_worktree(
+    repo, tmp_path, monkeypatch
+):
+    from engineering_ci import dagger_plan, hooks
+
+    checkout, _ = repo
+    monkeypatch.setattr(
+        dagger_plan, "__file__", checkout / "src/engineering_ci/dagger_plan.py"
+    )
+    linked = tmp_path / "linked worktree"
+    run(checkout, "worktree", "add", "-qb", "linked", str(linked))
+    assert dagger_plan.module_reference(".", root=checkout) == "."
+    assert dagger_plan.module_reference(".", root=linked) == "."
+
+    unregistered = tmp_path / "unregistered"
+    unregistered.mkdir()
+    (unregistered / ".git").write_bytes(
+        f"gitdir: {(checkout / '.git').as_posix()}\n".encode()
+    )
+    assert run(
+        unregistered, "rev-parse", "--path-format=absolute", "--git-common-dir"
+    ) == run(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    with pytest.raises(
+        hooks.HookEventError, match="hook_dagger_local_module_outside_eci_checkout"
+    ):
+        dagger_plan.module_reference(".", root=unregistered)
+
+
+def test_dagger_hook_consumes_original_exit_and_verifies_source(tmp_path):
+    from engineering_ci import dagger_plan, hooks
+
+    git = {"snapshot": "index", "execution_tree": "a" * 40, "source_tree_id": "b" * 64}
+    plan = {"git": git}
+    report = {
+        "kind": execution.REPORT_KIND,
+        "schema_version": execution.SCHEMA_VERSION,
+        "execution_context": "dagger_export",
+        "execution_identity": {"execution_ref": "execution:dagger"},
+        "plan_execution_tree": git["execution_tree"],
+        "source_tree_id": git["source_tree_id"],
+        "source_digest": git["source_tree_id"],
+        "source_tree_verified": "verified",
+        "tree_verified": True,
+        "source_handoff": {
+            "original_git": git,
+            "exported_content_id": git["source_tree_id"],
+            "parent_execution_ref": "execution:dagger",
+        },
+        "status": "failed",
+        "exit_code": 1,
+    }
+    (tmp_path / "plan.json").write_bytes(hooks.canonical_event_bytes(plan))
+    (tmp_path / "report.json").write_bytes(hooks.canonical_event_bytes(report))
+    native_exit = tmp_path / "exit-code.txt"
+    native_exit.write_bytes(b"1\n")
+    loaded = dagger_plan.load_result(
+        tmp_path, plan, run_ref="run", attempt_ref="attempt"
+    )
+    assert loaded["exit_code"] == 1
+    assert dagger_plan.source_bound(plan, loaded)
+    unbound = {
+        **loaded,
+        "source_tree_verified": "not_requested",
+        "tree_verified": False,
+        "status": "passed",
+        "exit_code": 0,
+    }
+    assert not dagger_plan.source_bound(plan, unbound)
+    native_exit.write_bytes(b"0\n")
+    with pytest.raises(
+        hooks.HookEventError, match="hook_dagger_original_exit_mismatch"
+    ):
+        dagger_plan.load_result(tmp_path, plan, run_ref="run", attempt_ref="attempt")
+    (tmp_path / "report.json").write_bytes(
+        hooks.canonical_event_bytes({**report, "status": "passed", "exit_code": 0})
+    )
+    with pytest.raises(hooks.HookEventError, match="hook_dagger_attempt_mismatch"):
+        dagger_plan.load_result(tmp_path, plan, run_ref="run", attempt_ref="attempt")
+
+
+def test_dagger_git_context_retains_only_target_and_comparison_objects(repo, tmp_path):
+    from engineering_ci import git_source
+
+    path, _ = repo
+    head = run(path, "rev-parse", "HEAD").strip()
+    extra = tmp_path / "outside-target.txt"
+    extra.write_bytes(b"a blob outside both trees\n")
+    unselected = run(path, "hash-object", "-w", str(extra)).strip()
+    (path / "selected.txt").write_bytes(b"target bytes\n")
+    run(path, "add", "selected.txt")
+    tree = run(path, "write-tree").strip()
+    destination = tmp_path / "export"
+    with git_source.materialized_tree(path, tree, head=head) as (source, _):
+        shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".git"))
+        git_source.add_git_context(
+            source,
+            destination,
+            {
+                "execution_tree": tree,
+                "base_commit": head,
+                "head_commit": head,
+            },
+        )
+
+    assert run(destination, "write-tree").strip() == tree
+    assert run(destination, "rev-parse", "HEAD").strip() == head
+    assert run(destination, "show", f"{tree}:selected.txt") == "target bytes\n"
+    assert not (destination / ".git/objects/info/alternates").exists()
+    with pytest.raises(subprocess.CalledProcessError):
+        run(destination, "cat-file", "-e", unselected)
 
 
 def test_execute_refuses_stale_index_tree(repo):
@@ -4089,3 +4942,1060 @@ def test_directory_artifact_closure_emits_member_digests(tmp_path):
     )
     assert missing["ok"] is False
     assert missing["file_digests"] == {}
+
+
+def test_hook_source_worker_ignores_shadowing_package_in_checked_tree(
+    tmp_path, monkeypatch
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    path = tmp_path / "repo"
+    path.mkdir()
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "execution@example.invalid")
+    run(path, "config", "user.name", "Execution Test")
+    run(path, "config", "core.autocrlf", "false")
+
+    (path / "engineering_ci").mkdir()
+    (path / "engineering_ci" / "__init__.py").write_text(
+        'raise RuntimeError("candidate engineering_ci shadowed worker")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "engineering_ci" / "hook_checks.py").write_text(
+        'raise RuntimeError("candidate hook_checks shadowed worker")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src").mkdir()
+    (path / "src" / "app.py").write_text(
+        "def compute():\n    return 1\n", encoding="utf-8", newline="\n"
+    )
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n[[modules]]\npath = "app"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    config_path = path / "ci-selection.toml"
+    base_selection = (
+        'schema_version = 1\nchecks = ["whitespace"]\nstrict_modules = false\n'
+        "coverage_required = false\n"
+        '[[non_code_rules]]\nprefix = "docs/"\ntests = []\nreason = "docs only"\n'
+    )
+    config_path.write_text(base_selection, encoding="utf-8", newline="\n")
+    declared = ["whitespace"]
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="shadow-worker-guard",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=declared,
+        required_obligations=[
+            {
+                "obligation_ref": f"req-{name}",
+                "check_names": [name],
+                "allow_inapplicable": True,
+            }
+            for name in declared
+        ],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        domain_complete=True,
+        authority_verified=True,
+    )
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(
+        config_path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+    )
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8", newline="\n"
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "initial baseline with shadowing package")
+
+    # Simulate --no-install-project + PYTHONPATH including dirty relative "." entry.
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([".", str(ROOT / "src")]))
+
+    (path / "src" / "app.py").write_text(
+        "def compute():\n    return 2\n", encoding="utf-8", newline="\n"
+    )
+    run(path, "add", "src/app.py")
+    event = hooks.capture_pre_commit(path)
+    invocation = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(invocation.invocation_path)
+    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+    report = hook_checks.run_checks(path, binding)
+    assert report["status"] == "passed", report
+    checks = {entry["name"]: entry for entry in report["checks"]}
+    assert checks["whitespace"]["status"] == "passed"
+    outcome = hook_checks.reconcile(path, binding)
+    assert outcome["exit_code"] == 0, [
+        (e["name"], e["binding_status"], e.get("reason"))
+        for e in outcome["receipt"]["entries"]
+    ]
+    assert outcome["receipt"]["status"] == "matched"
+    assert hook_checks.consume_index_result(path, binding)["exit_code"] == 0
+
+    # Child test runner spawned by `_source_worker` still resolves candidate `src/` and `tests/`
+    # because `-P` is scoped only to the worker process (not inherited as PYTHONSAFEPATH).
+    # Dagger `sync-tool-tests` omits `tach` from PATH, so provide a POSIX shim there to pass
+    # `target_test_gate`; on Windows without `tach.exe`, Part 1 above already proved `-P` isolation.
+    if not _fixture_tach(tmp_path, monkeypatch):
+        return
+    (path / "tests").mkdir()
+    (path / "tests" / "test_app.py").write_text(
+        "import unittest\nfrom app import compute\n\n\n"
+        "class AppTest(unittest.TestCase):\n"
+        "    def test_compute(self):\n"
+        "        self.assertEqual(compute(), 2)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    config_path.write_text(
+        base_selection + '[module_tests]\n"app" = ["tests.test_app"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(
+        config_path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+    )
+    run(path, "add", "tests/test_app.py", "ci-selection.toml")
+    event_tests = hooks.capture_pre_commit(path)
+    inv_tests = hooks.persist_event(path, event_tests)
+    binding_tests = hooks.load_invocation_binding(inv_tests.invocation_path)
+    assert hook_checks.prepare(path, binding_tests)["exit_code"] == 0
+    report_tests = hook_checks.run_checks(path, binding_tests)
+    assert report_tests["status"] == "passed", report_tests
+    assert report_tests["tests"]["status"] == "passed", report_tests
+
+
+def test_hook_whitespace_uses_isolated_tree_rules_and_rejects_local_config_parity(
+    tmp_path, monkeypatch
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, git_source, hook_checks, hooks
+
+    xdg_dir = tmp_path / "xdg"
+    (xdg_dir / "git").mkdir(parents=True)
+    (xdg_dir / "git" / "attributes").write_text(
+        "*.txt -whitespace\n", encoding="utf-8", newline="\n"
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_dir))
+
+    path = tmp_path / "repo"
+    path.mkdir()
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "execution@example.invalid")
+    run(path, "config", "user.name", "Execution Test")
+    run(path, "config", "core.autocrlf", "false")
+    run(path, "config", "core.whitespace", "-blank-at-eol")
+    info_attrs = path / ".git" / "info" / "attributes"
+    info_attrs.parent.mkdir(parents=True, exist_ok=True)
+    info_attrs.write_text("*.txt -whitespace\n", encoding="utf-8", newline="\n")
+
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src").mkdir()
+    (path / "src" / "pkg.py").write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "a.txt").write_bytes(b"clean\n")
+    config_path = path / "ci-selection.toml"
+    base_selection = (
+        'schema_version = 1\nchecks = ["whitespace"]\nstrict_modules = false\n'
+        "coverage_required = false\n"
+        '[[non_code_rules]]\nprefix = "docs/"\ntests = []\nreason = "docs only"\n'
+    )
+    config_path.write_text(base_selection, encoding="utf-8", newline="\n")
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/default", "1.0.0"),
+        profile_revision="ws-isolation",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="index",
+        action="index",
+        target="HEAD",
+        declared_checks=["whitespace"],
+        required_obligations=[
+            {"obligation_ref": "req-ws", "check_names": ["whitespace"]}
+        ],
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        domain_complete=True,
+        authority_verified=True,
+    )
+    cfg_policy = _attach_effective_profile_policy(config_path, profile)
+    config_path.write_bytes(
+        config_path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+    )
+    (path / "ci-effective-profile.json").write_text(
+        json.dumps(profile), encoding="utf-8", newline="\n"
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "initial baseline")
+
+    (path / "a.txt").write_bytes(b"trailing \n")
+    run(path, "add", "a.txt")
+
+    cs_host = selection.changeset(path, base="HEAD", mode="index")
+    host_plan = selection.plan(
+        selection.select(cs_host, cfg_policy, root=path),
+        config=cfg_policy,
+        config_path=config_path,
+        root=path,
+        effective_profile_path=path / "ci-effective-profile.json",
+    )
+    pre_proof_host = execution.build_pre_execution_source_proof(
+        host_plan, "whitespace", root=path
+    )
+    assert pre_proof_host["status"] == "verified_candidate_inputs", (
+        pre_proof_host.get("reason"),
+        pre_proof_host,
+    )
+    assert pre_proof_host["environment_inputs"]["core.whitespace"] == "-blank-at-eol"
+    assert pre_proof_host["environment_inputs"]["info_attributes_sha256"] is not None
+
+    event = hooks.capture_pre_commit(path)
+    inv = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(inv.invocation_path)
+    assert hook_checks.prepare(path, binding)["exit_code"] == 0
+
+    report = hook_checks.run_checks(path, binding)
+    assert report["status"] == "failed", report
+    ws_check = next(c for c in report["checks"] if c["name"] == "whitespace")
+    assert ws_check["status"] == "failed"
+    ws_nr = ws_check["native_result"]
+    ws_cfg = ws_nr["evidence"]["git_whitespace_config"]
+    assert ws_cfg["core.whitespace"] is None
+    assert ws_cfg["info_attributes_sha256"] is None
+    assert (
+        ws_cfg["core_attributes_file_sha256"]
+        == f"sha256:{hashlib.sha256(b'').hexdigest()}"
+    )
+    parity = execution.compare_pre_execution_to_historical_result(pre_proof_host, ws_nr)
+    assert parity["equivalent"] is False
+    assert parity["reason"] == "whitespace_config_mismatch", (
+        parity,
+        pre_proof_host["source_ref"],
+        ws_nr["source_ref"],
+    )
+
+    # Staging .gitattributes inside the Tree itself IS honored via --attr-source.
+    (path / ".gitattributes").write_text(
+        "*.txt -whitespace\n*.md -whitespace\n", encoding="utf-8", newline="\n"
+    )
+    run(path, "add", ".gitattributes")
+    event_in_tree = hooks.capture_pre_commit(path)
+    inv_in_tree = hooks.persist_event(path, event_in_tree)
+    binding_in_tree = hooks.load_invocation_binding(inv_in_tree.invocation_path)
+    assert hook_checks.prepare(path, binding_in_tree)["exit_code"] == 0
+    rep_in_tree = hook_checks.run_checks(path, binding_in_tree)
+    assert rep_in_tree["status"] == "passed", rep_in_tree
+    rec_in_tree = hook_checks.reconcile(path, binding_in_tree)
+    ws_entry = next(
+        e for e in rec_in_tree["receipt"]["entries"] if e["name"] == "whitespace"
+    )
+    assert ws_entry["binding_status"] == "matched"
+
+    # When .gitattributes is already in HEAD and only a matching doc changes,
+    # the full Hook prepare -> run -> reconcile -> consume chain exits 0.
+    run(path, "commit", "-qm", "commit in-tree gitattributes")
+    (path / "docs").mkdir()
+    (path / "docs" / "note.md").write_bytes(b"doc trailing \n")
+    run(path, "add", "docs/note.md")
+    event_doc = hooks.capture_pre_commit(path)
+    inv_doc = hooks.persist_event(path, event_doc)
+    binding_doc = hooks.load_invocation_binding(inv_doc.invocation_path)
+    assert hook_checks.prepare(path, binding_doc)["exit_code"] == 0
+    rep_doc = hook_checks.run_checks(path, binding_doc)
+    assert rep_doc["status"] == "passed", rep_doc
+    rec_doc = hook_checks.reconcile(path, binding_doc)
+    assert rec_doc["exit_code"] == 0, rec_doc["receipt"]["entries"]
+    assert rec_doc["receipt"]["status"] == "matched"
+    assert hook_checks.consume_index_result(path, binding_doc)["exit_code"] == 0
+
+    doc_plan = json.loads(inv_doc.invocation_path.with_suffix(".plan").read_bytes())[
+        "plan"
+    ]
+    with git_source.materialized_tree(
+        path, event_doc["index"]["tree"], head=event_doc["head_commit"]
+    ) as (source, _):
+        exported = tmp_path / "dagger-doc"
+        shutil.copytree(source, exported, ignore=shutil.ignore_patterns(".git"))
+        git_source.add_git_context(source, exported, doc_plan["git"])
+        resolved = execution.build_source_resolution(
+            doc_plan, "whitespace", root=source, execution_context="dagger_export"
+        )
+    report = execution.execute(
+        doc_plan, root=exported, execution_context="dagger_export"
+    )
+    native = _whitespace_result(report)["native_result"]
+    comparison = next(
+        ref
+        for ref in native["input_refs"]
+        if ref["kind"] == "git_whitespace_comparison"
+    )
+    assert native["source_ref"] == resolved["source_ref"]
+    assert comparison in resolved["input_refs"]
+    assert comparison["base_tree"] == run(path, "rev-parse", "HEAD^{tree}").strip()
+    assert native["native_exit_code"] == 0
+
+
+def test_push_delete_reconciles_with_local_before_and_blocks_missing_old_object(
+    tmp_path,
+):
+    from test_reconciliation import _attach_effective_profile_policy
+
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    run(root, "init", "-q", "-b", "main")
+    run(root, "config", "user.email", "execution@example.invalid")
+    run(root, "config", "user.name", "Execution Test")
+    (root / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (root / "src").mkdir()
+    (root / "src" / "sample.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "tach.toml").write_text(
+        'source_roots = ["src"]\n', encoding="utf-8", newline="\n"
+    )
+    config = root / "ci-selection.toml"
+    base_selection = (
+        'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
+        '[push]\neffective_profiles = ["push-delete.json"]\n'
+    )
+    profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/local-push", "1.0.0"),
+        profile_revision="delete-rev",
+        approval_source="governance-signed",
+        effective_at="2026-11-16T00:00:00Z",
+        evaluated_at="2026-11-16T00:00:00Z",
+        context="push",
+        action="delete",
+        target="refs/heads/topic",
+        declared_checks=["whitespace"],
+        required_obligations=[],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    config.write_text(base_selection, encoding="utf-8", newline="\n")
+    _attach_effective_profile_policy(config, profile)
+    (root / "push-delete.json").write_text(json.dumps(profile), encoding="utf-8")
+    run(root, "add", "-A")
+    run(root, "commit", "-qm", "baseline with delete profile")
+    run(root, "branch", "topic")
+    topic_oid = run(root, "rev-parse", "topic").strip()
+    zero = "0" * len(topic_oid)
+
+    # Positive: local `before` commit exists in ODB -> plan reads approved delete policy.
+    event = hooks.capture_pre_push(
+        root,
+        "origin",
+        "remote repo",
+        f"(delete) {zero} refs/heads/topic {topic_oid}\n",
+    )
+    inv = hooks.persist_event(root, event)
+    binding = hooks.load_invocation_binding(inv.invocation_path)
+    prepared = hook_checks.prepare_push(root, binding, require_plan=True)
+    assert prepared["exit_code"] == 0
+    push_reports = hook_checks.run_push_checks(root, binding)
+    assert push_reports["exit_code"] == 0
+    assert push_reports["references"][0]["report"] is None
+    reconciled = hook_checks.reconcile_push(root, binding)
+    assert reconciled["exit_code"] == 0
+    receipt = reconciled["references"][0]["receipt"]
+    reconciliation.validate_receipt(receipt)
+    assert receipt["status"] == "matched"
+    assert hook_checks.consume_push_result(root, binding)["exit_code"] == 0
+
+    # Negative: missing old object in local ODB -> selector stays ref_action=delete,
+    # while hook_checks fails closed because delete policy source is unprovable.
+    missing_oid = "f" * len(topic_oid)
+    missing_event = hooks.capture_pre_push(
+        root,
+        "origin",
+        "remote repo",
+        f"(delete) {zero} refs/heads/topic {missing_oid}\n",
+    )
+    changes = selection.changeset_multi(root, missing_event["refs"])
+    assert changes.complete is True
+    assert changes.references[0]["ref_action"] == "delete"
+    missing_inv = hooks.persist_event(root, missing_event)
+    missing_binding = hooks.load_invocation_binding(missing_inv.invocation_path)
+    with pytest.raises(
+        hooks.HookEventError, match="hook_push_delete_policy_unavailable"
+    ):
+        hook_checks.prepare_push(root, missing_binding, require_plan=True)
+
+
+def test_source_resolution_deleted_paths_and_forged_deletion_refusal(repo):
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    path, base = repo
+    run(path, "rm", "-q", "src/pkg/other.py")
+    (path / "src/pkg/mod.py").write_text("VALUE = 11\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "delete other and modify mod")
+
+    cfg = selection.load_config(path / "ci-selection.toml")
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8"
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "scope hygiene to whitespace")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    changes = selection.changeset(path, base=base, mode="commit")
+    assert changes.deleted_paths == ("src/pkg/other.py",)
+
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    entry = next(c for c in p["expected_checks"]["checks"] if c["name"] == "whitespace")
+    resolved = execution.build_source_resolution(p, "whitespace", root=path)
+    assert resolved["verified_deleted_scope"] == ["src/pkg/other.py"]
+    strict, status, reason = reconciliation.derive_strict_expected(entry, resolved)
+    assert (status, reason) == ("matched", None)
+    assert "src/pkg/other.py" not in strict["source_ref"]["verified_input_scope"]
+
+    # Forged `deleted_paths` claiming an existing file was deleted must NOT
+    # populate `verified_deleted_scope` or bypass `expected_input_scope_uncovered`.
+    forged_plan = json.loads(json.dumps(p))
+    forged_plan["git"]["deleted_paths"] = ["src/pkg/other.py", "src/pkg/mod.py"]
+    forged_res = execution.build_source_resolution(forged_plan, "whitespace", root=path)
+    assert forged_res["verified_deleted_scope"] == ["src/pkg/other.py"]
+    dropped_res = json.loads(json.dumps(forged_res))
+    dropped_res["source_ref"]["verified_input_scope"] = [
+        item
+        for item in dropped_res["source_ref"]["verified_input_scope"]
+        if item != "src/pkg/mod.py"
+    ]
+    _, forged_status, forged_reason = reconciliation.derive_strict_expected(
+        entry, dropped_res
+    )
+    assert (forged_status, forged_reason) == (
+        "insufficient",
+        "expected_input_scope_uncovered",
+    )
+
+    # Worktree mode with a real deleted path reconciles via changed_paths digest,
+    # whereas forging `deleted_paths` for a file still present on disk fails closed.
+    (path / "src/pkg/sub.py").unlink()
+    wt_head = run(path, "rev-parse", "HEAD").strip()
+    wt_plan = _hygiene_worktree_plan(path, wt_head)
+    wt_entry = next(
+        c for c in wt_plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+    )
+    wt_res = execution.build_source_resolution(wt_plan, "whitespace", root=path)
+    assert wt_res["verified_deleted_scope"] == ["src/pkg/sub.py"]
+    _, wt_status, wt_reason = reconciliation.derive_strict_expected(wt_entry, wt_res)
+    assert (wt_status, wt_reason) == ("matched", None)
+
+    # Tampering push plan deleted_paths away from verified push ref diff is refused.
+    from test_reconciliation import _attach_effective_profile_policy
+
+    push_profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/test-push", "1.0.0"),
+        profile_revision="1",
+        approval_source="governance-signed",
+        effective_at="2026-11-22T00:00:00Z",
+        evaluated_at="2026-11-22T00:00:00Z",
+        context="push",
+        action="update",
+        target="refs/heads/main",
+        declared_checks=["whitespace"],
+        required_obligations=[],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
+        '[push]\nselect_tests = false\neffective_profiles = ["push-update.json"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    _attach_effective_profile_policy(path / "ci-selection.toml", push_profile)
+    (path / "push-update.json").write_text(json.dumps(push_profile), encoding="utf-8")
+    run(path, "add", "ci-selection.toml", "push-update.json")
+    run(path, "commit", "-qm", "commit push profile")
+    push_head = run(path, "rev-parse", "HEAD").strip()
+    event = hooks.capture_pre_push(
+        path,
+        "origin",
+        "remote",
+        f"refs/heads/main {push_head} refs/heads/main {base}\n",
+    )
+    inv = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(inv.invocation_path)
+    hook_checks.prepare_push(path, binding, effective_profiles=("push-update.json",))
+    plan_artifact = binding.invocation_path.with_suffix(".plan")
+    tampered = json.loads(plan_artifact.read_text(encoding="utf-8"))
+    tampered["plan"][0]["git"]["deleted_paths"] = []
+    tampered["plan_ref"] = hooks._digest_bytes(
+        hooks.canonical_event_bytes(tampered["plan"])
+    )
+    plan_artifact.write_bytes(hooks.canonical_event_bytes(tampered))
+    with pytest.raises(hooks.HookEventError, match="hook_push_plan_source_mismatch"):
+        hook_checks.reconcile_push(path, binding)
+
+
+def test_gitfree_export_retains_unverified_members_and_refuses_forged_deletions(
+    tmp_path,
+):
+    from test_hooks import make_directory_link
+
+    def _whitespace_plan(
+        hyg_path, tree_oid, head_oid, source_tree_id, changed, deleted, expected_inputs
+    ):
+        cfg_ref = {"kind": "config", "path": "ci-hygiene.toml", "sha256": "a" * 64}
+        exp_src = check_contract.source_ref(
+            "commit",
+            declared_target_tree=tree_oid,
+            actual_execution_source="git_commit",
+            head_commit=head_oid,
+            verified_scope=expected_inputs,
+            scope_kind="changed_paths",
+            binding_status="identity_only",
+        )
+        entry = {
+            "name": "whitespace",
+            "check_id": "eci.whitespace",
+            "definition_version": "1.0.0",
+            "applicability": {"status": "applicable"},
+            "rule_ref": {"name": "ci-hygiene", "version": "1", "sha256": "b" * 64},
+            "source_ref": exp_src,
+            "input_refs": [cfg_ref],
+            "expected_check_ref": "expected:whitespace:1",
+        }
+        return {
+            "schema_version": 1,
+            "kind": "engineering-ci-selection-plan",
+            "generator": {"name": "engineering-ci", "version": "0.7.0"},
+            "git": {
+                "snapshot": "commit",
+                "base_ref": "main",
+                "head_ref": "HEAD",
+                "base_commit": None,
+                "head_commit": head_oid,
+                "tree": tree_oid,
+                "execution_tree": tree_oid,
+                "source_tree_id": source_tree_id,
+                "changed_paths": list(changed),
+                "deleted_paths": list(deleted),
+            },
+            "selection": {
+                "tests": [],
+                "framework": "unittest",
+                "src_root": "src",
+                "tests_dir": "tests",
+                "checks": ["hygiene"],
+            },
+            "inputs": {
+                "hygiene": {
+                    "path": "ci-hygiene.toml",
+                    "sha256": hashlib.sha256(hyg_path.read_bytes()).hexdigest(),
+                }
+            },
+            "check_scope": [{"name": "whitespace", "inputs": list(changed)}],
+            "expected_checks": {"checks": [entry]},
+        }
+
+    # Part 1: Junction / directory link in Git-free export (runs on Windows + Linux)
+    # and unmaterialized member rejection when source_tree_id disagrees.
+    mat_dir = tmp_path / "mat_junction"
+    (mat_dir / "src").mkdir(parents=True)
+    (mat_dir / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    (mat_dir / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (mat_dir / "src" / "keep.py").write_text("KEEP = 1\n", encoding="utf-8")
+    make_directory_link(mat_dir / "dirlink", mat_dir / "src")
+
+    cid = selection.directory_content_id(mat_dir)
+    changed_paths = ["dirlink", "src/keep.py", "src/gone.py"]
+    forged_plan = _whitespace_plan(
+        mat_dir / "ci-hygiene.toml",
+        "1" * 40,
+        "2" * 40,
+        cid,
+        changed_paths,
+        ["dirlink", "src/gone.py"],
+        changed_paths,
+    )
+    snapshots = execution._prepare_source_snapshots(
+        forged_plan, [], root=mat_dir, execution_context="dagger_export"
+    )
+    assert snapshots["kind"] == "full"
+    assert "dirlink" in snapshots["files"]
+    assert "dirlink" in (snapshots["binding"].get("unverified_paths") or ())
+
+    # Even against a synthetic strong SourceRef and with/without an unrelated overlay,
+    # `_verified_deleted_scope` must never treat the present `dirlink` as deleted.
+    strong_source = check_contract.source_ref(
+        "commit",
+        declared_target_tree="1" * 40,
+        actual_execution_source="dagger_directory",
+        head_commit="2" * 40,
+        content_digest=snapshots["binding"]["digest"],
+        verified_scope=[".gitignore", "ci-hygiene.toml", "src/keep.py"],
+        scope_kind="full_input_closure",
+        binding_status="byte_tree",
+        materialization_ref=f"sha256:{cid}",
+    )
+    exp_src = forged_plan["expected_checks"]["checks"][0]["source_ref"]
+    assert execution._verified_deleted_scope(
+        forged_plan,
+        exp_src,
+        strong_source,
+        snapshots,
+        root=mat_dir,
+        execution_context="dagger_export",
+    ) == ("src/gone.py",)
+    assert execution._verified_deleted_scope(
+        forged_plan,
+        exp_src,
+        strong_source,
+        snapshots,
+        root=mat_dir,
+        execution_context="dagger_export",
+        verified_overlay_paths=["gen/unrelated.txt"],
+    ) == ("src/gone.py",)
+
+    resolved = execution.build_source_resolution(
+        forged_plan, "whitespace", root=mat_dir, execution_context="dagger_export"
+    )
+    assert resolved["source_ref"]["binding_status"] == "identity_only"
+    assert not resolved.get("verified_deleted_scope")
+    strict, status, _reason = reconciliation.derive_strict_expected(
+        forged_plan["expected_checks"]["checks"][0], resolved
+    )
+    assert strict is None
+    assert status != "matched"
+
+    # Unmaterialized regular file in Git-free export must fail snapshot proof.
+    (mat_dir / "src" / "keep.py").unlink()
+    unmat_snapshots = execution._prepare_source_snapshots(
+        forged_plan, [], root=mat_dir, execution_context="dagger_export"
+    )
+    assert unmat_snapshots == {"kind": "unproven"}
+    assert (
+        execution._verified_deleted_scope(
+            forged_plan,
+            exp_src,
+            strong_source,
+            unmat_snapshots,
+            root=mat_dir,
+            execution_context="dagger_export",
+        )
+        == ()
+    )
+
+    # Part 2: Exact dangling symlink + directory symlink counterexample (skipped only
+    # when host OS lacks file symlink privilege).
+    sym_repo = tmp_path / "sym_repo"
+    (sym_repo / "src").mkdir(parents=True)
+    run(sym_repo, "init", "-q", "-b", "main")
+    run(sym_repo, "config", "user.email", "execution@example.invalid")
+    run(sym_repo, "config", "user.name", "Execution Test")
+    run(sym_repo, "config", "core.symlinks", "true")
+    (sym_repo / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    (sym_repo / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8"
+    )
+    (sym_repo / "src" / "keep.py").write_text("KEEP = 1\n", encoding="utf-8")
+    (sym_repo / "src" / "gone.py").write_text("GONE = 1\n", encoding="utf-8")
+    _source_symlink(sym_repo / "dirlink", "src", directory=True)
+    _source_symlink(sym_repo / "src" / "dangling.py", "missing.py")
+    run(sym_repo, "add", "-A")
+    run(sym_repo, "commit", "-qm", "base with links")
+    run(sym_repo, "rm", "-q", "src/gone.py")
+    run(sym_repo, "commit", "-qm", "delete gone")
+    head_tree = run(sym_repo, "rev-parse", "HEAD^{tree}").strip()
+    head_commit = run(sym_repo, "rev-parse", "HEAD").strip()
+
+    sym_export = tmp_path / "sym_export"
+    shutil.copytree(
+        sym_repo, sym_export, symlinks=True, ignore=shutil.ignore_patterns(".git")
+    )
+    sym_cid = selection.directory_content_id(sym_export)
+    assert sym_cid == selection.tree_content_id(sym_repo, head_tree)
+
+    sym_plan = _whitespace_plan(
+        sym_export / "ci-hygiene.toml",
+        head_tree,
+        head_commit,
+        sym_cid,
+        ["dirlink", "src/dangling.py", "src/keep.py", "src/gone.py"],
+        ["dirlink", "src/dangling.py", "src/gone.py"],
+        ["dirlink", "src/dangling.py", "src/keep.py", "src/gone.py"],
+    )
+    sym_snapshots = execution._prepare_source_snapshots(
+        sym_plan, [], root=sym_export, execution_context="dagger_export"
+    )
+    assert sym_snapshots["kind"] == "full"
+    assert set(sym_snapshots["files"]) == {
+        ".gitignore",
+        "ci-hygiene.toml",
+        "dirlink",
+        "src/dangling.py",
+        "src/keep.py",
+    }
+    assert set(sym_snapshots["binding"].get("unverified_paths") or ()) == {
+        "dirlink",
+        "src/dangling.py",
+    }
+    assert execution._verified_deleted_scope(
+        sym_plan,
+        sym_plan["expected_checks"]["checks"][0]["source_ref"],
+        strong_source,
+        sym_snapshots,
+        root=sym_export,
+        execution_context="dagger_export",
+    ) == ("src/gone.py",)
+
+
+def test_host_git_snapshot_retains_unmaterialized_and_unreadable_members(
+    repo, monkeypatch
+):
+    from test_reconciliation import make_routing
+
+    path, base = repo
+    run(path, "rm", "-q", "src/pkg/other.py")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "delete other")
+
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8"
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "scope hygiene")
+    changes = selection.changeset(path, base=base, mode="commit")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    forged = json.loads(json.dumps(p))
+    forged["git"]["deleted_paths"] = ["src/pkg/other.py", "src/pkg/sub.py"]
+
+    # Remove tracked `src/pkg/sub.py` from disk without changing the target Git Tree:
+    # host snapshot still uses `git ls-tree`, marks `sub.py` unverified, and never
+    # treats it as deleted even under forged `deleted_paths`.
+    (path / "src/pkg/sub.py").unlink()
+    snapshots = execution._prepare_source_snapshots(
+        forged, [], root=path, execution_context="host"
+    )
+    assert snapshots["kind"] == "full"
+    assert "src/pkg/sub.py" in snapshots["files"]
+    assert "src/pkg/sub.py" in (snapshots["binding"].get("unverified_paths") or ())
+    resolved = execution.build_source_resolution(forged, "whitespace", root=path)
+    assert resolved["source_ref"]["binding_status"] != "byte_tree"
+    assert not resolved.get("verified_deleted_scope")
+
+    entry = next(c for c in p["expected_checks"]["checks"] if c["name"] == "whitespace")
+    receipt = reconciliation.reconcile_expected_results(
+        p["expected_checks"],
+        routing=[make_routing(entry)],
+        resolutions=[resolved],
+        observations=[],
+    )
+    assert (
+        next(c for c in receipt["entries"] if c["name"] == "whitespace")[
+            "binding_status"
+        ]
+        != "matched"
+    )
+
+    # Inject deterministic PermissionError at selection.read_source_file for
+    # `src/pkg/sub.py` after restoring it on disk: Git member stays retained,
+    # marked in `unverified_paths`, refused as strong closure, and refused as deleted.
+    run(path, "checkout", "--", "src/pkg/sub.py")
+    real_read_source_file = selection.read_source_file
+
+    def _deny_sub(root, relative):
+        if Path(relative).as_posix() == "src/pkg/sub.py":
+            raise PermissionError("simulated unreadable member")
+        return real_read_source_file(root, relative)
+
+    monkeypatch.setattr(selection, "read_source_file", _deny_sub)
+    unreadable_snaps = execution._prepare_source_snapshots(
+        forged, [], root=path, execution_context="host"
+    )
+    assert unreadable_snaps["kind"] == "full"
+    assert "src/pkg/sub.py" in unreadable_snaps["files"]
+    assert "src/pkg/sub.py" in (
+        unreadable_snaps["binding"].get("unverified_paths") or ()
+    )
+    unreadable_res = execution.build_source_resolution(forged, "whitespace", root=path)
+    assert unreadable_res["source_ref"]["binding_status"] != "byte_tree"
+    assert unreadable_res["source_ref"]["scope_kind"] != "full_input_closure"
+    assert not unreadable_res.get("verified_deleted_scope")
+    unreadable_receipt = reconciliation.reconcile_expected_results(
+        p["expected_checks"],
+        routing=[make_routing(entry)],
+        resolutions=[unreadable_res],
+        observations=[],
+    )
+    assert (
+        next(c for c in unreadable_receipt["entries"] if c["name"] == "whitespace")[
+            "binding_status"
+        ]
+        != "matched"
+    )
+
+
+def test_deleted_path_resolution_with_overlays_and_ignored_reappearance(tmp_path, repo):
+    import sys
+
+    from test_generated_producer_resolution import _artifact_authority
+    from test_reconciliation import make_observation, make_routing
+
+    path, base = repo
+    (path / ".gitignore").write_text(
+        "__pycache__/\nsrc/pkg/other.py\n", encoding="utf-8"
+    )
+    run(path, "rm", "-q", "src/pkg/other.py")
+    (path / "src/pkg/mod.py").write_text("VALUE = 22\n", encoding="utf-8")
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8"
+    )
+    run(path, "add", ".gitignore", "src/pkg/mod.py", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "delete other with ignore rule")
+
+    # End-to-end Source Resolution -> Receipt -> Reconciliation on `whitespace`.
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    changes = selection.changeset(path, base=base, mode="commit")
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    entry = next(c for c in p["expected_checks"]["checks"] if c["name"] == "whitespace")
+    resolved = execution.build_source_resolution(p, "whitespace", root=path)
+    assert resolved["verified_deleted_scope"] == ["src/pkg/other.py"]
+    report = execution.execute(p, root=path)
+    native = next(
+        c["native_result"] for c in report["checks"] if c["name"] == "whitespace"
+    )
+    receipt = reconciliation.reconcile_expected_results(
+        p["expected_checks"],
+        routing=[make_routing(entry)],
+        resolutions=[resolved],
+        observations=[make_observation("job-1", [native])],
+    )
+    rec_entry = next(c for c in receipt["entries"] if c["name"] == "whitespace")
+    assert rec_entry["binding_status"] == "matched"
+    assert (
+        rec_entry["evidence_refs"]["source_receipt_ref"]
+        == resolved["source_receipt_ref"]
+    )
+    assert (
+        "src/pkg/other.py"
+        not in rec_entry["resolved_expected"]["source_ref"]["verified_input_scope"]
+    )
+
+    # When an ignored file with the deleted name sits on disk:
+    # - `commit` target absence remains true regardless of any unrelated overlay.
+    # - `worktree` branch rejects absence because the worktree path now exists.
+    (path / "src/pkg/other.py").write_text("IGNORED = 1\n", encoding="utf-8")
+    snapshots = execution._prepare_source_snapshots(
+        p, [], root=path, execution_context="host"
+    )
+    assert execution._verified_deleted_scope(
+        p,
+        entry["source_ref"],
+        resolved["source_ref"],
+        snapshots,
+        root=path,
+        execution_context="host",
+        verified_overlay_paths=["generated/unrelated.py"],
+    ) == ("src/pkg/other.py",)
+
+    wt_head = run(path, "rev-parse", "HEAD").strip()
+    wt_plan = _hygiene_worktree_plan(path, wt_head)
+    wt_entry = next(
+        c for c in wt_plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+    )
+    wt_snapshots = execution._prepare_source_snapshots(
+        wt_plan, [], root=path, execution_context="host"
+    )
+    assert (
+        execution._verified_deleted_scope(
+            wt_plan,
+            wt_entry["source_ref"],
+            execution.build_source_resolution(wt_plan, "whitespace", root=path)[
+                "source_ref"
+            ],
+            wt_snapshots,
+            root=path,
+            execution_context="host",
+        )
+        == ()
+    )
+    (path / "src/pkg/other.py").unlink()
+
+    # Producer artifact overlays:
+    # (a) unrelated overlay keeps `src/pkg/other.py` in `verified_deleted_scope`
+    # (b) same-name generated overlay puts `src/pkg/other.py` in consumer scope
+    #     instead of `verified_deleted_scope` and still reaches `matched`.
+    clean_head = run(path, "rev-parse", "HEAD").strip()
+    base_sel_toml = (path / "ci-selection.toml").read_text(encoding="utf-8")
+
+    def _run_with_overlay(artifact_rel, artifact_text, label):
+        run(path, "reset", "--hard", clean_head)
+        script = tmp_path / f"gen_{label}.py"
+        script.write_text(
+            f"""\
+import os
+from pathlib import Path
+out = Path(os.environ["ENGINEERING_CI_ARTIFACT_DIR"]) / {artifact_rel!r}
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text({artifact_text!r}, encoding="utf-8", newline="\\n")
+""",
+            encoding="utf-8",
+        )
+        sha = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
+        (path / "ci-selection.toml").write_text(
+            base_sel_toml
+            + f"""
+[prerequisite_actions.emit]
+type = "command"
+argv = {json.dumps([sys.executable, str(script)])}
+
+[[dependency_edges]]
+producer_ref = {{ kind = "prerequisite_action", name = "emit" }}
+consumer_ref = {{ kind = "check", name = "whitespace" }}
+dependency_kind = "data"
+requires_pass = true
+output_ref = {{ kind = "file", path = "{artifact_rel}", sha256 = "{sha}" }}
+""",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run(path, "add", "ci-selection.toml")
+        run(path, "commit", "-qm", f"overlay {label}")
+        ov_cfg = selection.load_config(path / "ci-selection.toml")
+        ov_changes = selection.changeset(path, base=base, mode="commit")
+        ov_sel = selection.select(ov_changes, ov_cfg, root=path)
+        ov_plan = selection.plan(
+            ov_sel,
+            config=ov_cfg,
+            config_path=path / "ci-selection.toml",
+            hygiene_config=hyg_cfg,
+            hygiene_config_path=path / "ci-hygiene.toml",
+            root=path,
+            tach_validation={
+                "status": "passed",
+                "tach_sha256": selection._digest(path / ov_cfg.tach),
+                "source_tree": ov_sel.changeset.execution_tree or ov_sel.changeset.tree,
+            },
+        )
+        ov_entry = next(
+            c for c in ov_plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+        )
+        bundle = tmp_path / f"bundle_{label}"
+        ov_report = execution.execute(ov_plan, root=path, produced_artifacts_dir=bundle)
+        ws_check = next(
+            (c for c in ov_report["checks"] if c["name"] == "whitespace"), None
+        )
+        assert ws_check is not None and "native_result" in ws_check, ov_report
+        ov_native = ws_check["native_result"]
+        ov_res = execution.build_source_resolution(
+            ov_plan,
+            "whitespace",
+            root=path,
+            producer_artifact_handoff=ov_report["producer_artifact_handoff"],
+            producer_artifacts_dir=bundle,
+            producer_artifact_authority=_artifact_authority(
+                ov_plan, bundle, ("whitespace",)
+            ),
+        )
+        ov_receipt = reconciliation.reconcile_expected_results(
+            ov_plan["expected_checks"],
+            routing=[make_routing(ov_entry)],
+            resolutions=[ov_res],
+            observations=[make_observation("job-1", [ov_native])],
+        )
+        return ov_res, ov_receipt
+
+    unrel_res, unrel_rec = _run_with_overlay(
+        "generated/note.py", "NOTE = 1\n", "unrelated"
+    )
+    assert unrel_res["verified_deleted_scope"] == ["src/pkg/other.py"]
+    assert (
+        next(c for c in unrel_rec["entries"] if c["name"] == "whitespace")[
+            "binding_status"
+        ]
+        == "matched"
+    )
+
+    same_res, same_rec = _run_with_overlay(
+        "src/pkg/other.py", "GENERATED = 1\n", "same_name"
+    )
+    assert "src/pkg/other.py" in same_res["source_ref"]["verified_input_scope"]
+    assert not same_res.get("verified_deleted_scope")
+    assert (
+        next(c for c in same_rec["entries"] if c["name"] == "whitespace")[
+            "binding_status"
+        ]
+        == "matched"
+    )

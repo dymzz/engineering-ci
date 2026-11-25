@@ -104,11 +104,16 @@ def test_check(
     origin="dagger",
     artifact_prefix="tests",
     generated_inputs=(),
+    plan_authorized=None,
+    binding=None,
 ):
     """Describe the one framework invocation which already produced item."""
     definition = check_contract.definition_for(framework)
     if generated_inputs:
         item["generated_input_refs"] = list(generated_inputs)
+    if plan_authorized is not None:
+        item["plan_authorized"] = plan_authorized
+    binding = binding or {}
     results = []
     if type(item.get("exit_code")) is int and item.get("status") in {
         "passed",
@@ -116,26 +121,30 @@ def test_check(
         "advisory",
     }:
         access = "python/" + framework
-        rule = check_contract.rule_ref(
+        rule = binding.get("rule_ref") or check_contract.rule_ref(
             "selected-" + framework,
             1,
             digest=digest({"framework": framework, "targets": list(targets)}),
         )
         result = check_contract.native_result(
             definition,
-            source=source,
+            source=binding.get("source_ref", source),
             status=item["status"],
             native_exit_code=item["exit_code"],
             result_origin=origin,
             runner_ref="execution:" + origin,
             result_instance=context["execution_ref"] + ":" + access,
             rule_ref=rule,
+            baseline_ref=binding.get("baseline_ref"),
+            profile_ref=binding.get("profile_ref"),
             tool=check_contract.tool_ref(
                 access,
                 executable=observation.get("executable"),
                 version=observation.get("tool_version"),
             ),
-            input_refs=[{"kind": "test_target", "path": t} for t in targets]
+            input_refs=binding.get(
+                "input_refs", [{"kind": "test_target", "path": t} for t in targets]
+            )
             + list(generated_inputs),
             artifact_refs=[
                 artifact_prefix + "/" + p
@@ -147,7 +156,7 @@ def test_check(
                 "execution": context,
                 "observation": observation,
                 "verification_implementation": impl,
-                "source_limit": "input_closure_not_proven",
+                **({} if binding else {"source_limit": "input_closure_not_proven"}),
             },
         )
         results.append(result)
@@ -228,6 +237,16 @@ def weaver_check(
                 "environment": raw.get("environment"),
                 "gate_status": raw.get("status"),
                 "gate_exit_code": raw.get("gate_exit_code"),
+                **(
+                    {
+                        "terminal_correlation_status": raw.get(
+                            "terminal_correlation_status"
+                        ),
+                        "terminal_correlation_reason": raw.get("reason"),
+                    }
+                    if stage == "terminal-live-check"
+                    else {}
+                ),
                 "source_limit": "input_closure_not_proven",
             },
         )

@@ -27,8 +27,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import PureWindowsPath
 
-from . import check_contract, expected_checks
+from . import check_contract, expected_checks, terminal_expected
 
 RECONCILIATION_KIND = "engineering-ci-expected-result-reconciliation"
 RECONCILIATION_VERSION = 1
@@ -120,6 +121,23 @@ def _optional_text(value, code):
     return _text(value, code)
 
 
+def _verified_deleted_paths(value, code):
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(path, str)
+        or not path
+        or "\\" in path
+        or "\0" in path
+        or PureWindowsPath(path).drive
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+        for path in value
+    ):
+        raise ReconciliationError(code)
+    normalized = [str(path).replace("\\", "/") for path in value]
+    if len(set(normalized)) != len(normalized):
+        raise ReconciliationError(code)
+    return normalized
+
+
 def _sha256_ref(value, code):
     if not isinstance(value, str) or not _SHA256_REF_RE.fullmatch(value):
         raise ReconciliationError(code)
@@ -164,6 +182,29 @@ def _report_ref(value, code):
     ):
         raise ReconciliationError(code)
     return value
+
+
+def execution_report_ref(report):
+    """Identify one original Execution Report by its canonical content."""
+    if not isinstance(report, dict) or report.get("kind") != EXECUTION_REPORT_KIND:
+        raise ReconciliationError("execution_report_invalid")
+    version = report.get("schema_version")
+    if type(version) is not int or version < 1:
+        raise ReconciliationError("execution_report_invalid")
+    return {
+        "kind": EXECUTION_REPORT_KIND,
+        "schema_version": version,
+        "sha256": _digest(report).removeprefix("sha256:"),
+    }
+
+
+def verify_execution_report(report, report_ref=None):
+    """Verify one Report reference and return its accepted Native Results."""
+    actual = execution_report_ref(report)
+    if report_ref is not None and report_ref != actual:
+        raise ReconciliationError("execution_report_digest_mismatch")
+    results, rejections = _execution_report(report, actual)
+    return results, rejections, actual
 
 
 def _optional_scope_id(value, code):
@@ -229,6 +270,29 @@ def _job_receipt(value, *, job_ref, run_ref, attempt_ref, runner_ref, report_ref
     _optional_scope_id(value.get("scope_id"), "observation_job_receipt_invalid")
     _optional_scope_id(value.get("expected_set_ref"), "observation_job_receipt_invalid")
     return value
+
+
+def _matches_job_runner(result, runner_ref, report):
+    observed_runner = result.get("runner_ref")
+    if runner_ref is None or observed_runner in {None, runner_ref}:
+        return True
+    if (
+        runner_ref != "execution:dagger"
+        or observed_runner != "execution:dagger_export"
+        or not isinstance(report, dict)
+        or report.get("execution_context") != "dagger_export"
+    ):
+        return False
+    evidence = result.get("evidence") or {}
+    handoff = report.get("source_handoff") or {}
+    return (
+        result.get("result_origin") == "host"
+        and evidence.get("execution_context") == "dagger_export"
+        and evidence.get("parent_execution_context") == "dagger"
+        and result["result_id"] in (handoff.get("host_result_ids") or ())
+        and handoff.get("parent_execution_ref")
+        == (report.get("execution_identity") or {}).get("execution_ref")
+    )
 
 
 def _check_report_rejection(
@@ -731,8 +795,59 @@ def _normalize_resolutions(resolutions, expected_refs):
         prod_ident = item.get("producer_execution_identity")
         if prod_ident is not None and not isinstance(prod_ident, dict):
             raise ReconciliationError("resolution_producer_identity_invalid")
+        if item.get("verified_deleted_scope") is not None:
+            _verified_deleted_paths(
+                item["verified_deleted_scope"], "resolution_deleted_scope_invalid"
+            )
         normalized[ref] = dict(item)
     return normalized
+
+
+def normalize_terminal_bindings(terminal_bindings, expected_refs, scope):
+    """Validate optional #52-D4 Terminal Expected bindings without minting authority."""
+    if isinstance(terminal_bindings, dict) or not isinstance(
+        terminal_bindings, (list, tuple)
+    ):
+        raise ReconciliationError("terminal_binding_invalid")
+    bindings = {}
+    for item in terminal_bindings:
+        try:
+            validated = terminal_expected.validate_terminal_expected_binding(item)
+        except terminal_expected.TerminalExpectedError:
+            raise ReconciliationError("terminal_binding_invalid") from None
+        ref = validated["expected_check_ref"]
+        if ref not in expected_refs:
+            raise ReconciliationError("terminal_binding_expected_unknown")
+        if ref in bindings:
+            raise ReconciliationError("terminal_binding_duplicate")
+        if validated.get("scope_id") != scope.get("scope_id") or validated.get(
+            "expected_set_ref"
+        ) != scope.get("expected_set_ref"):
+            raise ReconciliationError("terminal_binding_scope_mismatch")
+        bindings[ref] = validated
+    return bindings
+
+
+def terminal_applicability_authorized(entry, terminal_binding):
+    """True only when an authorized #52-D4 binding unlocks weaver_terminal unknown."""
+    if terminal_binding is None or entry.get("name") != "weaver_terminal":
+        return False
+    if entry.get("check_id") != check_contract.CHECK_IDS.get("weaver_terminal"):
+        return False
+    return (
+        terminal_binding.get("authorized") is True
+        and terminal_binding.get("status") == "bound"
+        and terminal_binding.get("contract_sample") is False
+        and terminal_binding.get("authorization_basis") == "authority_verified"
+        and terminal_binding.get("input_closure") == "verified"
+        and terminal_binding.get("phase_witness_verified") is True
+        and terminal_binding.get("projection_verified") is True
+        and terminal_binding.get("completed_run_verified") is True
+        and terminal_binding.get("subject_correlated") is True
+        and terminal_binding.get("check_id") == entry.get("check_id")
+        and terminal_binding.get("expected_check_ref")
+        == entry.get("expected_check_ref")
+    )
 
 
 def _normalize_observations(observations):
@@ -785,11 +900,7 @@ def _normalize_observations(observations):
                 raise ReconciliationError(
                     "native_result_invalid", native_code=error.code
                 ) from None
-            if (
-                runner_ref is not None
-                and result.get("runner_ref") is not None
-                and result["runner_ref"] != runner_ref
-            ):
+            if not _matches_job_runner(result, runner_ref, item.get("report")):
                 raise ReconciliationError("observation_runner_mismatch")
             received_results[result["result_id"]] = _canonical(result)
         if report_results is not None and provided is not None:
@@ -953,8 +1064,30 @@ def derive_strict_expected(entry, resolved):
             return None, "insufficient", f"expected_source_{key}_mismatch"
     exp_scope_set = set(expected_source.get("verified_input_scope") or ())
     res_scope_set = set(resolved_source.get("verified_input_scope") or ())
-    if exp_scope_set - res_scope_set:
+    raw_deleted = resolved.get("verified_deleted_scope")
+    verified_absent = set()
+    if raw_deleted is not None:
+        try:
+            deleted_list = _verified_deleted_paths(
+                raw_deleted, "resolution_deleted_scope_invalid"
+            )
+        except ReconciliationError as error:
+            return None, "insufficient", error.code
+        if (
+            expected_source.get("scope_kind") != "changed_paths"
+            or resolved_source.get("scope_kind")
+            not in {"check_input_closure", "full_input_closure"}
+            or resolved_source.get("binding_status")
+            not in {"byte_tree", "content_digest"}
+        ):
+            return None, "insufficient", "resolution_deleted_scope_unproven"
+        verified_absent = set(deleted_list)
+        if verified_absent & res_scope_set:
+            return None, "insufficient", "resolution_deleted_scope_contradicted"
+    uncovered = exp_scope_set - res_scope_set
+    if uncovered - verified_absent:
         return None, "insufficient", "expected_input_scope_uncovered"
+    covered_exp_scope = exp_scope_set - verified_absent
     if expected_source.get("content_digest") is not None:
         exp_digest = expected_source["content_digest"]
         res_digest = resolved_source.get("content_digest")
@@ -962,7 +1095,10 @@ def derive_strict_expected(entry, resolved):
             expected_source.get("scope_kind") == "changed_paths"
             and resolved_source.get("scope_kind")
             in {"check_input_closure", "full_input_closure"}
-            and exp_scope_set < res_scope_set
+            and (
+                covered_exp_scope < res_scope_set
+                or (bool(verified_absent) and covered_exp_scope <= res_scope_set)
+            )
         )
         if exp_digest != res_digest and not (
             expanded_closure
@@ -990,7 +1126,12 @@ def derive_strict_expected(entry, resolved):
     expected_baseline = entry.get("baseline_ref")
     if isinstance(expected_baseline, dict):
         base_commit = expected_baseline.get("base_commit")
-        if base_commit is not None:
+        if check_contract.is_unborn_index_baseline(expected_baseline):
+            if resolved_baseline is None:
+                return None, "unknown", "expected_baseline_unresolved"
+            if resolved_baseline != expected_baseline:
+                return None, "insufficient", "expected_baseline_mismatch"
+        elif base_commit is not None:
             if resolved_baseline is None:
                 # The immutable Expected baseline stays authoritative when the
                 # resolution supplies no competing comparison envelope.
@@ -1338,6 +1479,7 @@ def _reconcile_entry(
     *,
     scope=None,
     invocation_ref=None,
+    terminal_binding=None,
 ):
     output = {
         "expected_check_ref": entry["expected_check_ref"],
@@ -1383,12 +1525,14 @@ def _reconcile_entry(
         )
         return output
     if application_status not in _RECONCILABLE_APPLICABILITY:
-        output.update(
-            binding_status="unknown",
-            reason="applicability_unknown",
-            unknown_fields=_unknown_fields("applicability_unknown"),
-        )
-        return output
+        if not terminal_applicability_authorized(entry, terminal_binding):
+            output.update(
+                binding_status="unknown",
+                reason="applicability_unknown",
+                unknown_fields=_unknown_fields("applicability_unknown"),
+            )
+            return output
+        output["terminal_binding_ref"] = terminal_binding["binding_ref"]
     if binding is not None:
         output.update(
             scheduler_ref=binding.get("scheduler_ref"),
@@ -1840,15 +1984,17 @@ def reconcile_expected_results(
     resolutions=(),
     observations=(),
     invocation_ref=None,
+    terminal_bindings=(),
 ):
     """Reconcile one immutable Expected scope with activated Jobs and results.
 
     ``expected`` is the #66-B projection (or, for a multi-ref Schema v2
     projection, select one child scope with ``ref_scope_id``). ``routing``
     carries activated Job identities, ``resolutions`` carries separately
-    sourced rule/source/baseline evidence, and ``observations`` carries genuine
+    sourced rule/source/baseline evidence, ``observations`` carries genuine
     #52 Native Results under the exact Job/Run/Attempt/Report identity they came
-    from.
+    from, and optional ``terminal_bindings`` carries verified #52-D4 bindings
+    for post-completion ``weaver_terminal``.
 
     The returned receipt is additive and versioned. It never rewrites the
     Expected projection and does not claim trusted evidence or Required status.
@@ -1858,6 +2004,9 @@ def reconcile_expected_results(
     expected_refs = {item["expected_check_ref"] for item in checks}
     bindings = _normalize_routing(routing, expected_refs)
     resolutions_by_ref = _normalize_resolutions(resolutions, expected_refs)
+    terminal_by_ref = normalize_terminal_bindings(
+        terminal_bindings, expected_refs, scope
+    )
     normalized_observations, duplicates = _normalize_observations(observations)
     observations_by_identity = {
         _observation_key(item): item for item in normalized_observations
@@ -1870,6 +2019,7 @@ def reconcile_expected_results(
             observations_by_identity,
             scope=scope,
             invocation_ref=invocation_ref,
+            terminal_binding=terminal_by_ref.get(entry["expected_check_ref"]),
         )
         for entry in checks
     ]
@@ -1919,6 +2069,38 @@ def reconcile_expected_results(
         )
     payload["receipt_ref"] = _digest(payload)
     return payload
+
+
+def hook_exit_code(receipts):
+    """Return the local exit for the receipts covering one Hook Invocation.
+
+    Callers supply the full set of scope receipts. Success requires complete
+    Expected enumeration and reconciled observations in every scope.
+    """
+    if not isinstance(receipts, list) or not receipts:
+        return 1
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            return 1
+        if (
+            receipt.get("status") != "matched"
+            or receipt.get("all_observations_reconciled") is not True
+        ):
+            return 1
+        completeness = receipt.get("expected_completeness")
+        closed = completeness in ("expected_domain_complete", "domain_complete_empty")
+        if not (
+            closed or (receipt.get("ref") is not None and completeness == "per_ref")
+        ):
+            return 1
+        entries = receipt.get("entries")
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, dict)
+            or entry.get("binding_status") not in ("matched", "not_applicable")
+            for entry in entries
+        ):
+            return 1
+    return 0
 
 
 def _result_id_list(value, code):

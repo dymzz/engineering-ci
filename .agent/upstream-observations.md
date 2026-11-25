@@ -24,6 +24,16 @@
 - 当前处理：继续复用官方编码、HTTP 和有限重试；用官方 Protobuf 消息读取接收确认，不复制上游实现或修改库。
 - 未搜索或提交上游 Issue/PR，未开展额外上游调查。
 
+## OpenTelemetry Collector Contrib `githubreceiver@0.165.0`: `sem_conv_version: 1.43.0` and `workflow_job.id == 0` handling
+
+- Status: confirmed upstream component behavior (`v0.165.0` / `v0.165.1`); no third-party code modified.
+- Seen: 2026-11-24, Issue `#75` native integration verification against `ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea`.
+- Evidence:
+  1. Upstream `metadata.yaml` declares `sem_conv_version: 1.43.0`. Unmodified `githubreceiver` `workflow_run`/`workflow_job` OTLP output audited against pinned SemConv `v1.45.0` via Weaver `0.28.0` yields 27 violations (`type_mismatch` on `cicd.pipeline.run.id`/`cicd.pipeline.task.run.id` int values, `required_attribute_not_present` on Span `cicd.pipeline.result`/`cicd.pipeline.task.*`, `missing_attribute` on `cicd.pipeline.run.status`/`cicd.pipeline.run.task.status`/`cicd.pipeline.worker.*`/`vcs.ref.head`, `illegal_namespace` on `vcs.ref.head.revision.author.*`).
+  2. `Config.Validate()` requires at least one `scrapers` block even when receiving webhooks only.
+  3. With default beta gate `receiver.githubreceiver.UseCheckRunID` enabled, sending a completed `workflow_job` webhook with `id: 0` logs `failed to derive job parent span ID` in `trace_event_handling.go:69`, then `trace_receiver.go:186` calls `td.SpanCount()` on an uninitialized `ptrace.Traces{}` and recovers an HTTP connection panic per request (closing the socket cleanly without emitting spans or crashing the collector).
+- Workaround: configure official `otelcol-contrib` `transform/semconv_v1_45_0` + `filter/drop_raw_webhook_events` processors in `config/otel-collector-github-receiver.yaml` with `include_span_events: true` and valid `scrapers`; reject missing/zero `check_run_id` inputs at ECI boundaries as well. No upstream repository/PR modified.
+
 ## Propel / SQLx：Windows PostgreSQL 本地化错误无法解码
 
 - 状态：用户实际桌面操作报告了协议错误，宿主配置已只读核实；未独立复现 SQLx 连接，未认定为新的上游 Bug。
@@ -168,3 +178,46 @@
 - Assessment: no attribution to a specific upstream bug or competing process.
   This warning is not a tool result, cache-hit proof or fresh Origin identity.
   No Dagger binary, user profile file or third-party source was modified.
+
+## Dagger CLI@1.0.0-beta.16: Windows File argument path
+
+- Status: reproduced with the native Windows CLI against the matching Engine.
+- Seen: 2026-11-22, #152/#153 Hook module and path verification.
+- Evidence: `plan-execution --plan` with the absolute Windows path to the
+  same test input returned CLI exit 1 and `failed to match includepatterns:
+  syntax error in pattern`. The workspace-relative path reached the function
+  and returned its native `plan_invalid` report for the intentionally invalid
+  input. A valid Plan using relative inputs passed and exported its bundle.
+- Integration: place the Plan and Source in one temporary Dagger workspace
+  and use workspace-relative arguments. A Git-pinned module call also exposed
+  `WinError 32` while removing its Windows temporary workspace after export.
+  The process holding the handle was undetermined. Windows cleanup is
+  best-effort after the verified bundle is retained.
+
+## Lefthook 2.2.2: push file selection can skip a Ref event
+
+- Status: reproduced with installed Windows Lefthook during #153 validation.
+- Evidence: in a real ECI checkout whose branch was current with its upstream,
+  `git push origin HEAD:main HEAD:refs/heads/feature/push-policy` updated both
+  destination Refs. Lefthook reported `capture-refs (skip) no matching push files`,
+  Git exited 0 and no Hook Invocation was recorded.
+- The pinned [PushFiles implementation](https://github.com/evilmartians/lefthook/blob/v2.2.2/internal/git/wrapper/push_files.go)
+  first compares the current HEAD with `@{push}`. That comparison can be empty
+  during an explicit push to a different remote or target Ref.
+- Integration: a nonempty `files` command alone still falls through to the push
+  file check in the pinned [command builder](https://github.com/evilmartians/lefthook/blob/v2.2.2/internal/run/controller/command/build_command.go).
+  Use the native [job-level files option](https://lefthook.dev/configuration/files/)
+  with `{files}` to activate the capture Job from the Hook configuration path.
+  Git's stdin supplies the Ref updates for Source binding and final reconciliation.
+
+## Lefthook 2.2.2: inline command expansion in installed Hooks
+
+- Status: reproduced in native Linux pre-commit and pre-push Hooks during
+  #153/#154 validation.
+- Evidence: the generated Hook interpolates the configured command into
+  `test -n "..."`. With `"$@"` inside an inline `sh -c` body, the probe
+  receives multiple arguments and reports `unexpected operator`. Git then
+  uses Lefthook's fallback command, losing the custom Index options and
+  pre-push input frame. Four installed-Hook tests reproduced this.
+- Integration: keep the `lefthook:` command literal and put the argument
+  handling in the script called by that command.

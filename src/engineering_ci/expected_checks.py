@@ -41,6 +41,7 @@ _HYGIENE_MANAGED = frozenset(
 _WORKFLOW_SCRIPT_MANAGED = frozenset(
     {"actionlint", "shellcheck", "workflow_shellcheck", "zizmor"}
 )
+_TEST_FRAMEWORKS = frozenset({"pytest", "unittest"})
 
 
 class ExpectedError(ValueError):
@@ -65,6 +66,23 @@ def _canon_key(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _scope_input_refs(name, inputs):
+    kind = "test_target" if name in _TEST_FRAMEWORKS else "changed_path"
+    return [{"kind": kind, "path": path} for path in inputs]
+
+
+def _scope_input_paths(entry):
+    # Older Plans encoded framework target names as changed paths.
+    kinds = {"changed_path"}
+    if entry.get("name") in _TEST_FRAMEWORKS:
+        kinds.add("test_target")
+    return [
+        ref.get("path")
+        for ref in entry.get("input_refs", [])
+        if ref.get("kind") in kinds
+    ]
+
+
 def _event_ref(changeset):
     references = sorted(
         (dict(item) for item in changeset.references),
@@ -85,6 +103,8 @@ def _event_ref(changeset):
         event["force_push"] = True
     if getattr(changeset, "baseline_status", None) is not None:
         event["baseline_status"] = changeset.baseline_status
+    if getattr(changeset, "base_tree", None) is not None:
+        event["base_tree"] = changeset.base_tree
     return event
 
 
@@ -128,6 +148,8 @@ def _selection_rule_ref(config_digest):
 def _baseline_ref_for_changes(changeset):
     ref_action = getattr(changeset, "ref_action", None)
     baseline_status = getattr(changeset, "baseline_status", None)
+    if baseline_status == "unborn":
+        return {"base_tree": changeset.base_tree, "baseline_status": baseline_status}
     if ref_action in {"create", "delete", "force_update"} or baseline_status in {
         "policy",
         "not_applicable",
@@ -464,6 +486,13 @@ def _git_from_changeset(changeset):
     }
 
 
+def _scope_target(git):
+    if git.get("snapshot") == "push":
+        refs = git.get("references") or ()
+        return (refs[0].get("remote_ref") if refs else None) or git.get("head_ref")
+    return git.get("base_ref") or git.get("head_ref")
+
+
 def _match_profile_event(profile, git):
     snapshot = git.get("snapshot") or "worktree"
     refs = git.get("references") or []
@@ -471,14 +500,7 @@ def _match_profile_event(profile, git):
         expected_context = "push"
         if snapshot == "push":
             expected_actions = {git.get("ref_action") or "update"}
-            expected_targets = {
-                t
-                for t in (
-                    (refs[0].get("remote_ref") if refs else None)
-                    or git.get("head_ref"),
-                )
-                if t
-            }
+            expected_targets = {target} if (target := _scope_target(git)) else set()
         else:
             ref_actions = {r.get("ref_action") for r in refs if r.get("ref_action")}
             expected_actions = ref_actions if len(ref_actions) == 1 else {"multi"}
@@ -506,7 +528,14 @@ def _match_profile_event(profile, git):
         allowed_targets = set(declared_targets)
     else:
         allowed_targets = {profile.get("target")}
-    if not expected_targets or not (expected_targets <= allowed_targets):
+    if snapshot in {"push", "multi"}:
+        covered = all(
+            isinstance(target, str) and _target_matches(target, allowed_targets)
+            for target in expected_targets
+        )
+    else:
+        covered = expected_targets <= allowed_targets
+    if not expected_targets or not covered:
         raise ExpectedError("effective_profile_event_mismatch")
 
 
@@ -685,6 +714,20 @@ def validate_effective_profile(profile, *, git=None):
     return profile
 
 
+def _policy_approval(config_policy, approval_digest):
+    if not isinstance(config_policy, list):
+        return config_policy
+    matches = [
+        approval
+        for approval in config_policy
+        if isinstance(approval, dict)
+        and approval.get("approval_digest") == approval_digest
+    ]
+    if len(matches) != 1:
+        raise ExpectedError("effective_profile_authority_untrusted")
+    return matches[0]
+
+
 def _verify_profile_authority(
     profile,
     *,
@@ -695,6 +738,7 @@ def _verify_profile_authority(
 ):
     """Verify whether EffectiveProfile authority is proven against governed repository rules/policy."""
     binding = profile.get("approval_binding") or {}
+    config_policy = _policy_approval(config_policy, binding.get("approval_digest"))
     declared_domain = binding.get("declared_domain") or {}
     gov = profile.get("governed_rules")
     if gov is None and isinstance(declared_domain, dict):
@@ -980,6 +1024,14 @@ def _parse_profile_obligations(
                 rule_by_check[name] = chosen
         elif config_rule is not None:
             rule_by_check[name] = config_rule
+        elif (
+            name in _TEST_FRAMEWORKS
+            and name in declared_names
+            and effective_profile.get("context") in {"index", "push"}
+            and selection_check_rule is not None
+        ):
+            # The Hook profile explicitly declares this framework.
+            rule_by_check[name] = selection_check_rule
 
     for name in list(obligations_by_check):
         obligations_by_check[name] = sorted(
@@ -1375,7 +1427,7 @@ def _recompute_ref_projection(
                 else "unknown"
             ),
             "source_ref": json.loads(json.dumps(ref_source)),
-            "input_refs": [{"kind": "changed_path", "path": p} for p in app_inputs],
+            "input_refs": _scope_input_refs(name, app_inputs),
             "baseline_ref": json.loads(json.dumps(baseline_obj)),
         }
         if effective_profile is not None:
@@ -1586,9 +1638,7 @@ def _derive_v2_from_profile(
         if hygiene_config is not None
         else frozenset(scope_by_name)
     )
-    target_ref = getattr(changeset, "base_ref", None) or getattr(
-        changeset, "head_ref", None
-    )
+    target_ref = _scope_target(_git_from_changeset(changeset))
     ref_action = getattr(changeset, "ref_action", None)
     is_multi = changeset.snapshot == "multi"
     ref_scopes = _multi_ref_scopes(changeset.references) if is_multi else None
@@ -1748,9 +1798,7 @@ def _derive_v2_from_profile(
             "applicability": {"status": app_status, "reason": app_reason},
             "policy_status": policy_status,
             "source_ref": json.loads(json.dumps(source_ref)),
-            "input_refs": [
-                {"kind": "changed_path", "path": path} for path in app_inputs
-            ],
+            "input_refs": _scope_input_refs(name, app_inputs),
             "baseline_ref": _baseline_ref_for_changes(changeset),
         }
         entry["expected_check_ref"] = entry_identity(entry)
@@ -2235,10 +2283,7 @@ def derive_expected_checks(
             },
             "policy_status": "unknown",
             "source_ref": json.loads(json.dumps(source_ref)),
-            "input_refs": [
-                {"kind": "changed_path", "path": path}
-                for path in item.get("inputs", [])
-            ],
+            "input_refs": _scope_input_refs(name, item.get("inputs", [])),
             "baseline_ref": json.loads(json.dumps(baseline))
             if baseline is not None
             else None,
@@ -2377,7 +2422,10 @@ def _hygiene_config_for_validation(plan):
             return hygiene.config_from_identity(hygiene_input)
         except hygiene.HygieneError as error:
             raise ExpectedError(error.code) from None
-    return hygiene.default_config()
+    from . import selection
+
+    config, _, _ = _selection_for_validation(plan)
+    return selection._fallback_hygiene_config(config) if config is not None else None
 
 
 def _sources_for_validation(plan):
@@ -2992,7 +3040,7 @@ def _validate_per_ref(
                 consumer=expected.get("consumer"),
                 profile_ref=expected.get("profile_ref"),
                 profile_source=expected.get("profile_source"),
-                hygiene_config=hygiene_config or hygiene.default_config(),
+                hygiene_config=hygiene_config,
                 code_prefixes=code_prefixes,
                 source_prefixes=source_prefixes,
                 weaver_prefixes=weaver_prefixes,
@@ -3141,9 +3189,7 @@ def validate_projection(
             ):
                 raise ExpectedError("effective_profile_input_mismatch")
         is_multi = git.get("snapshot") == "multi"
-        target_ref = (
-            (git.get("base_ref") or git.get("head_ref")) if not is_multi else None
-        )
+        target_ref = _scope_target(git) if not is_multi else None
         ref_action = git.get("ref_action") if not is_multi else None
         ref_scopes = _multi_ref_scopes(git.get("references")) if is_multi else None
         (
@@ -3212,11 +3258,7 @@ def validate_projection(
                         "reason"
                     ) != origin.get("reason"):
                         raise ExpectedError("expected_applicability_mismatch")
-                    expected_inputs = [
-                        ref.get("path")
-                        for ref in item.get("input_refs", [])
-                        if ref.get("kind") == "changed_path"
-                    ]
+                    expected_inputs = _scope_input_paths(item)
                     if expected_inputs != list(origin.get("inputs", [])):
                         raise ExpectedError("expected_input_mismatch")
         configured_domain = _configured_domain_names(
@@ -3323,7 +3365,12 @@ def validate_projection(
     if snapshot != "multi":
         ref_action = git.get("ref_action")
         baseline_status = git.get("baseline_status")
-        if ref_action in {"create", "delete", "force_update"} or baseline_status in {
+        if baseline_status == "unborn":
+            expected_baseline = {
+                "base_tree": git.get("base_tree"),
+                "baseline_status": baseline_status,
+            }
+        elif ref_action in {"create", "delete", "force_update"} or baseline_status in {
             "policy",
             "not_applicable",
             "old_object_unavailable",
@@ -3353,20 +3400,21 @@ def validate_projection(
                 raise ExpectedError("expected_applicability_mismatch")
             if item.get("applicability", {}).get("reason") != origin.get("reason"):
                 raise ExpectedError("expected_applicability_mismatch")
-            expected_inputs = [
-                ref.get("path")
-                for ref in item.get("input_refs", [])
-                if ref.get("kind") == "changed_path"
-            ]
+            expected_inputs = _scope_input_paths(item)
             if expected_inputs != list(origin.get("inputs", [])):
                 raise ExpectedError("expected_input_mismatch")
 
     event = expected.get("event_ref")
     if not isinstance(event, dict):
         raise ExpectedError("expected_event_invalid")
-    for key in ("base_ref", "head_ref", "base_commit", "head_commit"):
+    for key in ("base_ref", "head_ref", "base_commit", "head_commit", "base_tree"):
         if event.get(key) != git.get(key):
             raise ExpectedError("expected_event_mismatch")
+    if (
+        git.get("baseline_status") == "unborn"
+        and event.get("baseline_status") != "unborn"
+    ):
+        raise ExpectedError("expected_event_mismatch")
     expected_refs = sorted(
         (dict(item) for item in event.get("references", [])),
         key=_canon_key,

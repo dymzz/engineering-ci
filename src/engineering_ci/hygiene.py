@@ -20,6 +20,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import check_contract, git_source
 from ._paths import (
     SourcePathError,
     read_internal_linked_source,
@@ -646,6 +647,21 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
     return scopes
 
 
+def _unborn_base_tree(changes):
+    if getattr(changes, "snapshot", None) != "index":
+        return None
+    baseline = {
+        "base_commit": changes.base_commit,
+        "base_tree": getattr(changes, "base_tree", None),
+        "baseline_status": getattr(changes, "baseline_status", None),
+    }
+    return (
+        baseline["base_tree"]
+        if check_contract.is_unborn_index_baseline(baseline)
+        else None
+    )
+
+
 def _whitespace(changes, root, runner, paths=None):
     """Run ``git diff --check`` over exactly the declared changed paths.
 
@@ -653,21 +669,38 @@ def _whitespace(changes, root, runner, paths=None):
     so characters like ``[ ]`` or ``*`` are never glob-expanded to match tracked
     files outside the declared Plan set while preserving ``git diff ...`` argv.
     """
-    argv = ["git", "diff", "--check", changes.base_commit]
-    if paths is not None:
-        if not paths:
-            return _result("whitespace", "not_applicable", reason="no_changed_paths")
-        argv += ["--", *(f":(literal){path}" for path in paths)]
-    result = runner(argv, root)
-    if result.returncode == 0:
+    empty_base = _unborn_base_tree(changes)
+    return check_git_whitespace(
+        root,
+        base=empty_base or changes.base_commit,
+        tree=changes.index_tree if empty_base is not None else None,
+        paths=paths,
+        runner=runner,
+    )
+
+
+def check_git_whitespace(root, *, base, tree=None, paths=None, runner=_run):
+    """Run the native whitespace check against the worktree or a fixed tree."""
+    if paths is not None and not paths:
+        return _result("whitespace", "not_applicable", reason="no_changed_paths")
+    result = runner(
+        ["git", *git_source.whitespace_diff_args(base, tree=tree, paths=paths)], root
+    )
+    return whitespace_result(
+        result.returncode, stdout=result.stdout, stderr=result.stderr
+    )
+
+
+def whitespace_result(exit_code, *, stdout, stderr):
+    if exit_code == 0:
         return _result("whitespace", "passed", exit_code=0, executable="git")
     return _result(
         "whitespace",
         "failed",
-        exit_code=result.returncode,
-        reason="whitespace_errors",
-        stdout=result.stdout,
-        stderr=result.stderr,
+        exit_code=exit_code,
+        reason="whitespace_errors" if exit_code == 2 else "git_diff_failed",
+        stdout=stdout,
+        stderr=stderr,
         executable="git",
     )
 
@@ -805,7 +838,8 @@ def _observe_forwarding_path_error(root, observation, error):
 def _forwarding(candidates, changes, root, runner):
     if not candidates:
         return _result("forwarding", "not_applicable", reason="no_python_changes")
-    base = getattr(changes, "base_commit", None)
+    empty_base = _unborn_base_tree(changes)
+    base = empty_base or getattr(changes, "base_commit", None)
     observation = {
         "kind": "git_forwarding_source",
         "requested_base": base,
@@ -850,9 +884,15 @@ def _forwarding(candidates, changes, root, runner):
         return result("not_executed", "forwarding_git_context_unavailable")
     observation["git_context"] = "worktree_root"
 
-    base_tree, base_failure = _forwarding_base_tree(base.strip(), probe, observation)
-    if base_failure is not None:
-        return result("failed", base_failure)
+    if empty_base is None:
+        base_tree, base_failure = _forwarding_base_tree(
+            base.strip(), probe, observation
+        )
+        if base_failure is not None:
+            return result("failed", base_failure)
+    else:
+        base_tree = empty_base
+        observation["base_tree"] = base_tree
     entries, tree_failure = _forwarding_tree_entries(base_tree, probe, observation)
     if tree_failure is not None:
         return result("failed", tree_failure)
@@ -1170,6 +1210,11 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
             "base_ref": changes.base_ref,
             "head_ref": changes.head_ref,
             "base_commit": changes.base_commit,
+            **(
+                {"base_tree": changes.base_tree}
+                if getattr(changes, "base_tree", None)
+                else {}
+            ),
             "head_commit": changes.head_commit,
             "tree": changes.tree,
             "worktree_dirty": changes.worktree_dirty,

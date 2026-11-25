@@ -27,6 +27,7 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | GitHub Actions | adopted | CI, release workflow | [github-actions](integrations/github-actions.md#github-actions) |
 | Reusable Python CI Workflow | adopted | CI orchestrator | [github-actions](integrations/github-actions.md#reusable-python-ci-workflow) |
 | Ruff | adopted | development, CI | [tools](integrations/tools.md#ruff) |
+| Lefthook | adopted | development, local Git hooks | [tools](integrations/tools.md#lefthook) |
 | Vulture | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
 | Pyright | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
 | deptry | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
@@ -34,12 +35,13 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | Git CLI | adopted | development, CI, release | [tools](integrations/tools.md#git-cli) |
 | GitHub CLI (gh) | adopted | download, release, API | [tools](integrations/tools.md#github-cli-gh) |
 | OSV-Scanner | adopted | dependency security gate | [tools](integrations/tools.md#osv-scanner) |
-| OpenTelemetry CI/CD SemConv attributes | experimental | GitHub Run/Job API or facts → Pipeline/Task candidate records + optional OTLP/JSON file (`engineering_ci.cicd_telemetry`); registry pin tracked with Knowledge #80/#81; live OTLP/gRPC later | [cicd-telemetry](cicd-telemetry.md) |
+| OpenTelemetry CI/CD SemConv + `githubreceiver` | experimental | Upstream Collector Contrib `githubreceiver` (Webhook → OTTL SemConv `v1.45.0` → Weaver `v1.45.0` → `#52`/`#66-C`/`#63`/`#61`, [github-receiver config](../configuration/github-receiver.md)) + retired-trace GitHub Attempt/Job witness, LogRecord & phase Histogram (`engineering_ci.cicd_telemetry`); live production receiver deployment remains opt-in | [cicd-telemetry](cicd-telemetry.md) |
 
 ## Verification notes
 
-Ruff is locked in root dev dependencies and configured in standard `pyproject.toml`.
-Vulture, Pyright, deptry and Pylint are pinned in the Dagger module and run through
+Ruff and Lefthook 2.2.2 are locked in root dev dependencies; Ruff settings are
+configured in standard `pyproject.toml`, and Git hook orchestration lives in
+`lefthook.yml`. Vulture, Pyright, deptry and Pylint are pinned in the Dagger module and run through
 `uvx` in their own environment, so they are not root dev dependencies and never
 enter a consumer's lockfile. The removed host Runner, input receipt cache and YAML
 mirror validator are not integration layers.

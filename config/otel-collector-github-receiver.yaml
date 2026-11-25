@@ -1,0 +1,107 @@
+# Official OpenTelemetry Collector Contrib pipeline for GitHub Actions (#75).
+#
+# Pinned release:
+#   ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.165.0
+#   sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+#
+# Upstream receiver githubreceiver declares SemConv 1.43.0 and enables
+# receiver.githubreceiver.UseCheckRunID by default (since v0.151.0).
+# ECI pins OpenTelemetry SemConv v1.45.0; the transform/filter processors below
+# normalize emitted attributes to SemConv v1.45.0 without modifying upstream
+# binaries or SemConv Registry YAML, while keeping githubreceiver traceId,
+# spanId, parentSpanId, Attempt links, and timestamps intact.
+#
+# Required environment variables:
+#   GITHUB_WEBHOOK_SECRET    Shared webhook secret validating X-Hub-Signature-256
+#   GITHUB_SCRAPER_ORG       GitHub owner/org (required by upstream Config.Validate())
+#   ECI_OTLP_GRPC_ENDPOINT   Target OTLP/gRPC endpoint (TLS enabled by default)
+
+receivers:
+  github:
+    webhook:
+      endpoint: 0.0.0.0:19418
+      path: /events
+      health_path: /health
+      secret: ${env:GITHUB_WEBHOOK_SECRET}
+      service_name: github-actions
+      include_span_events: true
+    scrapers:
+      scraper:
+        github_org: ${env:GITHUB_SCRAPER_ORG}
+
+processors:
+  transform/semconv_v1_45_0:
+    error_mode: propagate
+    trace_statements:
+      - context: spanevent
+        statements:
+          - set(spanevent.cache["ev"], ParseJSON(spanevent.attributes["event.payload"])) where (spanevent.name == "github.workflow_run.event" or spanevent.name == "github.workflow_job.event") and spanevent.attributes["event.payload"] != nil
+          - set(resource.attributes["cicd.pipeline.run.id"], Concat([String(spanevent.cache["ev"]["workflow_run"]["id"]), "/", String(spanevent.cache["ev"]["workflow_run"]["run_attempt"])], "")) where spanevent.cache["ev"]["workflow_run"] != nil
+          - set(resource.attributes["cicd.pipeline.name"], spanevent.cache["ev"]["workflow_run"]["name"]) where spanevent.cache["ev"]["workflow_run"] != nil and spanevent.cache["ev"]["workflow_run"]["name"] != nil
+          - set(resource.attributes["cicd.pipeline.run.id"], Concat([String(spanevent.cache["ev"]["workflow_job"]["run_id"]), "/", String(spanevent.cache["ev"]["workflow_job"]["run_attempt"])], "")) where spanevent.cache["ev"]["workflow_job"] != nil
+          - set(resource.attributes["cicd.pipeline.name"], spanevent.cache["ev"]["workflow_job"]["workflow_name"]) where spanevent.cache["ev"]["workflow_job"] != nil and spanevent.cache["ev"]["workflow_job"]["workflow_name"] != nil
+          - set(resource.attributes["vcs.repository.url.full"], spanevent.cache["ev"]["repository"]["html_url"]) where spanevent.cache["ev"]["repository"]["html_url"] != nil
+          - set(span.attributes["cicd.pipeline.result"], "success") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "success"
+          - set(span.attributes["cicd.pipeline.result"], "failure") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "failure"
+          - set(span.attributes["error.type"], "failure") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "failure"
+          - set(span.attributes["cicd.pipeline.result"], "error") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "startup_failure"
+          - set(span.attributes["error.type"], "startup_failure") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "startup_failure"
+          - set(span.attributes["cicd.pipeline.result"], "cancellation") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "cancelled"
+          - set(span.attributes["cicd.pipeline.result"], "skip") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "skipped"
+          - set(span.attributes["cicd.pipeline.result"], "timeout") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "timed_out"
+          - set(span.attributes["error.type"], "timeout") where spanevent.cache["ev"]["workflow_run"]["conclusion"] == "timed_out"
+          - set(span.attributes["cicd.pipeline.task.name"], spanevent.cache["ev"]["workflow_job"]["name"]) where spanevent.cache["ev"]["workflow_job"] != nil
+          - set(span.attributes["cicd.pipeline.task.run.id"], String(spanevent.cache["ev"]["workflow_job"]["id"])) where spanevent.cache["ev"]["workflow_job"] != nil
+          - set(span.attributes["cicd.pipeline.task.run.url.full"], spanevent.cache["ev"]["workflow_job"]["html_url"]) where spanevent.cache["ev"]["workflow_job"] != nil and spanevent.cache["ev"]["workflow_job"]["html_url"] != nil
+          - set(span.attributes["cicd.pipeline.task.run.result"], "success") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "success"
+          - set(span.attributes["cicd.pipeline.task.run.result"], "failure") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "failure"
+          - set(span.attributes["error.type"], "failure") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "failure"
+          - set(span.attributes["cicd.pipeline.task.run.result"], "error") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "startup_failure"
+          - set(span.attributes["error.type"], "startup_failure") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "startup_failure"
+          - set(span.attributes["cicd.pipeline.task.run.result"], "cancellation") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "cancelled"
+          - set(span.attributes["cicd.pipeline.task.run.result"], "skip") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "skipped"
+          - set(span.attributes["cicd.pipeline.task.run.result"], "timeout") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "timed_out"
+          - set(span.attributes["error.type"], "timeout") where spanevent.cache["ev"]["workflow_job"]["conclusion"] == "timed_out"
+      - context: resource
+        statements:
+          - set(resource.attributes["vcs.ref.head.name"], resource.attributes["vcs.ref.head"]) where resource.attributes["vcs.ref.head"] != nil
+          - delete_key(resource.attributes, "vcs.ref.head")
+          - delete_key(resource.attributes, "vcs.ref.head.revision.author.name")
+          - delete_key(resource.attributes, "vcs.ref.head.revision.author.email")
+          - delete_key(resource.attributes, "cicd.pipeline.run.status")
+          - delete_key(resource.attributes, "cicd.pipeline.run.task.status")
+          - delete_key(resource.attributes, "cicd.pipeline.run.sender.login")
+          - delete_key(resource.attributes, "cicd.pipeline.task.run.sender.login")
+          - delete_key(resource.attributes, "cicd.pipeline.run.previous_attempt.url.full")
+          - delete_key(resource.attributes, "cicd.pipeline.task.run.id")
+          - delete_key(resource.attributes, "cicd.pipeline.task.run.url.full")
+          - set(resource.attributes["cicd.worker.id"], String(resource.attributes["cicd.pipeline.worker.id"])) where resource.attributes["cicd.pipeline.worker.id"] != nil and Int(resource.attributes["cicd.pipeline.worker.id"]) > 0
+          - set(resource.attributes["cicd.worker.name"], resource.attributes["cicd.pipeline.worker.name"]) where resource.attributes["cicd.pipeline.worker.name"] != nil and resource.attributes["cicd.pipeline.worker.name"] != ""
+          - delete_matching_keys(resource.attributes, "^cicd\\.pipeline\\.worker\\..*")
+          - delete_matching_keys(resource.attributes, "^github\\..*")
+      - context: span
+        statements:
+          - delete_key(span.attributes, "cicd.pipeline.run.queue.duration")
+          - set(span.attributes["cicd.pipeline.task.run.result"], "success") where span.attributes["cicd.pipeline.run.task.status"] == "success"
+          - set(span.attributes["cicd.pipeline.task.run.result"], "failure") where span.attributes["cicd.pipeline.run.task.status"] == "failure"
+          - set(span.attributes["error.type"], "failure") where span.attributes["cicd.pipeline.run.task.status"] == "failure"
+          - set(span.attributes["cicd.pipeline.task.run.result"], "cancellation") where span.attributes["cicd.pipeline.run.task.status"] == "cancellation"
+          - set(span.attributes["cicd.pipeline.task.run.result"], "skip") where span.attributes["cicd.pipeline.run.task.status"] == "skip"
+          - delete_key(span.attributes, "cicd.pipeline.run.task.status")
+
+  filter/drop_raw_webhook_events:
+    error_mode: propagate
+    traces:
+      spanevent:
+        - 'spanevent.name == "github.workflow_run.event" or spanevent.name == "github.workflow_job.event"'
+
+exporters:
+  otlp_grpc:
+    endpoint: ${env:ECI_OTLP_GRPC_ENDPOINT}
+
+service:
+  pipelines:
+    traces:
+      receivers: [github]
+      processors: [transform/semconv_v1_45_0, filter/drop_raw_webhook_events]
+      exporters: [otlp_grpc]

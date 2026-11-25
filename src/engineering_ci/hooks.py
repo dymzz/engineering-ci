@@ -1,9 +1,8 @@
 """Git Hook event capture primitives.
 
-This module only captures the native Git event. It does not install hooks,
-dispatch jobs, or decide a Check verdict. A native pre-commit/pre-push entry
-may call :func:`capture_pre_push` or :func:`capture_pre_commit` once, persist the
-returned event, and hand the invocation reference to a dispatcher.
+The native hook captures and persists one Git event per invocation. Lefthook
+owns installation and scheduling. Hygiene supplies the native whitespace
+outcome for the captured pre-commit tree.
 
 Security boundaries:
 
@@ -13,21 +12,22 @@ Security boundaries:
   Event contains a redacted, correlatable identity only.
 - The content-addressed Event path is an ``event_payload_ref``, not an execution
   identity. Every :func:`persist_event` call creates a distinct
-  ``invocation_ref`` and invocation record; a later Coordinator maps that to
-  Run/Attempt. No #104 strict receipt field is extended here.
+  ``invocation_ref`` and invocation record for the jobs consuming the event.
+  No #104 strict receipt field is extended here.
 - Event files are written with a unique temporary name, flushed, and atomically
   published with owner-only permissions. Capture publication and pruning share
   a small per-repository lock; pruning keeps Events referenced by current
   Invocations. Pre-commit captures verify that the Index bytes did not change
   while ``git write-tree`` ran.
-- The raw remote files handed to the CLI are owned by the native Hook wrapper:
-  it must create them with owner-only access and delete them on success and
-  failure. The capture CLI only reads them and never deletes caller files.
+- The caller owns the raw remote files handed to the CLI. The caller creates
+  them with owner-only access and deletes them on success and failure. The
+  capture CLI only reads these files.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from engineering_ci import selection
+from engineering_ci import hygiene, selection
 
 HOOKS = ("pre-commit", "pre-push")
 EVENT_SCHEMA_VERSION = 2
@@ -50,6 +50,8 @@ INVOCATION_SCHEMA_VERSION = 1
 INVOCATION_KIND = "engineering-ci-hook-invocation"
 EVENT_RETENTION_SECONDS = 24 * 60 * 60
 INDEX_LOCATOR_KINDS = frozenset({"git_dir", "worktree", "absolute"})
+_INVOCATION_REF = re.compile(r"invocation:([0-9a-f]{32})")
+_TREE_OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _SAFE_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 _SCP_LIKE = re.compile(r"^(?:(?P<user>[^/@:]+)@)?(?P<host>[^@/:]+):(?P<path>.*)$")
@@ -74,7 +76,19 @@ class HookInvocation:
     invocation_path: Path
 
 
-def _git(root, *args, env=None):
+@dataclass(frozen=True)
+class InvocationBinding:
+    """Verified Invocation identity and the content-addressed Event it names."""
+
+    invocation_ref: str
+    event_payload_ref: str
+    event: dict
+    hook: str
+    invocation_path: Path
+    event_path: Path
+
+
+def _git(root, *args, env=None, data=None):
     return subprocess.run(
         ["git", *args],
         cwd=root,
@@ -84,6 +98,7 @@ def _git(root, *args, env=None):
         errors="replace",
         check=False,
         env=env,
+        input=data,
     )
 
 
@@ -328,23 +343,26 @@ def capture_pre_push(root, remote_name, remote_location, stdin_text):
     }
 
 
+def _active_index_path(root, environ, *, git_dir=None):
+    index_file = environ.get("GIT_INDEX_FILE")
+    if not index_file:
+        return (git_dir or _git_dir(root)) / "index"
+    return Path(root) / index_file
+
+
 def capture_pre_commit(root, *, environ=None):
     """Capture the actual Index used by a pre-commit invocation.
 
-    The Index bytes are read immediately before and after ``git write-tree``.
-    A change during the window is refused rather than combining a Tree ID and
-    Index digest from different moments. This still does not claim that native
-    tools read those bytes; Source materialization/Check execution must verify
-    the recorded identity.
+    Read Index bytes before and after ``git write-tree`` and check that the
+    baseline Tree stayed fixed. The native check verifies the recorded Source
+    identity again when it consumes this Event.
     """
     environ = os.environ if environ is None else environ
-    index_file = environ.get("GIT_INDEX_FILE")
-    if index_file:
-        index_path = Path(index_file)
-        if not index_path.is_absolute():
-            index_path = Path(root) / index_path
-    else:
-        index_path = _git_dir(root) / "index"
+    base_tree = _pre_commit_base_tree(root)
+    head_commit = selection._resolve(root, "HEAD")
+    git_dir = _git_dir(root)
+    index_path = _active_index_path(root, environ, git_dir=git_dir)
+    captured_path = index_path.resolve()
     if not index_path.is_file():
         raise HookEventError("index_file_unavailable")
     tree_id = None
@@ -370,11 +388,19 @@ def capture_pre_commit(root, *, environ=None):
         previous_tree = current_tree
     if tree_id is None:
         raise HookEventError("index_changed_during_capture")
-    git_dir = _git_dir(root)
-    locator = _index_locator(root, index_path, git_dir)
+    if index_path.resolve() != captured_path:
+        raise HookEventError("index_changed_during_capture")
+    if (
+        _pre_commit_base_tree(root) != base_tree
+        or selection._resolve(root, "HEAD") != head_commit
+    ):
+        raise HookEventError("pre_commit_base_changed_during_capture")
+    locator = _index_locator(root, captured_path, git_dir)
     return {
         "schema_version": EVENT_SCHEMA_VERSION,
         "hook": "pre-commit",
+        "base_tree": base_tree,
+        "head_commit": head_commit,
         "index": {
             # Authoritative namespaced locator; consumers must not re-guess bases.
             "locator": locator,
@@ -537,7 +563,7 @@ def _controlled_event_path(git_dir, event_file):
     return candidate
 
 
-def load_invocation(path):
+def load_invocation_binding(path):
     """Read an Invocation and verify its Event content/reference linkage.
 
     The referenced Event must be a direct child of this repository's
@@ -566,9 +592,41 @@ def load_invocation(path):
     hook = invocation.get("hook")
     if hook not in HOOKS or event.get("hook") != hook:
         raise HookEventError("invocation_hook_mismatch")
-    if event_payload_ref(event) != invocation.get("event_payload_ref"):
+    payload_ref = invocation.get("event_payload_ref")
+    if event_payload_ref(event) != payload_ref:
         raise HookEventError("invocation_event_mismatch")
-    return event
+    return InvocationBinding(
+        invocation_ref=expected_ref,
+        event_payload_ref=payload_ref,
+        event=event,
+        hook=hook,
+        invocation_path=path.resolve(),
+        event_path=event_path,
+    )
+
+
+def load_invocation(path):
+    """Read the verified Event named by an Invocation."""
+    return load_invocation_binding(path).event
+
+
+def _load_invocation_ref(root, invocation_ref):
+    match = (
+        _INVOCATION_REF.fullmatch(invocation_ref)
+        if isinstance(invocation_ref, str)
+        else None
+    )
+    if match is None:
+        raise HookEventError("invocation_ref_invalid")
+    git_dir = _git_dir(root)
+    _hook_storage(git_dir)
+    path = _invocation_path(git_dir, match[1])
+    if _invocation_git_dir(path) != git_dir:
+        raise HookEventError("invocation_repository_mismatch")
+    try:
+        return load_invocation_binding(path)
+    except OSError:
+        raise HookEventError("invocation_file_unavailable") from None
 
 
 def _write_private_file(path, payload):
@@ -718,6 +776,29 @@ def prune_events(root, *, now=None, retention_seconds=EVENT_RETENTION_SECONDS):
                 except OSError:
                     continue
                 if expired:
+                    if _INVOCATION_REF.fullmatch(f"invocation:{path.stem}"):
+                        sidecars = [
+                            path.with_suffix(suffix)
+                            for suffix in (
+                                ".plan",
+                                ".activation",
+                                ".execution",
+                                ".receipt",
+                                ".push-source",
+                            )
+                        ]
+                        sidecars.extend(
+                            path.parent.glob(f"{path.stem}.execution-[0-9]*")
+                        )
+                        for suffix in ("execution", "activation"):
+                            sidecars.extend(
+                                path.parent.glob(f"{path.stem}.{suffix}-check-*")
+                            )
+                        for sidecar in sidecars:
+                            try:
+                                sidecar.unlink(missing_ok=True)
+                            except OSError:
+                                pass
                     try:
                         path.unlink()
                         removed += 1
@@ -752,15 +833,139 @@ def _read_remote_file(path, *, field):
     return value.rstrip("\r\n")
 
 
+def _read_pre_push_frame(stream):
+    """Read a Lefthook input frame without logging the original argv."""
+    try:
+        marker, name, location, stdin = stream.read().split(b":", 3)
+        if marker != b"ECI-PRE-PUSH":
+            raise ValueError
+        return (
+            base64.b64decode(name, validate=True).decode("utf-8"),
+            base64.b64decode(location, validate=True).decode("utf-8"),
+            stdin.decode("utf-8"),
+        )
+    except ValueError:
+        raise HookEventError("pre_push_argument_frame_invalid") from None
+
+
+def _pre_commit_base_tree(root):
+    head = _git(root, "rev-parse", "--verify", "--quiet", "HEAD^{tree}")
+    if head.returncode == 0:
+        return head.stdout.strip()
+    empty = selection.unborn_index_base(root)
+    if empty is None:
+        raise HookEventError("pre_commit_base_unavailable")
+    return empty
+
+
+def _capture_details(event, reference):
+    return {
+        "event": event,
+        "path": str(reference.event_path),
+        "invocation_ref": reference.invocation_ref,
+        "event_payload_ref": reference.event_payload_ref,
+        "invocation_path": str(reference.invocation_path),
+    }
+
+
+def _active_index_matches(root, path, captured):
+    try:
+        if _active_index_path(root, os.environ).resolve() != path or _digest_bytes(
+            path.read_bytes()
+        ) != captured.get("sha256"):
+            return False
+        current_tree = _git(root, "write-tree")
+        return (
+            current_tree.returncode == 0
+            and current_tree.stdout.strip() == captured["tree"]
+            and _active_index_path(root, os.environ).resolve() == path
+            and _digest_bytes(path.read_bytes()) == captured["sha256"]
+        )
+    except (OSError, HookEventError):
+        return False
+
+
+def check_pre_commit(root, *, invocation_ref=None):
+    """Check the exact staged tree and retain the native result for its event."""
+    if invocation_ref is None:
+        event = capture_pre_commit(root)
+        reference = persist_event(root, event)
+    else:
+        reference = _load_invocation_ref(root, invocation_ref)
+        if reference.hook != "pre-commit":
+            raise HookEventError("invocation_hook_mismatch")
+        event = reference.event
+    base = event.get("base_tree")
+    if not isinstance(base, str) or not _TREE_OID.fullmatch(base):
+        raise HookEventError("pre_commit_base_unavailable")
+    index = resolve_index_path(event, root=root)
+    captured = event["index"]
+    tree = captured.get("tree")
+    if not isinstance(tree, str) or not _TREE_OID.fullmatch(tree):
+        raise HookEventError("index_tree_unavailable")
+    native = hygiene.check_git_whitespace(root, base=base, tree=tree)
+    index_matches = _active_index_matches(root, index, captured)
+    try:
+        base_matches = _pre_commit_base_tree(root) == base
+    except HookEventError:
+        base_matches = False
+    reason = None
+    if not index_matches:
+        reason = "index_changed_during_check"
+    elif not base_matches:
+        reason = "pre_commit_base_changed_during_check"
+    return {
+        **_capture_details(event, reference),
+        "base_tree": base,
+        "check": native,
+        "source_status": "matched" if reason is None else "stale",
+        "reason": reason or native["reason"],
+        "exit_code": native["exit_code"] or (1 if reason is not None else 0),
+    }
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Capture Git Hook events")
+    parser = argparse.ArgumentParser(description="Capture and check Git Hook inputs")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    check = subparsers.add_parser("check")
+    check.add_argument("hook", choices=("pre-commit",))
+    check.add_argument("--root", type=Path, default=Path("."))
+    check.add_argument("--invocation-ref", help="Consume an existing pre-commit Event.")
+    check.add_argument("--json", action="store_true")
+    for command in ("prepare", "run", "reconcile", "consume", "skip"):
+        job = subparsers.add_parser(command)
+        job.add_argument(
+            "hook", choices=("pre-commit",) if command == "skip" else HOOKS
+        )
+        job.add_argument("--root", type=Path, default=Path("."))
+        job.add_argument("--invocation-ref", required=True)
+        job.add_argument("--json", action="store_true")
+        if command in ("skip", "run"):
+            job.add_argument("--job")
+        if command == "prepare":
+            job.add_argument("--split-checks", action="store_true")
+            job.add_argument(
+                "--dagger-module",
+                help="Use . in the ECI checkout or pin the ECI Dagger module to a full Git commit.",
+            )
+            job.add_argument("--new-ref-baseline")
+            job.add_argument(
+                "--require-plan",
+                action="store_true",
+                help="Require each pre-push Ref to have a Plan and matching EffectiveProfile.",
+            )
+            job.add_argument(
+                "--effective-profile",
+                action="append",
+                default=[],
+                help="Repository-relative push profile in the Ref's actual Git tree.",
+            )
     capture = subparsers.add_parser("capture")
     capture.add_argument("hook", choices=HOOKS)
     capture.add_argument("--root", default=".")
     # Raw remote argv is deliberately not accepted as a CLI argument: process
-    # arguments are observable by other processes. The native hook writes the
-    # two values to controlled files and passes only those paths here.
+    # arguments are observable by other processes. The caller supplies the
+    # paths of controlled files containing the two values.
     capture.add_argument(
         "--remote-name-file",
         help="Caller-owned 0600 file; capture reads it and never deletes it.",
@@ -770,41 +975,109 @@ def main(argv=None):
         help="Caller-owned 0600 file; capture reads it and never deletes it.",
     )
     capture.add_argument("--stdin-file")
+    capture.add_argument("--framed-stdin", action="store_true")
     capture.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.command in ("prepare", "run", "reconcile", "consume", "skip"):
+            from . import hook_checks
+
+            binding = _load_invocation_ref(args.root, args.invocation_ref)
+            if args.command == "skip":
+                if args.job is None:
+                    raise HookEventError("hook_index_job_required")
+                return int(not hook_checks.skip_index_job(binding, args.job))
+            if args.hook == "pre-push":
+                if args.command == "prepare":
+                    if args.split_checks:
+                        raise HookEventError("pre_push_split_checks_unsupported")
+                    outcome = hook_checks.prepare_push(
+                        args.root,
+                        binding,
+                        new_ref_baseline=args.new_ref_baseline,
+                        effective_profiles=args.effective_profile,
+                        require_plan=args.require_plan,
+                        dagger_module=args.dagger_module,
+                    )
+                else:
+                    if args.command == "run" and args.job is not None:
+                        raise HookEventError("pre_push_index_job_unsupported")
+                    handlers = {
+                        "run": hook_checks.run_push_checks,
+                        "reconcile": hook_checks.reconcile_push,
+                        "consume": hook_checks.consume_push_result,
+                    }
+                    outcome = handlers[args.command](args.root, binding)
+            else:
+                if args.command == "prepare" and (
+                    args.effective_profile or args.new_ref_baseline or args.require_plan
+                ):
+                    raise HookEventError("pre_commit_push_options_unsupported")
+                handlers = {
+                    "prepare": hook_checks.prepare,
+                    "run": hook_checks.run_checks,
+                    "reconcile": hook_checks.reconcile,
+                    "consume": hook_checks.consume_index_result,
+                }
+                options = {}
+                if args.command == "prepare":
+                    options = {
+                        "dagger_module": args.dagger_module,
+                        "split_checks": args.split_checks,
+                    }
+                elif args.command == "run" and args.job is not None:
+                    options = {"job_ref": args.job}
+                outcome = handlers[args.command](args.root, binding, **options)
+            if args.json:
+                print(json.dumps(outcome, sort_keys=True))
+            elif args.command not in ("prepare", "consume") or outcome["exit_code"]:
+                hook_checks.print_result(outcome, binding.invocation_ref)
+            return outcome["exit_code"]
+        if args.command == "check":
+            report = check_pre_commit(args.root, invocation_ref=args.invocation_ref)
+            if args.json:
+                print(json.dumps(report, sort_keys=True))
+            else:
+                print(report["invocation_ref"])
+                sys.stdout.write(report["check"]["stdout"])
+                sys.stderr.write(report["check"]["stderr"])
+                if report["reason"] is not None:
+                    print(report["reason"], file=sys.stderr)
+            return report["exit_code"]
         if args.hook == "pre-push":
-            remote_name = _read_remote_file(args.remote_name_file, field="remote_name")
-            remote_location = _read_remote_file(
-                args.remote_location_file, field="remote_location"
-            )
-            stdin_text = (
-                Path(args.stdin_file).read_text(encoding="utf-8")
-                if args.stdin_file
-                else sys.stdin.read()
-            )
+            if args.framed_stdin:
+                if (
+                    args.remote_name_file
+                    or args.remote_location_file
+                    or args.stdin_file
+                ):
+                    raise HookEventError("pre_push_argument_sources_conflict")
+                remote_name, remote_location, stdin_text = _read_pre_push_frame(
+                    sys.stdin.buffer
+                )
+            else:
+                remote_name = _read_remote_file(
+                    args.remote_name_file, field="remote_name"
+                )
+                remote_location = _read_remote_file(
+                    args.remote_location_file, field="remote_location"
+                )
+                stdin_text = (
+                    Path(args.stdin_file).read_text(encoding="utf-8")
+                    if args.stdin_file
+                    else sys.stdin.read()
+                )
             event = capture_pre_push(
                 Path(args.root), remote_name, remote_location, stdin_text
             )
         else:
             event = capture_pre_commit(Path(args.root))
         reference = persist_event(Path(args.root), event)
-    except HookEventError as error:
-        print(error.code, file=sys.stderr)
+    except (OSError, ValueError) as error:
+        print(str(error), file=sys.stderr)
         return 2
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "event": event,
-                    "path": str(reference.event_path),
-                    "invocation_ref": reference.invocation_ref,
-                    "event_payload_ref": reference.event_payload_ref,
-                    "invocation_path": str(reference.invocation_path),
-                },
-                sort_keys=True,
-            )
-        )
+        print(json.dumps(_capture_details(event, reference), sort_keys=True))
     else:
         # The default handoff identifies this invocation, not merely its
         # reusable payload content. The Event path is available in --json.

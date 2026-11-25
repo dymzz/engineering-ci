@@ -32,6 +32,81 @@ gh pr view --json number,url,headRefOid
 若当前分支尚无 PR，再执行 `gh pr create --draft --fill`；已有 PR 不重复创建。
 提交信息与已合并 PR 供 GitHub 自动 Release Notes 使用，无需另造发布说明来源。
 
+### Lefthook 本地入口
+
+在 checkout 里从开发依赖锁文件安装和调用 Lefthook 2.2.2。
+
+```sh
+uv sync --locked
+uv run --locked --no-sync lefthook validate
+uv run --locked --no-sync lefthook install
+```
+
+已有 `core.hooksPath` 时，默认安装会返回 Lefthook 的冲突诊断，已有 Hook
+文件保持原字节。普通仓和它的 linked worktree 共享安装的 Git Hook，各次
+调用各自保留 Invocation。
+
+`git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
+再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
+本仓当前仅为 `pre-push` 绑定了根级策略与 [Profile](../config/hook-profiles)，根目录尚无
+`ci-effective-profile.json` 或 `ci-effective-profile.toml`，因此本仓 `pre-commit` 默认仍使用
+本地 Git 规则运行原生暂存空白检查（不产出 `Plan` 与多 Job 拆分）。当受检树声明了
+`ci-selection.toml` 和已绑定的 `ci-effective-profile.json` 或
+`ci-effective-profile.toml` 时，准备 Job 从隔离检出读取暂存策略。该检出
+采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`
+和干净的 Git 默认值。
+
+配置版 `pre-commit` 先准备同一份 Plan。Lefthook 按适用性唤醒独立的 Host
+Check Job 并安全并行。共享 Workflow 分析的检查在同一 Job 内复用原生结果，
+含共享前置条件的 Plan 和 Dagger Plan 仍整体执行。最后的对账 Job 核对同一次
+Invocation 的全部适用结果。失败、缺失、过滤及异源结果都会阻断最终消费。
+正式接纳由 #63/#61 决定。
+
+需要 Dagger 时，在 Lefthook 准备 Job 显式传入 `--dagger-module`。ECI 开发检出
+使用 `--dagger-module .`，由本次暂存或目标 Ref 的 ECI 模块源码提供函数。
+当 Python 包从同一 ECI 仓库的另一检出导入时，Git 的共同目录和 worktree 注册
+确认调用方属于该仓库。模块源码仍来自本次受检树。
+消费者把该参数设为 `github.com/dymzz/engineering-ci@<40 位提交 SHA>`，固定到
+提供兼容 `plan-execution` 接口的 ECI 修订。消费者自己的 Dagger 配置可以保留，
+它的受检树作为独立的 `--source` 输入。缺少模块引用或使用非固定修订的调用会
+在准备阶段阻断。Hook 保留一次 Dagger 执行的原生结果包，核对包中的 Plan、
+目录字节、原始退出和本次 Invocation。
+
+复验固定修订的跨仓调用时，将 `ECI_TEST_DAGGER_MODULE` 设为已发布的 ECI 模块引用，
+然后运行 `uv run --locked --no-sync pytest -q tests/test_native_hooks.py::test_installed_lefthook_uses_pinned_dagger_module`。
+测试使用已有的 Dagger CLI、Engine 和 Tach，在隔离 Git 仓库中运行 Lefthook，核对能通过的首次提交和因暂存空白失败被拒绝的提交（未设置 `ECI_TEST_DAGGER_MODULE` 时在默认 PR CI 中跳过；消费者仓库的长期接入配置由 [新仓库接入](new-repository.md) 在后续阶段承接）。
+
+需要 Git 比较的 Dagger Plan 会携带受检 Tree 与基线所需的 Git 对象和 Index，
+由隔离检出生成 Git 配置。该输入不包含调用方的 Git 配置、其他引用或完整历史。
+Git 须支持 `--attr-source` 和 `show-ref --exists`。
+要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
+`uv run --locked --no-sync python -P -m engineering_ci.cli hooks check pre-commit --json`。
+
+本仓的 `lefthook install` 安装 `pre-commit` 和 `pre-push`。同次推送的每个 Ref
+在自己的目标树内读取 `ci-selection.toml`、`ci-hygiene.toml` 和对应动作的
+[Profile](../config/hook-profiles)。`refs/*` 下指向提交的新建、更新和强制更新
+执行原生 Git 空白检查。新建以本机记录的 `refs/remotes/origin/main` 为比较基线，
+更新和强推使用 Git 交付的旧对象。删除读取待删 Ref 的本地旧树，保留 `ref_deletion`
+及逐 Ref 回执。`select_tests = false` 仅用于本地推送的测试选择，完整工程检查走 `verify`。
+
+启用前将本仓策略带入要推送的分支。首次推送新 Ref 前，若本机还没有主线跟踪引用，
+先获取 `origin/main`。缺少已声明基线、目标树策略、删除旧对象或最终回执时，Git 拒绝推送。
+修改 Profile 时，在 `ci-selection.toml` 的 `[push].effective_profiles` 登记目标树内
+的文件，并同步更新对应 `[[effective_profile]]` 的修订和审批摘要。
+
+顶层 `lefthook:` 调用参数交接脚本，Git Hook 仍由 Lefthook 原生安装。更新这项配置后，
+运行 `uv run --locked --no-sync lefthook install` 同步已安装的 Hook。复用配置时带上同版脚本。
+[lefthook.yml](../lefthook.yml) · [参数交接脚本](../scripts/lefthook-arguments.sh)
+
+`pre-push` 的采集 Job `capture-refs` 通过 `files` 与 `{files}`
+用 Hook 配置路径唤醒，规避 Lefthook 默认 `push` 文件比较可能为空的问题，并从 stdin
+读取 `ECI-PRE-PUSH` 参数帧和全部 Git Ref；子任务成功后消费同一次 Invocation 的逐 Ref
+Receipt，缺失最终对账时阻断。
+
+`uv run --locked --no-sync lefthook run verify --no-auto-install` 运行 Dagger 的
+lint、格式、版本与锁文件检查和核心测试。各项保留原生结果，Lefthook 汇总退出。
+用 `uv run --locked --no-sync lefthook uninstall` 卸载本地 Hook。
+
 ### 审查与合并
 
 在当前分支执行以下命令，取得当前 PR 的身份和真实检查：
@@ -42,7 +117,7 @@ $pr.url
 gh pr checks $pr.number --watch
 ```
 
-核对当前 head 的三个实际检查 `python-ci / checks`、`sync-tool-tests`、`version-metadata`，
+核对当前 head 的四个实际检查 `python-ci / checks`、`sync-tool-tests`、`version-metadata`、`dagger-native-telemetry / a1-gate`，
 完成代码审查后再 Ready 和合并。合并权限遵循 [AGENTS.md](../AGENTS.md)。
 如果检查尚未完成或失败，在此停止；修复并提交到同一分支，再查同一 PR。
 

@@ -164,6 +164,7 @@ async def _tests(
     context=None,
     plan=None,
     generated_inputs=(),
+    binding_root=None,
 ):
     """Use the existing pytest computation, or native unittest, exactly once."""
     if framework == "pytest":
@@ -178,7 +179,7 @@ async def _tests(
         files = module._pytest_bundle(execution)
     else:
         container = module._uv_container(source, python_version).with_exec(
-            ["uv", "run", "python", "-m", "unittest", *targets],
+            ["uv", "run", "--no-sync", "python", "-m", "unittest", *targets],
             expect=dagger.ReturnType.ANY,
         )
         code = await container.exit_code()
@@ -198,6 +199,20 @@ async def _tests(
         payload["junit"] = xml
     from . import native_results
 
+    binding = None
+    if binding_root is not None and not generated_inputs:
+        from engineering_ci import execution
+
+        bound_plan = _plan_with_repo_relative_configs(plan)
+        snapshots = execution._prepare_source_snapshots(
+            bound_plan, [], root=binding_root, execution_context="dagger_export"
+        )
+        binding = execution.test_input_binding(
+            bound_plan,
+            root=binding_root,
+            execution_context="dagger_export",
+            source_snapshots=snapshots,
+        )
     payload["tests"] = await native_results.test_result(
         payload["tests"],
         container,
@@ -208,6 +223,7 @@ async def _tests(
         context=context,
         plan=plan,
         generated_inputs=generated_inputs,
+        binding=binding,
     )
     files = files.with_new_file(
         "check-result.json", json.dumps(payload["tests"], sort_keys=True)
@@ -324,6 +340,9 @@ async def _native_results(
                     python_version,
                     context=report.get("execution_identity"),
                     plan=value,
+                    binding_root=directory
+                    if report.get("tree_verified") is True
+                    else None,
                 ),
             )
         )
@@ -476,7 +495,15 @@ def _make_hygiene_runner(
     """Delegate missing Lychee / read-only Git / pinned workflow calls to Dagger containers."""
     from engineering_ci import hygiene
 
-    _readonly_git = {"ls-files", "diff", "show", "cat-file", "rev-parse", "ls-tree"}
+    _readonly_git = {
+        "ls-files",
+        "diff",
+        "show",
+        "cat-file",
+        "rev-parse",
+        "ls-tree",
+        "check-attr",
+    }
     _workflow_tools = {"actionlint", "shellcheck", "zizmor"}
 
     def _is_pinned_workflow_uvx(argv_list):
@@ -509,15 +536,23 @@ def _make_hygiene_runner(
             if isinstance(outcome.get("observation"), dict):
                 completed.observation = outcome["observation"]
             return completed
+        git_args = argv_list[1:]
+        reads_git = bool(git_args) and (
+            git_args[0] in _readonly_git
+            or (
+                git_args[1:3] == ["diff", "--check"]
+                and git_args[0].startswith("--attr-source=")
+                and hygiene._GIT_OID.fullmatch(git_args[0].split("=", 1)[1])
+            )
+        )
         if (
             tool_name == "git"
-            and len(argv_list) > 1
-            and argv_list[1] in _readonly_git
+            and reads_git
             and shutil.which(tool) is None
             and hasattr(module, "_run_git")
         ):
             outcome = asyncio.run_coroutine_threadsafe(
-                module._run_git(consumer_source, argv_list[1:]), loop
+                module._run_git(consumer_source, git_args), loop
             ).result()
             completed = subprocess.CompletedProcess(
                 argv_list,
@@ -554,6 +589,17 @@ def _make_hygiene_runner(
         return hygiene._run(argv, cwd, data)
 
     return _runner
+
+
+def _make_index_whitespace_runner(module, source, loop):
+    run = getattr(module, "_run_index_whitespace", None)
+    if run is None:
+        return None
+
+    def compare(git, paths):
+        return asyncio.run_coroutine_threadsafe(run(source, git, paths), loop).result()
+
+    return compare
 
 
 def _tag_command_prerequisites(entries):
@@ -624,7 +670,7 @@ def _host_adapter_plan(value, selected_host_checks, *, preserve_verified_git=Fal
     host_plan["selection"].pop("check_scope", None)
     host_plan.pop("expected_checks", None)
     host_plan["git"] = dict(host_plan.get("git") or {})
-    if not preserve_verified_git:
+    if not preserve_verified_git and host_plan["git"].get("snapshot") != "index":
         # This is only the Host adapter's filesystem view. Preserve the
         # original Git identity in source_handoff, and do not claim an
         # exported Directory has the original ODB or verified full Tree.
@@ -1015,24 +1061,56 @@ async def _execute_dag(
                     and name in execution._WORKFLOW_SCRIPT_CHECKS
                 )
                 try:
-                    entry = await asyncio.to_thread(
-                        execution.run_host_check,
-                        verified_workflow_plan if use_verified_wf else host_plan,
-                        check_item,
-                        root=consumer_root,
-                        runner=runner,
-                        execution_context="dagger_export",
-                        run_instance=run_instance,
-                        artifact_paths=artifact_paths,
-                        generated_input_refs=generated_refs,
-                        shared_cache=None if fs_files else script_shared_cache,
-                        profile_ref=verified_profile,
-                        workflow_source_authority=(
-                            verified_workflow_authority if use_verified_wf else None
-                        ),
-                        _consumer_source_root=Path(directory) if fs_files else None,
-                        _consumer_generated_retained=bool(fs_files),
-                    )
+                    if raw_snapshot == "index":
+                        bound_ok, bind_reason, _ = (
+                            execution._verify_git_execution_binding(
+                                host_plan,
+                                Path(directory),
+                                execution_context="dagger_export",
+                            )
+                        )
+                    else:
+                        bound_ok, bind_reason = True, None
+                    if not bound_ok:
+                        entry = execution._decorate_checks(
+                            host_plan,
+                            [
+                                execution._blocked_consumer_entry(
+                                    name,
+                                    check_item.get("status"),
+                                    bind_reason,
+                                    [],
+                                )
+                            ],
+                            execution_context="dagger_export",
+                            run_instance=run_instance,
+                            root=consumer_root,
+                            profile_ref=verified_profile,
+                            artifact_paths=artifact_paths,
+                            base_root=Path(directory) if fs_files else None,
+                        )[0]
+                    else:
+                        entry = await asyncio.to_thread(
+                            execution.run_host_check,
+                            verified_workflow_plan if use_verified_wf else host_plan,
+                            check_item,
+                            root=consumer_root,
+                            runner=runner,
+                            whitespace_runner=_make_index_whitespace_runner(
+                                module, consumer_source, loop
+                            ),
+                            execution_context="dagger_export",
+                            run_instance=run_instance,
+                            artifact_paths=artifact_paths,
+                            generated_input_refs=generated_refs,
+                            shared_cache=None if fs_files else script_shared_cache,
+                            profile_ref=verified_profile,
+                            workflow_source_authority=(
+                                verified_workflow_authority if use_verified_wf else None
+                            ),
+                            _consumer_source_root=Path(directory) if fs_files else None,
+                            _consumer_generated_retained=bool(fs_files),
+                        )
                 finally:
                     if temporary is not None:
                         temporary.cleanup()
@@ -1083,6 +1161,9 @@ async def _execute_dag(
                     context=report.get("execution_identity"),
                     plan=value,
                     generated_inputs=generated_refs,
+                    binding_root=directory
+                    if report.get("tree_verified") is True
+                    else None,
                 )
                 return payload, test_files
             if kind == "report_artifacts":
@@ -1397,6 +1478,21 @@ async def execute(
     git = value.get("git") or {}
     source_tree_id = git.get("source_tree_id")
     execution_tree = git.get("execution_tree")
+    index_tree = git.get("index_tree")
+    index_identity_conflict = (
+        index_tree is not None and index_tree != execution_tree
+    ) or (bool(source_tree_id) and (not execution_tree or index_tree != execution_tree))
+    if git.get("snapshot") == "index" and index_identity_conflict:
+        return make_result(
+            {
+                "plan_declaration_consistent": declaration_consistent,
+                "status": "not_executed",
+                "reason": "dagger_export_index_source_unverified",
+                "exit_code": 4,
+                "plan": {"generator": value.get("generator"), "git": git},
+            },
+            artifacts,
+        )
     tree_verified = False
     source_tree_state = "not_requested"
     source_digest = None
@@ -1408,7 +1504,7 @@ async def execute(
         exported_directory = await native_results.directory_reference(source)
         exported_content_id = selection.directory_content_id(directory)
         if source_tree_id and execution_tree:
-            source_digest = selection.directory_content_id(directory)
+            source_digest = exported_content_id
             tree_verified = source_digest == source_tree_id
             source_tree_state = "verified" if tree_verified else "failed"
             if not tree_verified:
@@ -1525,6 +1621,9 @@ async def execute(
                     root=directory,
                     execution_context="dagger_export",
                     runner=_make_hygiene_runner(module, source, loop),
+                    whitespace_runner=_make_index_whitespace_runner(
+                        module, source, loop
+                    ),
                     profile_ref=verified_profile,
                     run_instance=identity["execution_ref"],
                 )

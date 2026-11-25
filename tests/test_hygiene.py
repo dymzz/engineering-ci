@@ -89,6 +89,18 @@ def test_whitespace_failure_is_reported_from_git(repo):
     assert by_name(result)["whitespace"]["reason"] == "whitespace_errors"
 
 
+def test_whitespace_git_failure_preserves_native_diagnostic(repo):
+    path, _ = repo
+    tree = run(path, "write-tree").strip()
+
+    result = hygiene.check_git_whitespace(path, base="missing-base-tree", tree=tree)
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "git_diff_failed"
+    assert result["exit_code"] == 128
+    assert "missing-base-tree" in result["stderr"]
+
+
 def test_clean_whitespace_passes(repo):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")

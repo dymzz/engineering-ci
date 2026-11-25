@@ -23,7 +23,6 @@ def main(argv=None):
             "sources",
             "execute",
             "hooks",
-            "hook-coordinator",
             "cicd-telemetry",
             "dagger-telemetry",
         ),
@@ -49,8 +48,6 @@ def main(argv=None):
         from engineering_ci.execution import main as invoke
     elif namespace.command == "hooks":
         from engineering_ci.hooks import main as invoke
-    elif namespace.command == "hook-coordinator":
-        from engineering_ci.hook_coordinator import main as invoke
     elif namespace.command == "cicd-telemetry":
         from engineering_ci.cicd_telemetry import main as invoke
     elif namespace.command == "dagger-telemetry":
