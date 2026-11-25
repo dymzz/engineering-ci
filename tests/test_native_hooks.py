@@ -612,3 +612,110 @@ def test_installed_lefthook_uses_pinned_dagger_module(tmp_path, hook_env):
     )
     assert git(root, "rev-parse", "HEAD", env=hook_env) == head
     assert source.read_bytes() == b"ANSWER = 43\n"
+
+
+def test_pre_push_and_pre_commit_reconcile_deleted_paths(tmp_path, hook_env):
+    root = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init(root, hook_env)
+    checks = ("whitespace",)
+    keep = _source(root, "keep", checks)
+    keep.write_bytes(b"VALUE = 1\n")
+    (root / "tach.toml").write_bytes(
+        b'source_roots = ["src"]\n'
+        + b"".join(
+            f'[[modules]]\npath = "{name}"\ndepends_on = []\n'.encode()
+            for name in (
+                "keep",
+                "obsoleted",
+                "pure_deleted",
+                "upstream_deleted",
+                "deleted_upstream_mod",
+            )
+        )
+    )
+    mixed_deleted = root / "src/obsoleted.py"
+    mixed_deleted.write_bytes(b"LEGACY = 1\n")
+    pure_deleted = root / "src/pure_deleted.py"
+    pure_deleted.write_bytes(b"GONE = 1\n")
+    upstream_only = root / "src/upstream_deleted.py"
+    upstream_only.write_bytes(b"UPSTREAM = 1\n")
+    _approve_profiles(
+        root,
+        INDEX_SELECTION + "\n[push]\n"
+        "select_tests = false\n"
+        'effective_profiles = ["push-update.json", "push-force.json"]\n',
+        [
+            ("ci-effective-profile.json", "index", "index", "HEAD", checks),
+            ("push-update.json", "push", "update", "refs/heads/*", checks),
+            ("push-force.json", "push", "force_update", "refs/heads/*", checks),
+        ],
+    )
+    git(root, "add", "--all", env=hook_env)
+    git(root, "commit", "-qm", "baseline", env=hook_env)
+    baseline = git(root, "rev-parse", "HEAD", env=hook_env)
+    git(root, "init", "--bare", "-q", "--template=", str(remote), env=hook_env)
+    git(root, "remote", "add", "origin", str(remote), env=hook_env)
+
+    # Seed remote `feature` with an upstream-only file so force-pushing a
+    # rebased history that never had it exercises deletions across force_update.
+    git(root, "switch", "-qc", "feature", baseline, env=hook_env)
+    remote_extra = root / "src/deleted_upstream_mod.py"
+    remote_extra.write_bytes(b"EXTRA = 1\n")
+    git(root, "add", "src/deleted_upstream_mod.py", env=hook_env)
+    git(root, "commit", "-qm", "remote extra file", env=hook_env)
+    git(root, "push", "-q", "origin", "main", "feature", env=hook_env)
+    git(root, "switch", "-q", "main", env=hook_env)
+
+    _run(root, hook_env, *LEFTHOOK, "install")
+    directory = _invocations(root, hook_env)
+
+    def push(*refspecs):
+        previous = set(directory.glob("*.json"))
+        result = _run(root, hook_env, "git", "push", "origin", *refspecs)
+        return _new_invocation(directory, result, previous)
+
+    # 1. Mixed commit & push (file deleted + existing file modified).
+    git(root, "rm", "-q", "src/obsoleted.py", env=hook_env)
+    keep.write_bytes(b"VALUE = 2\n")
+    git(root, "add", "src/keep.py", env=hook_env)
+    previous = set(directory.glob("*.json"))
+    commit_mixed = _run(root, hook_env, "git", "commit", "-m", "delete and modify")
+    index_binding = _new_invocation(directory, commit_mixed, previous)
+    assert _artifact(index_binding, ".receipt")["status"] == "matched"
+    push_mixed = push("main:main")
+    mixed_receipt = _artifact(push_mixed, ".receipt")["receipts"][0]
+    assert mixed_receipt["status"] == "matched"
+    mixed_oid = git(root, "rev-parse", "HEAD", env=hook_env)
+    assert git(remote, "rev-parse", "refs/heads/main", env=hook_env) == mixed_oid
+
+    # 2. Pure-deletion commit & push (no modified/added live files).
+    git(root, "rm", "-q", "src/pure_deleted.py", env=hook_env)
+    previous = set(directory.glob("*.json"))
+    commit_pure = _run(root, hook_env, "git", "commit", "-m", "pure deletion")
+    pure_index = _new_invocation(directory, commit_pure, previous)
+    assert _artifact(pure_index, ".receipt")["status"] == "matched"
+    push_pure = push("main:main")
+    pure_receipt = _artifact(push_pure, ".receipt")["receipts"][0]
+    assert pure_receipt["status"] == "matched"
+    pure_oid = git(root, "rev-parse", "HEAD", env=hook_env)
+    assert git(remote, "rev-parse", "refs/heads/main", env=hook_env) == pure_oid
+
+    # 3. Force-push replacing upstream branch that contains extra deleted files.
+    git(root, "rm", "-q", "src/upstream_deleted.py", env=hook_env)
+    keep.write_bytes(b"VALUE = 3\n")
+    git(root, "add", "src/keep.py", env=hook_env)
+    _run(root, hook_env, "git", "commit", "-m", "force update target")
+    rebased_oid = git(root, "rev-parse", "HEAD", env=hook_env)
+    push_force = push("+main:feature")
+    force_plan = _artifact(push_force, ".plan")["plan"][0]
+    assert force_plan["git"]["ref_action"] == "force_update"
+    assert set(force_plan["git"]["deleted_paths"]) == {
+        "src/deleted_upstream_mod.py",
+        "src/obsoleted.py",
+        "src/pure_deleted.py",
+        "src/upstream_deleted.py",
+    }
+    force_receipt = _artifact(push_force, ".receipt")["receipts"][0]
+    assert force_receipt["status"] == "matched"
+    assert git(remote, "rev-parse", "refs/heads/feature", env=hook_env) == rebased_oid

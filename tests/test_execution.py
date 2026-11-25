@@ -5352,3 +5352,124 @@ def test_push_delete_reconciles_with_local_before_and_blocks_missing_old_object(
         hooks.HookEventError, match="hook_push_delete_policy_unavailable"
     ):
         hook_checks.prepare_push(root, missing_binding, require_plan=True)
+
+
+def test_source_resolution_deleted_paths_and_forged_deletion_refusal(repo):
+    from engineering_ci import expected_checks, hook_checks, hooks
+
+    path, base = repo
+    run(path, "rm", "-q", "src/pkg/other.py")
+    (path / "src/pkg/mod.py").write_text("VALUE = 11\n", encoding="utf-8")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "delete other and modify mod")
+
+    cfg = selection.load_config(path / "ci-selection.toml")
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8"
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "scope hygiene to whitespace")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    changes = selection.changeset(path, base=base, mode="commit")
+    assert changes.deleted_paths == ("src/pkg/other.py",)
+
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    entry = next(c for c in p["expected_checks"]["checks"] if c["name"] == "whitespace")
+    resolved = execution.build_source_resolution(p, "whitespace", root=path)
+    assert resolved["verified_deleted_scope"] == ["src/pkg/other.py"]
+    strict, status, reason = reconciliation.derive_strict_expected(entry, resolved)
+    assert (status, reason) == ("matched", None)
+    assert "src/pkg/other.py" not in strict["source_ref"]["verified_input_scope"]
+
+    # Forged `deleted_paths` claiming an existing file was deleted must NOT
+    # populate `verified_deleted_scope` or bypass `expected_input_scope_uncovered`.
+    forged_plan = json.loads(json.dumps(p))
+    forged_plan["git"]["deleted_paths"] = ["src/pkg/other.py", "src/pkg/mod.py"]
+    forged_res = execution.build_source_resolution(forged_plan, "whitespace", root=path)
+    assert forged_res["verified_deleted_scope"] == ["src/pkg/other.py"]
+    dropped_res = json.loads(json.dumps(forged_res))
+    dropped_res["source_ref"]["verified_input_scope"] = [
+        item
+        for item in dropped_res["source_ref"]["verified_input_scope"]
+        if item != "src/pkg/mod.py"
+    ]
+    _, forged_status, forged_reason = reconciliation.derive_strict_expected(
+        entry, dropped_res
+    )
+    assert (forged_status, forged_reason) == (
+        "insufficient",
+        "expected_input_scope_uncovered",
+    )
+
+    # Worktree mode with a real deleted path reconciles via changed_paths digest,
+    # whereas forging `deleted_paths` for a file still present on disk fails closed.
+    (path / "src/pkg/sub.py").unlink()
+    wt_head = run(path, "rev-parse", "HEAD").strip()
+    wt_plan = _hygiene_worktree_plan(path, wt_head)
+    wt_entry = next(
+        c for c in wt_plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+    )
+    wt_res = execution.build_source_resolution(wt_plan, "whitespace", root=path)
+    assert wt_res["verified_deleted_scope"] == ["src/pkg/sub.py"]
+    _, wt_status, wt_reason = reconciliation.derive_strict_expected(wt_entry, wt_res)
+    assert (wt_status, wt_reason) == ("matched", None)
+
+    # Tampering push plan deleted_paths away from verified push ref diff is refused.
+    from test_reconciliation import _attach_effective_profile_policy
+
+    push_profile = expected_checks.build_effective_profile(
+        profile_ref=check_contract.profile_ref("eci/test-push", "1.0.0"),
+        profile_revision="1",
+        approval_source="governance-signed",
+        effective_at="2026-11-22T00:00:00Z",
+        evaluated_at="2026-11-22T00:00:00Z",
+        context="push",
+        action="update",
+        target="refs/heads/main",
+        declared_checks=["whitespace"],
+        required_obligations=[],
+        domain_complete=True,
+        authority_verified=True,
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nchecks = ["hygiene"]\nstrict_modules = false\n'
+        '[push]\nselect_tests = false\neffective_profiles = ["push-update.json"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    _attach_effective_profile_policy(path / "ci-selection.toml", push_profile)
+    (path / "push-update.json").write_text(json.dumps(push_profile), encoding="utf-8")
+    run(path, "add", "ci-selection.toml", "push-update.json")
+    run(path, "commit", "-qm", "commit push profile")
+    push_head = run(path, "rev-parse", "HEAD").strip()
+    event = hooks.capture_pre_push(
+        path,
+        "origin",
+        "remote",
+        f"refs/heads/main {push_head} refs/heads/main {base}\n",
+    )
+    inv = hooks.persist_event(path, event)
+    binding = hooks.load_invocation_binding(inv.invocation_path)
+    hook_checks.prepare_push(path, binding, effective_profiles=("push-update.json",))
+    plan_artifact = binding.invocation_path.with_suffix(".plan")
+    tampered = json.loads(plan_artifact.read_text(encoding="utf-8"))
+    tampered["plan"][0]["git"]["deleted_paths"] = []
+    tampered["plan_ref"] = hooks._digest_bytes(
+        hooks.canonical_event_bytes(tampered["plan"])
+    )
+    plan_artifact.write_bytes(hooks.canonical_event_bytes(tampered))
+    with pytest.raises(hooks.HookEventError, match="hook_push_plan_source_mismatch"):
+        hook_checks.reconcile_push(path, binding)

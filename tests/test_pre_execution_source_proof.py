@@ -1296,3 +1296,40 @@ def test_pre_execution_overlay_subset_digest_uses_effective_view(tmp_path):
         "check_input_closure",
         "full_input_closure",
     }
+
+
+def test_pre_execution_source_proof_and_admission_with_deleted_worktree_path(tmp_path):
+    from engineering_ci import admission
+
+    root, _ = _init_repo(tmp_path)
+    (root / "src" / "pkg" / "gone.py").write_text("GONE = 1\n", encoding="utf-8")
+    _git(root, "add", "src/pkg/gone.py")
+    _git(root, "commit", "-qm", "add file to delete later")
+    base = _git(root, "rev-parse", "HEAD").strip()
+
+    (root / "src" / "pkg" / "gone.py").unlink()
+    (root / "src" / "pkg" / "mod.py").write_text("VALUE = 99\n", encoding="utf-8")
+    plan = _worktree_plan(root, base)
+    ws_expected = next(
+        c for c in plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+    )
+    expected_digest = ws_expected["source_ref"]["content_digest"]
+
+    proof = execution.build_pre_execution_source_proof(plan, "whitespace", root=root)
+    assert proof["status"] == "verified_candidate_inputs"
+    assert proof["verified_deleted_scope"] == ["src/pkg/gone.py"]
+    assert proof["changed_paths_content_digest"] == expected_digest
+    assert admission._recompute_closure_digest(proof) == proof["closure_digest"]
+
+    strict, reason = admission._derive_strict_expected_from_pre_proof(
+        ws_expected, proof
+    )
+    assert reason is None
+    assert strict is not None
+
+    # Forging/mutating verified_deleted_scope breaks closure digest authentication.
+    tampered = {
+        **proof,
+        "verified_deleted_scope": ["src/pkg/gone.py", "src/pkg/mod.py"],
+    }
+    assert admission._recompute_closure_digest(tampered) != proof["closure_digest"]
