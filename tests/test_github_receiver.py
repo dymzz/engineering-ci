@@ -558,9 +558,25 @@ def test_partial_rerun_separates_result_and_executed_inventories_44713410255_pat
     assert exp["executed_jobs"] == ["136212522105"]
     assert exp["reused_jobs"] == ["136212523496", "136212524904", "136212602878"]
     assert exp["unknown_execution_jobs"] == []
+    assert exp["expected_matchers"] == [gr.PIPELINE_MATCHER_ID, gr.TASK_MATCHER_ID]
     assert [s["span_id"] for s in exp["spans"]] == [
         gr.root_span_id(run_id, attempt),
         gr.job_span_id(136212522105),
+    ]
+
+    reused_only_exp = gr.build_weaver_expectations(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=[reused_sync, reused_checks],
+        run_started_at=run_started_at,
+    )
+    assert reused_only_exp["executed_jobs"] == []
+    assert reused_only_exp["result_completed_jobs"] == ["136212523496", "136212524904"]
+    assert reused_only_exp["expected_matchers"] == [gr.PIPELINE_MATCHER_ID]
+    assert [s["span_id"] for s in reused_only_exp["spans"]] == [
+        gr.root_span_id(run_id, attempt)
     ]
 
     verdict = gr.reconcile_github_receiver_trace(
@@ -1151,7 +1167,7 @@ def test_live_collector_to_otlp_to_weaver_v1_45_0_e2e():
             kind="terminal",
             capture=cap_501,
             expected=exp_501,
-            expected_matchers=gr.expected_matchers_for_jobs(jobs_501),
+            expected_matchers=exp_501["expected_matchers"],
         )
         assert weaver_501["status"] == "passed", weaver_501
         assert weaver_501["official_registry_verified"] is True
@@ -1191,7 +1207,7 @@ def test_live_collector_to_otlp_to_weaver_v1_45_0_e2e():
             kind="terminal",
             capture=cap_502,
             expected=exp_502,
-            expected_matchers=gr.expected_matchers_for_jobs([]),
+            expected_matchers=exp_502["expected_matchers"],
         )
         assert weaver_502["status"] == "passed", weaver_502
         assert weaver_502["terminal_correlation_status"] == "passed"

@@ -634,6 +634,7 @@ def build_weaver_expectations(
         "unknown_execution_jobs": partition["unknown_execution_job_ids"],
         "execution_attribution_status": partition["execution_attribution_status"],
         "provenance_gaps": gaps,
+        "expected_matchers": expected_matchers_for_jobs(partition["executed_jobs"]),
         "spans": spans,
         "terminal_evidence": {
             "run_id": composite_run_id,
