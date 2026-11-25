@@ -2745,6 +2745,7 @@ output_ref = {{ kind = "directory", path = "{gen_dir}", sha256 = "{gen_dir_sha}"
     assert trunc_entry["native_status"] == "passed"
 
 
+<<<<<<< HEAD
 def test_dagger_index_separates_identity_only_from_source_bound_host_checks(
     modules, tmp_path
 ):
@@ -2964,3 +2965,86 @@ def test_dagger_index_identity_conflicts_still_refuse_early(modules, tmp_path):
     assert rep_wrong["status"] == "not_executed"
     assert rep_wrong["reason"] == "source_tree_mismatch"
     assert rep_wrong["exit_code"] == 4
+
+
+def test_v2_build_data_artifact_reaches_consumer_and_records_filtered_view(modules):
+    _, collector = modules
+    manifest_bytes = b'{"built":true}\n'
+    writer = (
+        "import os; from pathlib import Path; "
+        "target = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']) / 'build' / 'generated' / 'manifest.json'; "
+        "target.parent.mkdir(parents=True, exist_ok=True); "
+        "target.write_bytes(b'{\"built\":true}\\n')"
+    )
+    action = {"type": "command", "argv": [sys.executable, "-c", writer]}
+    edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+        "consumer_ref": {"kind": "tests"},
+        "dependency_kind": "data",
+        "requires_pass": True,
+        "output_ref": {"kind": "file", "path": "build/generated/manifest.json"},
+        "source_binding_ref": "git",
+        "declaration_ref": _v2_decl("gen"),
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": None,
+    }
+    plan = _v2_dagger_plan(
+        edges=[edge],
+        prerequisites=["gen"],
+        actions={"gen": action},
+        checks=["weaver_registry"],
+    )
+
+    class Native(NativeDouble):
+        def __init__(self):
+            super().__init__()
+            self.test_source = None
+
+        def _bound_public_source(self, source):
+            files, dirs = source._materialize()
+            return MemoryDirectory(
+                {k: v for k, v in files.items() if not k.startswith(".git/")},
+                dirs={d for d in dirs if d != ".git" and not d.startswith(".git/")},
+            )
+
+        def _uv_container(self, source, version):
+            self.test_source = source
+            return self
+
+        async def stdout(self):
+            return json.dumps(
+                {
+                    "executable": sys.executable,
+                    "python": "3.14.0",
+                    "platform": "linux",
+                    "tool_version": "3.14.0",
+                }
+            )
+
+    native = Native()
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(
+                {
+                    ".git/HEAD": "ref: refs/heads/main\n",
+                    "ci-selection.toml": "# clean\n",
+                }
+            ),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", report
+    assert native.test_source.files["build/generated/manifest.json"] == manifest_bytes
+    obs = report["tests"]["native_result"]["evidence"]["observation"]
+    assert obs["container_source_filtered"] is True
+    assert (
+        obs["source_directory"]["digest"] != obs["consumed_source_directory"]["digest"]
+    )
+    assert report["tests"]["native_result"]["evidence"]["source_limit"] == (
+        "input_closure_not_proven"
+    )

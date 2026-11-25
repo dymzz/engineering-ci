@@ -111,14 +111,15 @@ source 必须含有效 `pyproject.toml` 与对应 `uv.lock`，消费者负责声
 按自己的源码、范围与策略声明原生 Checks，见[接入示例](../../guides/new-repository.md)。
 
 - 在本仓运行原生 Checks（`dagger check` / `@check`）或 `repository_*` 函数时，参数通过
-  `DefaultPath("/")` 与 `Ignore(...)` 预先裁剪 `.git`、`.venv`、缓存及历史临时目录（当前模块上传约 `4.4 MB`）。
-- 通过 CLI 向独立可复用 `@function` 传入 `--source .`（例如 `actionlint-workflows`、`zizmor-workflows`、
-  `lychee-check`、`tach-check`、`python-*`）时，Dagger `v1.0.0-beta.16` 会在进入函数前由宿主先上传完整 `.` 目录，
-  因此本仓本地调用应使用 Dagger Shell 过滤宿主目录，例如：
+  `DefaultPath("/")` 与 `Ignore(repository.SOURCE_EXCLUDES)` 预先裁剪 `.git`、`.venv`、缓存、本仓临时目录及非 Python 文档/设计目录（当前模块上传约 `4.4 MB`）。
+- 区分四层过滤边界：`.gitignore` 仅约束本地 Git 未跟踪文件；`pyproject.toml` 中的 `[tool.ruff] extend-exclude` 仅作用于本仓 Ruff 检查；`repository.SOURCE_EXCLUDES` 仅用于本仓默认工作区（包含 `design`、`build`、`dist`、`.artifacts`、`.work` 等）；公共可复用 `@function`（以及 Plan overlay 后的 `consumer_source`）仅使用通用最小噪声 `tooling.SOURCE_NOISE`（Git/虚拟环境/工具缓存/敏感文件），绝不删除消费者项目源码、`design/` 目标、`build/` 产物或 `.artifacts/` 绑定输入（证据中同时区分传入 `source` 与容器内过滤后消费目录摘要）。
+- 通过 CLI 对本仓当前目录向独立可复用 `@function` 传入宿主目录时，Dagger `v1.0.0-beta.16` 会在进入函数前先由宿主上传完整目录，本仓默认工作区可按需预先剔除本仓噪声目录，例如：
 
 ```sh
-dagger -c 'src=$(host | directory . --exclude .git --exclude .venv --exclude .dagger/.venv --exclude .dagger/.ruff_cache --exclude .ruff_cache --exclude .pytest_cache); actionlint-workflows --source $src'
+dagger -c 'src=$(host | directory . --exclude .git --exclude .venv --exclude .dagger/.venv --exclude .dagger/.ruff_cache --exclude .ruff_cache --exclude .pytest_cache --exclude .mypy_cache --exclude .pyright --exclude .tach --exclude .lycheecache --exclude .work --exclude .tools --exclude .weaver-74-probe --exclude .test-deps --exclude .test-tools --exclude .artifacts --exclude .log --exclude .tmp --exclude dist --exclude build --exclude htmlcov); actionlint-workflows --source $src'
 ```
+
+*(上述宿主排除列表仅适用于本仓默认工作区，不应套用到携带显式 `build/` / `.artifacts/` / `design/` 声明输入或跨仓 Plan 消费的外部项目 `source`。)*
 
 ### 按执行位置选择 GitHub 认证入口
 

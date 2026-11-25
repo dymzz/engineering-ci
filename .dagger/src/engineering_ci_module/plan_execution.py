@@ -167,9 +167,19 @@ async def _tests(
     binding_root=None,
 ):
     """Use the existing pytest computation, or native unittest, exactly once."""
+    from . import tooling
+
+    consumed_source = (
+        module._bound_public_source(source)
+        if hasattr(module, "_bound_public_source")
+        else None
+    )
     if framework == "pytest":
+        kwargs = (
+            {"_bound_source": consumed_source} if consumed_source is not None else {}
+        )
         execution = await module._run_pytest(
-            source, python_version, targets[0], _targets=targets
+            source, python_version, targets[0], _targets=targets, **kwargs
         )
         code = execution.exit_code
         container = execution.container
@@ -178,7 +188,8 @@ async def _tests(
         xml = execution.xml
         files = module._pytest_bundle(execution)
     else:
-        container = module._uv_container(source, python_version).with_exec(
+        mount_source = consumed_source if consumed_source is not None else source
+        container = module._uv_container(mount_source, python_version).with_exec(
             ["uv", "run", "--no-sync", "python", "-m", "unittest", *targets],
             expect=dagger.ReturnType.ANY,
         )
@@ -213,6 +224,15 @@ async def _tests(
             execution_context="dagger_export",
             source_snapshots=snapshots,
         )
+
+    result_kwargs = (
+        {
+            "consumed_source": consumed_source,
+            "source_excludes": tooling.SOURCE_NOISE,
+        }
+        if consumed_source is not None
+        else {}
+    )
     payload["tests"] = await native_results.test_result(
         payload["tests"],
         container,
@@ -224,6 +244,7 @@ async def _tests(
         plan=plan,
         generated_inputs=generated_inputs,
         binding=binding,
+        **result_kwargs,
     )
     files = files.with_new_file(
         "check-result.json", json.dumps(payload["tests"], sort_keys=True)
