@@ -22,6 +22,7 @@ def main(argv=None):
             "hygiene",
             "sources",
             "execute",
+            "gitleaks",
             "hooks",
             "hook-coordinator",
             "cicd-telemetry",
@@ -47,6 +48,8 @@ def main(argv=None):
         from engineering_ci.sources import main as invoke
     elif namespace.command == "execute":
         from engineering_ci.execution import main as invoke
+    elif namespace.command == "gitleaks":
+        from engineering_ci.gitleaks import main as invoke
     elif namespace.command == "hooks":
         from engineering_ci.hooks import main as invoke
     elif namespace.command == "hook-coordinator":
