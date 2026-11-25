@@ -5473,3 +5473,510 @@ def test_source_resolution_deleted_paths_and_forged_deletion_refusal(repo):
     plan_artifact.write_bytes(hooks.canonical_event_bytes(tampered))
     with pytest.raises(hooks.HookEventError, match="hook_push_plan_source_mismatch"):
         hook_checks.reconcile_push(path, binding)
+
+
+def test_gitfree_export_retains_unverified_members_and_refuses_forged_deletions(
+    tmp_path,
+):
+    from test_hooks import make_directory_link
+
+    def _whitespace_plan(
+        hyg_path, tree_oid, head_oid, source_tree_id, changed, deleted, expected_inputs
+    ):
+        cfg_ref = {"kind": "config", "path": "ci-hygiene.toml", "sha256": "a" * 64}
+        exp_src = check_contract.source_ref(
+            "commit",
+            declared_target_tree=tree_oid,
+            actual_execution_source="git_commit",
+            head_commit=head_oid,
+            verified_scope=expected_inputs,
+            scope_kind="changed_paths",
+            binding_status="identity_only",
+        )
+        entry = {
+            "name": "whitespace",
+            "check_id": "eci.whitespace",
+            "definition_version": "1.0.0",
+            "applicability": {"status": "applicable"},
+            "rule_ref": {"name": "ci-hygiene", "version": "1", "sha256": "b" * 64},
+            "source_ref": exp_src,
+            "input_refs": [cfg_ref],
+            "expected_check_ref": "expected:whitespace:1",
+        }
+        return {
+            "schema_version": 1,
+            "kind": "engineering-ci-selection-plan",
+            "generator": {"name": "engineering-ci", "version": "0.7.0"},
+            "git": {
+                "snapshot": "commit",
+                "base_ref": "main",
+                "head_ref": "HEAD",
+                "base_commit": None,
+                "head_commit": head_oid,
+                "tree": tree_oid,
+                "execution_tree": tree_oid,
+                "source_tree_id": source_tree_id,
+                "changed_paths": list(changed),
+                "deleted_paths": list(deleted),
+            },
+            "selection": {
+                "tests": [],
+                "framework": "unittest",
+                "src_root": "src",
+                "tests_dir": "tests",
+                "checks": ["hygiene"],
+            },
+            "inputs": {
+                "hygiene": {
+                    "path": "ci-hygiene.toml",
+                    "sha256": hashlib.sha256(hyg_path.read_bytes()).hexdigest(),
+                }
+            },
+            "check_scope": [{"name": "whitespace", "inputs": list(changed)}],
+            "expected_checks": {"checks": [entry]},
+        }
+
+    # Part 1: Junction / directory link in Git-free export (runs on Windows + Linux)
+    # and unmaterialized member rejection when source_tree_id disagrees.
+    mat_dir = tmp_path / "mat_junction"
+    (mat_dir / "src").mkdir(parents=True)
+    (mat_dir / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    (mat_dir / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (mat_dir / "src" / "keep.py").write_text("KEEP = 1\n", encoding="utf-8")
+    make_directory_link(mat_dir / "dirlink", mat_dir / "src")
+
+    cid = selection.directory_content_id(mat_dir)
+    changed_paths = ["dirlink", "src/keep.py", "src/gone.py"]
+    forged_plan = _whitespace_plan(
+        mat_dir / "ci-hygiene.toml",
+        "1" * 40,
+        "2" * 40,
+        cid,
+        changed_paths,
+        ["dirlink", "src/gone.py"],
+        changed_paths,
+    )
+    snapshots = execution._prepare_source_snapshots(
+        forged_plan, [], root=mat_dir, execution_context="dagger_export"
+    )
+    assert snapshots["kind"] == "full"
+    assert "dirlink" in snapshots["files"]
+    assert "dirlink" in (snapshots["binding"].get("unverified_paths") or ())
+
+    # Even against a synthetic strong SourceRef and with/without an unrelated overlay,
+    # `_verified_deleted_scope` must never treat the present `dirlink` as deleted.
+    strong_source = check_contract.source_ref(
+        "commit",
+        declared_target_tree="1" * 40,
+        actual_execution_source="dagger_directory",
+        head_commit="2" * 40,
+        content_digest=snapshots["binding"]["digest"],
+        verified_scope=[".gitignore", "ci-hygiene.toml", "src/keep.py"],
+        scope_kind="full_input_closure",
+        binding_status="byte_tree",
+        materialization_ref=f"sha256:{cid}",
+    )
+    exp_src = forged_plan["expected_checks"]["checks"][0]["source_ref"]
+    assert execution._verified_deleted_scope(
+        forged_plan,
+        exp_src,
+        strong_source,
+        snapshots,
+        root=mat_dir,
+        execution_context="dagger_export",
+    ) == ("src/gone.py",)
+    assert execution._verified_deleted_scope(
+        forged_plan,
+        exp_src,
+        strong_source,
+        snapshots,
+        root=mat_dir,
+        execution_context="dagger_export",
+        verified_overlay_paths=["gen/unrelated.txt"],
+    ) == ("src/gone.py",)
+
+    resolved = execution.build_source_resolution(
+        forged_plan, "whitespace", root=mat_dir, execution_context="dagger_export"
+    )
+    assert resolved["source_ref"]["binding_status"] == "identity_only"
+    assert not resolved.get("verified_deleted_scope")
+    strict, status, _reason = reconciliation.derive_strict_expected(
+        forged_plan["expected_checks"]["checks"][0], resolved
+    )
+    assert strict is None
+    assert status != "matched"
+
+    # Unmaterialized regular file in Git-free export must fail snapshot proof.
+    (mat_dir / "src" / "keep.py").unlink()
+    unmat_snapshots = execution._prepare_source_snapshots(
+        forged_plan, [], root=mat_dir, execution_context="dagger_export"
+    )
+    assert unmat_snapshots == {"kind": "unproven"}
+    assert (
+        execution._verified_deleted_scope(
+            forged_plan,
+            exp_src,
+            strong_source,
+            unmat_snapshots,
+            root=mat_dir,
+            execution_context="dagger_export",
+        )
+        == ()
+    )
+
+    # Part 2: Exact dangling symlink + directory symlink counterexample (skipped only
+    # when host OS lacks file symlink privilege).
+    sym_repo = tmp_path / "sym_repo"
+    (sym_repo / "src").mkdir(parents=True)
+    run(sym_repo, "init", "-q", "-b", "main")
+    run(sym_repo, "config", "user.email", "execution@example.invalid")
+    run(sym_repo, "config", "user.name", "Execution Test")
+    run(sym_repo, "config", "core.symlinks", "true")
+    (sym_repo / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    (sym_repo / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8"
+    )
+    (sym_repo / "src" / "keep.py").write_text("KEEP = 1\n", encoding="utf-8")
+    (sym_repo / "src" / "gone.py").write_text("GONE = 1\n", encoding="utf-8")
+    _source_symlink(sym_repo / "dirlink", "src", directory=True)
+    _source_symlink(sym_repo / "src" / "dangling.py", "missing.py")
+    run(sym_repo, "add", "-A")
+    run(sym_repo, "commit", "-qm", "base with links")
+    run(sym_repo, "rm", "-q", "src/gone.py")
+    run(sym_repo, "commit", "-qm", "delete gone")
+    head_tree = run(sym_repo, "rev-parse", "HEAD^{tree}").strip()
+    head_commit = run(sym_repo, "rev-parse", "HEAD").strip()
+
+    sym_export = tmp_path / "sym_export"
+    shutil.copytree(
+        sym_repo, sym_export, symlinks=True, ignore=shutil.ignore_patterns(".git")
+    )
+    sym_cid = selection.directory_content_id(sym_export)
+    assert sym_cid == selection.tree_content_id(sym_repo, head_tree)
+
+    sym_plan = _whitespace_plan(
+        sym_export / "ci-hygiene.toml",
+        head_tree,
+        head_commit,
+        sym_cid,
+        ["dirlink", "src/dangling.py", "src/keep.py", "src/gone.py"],
+        ["dirlink", "src/dangling.py", "src/gone.py"],
+        ["dirlink", "src/dangling.py", "src/keep.py", "src/gone.py"],
+    )
+    sym_snapshots = execution._prepare_source_snapshots(
+        sym_plan, [], root=sym_export, execution_context="dagger_export"
+    )
+    assert sym_snapshots["kind"] == "full"
+    assert set(sym_snapshots["files"]) == {
+        ".gitignore",
+        "ci-hygiene.toml",
+        "dirlink",
+        "src/dangling.py",
+        "src/keep.py",
+    }
+    assert set(sym_snapshots["binding"].get("unverified_paths") or ()) == {
+        "dirlink",
+        "src/dangling.py",
+    }
+    assert execution._verified_deleted_scope(
+        sym_plan,
+        sym_plan["expected_checks"]["checks"][0]["source_ref"],
+        strong_source,
+        sym_snapshots,
+        root=sym_export,
+        execution_context="dagger_export",
+    ) == ("src/gone.py",)
+
+
+def test_host_git_snapshot_retains_unmaterialized_and_unreadable_members(repo):
+    from test_reconciliation import make_routing
+
+    path, base = repo
+    run(path, "rm", "-q", "src/pkg/other.py")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "delete other")
+
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8"
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "scope hygiene")
+    changes = selection.changeset(path, base=base, mode="commit")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    forged = json.loads(json.dumps(p))
+    forged["git"]["deleted_paths"] = ["src/pkg/other.py", "src/pkg/sub.py"]
+
+    # Remove tracked `src/pkg/sub.py` from disk without changing the target Git Tree:
+    # host snapshot still uses `git ls-tree`, marks `sub.py` unverified, and never
+    # treats it as deleted even under forged `deleted_paths`.
+    (path / "src/pkg/sub.py").unlink()
+    snapshots = execution._prepare_source_snapshots(
+        forged, [], root=path, execution_context="host"
+    )
+    assert snapshots["kind"] == "full"
+    assert "src/pkg/sub.py" in snapshots["files"]
+    assert "src/pkg/sub.py" in (snapshots["binding"].get("unverified_paths") or ())
+    resolved = execution.build_source_resolution(forged, "whitespace", root=path)
+    assert resolved["source_ref"]["binding_status"] != "byte_tree"
+    assert not resolved.get("verified_deleted_scope")
+
+    entry = next(c for c in p["expected_checks"]["checks"] if c["name"] == "whitespace")
+    receipt = reconciliation.reconcile_expected_results(
+        p["expected_checks"],
+        routing=[make_routing(entry)],
+        resolutions=[resolved],
+        observations=[],
+    )
+    assert (
+        next(c for c in receipt["entries"] if c["name"] == "whitespace")[
+            "binding_status"
+        ]
+        != "matched"
+    )
+
+    if os.name != "nt":
+        run(path, "checkout", "--", "src/pkg/sub.py")
+        sub_path = path / "src/pkg/sub.py"
+        sub_path.chmod(0)
+        try:
+            unreadable_snaps = execution._prepare_source_snapshots(
+                forged, [], root=path, execution_context="host"
+            )
+            assert unreadable_snaps["kind"] == "full"
+            assert "src/pkg/sub.py" in unreadable_snaps["files"]
+            assert "src/pkg/sub.py" in (
+                unreadable_snaps["binding"].get("unverified_paths") or ()
+            )
+            unreadable_res = execution.build_source_resolution(
+                forged, "whitespace", root=path
+            )
+            assert not unreadable_res.get("verified_deleted_scope")
+        finally:
+            sub_path.chmod(0o644)
+
+
+def test_deleted_path_resolution_with_overlays_and_ignored_reappearance(tmp_path, repo):
+    import sys
+
+    from test_generated_producer_resolution import _artifact_authority
+    from test_reconciliation import make_observation, make_routing
+
+    path, base = repo
+    (path / ".gitignore").write_text(
+        "__pycache__/\nsrc/pkg/other.py\n", encoding="utf-8"
+    )
+    run(path, "rm", "-q", "src/pkg/other.py")
+    (path / "src/pkg/mod.py").write_text("VALUE = 22\n", encoding="utf-8")
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8"
+    )
+    run(path, "add", ".gitignore", "src/pkg/mod.py", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "delete other with ignore rule")
+
+    # End-to-end Source Resolution -> Receipt -> Reconciliation on `whitespace`.
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    changes = selection.changeset(path, base=base, mode="commit")
+    sel = selection.select(changes, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation={
+            "status": "passed",
+            "tach_sha256": selection._digest(path / cfg.tach),
+            "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
+        },
+    )
+    entry = next(c for c in p["expected_checks"]["checks"] if c["name"] == "whitespace")
+    resolved = execution.build_source_resolution(p, "whitespace", root=path)
+    assert resolved["verified_deleted_scope"] == ["src/pkg/other.py"]
+    report = execution.execute(p, root=path)
+    native = next(
+        c["native_result"] for c in report["checks"] if c["name"] == "whitespace"
+    )
+    receipt = reconciliation.reconcile_expected_results(
+        p["expected_checks"],
+        routing=[make_routing(entry)],
+        resolutions=[resolved],
+        observations=[make_observation("job-1", [native])],
+    )
+    rec_entry = next(c for c in receipt["entries"] if c["name"] == "whitespace")
+    assert rec_entry["binding_status"] == "matched"
+    assert (
+        rec_entry["evidence_refs"]["source_receipt_ref"]
+        == resolved["source_receipt_ref"]
+    )
+    assert (
+        "src/pkg/other.py"
+        not in rec_entry["resolved_expected"]["source_ref"]["verified_input_scope"]
+    )
+
+    # When an ignored file with the deleted name sits on disk:
+    # - `commit` target absence remains true regardless of any unrelated overlay.
+    # - `worktree` branch rejects absence because the worktree path now exists.
+    (path / "src/pkg/other.py").write_text("IGNORED = 1\n", encoding="utf-8")
+    snapshots = execution._prepare_source_snapshots(
+        p, [], root=path, execution_context="host"
+    )
+    assert execution._verified_deleted_scope(
+        p,
+        entry["source_ref"],
+        resolved["source_ref"],
+        snapshots,
+        root=path,
+        execution_context="host",
+        verified_overlay_paths=["generated/unrelated.py"],
+    ) == ("src/pkg/other.py",)
+
+    wt_head = run(path, "rev-parse", "HEAD").strip()
+    wt_plan = _hygiene_worktree_plan(path, wt_head)
+    wt_entry = next(
+        c for c in wt_plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+    )
+    wt_snapshots = execution._prepare_source_snapshots(
+        wt_plan, [], root=path, execution_context="host"
+    )
+    assert (
+        execution._verified_deleted_scope(
+            wt_plan,
+            wt_entry["source_ref"],
+            execution.build_source_resolution(wt_plan, "whitespace", root=path)[
+                "source_ref"
+            ],
+            wt_snapshots,
+            root=path,
+            execution_context="host",
+        )
+        == ()
+    )
+    (path / "src/pkg/other.py").unlink()
+
+    # Producer artifact overlays:
+    # (a) unrelated overlay keeps `src/pkg/other.py` in `verified_deleted_scope`
+    # (b) same-name generated overlay puts `src/pkg/other.py` in consumer scope
+    #     instead of `verified_deleted_scope` and still reaches `matched`.
+    clean_head = run(path, "rev-parse", "HEAD").strip()
+    base_sel_toml = (path / "ci-selection.toml").read_text(encoding="utf-8")
+
+    def _run_with_overlay(artifact_rel, artifact_text, label):
+        run(path, "reset", "--hard", clean_head)
+        script = tmp_path / f"gen_{label}.py"
+        script.write_text(
+            f"""\
+import os
+from pathlib import Path
+out = Path(os.environ["ENGINEERING_CI_ARTIFACT_DIR"]) / {artifact_rel!r}
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text({artifact_text!r}, encoding="utf-8", newline="\\n")
+""",
+            encoding="utf-8",
+        )
+        sha = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
+        (path / "ci-selection.toml").write_text(
+            base_sel_toml
+            + f"""
+[prerequisite_actions.emit]
+type = "command"
+argv = {json.dumps([sys.executable, str(script)])}
+
+[[dependency_edges]]
+producer_ref = {{ kind = "prerequisite_action", name = "emit" }}
+consumer_ref = {{ kind = "check", name = "whitespace" }}
+dependency_kind = "data"
+requires_pass = true
+output_ref = {{ kind = "file", path = "{artifact_rel}", sha256 = "{sha}" }}
+""",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run(path, "add", "ci-selection.toml")
+        run(path, "commit", "-qm", f"overlay {label}")
+        ov_cfg = selection.load_config(path / "ci-selection.toml")
+        ov_changes = selection.changeset(path, base=base, mode="commit")
+        ov_sel = selection.select(ov_changes, ov_cfg, root=path)
+        ov_plan = selection.plan(
+            ov_sel,
+            config=ov_cfg,
+            config_path=path / "ci-selection.toml",
+            hygiene_config=hyg_cfg,
+            hygiene_config_path=path / "ci-hygiene.toml",
+            root=path,
+            tach_validation={
+                "status": "passed",
+                "tach_sha256": selection._digest(path / ov_cfg.tach),
+                "source_tree": ov_sel.changeset.execution_tree or ov_sel.changeset.tree,
+            },
+        )
+        ov_entry = next(
+            c for c in ov_plan["expected_checks"]["checks"] if c["name"] == "whitespace"
+        )
+        bundle = tmp_path / f"bundle_{label}"
+        ov_report = execution.execute(ov_plan, root=path, produced_artifacts_dir=bundle)
+        ws_check = next(
+            (c for c in ov_report["checks"] if c["name"] == "whitespace"), None
+        )
+        assert ws_check is not None and "native_result" in ws_check, ov_report
+        ov_native = ws_check["native_result"]
+        ov_res = execution.build_source_resolution(
+            ov_plan,
+            "whitespace",
+            root=path,
+            producer_artifact_handoff=ov_report["producer_artifact_handoff"],
+            producer_artifacts_dir=bundle,
+            producer_artifact_authority=_artifact_authority(
+                ov_plan, bundle, ("whitespace",)
+            ),
+        )
+        ov_receipt = reconciliation.reconcile_expected_results(
+            ov_plan["expected_checks"],
+            routing=[make_routing(ov_entry)],
+            resolutions=[ov_res],
+            observations=[make_observation("job-1", [ov_native])],
+        )
+        return ov_res, ov_receipt
+
+    unrel_res, unrel_rec = _run_with_overlay(
+        "generated/note.py", "NOTE = 1\n", "unrelated"
+    )
+    assert unrel_res["verified_deleted_scope"] == ["src/pkg/other.py"]
+    assert (
+        next(c for c in unrel_rec["entries"] if c["name"] == "whitespace")[
+            "binding_status"
+        ]
+        == "matched"
+    )
+
+    same_res, same_rec = _run_with_overlay(
+        "src/pkg/other.py", "GENERATED = 1\n", "same_name"
+    )
+    assert "src/pkg/other.py" in same_res["source_ref"]["verified_input_scope"]
+    assert not same_res.get("verified_deleted_scope")
+    assert (
+        next(c for c in same_rec["entries"] if c["name"] == "whitespace")[
+            "binding_status"
+        ]
+        == "matched"
+    )

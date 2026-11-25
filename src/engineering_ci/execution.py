@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,7 @@ from . import (
     sources,
     workflow_analysis,
 )
-from ._paths import source_file_present
+from ._paths import SourcePathError, source_file_present
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "engineering-ci-execution-report"
@@ -3193,32 +3194,81 @@ def _closure_paths_for_check(
     return sorted(paths)
 
 
+def _all_source_entries(root):
+    """Enumerate every materialized member under root without following links."""
+    resolved_root = Path(root).resolve()
+    if not resolved_root.is_dir():
+        return None
+    members = []
+
+    def _walk(directory, prefix):
+        try:
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda item: item.name)
+        except OSError:
+            return False
+        for entry in entries:
+            name = entry.name
+            if not prefix and name == ".git":
+                continue
+            rel = f"{prefix}/{name}" if prefix else name
+            try:
+                info = os.lstat(entry.path)
+            except OSError:
+                return False
+            is_link = stat.S_ISLNK(info.st_mode) or bool(
+                getattr(info, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            )
+            if is_link:
+                members.append(rel)
+            elif stat.S_ISDIR(info.st_mode):
+                if not _walk(entry.path, rel):
+                    return False
+            else:
+                members.append(rel)
+        return True
+
+    if not _walk(resolved_root, ""):
+        return None
+    return sorted(set(members))
+
+
 def _tree_files_for_snapshot(plan, root, execution_context):
     git = plan.get("git") or {}
     snapshot = str(git.get("snapshot") or "worktree")
-    if execution_context == "host" and snapshot == "index":
-        env = (
-            {"GIT_INDEX_FILE": str(Path(git["index_file"]).resolve())}
-            if git.get("index_file")
-            else None
-        )
-        listed = selection._git(root, "ls-files", "-z", env=env)
-        if listed.returncode != 0:
-            return None
-        return sorted({p for p in listed.stdout.split("\0") if p})
-    if (
-        execution_context == "host"
-        and snapshot in {"commit", "push", "pr_merge"}
-        and (git.get("execution_tree") or git.get("tree") or git.get("merge_tree"))
-    ):
-        tree_oid = git.get("execution_tree") or git.get("tree") or git.get("merge_tree")
-        listed = selection._git(root, "ls-tree", "-r", "--name-only", "-z", tree_oid)
-        if listed.returncode == 0:
+    if execution_context == "host" and selection._resolve_git_dir(root) is not None:
+        if snapshot == "index":
+            env = (
+                {"GIT_INDEX_FILE": str(Path(git["index_file"]).resolve())}
+                if git.get("index_file")
+                else None
+            )
+            listed = selection._git(root, "ls-files", "-z", env=env)
+            if listed.returncode != 0:
+                return None
+            return sorted({p for p in listed.stdout.split("\0") if p})
+        if snapshot in {"commit", "push", "pr_merge"}:
+            tree_oid = (
+                git.get("execution_tree") or git.get("tree") or git.get("merge_tree")
+            )
+            if not tree_oid:
+                return None
+            listed = selection._git(
+                root, "ls-tree", "-r", "--name-only", "-z", tree_oid
+            )
+            if listed.returncode != 0:
+                return None
             return sorted(p for p in listed.stdout.split("\0") if p)
-        if selection._resolve_git_dir(root) is not None:
+    source_tree_id = git.get("source_tree_id")
+    if _is_hex64(source_tree_id):
+        try:
+            actual_tree_id = selection.directory_content_id(root)
+        except (OSError, SourcePathError):
             return None
-    if git.get("source_tree_id"):
-        return sorted(_relative_existing_files(root, "."))
+        if actual_tree_id != source_tree_id:
+            return None
+        return _all_source_entries(root)
     return None
 
 
@@ -3768,8 +3818,7 @@ def _verified_deleted_scope(
             path
             for path in candidates
             if path not in tree_files
-            and path not in overlays
-            and not (overlays and source_file_present(root_path, path))
+            and not _overlay_intersects_subset(overlays, [path])
         )
     if snapshot != "worktree":
         return ()
@@ -3785,7 +3834,7 @@ def _verified_deleted_scope(
         return ()
     verified = []
     for path in candidates:
-        if path in overlays or path in unverified_binding:
+        if _overlay_intersects_subset(overlays, [path]) or path in unverified_binding:
             continue
         if isinstance(binding_paths, dict):
             if path not in binding_paths or binding_paths[path] is not None:
