@@ -10,8 +10,10 @@ Engineering CI provides reusable Python CI/CD capabilities through Dagger and Gi
 - [Repository overview](docs/architecture/repository-overview.md): architecture, responsibilities and module boundaries.
 - [Technology inventory](docs/architecture/technology.md): adopted, experimental, planned and removed technologies.
 - [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures.
+- [Agent task continuity](docs/architecture/agent-instructions.md#task-continuity-and-evidence-reuse): locate relevant knowledge relations, existing work, evidence and handoff before implementation or review.
+- [Authorization dependency review](docs/verification/authorization-closure/README.md): pinned dependency and evidence coverage snapshots, not current execution or authorization state.
 
-Consult relevant documentation and interfaces when working across module boundaries.
+Consult relevant documentation and interfaces when working across module boundaries. Before starting or resuming work, follow the task continuity procedure: locate the existing owner and applicable evidence, inspect the actual revision delta, and resume from the authoritative task record. Do not duplicate task, defect, dependency or evidence records for relationships already represented by their authoritative resources.
 
 ## Architecture and Ownership
 
@@ -32,6 +34,7 @@ Consult relevant documentation and interfaces when working across module boundar
 
 ## Delivery
 
+- **Maintain engineering knowledge graph relations and task handoff with every submission** (commit, PR update, Review, or acceptance). Before submitting, reconcile affected relations and evidence against the actual change; update their authoritative records in the same submission or a linked companion update. Record the scope and outcome, including why no relation changed when applicable. Follow [graph maintenance on every submission](docs/architecture/agent-instructions.md#graph-maintenance-on-every-submission). Preserve pinned historical graphs; update original authorities and refresh applicable projections using adopted tools. Derive mechanical facts from Git/GitHub and native tool outputs instead of transcribing them. Tool adoption and projection automation belong to [#162 C](https://github.com/dymzz/engineering-ci/issues/162); use existing sources until those capabilities are available, without duplicating ledgers or unrelated revalidation.
 - PR merging is authorized for this repository after task acceptance, code review and required CI checks on the current head.
 - Before preparing a formal Release, review
   [Release Readiness](docs/delivery/release-readiness.md)
