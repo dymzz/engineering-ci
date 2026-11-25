@@ -12,6 +12,8 @@
 
 基于 [main e5e86228](https://github.com/dymzz/engineering-ci/commit/e5e86228b51460b0cb825540d24c44180f3d8b4d) 和固定 PR 源码差分/合并记录更新 §0A.1 的 NEW-014/017/041/049/050/051/052/055/059 实施入口。#140/#143/#157 已合并合同、#146 在途候选及 #141 生成物独立可重读合同切片分别记录。§0A.1 是这些编号的更新导航；下文 2026-11-20 的旧顺位、源码观察及生产链路待验记录保留为当时快照，不再作为重启相同实现的依据。没有重新执行原生工具或扩大已有证据的生产适用性。
 
+**同日补充结算（#143 D-G01/D-G02）：** NEW-026/031/032/043/044 的原实施入口在 §0A.1 更新为已合并合同切片。依据 [#143](https://github.com/dymzz/engineering-ci/pull/143) 的实际 merge [a99efd5b](https://github.com/dymzz/engineering-ci/commit/a99efd5b59dde41de3ccea82c4d89c2b0e962669)、固定 main 上的相应代码及原 [CI 44764989301](https://github.com/dymzz/engineering-ci/actions/runs/44764989301)（4/4 success），不重新执行已有测试。R1 时间复验/非 Sample 来源记录、Universe 非未来求值、Profile Approval 时间、正式 T1-b 主体绑定、T1-b/R4 时区均分别按代码实际合同结算。这里不宣称任意反序列化对象已被独立认证、Universe 时间必须完全相等、真实生产 Issuer/Actions receiver/Release Provider 已接线，或 #61/#63 全部义务已完成。原历史发现保留；下一步沿 #66-B2 → #61 R1 及 #63 T1-b → T1-a 实际权威交接验收，R4 按原 #61 生产链推进。已有 #125 图边 E024/E061 等历史证据不改写。本次只补五项原 ID 的关系与状态，无新增缺陷、无主责变化。
+
 ## 2026-11-20 · 合并结算与当时执行导航
 
 本节依据 ECI main f18e520f9a5fcf958080f4d6a77e7a5596a1dca4、实际 GitHub 合并记录、对应源码差分及定向验证记录更新至 2026-11-20。文件旧基线 main@fc0df2a 是 2026-11-18 的审计快照，并非现行源码；后续原文的旧版“未修复/待合并”只作为发现历史。**以较新增量结算和 §0A.1 为更新导航；本节保存 2026-11-20 原有结算，所有修复的原始证据不删除。**
@@ -64,13 +66,13 @@
 | [NEW-023](#new-023) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-024](#new-024) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-025](#new-025) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-026](#new-026) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-026](#new-026) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #143](https://github.com/dymzz/engineering-ci/pull/143) **已合并**（a99efd5b）；[R1 复验](https://github.com/dymzz/engineering-ci/blob/e5e86228b51460b0cb825540d24c44180f3d8b4d/src/engineering_ci/required_assessment.py#L3603-L3645) 检查 Authority 时间窗口及非 Sample Universe 来源记录；独立签发及原件认证仍另证，结构校验不等于来源认证 |
 | [NEW-027](#new-027) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #134](https://github.com/dymzz/engineering-ci/pull/134) **已合并**（e3ec016b）；R5 正常时序及有权历史重评；真实 Trigger/后置消费另证 |
 | [NEW-028](#new-028) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-029](#new-029) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-030](#new-030) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-031](#new-031) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-032](#new-032) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-031](#new-031) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #143](https://github.com/dymzz/engineering-ci/pull/143) **已合并**（a99efd5b）；[R1 Authority Fact](https://github.com/dymzz/engineering-ci/blob/e5e86228b51460b0cb825540d24c44180f3d8b4d/src/engineering_ci/required_assessment.py#L1723-L1745) 拒绝晚于 Assessment 的 Universe 求值；并非强制两个合法时间完全相等；真实 Universe 签发与当前适用性仍另证 |
+| [NEW-032](#new-032) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #143](https://github.com/dymzz/engineering-ci/pull/143) **已合并**（a99efd5b）；[R1 Authority Fact](https://github.com/dymzz/engineering-ci/blob/e5e86228b51460b0cb825540d24c44180f3d8b4d/src/engineering_ci/required_assessment.py#L1723-L1745) 与 [复验](https://github.com/dymzz/engineering-ci/blob/e5e86228b51460b0cb825540d24c44180f3d8b4d/src/engineering_ci/required_assessment.py#L3624-L3645) 拒绝晚于 Assessment 的 Approval；实际治理来源仍另证 |
 | [NEW-033](#new-033) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-034](#new-034) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-035](#new-035) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
@@ -81,8 +83,8 @@
 | [NEW-040](#new-040) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-041](#new-041) | [#74](https://github.com/dymzz/engineering-ci/issues/74) | [PR #157](https://github.com/dymzz/engineering-ci/pull/157) **已合并**（7be3cf97）；Terminal correlation、gate_status/exit 参与 Native Satisfaction；[#145](https://github.com/dymzz/engineering-ci/pull/145) 旧候选仅核独有净差分，不重复实施；实际生产身份另证 |
 | [NEW-042](#new-042) | [#57](https://github.com/dymzz/engineering-ci/issues/57) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-043](#new-043) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-044](#new-044) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-043](#new-043) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | [PR #143](https://github.com/dymzz/engineering-ci/pull/143) **已合并**（a99efd5b）；[正式主体要求](https://github.com/dymzz/engineering-ci/blob/e5e86228b51460b0cb825540d24c44180f3d8b4d/src/engineering_ci/local_actions_handoff.py#L547-L569)、[主体核验](https://github.com/dymzz/engineering-ci/blob/e5e86228b51460b0cb825540d24c44180f3d8b4d/src/engineering_ci/local_actions_handoff.py#L724-L754) 按 Context×Action×Target 绑定 Event/Expected/Scope 及适用 Candidate；真实 Issuer/Actions Receiver/T1-a 消费另证 |
+| [NEW-044](#new-044) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | [PR #143](https://github.com/dymzz/engineering-ci/pull/143) **已合并**（a99efd5b）；[T1-b](https://github.com/dymzz/engineering-ci/blob/e5e86228b51460b0cb825540d24c44180f3d8b4d/src/engineering_ci/local_actions_handoff.py#L112-L123)、[R4](https://github.com/dymzz/engineering-ci/blob/e5e86228b51460b0cb825540d24c44180f3d8b4d/src/engineering_ci/required_assessment_release.py#L87-L98) 拒绝 naive 时间，保留合法偏移；原生产授权与发布验收另证 |
 | [NEW-045](#new-045) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
 | [NEW-046](#new-046) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
 | [NEW-047](#new-047) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
