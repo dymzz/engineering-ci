@@ -17,7 +17,7 @@ from opentelemetry.proto.collector.trace.v1 import (
     trace_service_pb2_grpc,
 )
 
-from engineering_ci import cicd_telemetry
+from engineering_ci import cicd_telemetry, github_receiver
 
 JOB_START = 1_700_000_010_000_000_000
 JOB_END = 1_700_000_090_000_000_000
@@ -26,6 +26,63 @@ EXECUTING = {
     "start_ns": JOB_START,
     "end_ns": JOB_END,
 }
+
+
+def _attach_external_githubreceiver_traces(report: dict) -> None:
+    """Attach a deterministic githubreceiver OTLP/JSON trace payload for RPC tests."""
+    facts = report["facts"]
+    run_id = int(facts["run_id"])
+    attempt = int(facts["run_attempt"])
+    job_id = int(facts["job_id"])
+    trace_id = github_receiver.trace_id(run_id, attempt)
+    root_span_id = github_receiver.root_span_id(run_id, attempt)
+    job_span_id = github_receiver.job_span_id(job_id)
+    report["otlp_json"] = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [
+                        {
+                            "key": "service.name",
+                            "value": {"stringValue": "githubreceiver"},
+                        },
+                        {
+                            "key": "cicd.pipeline.name",
+                            "value": {"stringValue": facts["workflow_name"]},
+                        },
+                        {
+                            "key": "cicd.pipeline.run.id",
+                            "value": {"stringValue": facts["run_id"]},
+                        },
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "scope": {"name": "githubreceiver"},
+                        "spans": [
+                            {
+                                "traceId": trace_id,
+                                "spanId": root_span_id,
+                                "name": facts["workflow_name"],
+                                "kind": "SPAN_KIND_SERVER",
+                                "startTimeUnixNano": str(facts["run_started_at_ns"]),
+                                "endTimeUnixNano": str(facts["run_completed_at_ns"]),
+                            },
+                            {
+                                "traceId": trace_id,
+                                "spanId": job_span_id,
+                                "parentSpanId": root_span_id,
+                                "name": facts["job_name"],
+                                "kind": "SPAN_KIND_CLIENT",
+                                "startTimeUnixNano": str(facts["job_started_at_ns"]),
+                                "endTimeUnixNano": str(facts["job_completed_at_ns"]),
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
 
 
 def complete_facts(**overrides):
@@ -117,7 +174,7 @@ def _string_attr(attributes, key):
 def test_live_otlp_grpc_receiver_observes_traces_logs_and_metrics():
     report = cicd_telemetry.produce(complete_facts(), phase_intervals=[EXECUTING])
     cicd_telemetry.attach_signal_candidates(report)
-    cicd_telemetry.attach_otlp_json(report)
+    _attach_external_githubreceiver_traces(report)
     traces = _RecordingTraceService()
     logs = _RecordingLogsService()
     metrics = _RecordingMetricsService()
@@ -202,7 +259,7 @@ def test_live_otlp_grpc_receiver_observes_traces_logs_and_metrics():
         assert report["claims"]["weaver_pass"] is False
         assert report["claims"]["trusted"] is False
         assert report["terminal_provenance"]["terminal_source"] == "mapping"
-        assert report["terminal"]["time_precision"] == "exact_input"
+        assert report["terminal"]["time_precision"] == "unproven"
         assert report["terminal"]["time_source_verified"] is False
     finally:
         server.stop(grace=0)
@@ -210,7 +267,7 @@ def test_live_otlp_grpc_receiver_observes_traces_logs_and_metrics():
 
 def test_live_otlp_grpc_unreachable_endpoint():
     report = cicd_telemetry.produce(complete_facts())
-    cicd_telemetry.attach_otlp_json(report)
+    _attach_external_githubreceiver_traces(report)
     with pytest.raises(cicd_telemetry.TelemetryError) as error:
         cicd_telemetry.export_otlp_grpc(
             report, "127.0.0.1:1", insecure=True, timeout=0.5
@@ -225,7 +282,7 @@ def test_live_otlp_grpc_unreachable_endpoint():
 
 def test_live_otlp_grpc_partial_reject():
     report = cicd_telemetry.produce(complete_facts())
-    cicd_telemetry.attach_otlp_json(report)
+    _attach_external_githubreceiver_traces(report)
     servicer = _RecordingTraceService(reject_spans=1)
     server, port = _start_server(servicer)
     try:
@@ -243,7 +300,7 @@ def test_live_otlp_grpc_partial_reject():
 def test_live_logs_partial_reject_does_not_inherit_trace_ack():
     report = cicd_telemetry.produce(complete_facts())
     cicd_telemetry.attach_signal_candidates(report)
-    cicd_telemetry.attach_otlp_json(report)
+    _attach_external_githubreceiver_traces(report)
     traces = _RecordingTraceService()
     logs = _RecordingLogsService(reject_records=1)
     server, port = _start_server(traces, logs)
@@ -277,11 +334,22 @@ def test_job_terminal_logs_without_fake_finalizing_metric():
 
 
 def test_observed_root_marks_duration_not_observable():
+    with pytest.raises(cicd_telemetry.TelemetryError) as retired:
+        cicd_telemetry.produce(
+            complete_facts(run_completed_at_ns=None, run_status="completed"),
+            end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+            terminal_observed_at_ns=JOB_END + 5_000_000_000,
+        )
+    assert retired.value.code == "duplicate_trace_producer_retired"
+
     report = cicd_telemetry.produce(
         complete_facts(run_completed_at_ns=None, run_status="completed"),
-        end_time_mode=cicd_telemetry.END_TIME_OBSERVED_UPPER_BOUND,
+        source="github_api",
+        github_api_fetched=True,
+        end_time_mode=cicd_telemetry.END_TIME_WITNESS,
         terminal_observed_at_ns=JOB_END + 5_000_000_000,
     )
+    assert report["terminal"]["terminal_confirmed"] is True
     cicd_telemetry.attach_signal_candidates(report)
     assert report["otlp_metrics_json"] is None
     assert any(

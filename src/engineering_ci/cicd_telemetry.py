@@ -1,19 +1,26 @@
-"""GitHub Actions Run/Job facts → OTel CI/CD Pipeline/Task candidate records.
+"""GitHub Actions Run/Job Attempt Witness and companion OTel CI/CD records.
 
-Producer decision (ECI #75 / Knowledge PR #79 C/O2):
-- Source of truth: separate Run and Job facts (env or explicit mapping/API).
-- Emits candidate Pipeline/Task span records for a JSON artifact only.
+Producer & cutover decision (ECI #75 / #52 / Knowledge PR #79 C/O2):
+- Upstream ``opentelemetry-collector-contrib/githubreceiver`` owns GitHub
+  Pipeline/Job/Queue/Step trace production (``otel-githubreceiver-usecheckrunid-v1``).
+- ECI duplicate trace synthesis is retired once production receiver cutover
+  is verified via ``evaluate_receiver_production_handoff()``; pre-cutover
+  transitional fallback remains gated behind explicit unverified cutover opt-in.
+- Default ``witness`` mode retains Attempt API completeness, separate
+  ``result_inventory`` / ``terminal_job_records`` (executed-in-attempt only) /
+  ``reused_job_records`` classification via ``github_receiver.partition_witness_jobs``,
+  correlated companion LogRecords, and proven phase Histograms.
 - Does not prove OTLP delivery, Weaver PASS, or authenticated GitHub provenance.
 - Does not instrument Dagger Functions.
-- Missing identity, terminal results, required SemConv fields, or real timestamps
-  yield incomplete/partial reports — never forged complete spans.
 
-Pipeline Run identity (ECI #75 / PR #77 review P2-2):
-- Each GitHub Actions *Attempt* is one distinct pipeline execution (own Trace).
-- SemConv `cicd.pipeline.run.id` is the stable canonical form
-  `{github_run_id}/{run_attempt}` — same value on Resource, Pipeline Span, and
-  Task/Log correlation. Raw GitHub Run ID and Attempt remain in facts and the
-  independent Source Witness; no unregistered Attempt attribute is exported.
+Pipeline Run identity (ECI #75 / #151 D-01):
+- OpenTelemetry CI/CD SemConv v1.45.0 specifies ``cicd.pipeline.run.id`` without
+  mandating GitHub's wire encoding.
+- Each GitHub Actions *Attempt* is one distinct pipeline execution; ECI's
+  normalized convention ``{github_run_id}/{run_attempt}`` aligns with
+  ``githubreceiver`` OTTL normalization while raw Run ID and Attempt stay
+  separately verified in API Witness facts without exporting unregistered
+  custom Attempt attributes.
 """
 
 from __future__ import annotations
@@ -29,26 +36,31 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import time_ns
 from urllib.parse import urlsplit
 
+from . import github_receiver
+
 SCHEMA_VERSION = 9
-# Reconstruct Trace/Span IDs from Run/Attempt/Job only. Not a trust decision.
-ID_SCHEME = "github-actions-attempt-sha256-v1"
-# Groups this producer maps. Not an official Required judgment and not a
-# second copy of the SemConv registry pin. The shared registry record belongs
-# to #74; this baseline does not import it.
+# Historical ECI self-authored ID scheme (archived / transitional only).
+LEGACY_ID_SCHEME = "github-actions-attempt-sha256-v1"
+# Reconstruct Trace/Span IDs from upstream githubreceiver (UseCheckRunID).
+ID_SCHEME = github_receiver.ID_SCHEME
+# Signals still mapped by this witness/logs/metrics module (GitHub Trace/Task
+# Span synthesis is retired in favor of upstream githubreceiver).
 PRODUCER_GROUP_IDS = (
-    "span.cicd.pipeline.run.server",
-    "span.cicd.pipeline.task.internal",
+    "log.cicd.pipeline.terminal",
     "metric.cicd.pipeline.run.duration",
 )
 REPORT_KIND = "engineering-ci-cicd-telemetry"
 EVIDENCE_CLASS = "candidate_record"
 OTLP_SCOPE_NAME = "eci_core.cicd_telemetry"
-# CLI mode: emit Root only when an explicit completed-at input closes the bounds.
-# The recorded precision is exact_input, which is not a verified GitHub timestamp.
+# Trace synthesis end-time modes are retired; witness mode records API/event bounds
+# and correlated LogRecords without synthesizing duplicate Root or Task Spans.
 END_TIME_EXACT = "exact"
 END_TIME_OBSERVED_UPPER_BOUND = "observed_upper_bound"
+END_TIME_WITNESS = "witness"
+RETIRED_END_TIME_MODES = frozenset({END_TIME_EXACT, END_TIME_OBSERVED_UPPER_BOUND})
 END_TIME_UNPROVEN = "unproven"
 TIME_PRECISION_EXACT_INPUT = "exact_input"
 TIME_PRECISION_OBSERVED_UPPER_BOUND = END_TIME_OBSERVED_UPPER_BOUND
@@ -592,7 +604,7 @@ def _observation_interval(
     invalid = None
     if job_count == 0 and completed_jobs_total in {None, 0}:
         lower = run_started_ns
-        lower_source = "weak_run_start"
+        lower_source = "weak_run_start" if run_started_ns is not None else None
     elif (
         job_selection == "job_id"
         or (completed_jobs_total is not None and completed_jobs_total != job_count)
@@ -615,7 +627,18 @@ def _observation_interval(
             job_set_complete=False,
             clock_quality="not_assessed",
         )
-    if lower is None or observed_ns < lower:
+    if lower is None:
+        return _bound_fields(
+            valid=False,
+            reason="missing_run_timestamps",
+            lower=None,
+            lower_source=None,
+            upper=observed_ns,
+            uncertainty=None,
+            job_set_complete=True,
+            clock_quality="unproven",
+        )
+    if observed_ns < lower:
         return _bound_fields(
             valid=False,
             reason="end_bounds_unverified",
@@ -689,6 +712,35 @@ def _stable_ids(run_id, attempt, job_id=None):
     return trace_id, pipeline_span_id, task_span_id
 
 
+def _parse_positive_int(value):
+    if type(value) is int and value > 0:
+        return value
+    if type(value) is str:
+        text = value.strip()
+        if text.isdigit():
+            parsed = int(text)
+            if parsed > 0:
+                return parsed
+    return None
+
+
+def _githubreceiver_ids(run_id, attempt, job_id=None):
+    """Derive deterministic upstream githubreceiver IDs (not provenance proof)."""
+    run_int = _parse_positive_int(run_id)
+    attempt_int = _parse_positive_int(attempt)
+    if run_int is None:
+        raise TelemetryError("run_id_invalid")
+    if attempt_int is None:
+        raise TelemetryError("run_attempt_invalid")
+    trace_id = github_receiver.trace_id(run_int, attempt_int)
+    pipeline_span_id = github_receiver.root_span_id(run_int, attempt_int)
+    if job_id is None:
+        return trace_id, pipeline_span_id, None
+    job_int = _parse_positive_int(job_id)
+    task_span_id = github_receiver.job_span_id(job_int) if job_int is not None else None
+    return trace_id, pipeline_span_id, task_span_id
+
+
 def _audit_job_rows(spans, rows):
     """Check this producer's own Job rows against the spans it emitted.
 
@@ -709,7 +761,11 @@ def _audit_job_rows(spans, rows):
     for row in rows:
         span_id = row.get("expected_task_span_id")
         span = tasks.get(span_id) if span_id else None
-        selected = row.get("omit_reason") != "not_selected_job_id_slice"
+        selected = row.get("omit_reason") not in {
+            "not_selected_job_id_slice",
+            "reused_from_prior_attempt",
+            "execution_attribution_unknown",
+        }
         if row.get("omitted") or not selected:
             if span is not None:
                 omitted_emitted.append(row.get("job_id"))
@@ -767,13 +823,34 @@ def _canonical_job_id(value):
     return str(number)
 
 
-def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
+def reconcile_expected_trace(
+    *,
+    run_id,
+    attempt,
+    job_ids,
+    observed_spans,
+    id_scheme=github_receiver.ID_SCHEME,
+):
     """Match Task Span IDs rebuilt from run_id, attempt and job_ids.
 
-    ok means only verification_scope task_trace_identity. It does not verify
-    source completeness, Job attributes, URLs, or trust.
+    Defaults to upstream ``githubreceiver`` deterministic IDs
+    (``otel-githubreceiver-usecheckrunid-v1``); pass
+    ``id_scheme=LEGACY_ID_SCHEME`` only when checking frozen historical
+    ECI-producer artifacts. ``ok`` means only
+    ``verification_scope=task_trace_identity``. It does not verify source
+    completeness, Job attributes, URLs, or trust.
     """
-    trace_id, pipeline_span_id, _ = _stable_ids(str(run_id), int(attempt))
+    if id_scheme not in {github_receiver.ID_SCHEME, LEGACY_ID_SCHEME}:
+        raise TelemetryError("unsupported_id_scheme")
+    use_upstream = id_scheme == github_receiver.ID_SCHEME
+    if use_upstream:
+        try:
+            trace_id = github_receiver.trace_id(run_id, attempt)
+            pipeline_span_id = github_receiver.root_span_id(run_id, attempt)
+        except github_receiver.GitHubReceiverError as error:
+            raise TelemetryError(error.code) from None
+    else:
+        trace_id, pipeline_span_id, _ = _stable_ids(str(run_id), int(attempt))
     invalid = []
     duplicates = []
     seen = []
@@ -786,7 +863,7 @@ def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
             duplicates.append(job_id)
         seen.append(job_id)
     base = {
-        "id_scheme": ID_SCHEME,
+        "id_scheme": id_scheme,
         "verification_scope": "task_trace_identity",
         "source_completeness_verified": False,
         "job_attributes_verified": False,
@@ -808,14 +885,33 @@ def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
         return base
     expected_ids = set()
     for job_id in seen:
-        _, _, task_span_id = _stable_ids(str(run_id), int(attempt), job_id)
-        expected_ids.add(task_span_id)
+        if use_upstream:
+            expected_ids.add(github_receiver.job_span_id(job_id))
+        else:
+            _, _, task_span_id = _stable_ids(str(run_id), int(attempt), job_id)
+            expected_ids.add(task_span_id)
     trace_mismatch = []
     parent_mismatch = []
     observed_counts = {}
     for span in observed_spans:
         if span.get("kind") != SPAN_KIND_INTERNAL:
             continue
+        if use_upstream:
+            # Exclude nested githubreceiver queue-* and step child spans whose parent
+            # is a Job span unless they falsely carry task.run.id or attach to Root.
+            parent_id = span.get("parent_span_id") or span.get("parentSpanId")
+            attrs = span.get("span_attrs") or span.get("attributes") or {}
+            if isinstance(attrs, list):
+                has_task_id = any(
+                    isinstance(a, dict) and a.get("key") == ATTR_TASK_RUN_ID
+                    for a in attrs
+                )
+            elif isinstance(attrs, dict):
+                has_task_id = ATTR_TASK_RUN_ID in attrs
+            else:
+                has_task_id = False
+            if parent_id != pipeline_span_id and not has_task_id:
+                continue
         span_id = span.get("span_id")
         observed_counts[span_id] = observed_counts.get(span_id, 0) + 1
         if span.get("trace_id") != trace_id:
@@ -836,6 +932,292 @@ def reconcile_expected_trace(*, run_id, attempt, job_ids, observed_spans):
         duplicate=duplicate,
     )
     return base
+
+
+def reconcile_attempt_witness_capture(
+    raw_api_witness,
+    capture,
+    *,
+    repository_url=None,
+    expect_previous_attempt_link=None,
+    executed_job_ids=None,
+):
+    """Validate an independent GitHub API Attempt Witness against a ``githubreceiver`` capture.
+
+    Verifies Attempt + paginated Job pages completeness (never inferring
+    Expected from the capture itself) and delegates trace/root/task/attribute
+    reconciliation to :func:`github_receiver.reconcile_github_receiver_trace`.
+    """
+    if not isinstance(raw_api_witness, dict):
+        raise TelemetryError("witness_payload_invalid")
+    run_obj = raw_api_witness.get("attempt")
+    pages = raw_api_witness.get("job_pages")
+    if not isinstance(run_obj, dict) or not isinstance(pages, list):
+        raise TelemetryError("witness_payload_invalid")
+    run_id = run_obj.get("id")
+    run_attempt = run_obj.get("run_attempt")
+    if type(run_id) is bool or not isinstance(run_id, int) or run_id <= 0:
+        raise TelemetryError("run_id_invalid")
+    if (
+        type(run_attempt) is bool
+        or not isinstance(run_attempt, int)
+        or run_attempt <= 0
+    ):
+        raise TelemetryError("run_attempt_invalid")
+    declared_total = None
+    jobs = []
+    seen_job_ids = set()
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("jobs"), list):
+            raise TelemetryError("jobs_payload_invalid")
+        total = page.get("total_count")
+        if type(total) is not int or total < 0:
+            raise TelemetryError("jobs_total_count_invalid")
+        if declared_total is None:
+            declared_total = total
+        elif total != declared_total:
+            raise TelemetryError("jobs_snapshot_inconsistent")
+        for job in page["jobs"]:
+            if not isinstance(job, dict):
+                raise TelemetryError("jobs_payload_invalid")
+            _validate_job_membership(job, run_id=run_id, run_attempt=run_attempt)
+            jid = job.get("id")
+            if jid is not None:
+                if jid in seen_job_ids:
+                    raise TelemetryError("jobs_snapshot_inconsistent")
+                seen_job_ids.add(jid)
+            jobs.append(job)
+    if declared_total is not None and len(jobs) < declared_total:
+        raise TelemetryError("jobs_page_incomplete")
+    if expect_previous_attempt_link is None:
+        expect_link = bool(run_attempt > 1 and run_obj.get("previous_attempt_url"))
+    else:
+        expect_link = bool(expect_previous_attempt_link)
+    repo_url = repository_url
+    if repo_url is None and isinstance(run_obj.get("repository"), dict):
+        html_url = run_obj["repository"].get("html_url")
+        if isinstance(html_url, str) and html_url:
+            repo_url = html_url
+    try:
+        return github_receiver.reconcile_github_receiver_trace(
+            run_id=run_id,
+            attempt=run_attempt,
+            run_status=run_obj.get("status") or "",
+            run_conclusion=run_obj.get("conclusion"),
+            jobs=jobs,
+            capture=capture,
+            repository_url=repo_url,
+            head_sha=run_obj.get("head_sha"),
+            expect_previous_attempt_link=expect_link,
+            run_started_at=run_obj.get("run_started_at"),
+            executed_job_ids=executed_job_ids,
+        )
+    except github_receiver.GitHubReceiverError as error:
+        raise TelemetryError(error.code) from None
+
+
+def evaluate_receiver_production_handoff(
+    *,
+    webhook_subscription_verified=False,
+    webhook_hmac_verified=False,
+    live_receiver_ingested=False,
+    otlp_traces_delivered=False,
+    live_consumer_gate_verified=False,
+    local_e2e_only=False,
+):
+    """Fail-closed readiness status for live upstream githubreceiver cutover."""
+    checks = {
+        "webhook_subscription_verified": bool(webhook_subscription_verified),
+        "webhook_hmac_verified": bool(webhook_hmac_verified),
+        "live_receiver_ingested": bool(live_receiver_ingested),
+        "otlp_traces_delivered": bool(otlp_traces_delivered),
+        "live_consumer_gate_verified": bool(live_consumer_gate_verified),
+    }
+    missing = [name for name, passed in checks.items() if not passed]
+    verified = not bool(local_e2e_only) and not missing
+    return {
+        "trace_owner": "opentelemetry-collector-contrib/githubreceiver",
+        "duplicate_trace_producer_retired_in_code": True,
+        "status": "verified" if verified else "not_verified",
+        "local_e2e_proves_production_webhook": False,
+        "checks": checks,
+        "missing_prerequisites": missing,
+    }
+
+
+def evaluate_production_handoff_payload(payload):
+    """Strictly validate a JSON production-handoff readiness mapping."""
+    if not isinstance(payload, dict):
+        return evaluate_receiver_production_handoff()
+    source = (
+        payload.get("checks") if isinstance(payload.get("checks"), dict) else payload
+    )
+    return evaluate_receiver_production_handoff(
+        webhook_subscription_verified=(
+            source.get("webhook_subscription_verified") is True
+        ),
+        webhook_hmac_verified=(source.get("webhook_hmac_verified") is True),
+        live_receiver_ingested=(source.get("live_receiver_ingested") is True),
+        otlp_traces_delivered=(source.get("otlp_traces_delivered") is True),
+        live_consumer_gate_verified=(source.get("live_consumer_gate_verified") is True),
+        local_e2e_only=(payload.get("local_e2e_only") is True),
+    )
+
+
+def evaluate_receiver_production_handoff_env(env=None):
+    """Read the 5 independent receiver cutover checks from workflow env vars."""
+    mapping = os.environ if env is None else env
+    return evaluate_receiver_production_handoff(
+        webhook_subscription_verified=(
+            str(mapping.get("ECI_GITHUBRECEIVER_WEBHOOK_SUBSCRIPTION_VERIFIED", ""))
+            .strip()
+            .lower()
+            == "true"
+        ),
+        webhook_hmac_verified=(
+            str(mapping.get("ECI_GITHUBRECEIVER_WEBHOOK_HMAC_VERIFIED", ""))
+            .strip()
+            .lower()
+            == "true"
+        ),
+        live_receiver_ingested=(
+            str(mapping.get("ECI_GITHUBRECEIVER_LIVE_INGESTED", "")).strip().lower()
+            == "true"
+        ),
+        otlp_traces_delivered=(
+            str(mapping.get("ECI_GITHUBRECEIVER_OTLP_TRACES_DELIVERED", ""))
+            .strip()
+            .lower()
+            == "true"
+        ),
+        live_consumer_gate_verified=(
+            str(mapping.get("ECI_GITHUBRECEIVER_CONSUMER_VERIFIED", "")).strip().lower()
+            == "true"
+        ),
+    )
+
+
+def select_post_run_cutover_policy(handoff):
+    """Choose witness trace retirement vs pre-cutover trace retention from handoff."""
+    verified = isinstance(handoff, dict) and handoff.get("status") == "verified"
+    if verified:
+        return {
+            "cutover_status": "verified",
+            "mode": END_TIME_WITNESS,
+            "allow_pre_cutover_trace_fallback": False,
+            "emit_otlp_traces": False,
+            "actual_trace_producer": "opentelemetry-collector-contrib/githubreceiver",
+            "target_trace_owner": "opentelemetry-collector-contrib/githubreceiver",
+        }
+    return {
+        "cutover_status": "not_verified",
+        "mode": END_TIME_OBSERVED_UPPER_BOUND,
+        "allow_pre_cutover_trace_fallback": True,
+        "emit_otlp_traces": True,
+        "actual_trace_producer": "eci_core.cicd_telemetry",
+        "target_trace_owner": "opentelemetry-collector-contrib/githubreceiver",
+    }
+
+
+def _classify_witness_jobs(facts, valid_jobs, *, executed_job_ids=None):
+    """Classify valid completed Attempt jobs via #155 partition_witness_jobs."""
+    rid = _parse_positive_int(facts.run_id)
+    att = _parse_positive_int(facts.run_attempt)
+    if (
+        not valid_jobs
+        or rid is None
+        or att is None
+        or any(_parse_positive_int(jf.job_id) is None for _, jf in valid_jobs)
+    ):
+        if executed_job_ids is not None:
+            try:
+                partition = github_receiver.partition_witness_jobs(
+                    [],
+                    rid=rid or 1,
+                    att=att or 1,
+                    executed_job_ids=executed_job_ids,
+                )
+            except github_receiver.GitHubReceiverError as error:
+                raise TelemetryError(error.code) from None
+        else:
+            partition = None
+        if partition is None:
+            return {
+                "by_job_id": {
+                    jf.job_id: {
+                        "job_id": jf.job_id,
+                        "name": jf.job_name,
+                        "status": "completed",
+                        "conclusion": jf.job_conclusion,
+                        "started_at": jf.job_started_at_ns,
+                        "completed_at": jf.job_completed_at_ns,
+                        "execution_attribution": (
+                            "executed_in_attempt" if (att or 1) == 1 else "unknown"
+                        ),
+                        "execution_attribution_source": (
+                            "attempt_1_witness"
+                            if (att or 1) == 1
+                            else "unproven_execution_vs_reuse"
+                        ),
+                    }
+                    for _, jf in valid_jobs
+                },
+                "result_inventory": [],
+                "executed_job_ids": (
+                    [jf.job_id for _, jf in valid_jobs] if (att or 1) == 1 else []
+                ),
+                "reused_job_ids": [],
+                "unknown_execution_job_ids": (
+                    [] if (att or 1) == 1 else [jf.job_id for _, jf in valid_jobs]
+                ),
+                "execution_attribution_status": (
+                    "verified" if (not valid_jobs or (att or 1) == 1) else "unknown"
+                ),
+            }
+    raw_jobs = []
+    for _, job_facts in valid_jobs:
+        entry = {
+            "id": int(job_facts.job_id),
+            "name": job_facts.job_name,
+            "status": "completed",
+            "conclusion": job_facts.job_conclusion,
+        }
+        if job_facts.job_started_at_ns is not None and job_facts.job_started_at_ns > 0:
+            entry["started_at"] = job_facts.job_started_at_ns
+        if (
+            job_facts.job_completed_at_ns is not None
+            and job_facts.job_completed_at_ns > 0
+        ):
+            entry["completed_at"] = job_facts.job_completed_at_ns
+        raw_jobs.append(entry)
+    run_started = (
+        facts.run_started_at_ns
+        if (
+            facts.run_started_at_ns is not None
+            and facts.run_started_at_ns > 0
+            and facts.run_bounds_state != "invalid"
+        )
+        else None
+    )
+    try:
+        partition = github_receiver.partition_witness_jobs(
+            raw_jobs,
+            rid=rid,
+            att=att,
+            run_started_at=run_started,
+            executed_job_ids=executed_job_ids,
+        )
+    except github_receiver.GitHubReceiverError as error:
+        raise TelemetryError(error.code) from None
+    by_id = {row["job_id"]: row for row in partition["result_inventory"]}
+    return {
+        "by_job_id": by_id,
+        "result_inventory": partition["result_inventory"],
+        "executed_job_ids": partition["executed_job_ids"],
+        "reused_job_ids": partition["reused_job_ids"],
+        "unknown_execution_job_ids": partition["unknown_execution_job_ids"],
+        "execution_attribution_status": partition["execution_attribution_status"],
+    }
 
 
 def _task_omit_reason(job_facts):
@@ -875,28 +1257,54 @@ def produce(
     include_run_entity_metrics=False,
     max_end_uncertainty_ns=None,
     api_jobs_snapshot=None,
+    executed_job_ids=None,
+    production_handoff=None,
+    allow_pre_cutover_trace_fallback=False,
 ):
     """Build candidate telemetry records. Incomplete inputs stay incomplete/partial.
 
-    ``task_facts`` (optional) is the Attempt's Job set to emit as Task Spans.
-    When omitted, a single Job carried on ``facts`` is used (mapping/env/diagnostic
-    ``--job-id`` path). Full Attempt coverage passes every completed Job here.
+    By default ECI duplicate trace synthesis is retired (``witness`` mode): it
+    emits Attempt/Job API Witness inventories (with ``result_inventory``
+    separated from ``executed_jobs`` / ``reused_jobs``), correlated companion
+    LogRecords, and proven phase Histograms.
 
-    Pipeline Root end-time modes (PR #81):
-    - default / exact: only emit SERVER Root when ``run_completed_at_ns`` is an
-      explicit input. Recorded precision is ``exact_input``. That closed numeric
-      bound is not a verified GitHub completion timestamp.
-    - ``observed_upper_bound``: after Attempt ``run_status=completed``, record a
-      constraint interval (last Job end or weak Run start, through the
-      observation time). That interval is not a proven end. An approximate Root
-      is emitted only when ``max_end_uncertainty_ns`` is set and the interval
-      fits that budget. A late observation is not written as the standard Root
-      end. ``terminal_status`` / event fields are not substitutes for API status.
-
-    ``phase_intervals`` are already-proven ``pending`` / ``executing`` /
-    ``finalizing`` windows. Missing windows stay ``not_observable``.
-    ``include_run_entity_metrics`` defaults off (SemConv run-entity opt-in).
+    Pre-cutover transitional fallback (``allow_pre_cutover_trace_fallback=True``)
+    is permitted **only** while ``production_handoff["status"] != "verified"``
+    so production workflows do not silently drop trace output before upstream
+    ``githubreceiver`` webhook cutover is verified. Once ``production_handoff``
+    is ``verified``, any fallback or retired trace mode is refused with
+    ``duplicate_trace_producer_retired``.
     """
+    handoff = (
+        evaluate_production_handoff_payload(production_handoff)
+        if production_handoff is not None
+        else evaluate_receiver_production_handoff()
+    )
+    pre_cutover_allowed = bool(allow_pre_cutover_trace_fallback) and (
+        handoff["status"] != "verified"
+    )
+    if handoff["status"] == "verified" and allow_pre_cutover_trace_fallback:
+        raise TelemetryError("duplicate_trace_producer_retired")
+    if not pre_cutover_allowed and (
+        end_time_mode in RETIRED_END_TIME_MODES or max_end_uncertainty_ns is not None
+    ):
+        raise TelemetryError("duplicate_trace_producer_retired")
+    if end_time_mode not in {None, END_TIME_WITNESS, *RETIRED_END_TIME_MODES}:
+        raise TelemetryError("end_time_mode_invalid")
+    pre_cutover_active = pre_cutover_allowed and (
+        end_time_mode in RETIRED_END_TIME_MODES or max_end_uncertainty_ns is not None
+    )
+    handoff["cutover_action"] = (
+        "retained_pre_cutover_trace_fallback"
+        if pre_cutover_active
+        else (
+            "retired_to_githubreceiver"
+            if handoff["status"] == "verified"
+            else "witness_only_unverified_handoff"
+        )
+    )
+    retired = not pre_cutover_active
+
     # Persisted producer identity predates the package move; it is not an import path.
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -907,6 +1315,7 @@ def produce(
             "otlp_delivered": False,
             "otlp_json_prepared": False,
             "otlp_json_exported": False,
+            "trace_producer_retired": retired,
             "otlp_logs_prepared": False,
             "otlp_logs_exported": False,
             "otlp_logs_rpc_accepted": False,
@@ -932,10 +1341,34 @@ def produce(
         },
         "producer": {
             "name": producer,
-            "decision": "github_actions_env_or_api_adapter",
+            "decision": (
+                "pre_cutover_trace_fallback_and_witness"
+                if pre_cutover_active
+                else "github_actions_witness_and_companion_signals"
+            ),
+            "trace_producer_retired": retired,
+            "actual_trace_producer": (
+                producer
+                if pre_cutover_active
+                else (
+                    "opentelemetry-collector-contrib/githubreceiver"
+                    if handoff["status"] == "verified"
+                    else "none_emitted_by_eci"
+                )
+            ),
+            "target_trace_owner": "opentelemetry-collector-contrib/githubreceiver",
+            "trace_owner": (
+                producer
+                if pre_cutover_active
+                else "opentelemetry-collector-contrib/githubreceiver"
+            ),
             "semconv_note": (
                 "Attribute names follow public CI/CD SemConv Pipeline/Task Run. "
-                "This candidate does not copy or verify the official registry pin."
+                + (
+                    "Pre-cutover fallback candidate Spans produced by ECI; upstream githubreceiver cutover is not_verified."
+                    if pre_cutover_active
+                    else "This companion witness does not emit GitHub Trace/Task Spans or copy the registry pin."
+                )
             ),
             "semconv_source": {
                 "official_source_pinned": False,
@@ -997,6 +1430,10 @@ def produce(
         },
         "resource": {},
         "spans": [],
+        "production_handoff": handoff,
+        "result_inventory": [],
+        "reused_job_records": [],
+        "unknown_execution_jobs": [],
         "otlp_json": None,
         "otlp_logs_json": None,
         "otlp_metrics_json": None,
@@ -1034,7 +1471,7 @@ def produce(
         resource[ATTR_VCS_HEAD_REVISION] = facts.head_sha
     report["resource"] = resource
 
-    trace_id, pipeline_span_id, _ = _stable_ids(facts.run_id, facts.run_attempt)
+    trace_id, pipeline_span_id, _ = _githubreceiver_ids(facts.run_id, facts.run_attempt)
     spans = []
     reasons = []
 
@@ -1054,89 +1491,96 @@ def produce(
     run_result, run_error_type = map_github_result(facts.run_conclusion)
     root_end_ns = None
     root_emission = "not_emitted"
-    root_emission_reason = None
+    root_emission_reason = (
+        None if pre_cutover_active else "duplicate_trace_producer_retired"
+    )
     duration_valid_for_metrics = False
     observation_ready = False
     time_precision = TIME_PRECISION_UNPROVEN
-    # Numeric closure and native-source verification are separate facts.
+    # Witness mode only checks Attempt/Event/Job consistency and observation bounds;
+    # pre-cutover fallback retains legacy exact/observed Root end only when enabled.
     time_source_verified = False
     run_end_source = None
+    api_confirmed_source = source == "github_api" and bool(github_api_fetched)
     if run_result is None and facts.run_conclusion is not None:
         reasons.append("unsupported_run_conclusion")
     elif facts.run_conclusion is None:
         reasons.append("missing_run_terminal_result")
-    elif facts.run_bounds_state == "ok":
+    elif facts.run_bounds_state == "invalid":
+        reasons.append("invalid_run_timestamps")
+    elif (
+        pre_cutover_active
+        and end_time_mode in {None, END_TIME_EXACT}
+        and facts.run_bounds_state == "ok"
+    ):
         root_end_ns = facts.run_completed_at_ns
         time_precision = TIME_PRECISION_EXACT_INPUT
-        time_source_verified = False
         run_end_source = _explicit_run_end_source(source)
         root_emission = "explicit_end"
         duration_valid_for_metrics = True
-    elif end_time_mode == END_TIME_OBSERVED_UPPER_BOUND:
-        api_status = facts.run_status
-        if api_status is None:
-            reasons.append("terminal_status_unverified")
-        elif api_status != "completed":
+    else:
+        if facts.run_started_at_ns is None:
+            reasons.append("missing_run_timestamps")
+        if facts.run_status == "completed":
+            if event_status is not None and event_status != facts.run_status:
+                reasons.append("event_api_status_conflict")
+            elif (
+                event_conclusion is not None
+                and facts.run_conclusion is not None
+                and event_conclusion != facts.run_conclusion
+            ):
+                reasons.append("event_api_conclusion_conflict")
+            elif terminal_observed_at_ns is not None:
+                if not api_confirmed_source and not pre_cutover_active:
+                    reasons.append("terminal_source_not_github_api")
+                elif (
+                    facts.run_started_at_ns is not None
+                    and terminal_observed_at_ns < facts.run_started_at_ns
+                ):
+                    reasons.append("invalid_terminal_observed_at")
+                else:
+                    max_job_end = None
+                    for _, job_facts in job_sources:
+                        if job_facts.job_completed_at_ns is None:
+                            continue
+                        if (
+                            max_job_end is None
+                            or job_facts.job_completed_at_ns > max_job_end
+                        ):
+                            max_job_end = job_facts.job_completed_at_ns
+                    if (
+                        max_job_end is not None
+                        and terminal_observed_at_ns < max_job_end
+                    ):
+                        reasons.append("terminal_observed_before_jobs")
+                        reasons.append("end_bounds_unverified")
+                        report["terminal"]["bounds_valid"] = False
+                        report["terminal"]["bounds_invalid_reason"] = (
+                            "end_bounds_unverified"
+                        )
+                        report["terminal"]["clock_quality"] = "rejected"
+                        report["terminal"]["job_set_complete"] = True
+                    else:
+                        observation_ready = True
+                        report["terminal"]["terminal_confirmed"] = True
+                        report["terminal"].update(
+                            _observation_interval(
+                                job_sources,
+                                observed_ns=terminal_observed_at_ns,
+                                run_started_ns=facts.run_started_at_ns,
+                                completed_jobs_total=completed_jobs_total,
+                                job_selection=job_selection,
+                                omitted_count=0,
+                            )
+                        )
+        elif facts.run_status is not None:
             reasons.append("run_not_completed")
-        elif event_status is not None and event_status != api_status:
-            reasons.append("event_api_status_conflict")
-        elif (
-            event_conclusion is not None
-            and facts.run_conclusion is not None
-            and event_conclusion != facts.run_conclusion
-        ):
-            reasons.append("event_api_conclusion_conflict")
-        elif facts.run_started_at_ns is None:
-            reasons.append("missing_run_timestamps")
-        elif terminal_observed_at_ns is None:
-            reasons.append("missing_terminal_observed_at")
-        elif terminal_observed_at_ns < facts.run_started_at_ns:
-            reasons.append("invalid_terminal_observed_at")
-        else:
-            # Observed upper bound must not precede any Job end in the set.
-            max_job_end = None
-            for _, job_facts in job_sources:
-                if job_facts.job_completed_at_ns is None:
-                    continue
-                if max_job_end is None or job_facts.job_completed_at_ns > max_job_end:
-                    max_job_end = job_facts.job_completed_at_ns
-            if max_job_end is not None and terminal_observed_at_ns < max_job_end:
-                reasons.append("terminal_observed_before_jobs")
-                reasons.append("end_bounds_unverified")
-                report["terminal"]["bounds_valid"] = False
-                report["terminal"]["bounds_invalid_reason"] = "end_bounds_unverified"
-                report["terminal"]["clock_quality"] = "rejected"
-                report["terminal"]["job_set_complete"] = True
-            else:
-                # Confirmed terminal only. The observation is not a span end yet.
-                observation_ready = True
-                report["terminal"]["terminal_confirmed"] = True
-    elif facts.run_bounds_state == "missing":
-        # Prefer explicit missing completed-at over fabricating from updated_at.
-        if facts.run_updated_at_ns is not None and facts.run_completed_at_ns is None:
-            reasons.append("run_completed_at_unproven")
-        else:
-            reasons.append("missing_run_timestamps")
-    elif facts.run_bounds_state == "invalid":
-        reasons.append("invalid_run_timestamps")
 
-    report["terminal"]["end_time_quality"] = time_precision
-    report["terminal"]["end_time_source"] = run_end_source
-    report["terminal"]["time_precision"] = time_precision
-    report["terminal"]["time_source_verified"] = time_source_verified
-    report["terminal"]["exact_run_duration"] = (
-        time_precision == TIME_PRECISION_EXACT_INPUT
-    )
-
-    if root_end_ns is not None and facts.run_started_at_ns is not None:
-        pipeline_attrs = {
-            ATTR_PIPELINE_NAME: facts.workflow_name,
-            ATTR_PIPELINE_RUN_ID: pipeline_run_id,
-            ATTR_PIPELINE_RUN_URL: facts.run_url,
-            ATTR_PIPELINE_RESULT: run_result,
-            ATTR_VCS_HEAD_REVISION: facts.head_sha,
-            ATTR_ERROR_TYPE: run_error_type,
-        }
+    if (
+        pre_cutover_active
+        and root_end_ns is not None
+        and facts.run_started_at_ns is not None
+    ):
         spans.append(
             _span(
                 f"RUN {facts.workflow_name}",
@@ -1146,13 +1590,30 @@ def produce(
                 parent_span_id=None,
                 start_ns=facts.run_started_at_ns,
                 end_ns=root_end_ns,
-                attributes=pipeline_attrs,
+                attributes={
+                    ATTR_PIPELINE_NAME: facts.workflow_name,
+                    ATTR_PIPELINE_RUN_ID: pipeline_run_id,
+                    ATTR_PIPELINE_RUN_URL: facts.run_url,
+                    ATTR_PIPELINE_RESULT: run_result,
+                    ATTR_VCS_HEAD_REVISION: facts.head_sha,
+                    ATTR_ERROR_TYPE: run_error_type,
+                },
             )
         )
 
+    report["terminal"]["end_time_quality"] = time_precision
+    report["terminal"]["end_time_source"] = run_end_source
+    report["terminal"]["time_precision"] = time_precision
+    report["terminal"]["time_source_verified"] = time_source_verified
+    report["terminal"]["exact_run_duration"] = (
+        time_precision == TIME_PRECISION_EXACT_INPUT
+    )
+
     omitted = []
     expected_by_key = {}
+    seen_job_ids = set()
     witness_anomalies = []
+    valid_job_entries = []
     for source_index, job_facts in job_sources:
         omit = _task_omit_reason(job_facts)
         expected_key = (
@@ -1160,7 +1621,7 @@ def produce(
             if job_facts.job_id is not None
             else ("index", source_index)
         )
-        if job_facts.job_id is not None and ("id", job_facts.job_id) in expected_by_key:
+        if job_facts.job_id is not None and job_facts.job_id in seen_job_ids:
             witness_anomalies.append(
                 {
                     "source_index": source_index,
@@ -1172,6 +1633,8 @@ def produce(
             if "duplicate_job_id" not in reasons:
                 reasons.append("duplicate_job_id")
             continue
+        if job_facts.job_id is not None:
+            seen_job_ids.add(job_facts.job_id)
         if job_facts.run_id and str(job_facts.run_id) != str(facts.run_id):
             witness_anomalies.append(
                 {
@@ -1216,47 +1679,184 @@ def produce(
                 "omit_reason": omit,
             }
             continue
+        valid_job_entries.append((source_index, job_facts, expected_key))
+
+    partition_info = _classify_witness_jobs(
+        facts,
+        [(source_index, jf) for source_index, jf, _ in valid_job_entries],
+        executed_job_ids=executed_job_ids,
+    )
+    attribution_by_job_id = partition_info["by_job_id"]
+
+    terminal_job_records = []
+    reused_job_records = []
+    unknown_execution_job_records = []
+    executed_sources = []
+    for source_index, job_facts, expected_key in valid_job_entries:
         job_result, job_error_type = map_github_result(job_facts.job_conclusion)
-        _, _, task_span_id = _stable_ids(
+        _, _, task_span_id = _githubreceiver_ids(
             facts.run_id, facts.run_attempt, job_facts.job_id
         )
-        task_attrs = {
-            ATTR_TASK_NAME: job_facts.job_name,
-            ATTR_TASK_RUN_ID: job_facts.job_id,
-            ATTR_TASK_RUN_RESULT: job_result,
-            ATTR_TASK_RUN_URL: job_facts.job_url,
-            ATTR_PIPELINE_RUN_ID: pipeline_run_id,
-            ATTR_ERROR_TYPE: job_error_type,
+        attr_row = attribution_by_job_id.get(str(job_facts.job_id)) or {
+            "execution_attribution": "executed_in_attempt",
+            "execution_attribution_source": "attempt_1_witness",
         }
-        spans.append(
-            _span(
-                f"task:{job_facts.job_name}",
-                kind=SPAN_KIND_INTERNAL,
-                trace_id=trace_id,
-                span_id=task_span_id,
-                parent_span_id=pipeline_span_id,
-                start_ns=job_facts.job_started_at_ns,
-                end_ns=job_facts.job_completed_at_ns,
-                attributes=task_attrs,
+        attr = attr_row["execution_attribution"]
+        attr_source = attr_row["execution_attribution_source"]
+
+        if attr == "reused_from_prior_attempt":
+            expected_by_key[expected_key] = {
+                "source_index": source_index,
+                "job_id": job_facts.job_id,
+                "job_url": job_facts.job_url,
+                "expected_task_span_id": None,
+                "emitted": False,
+                "omitted": False,
+                "omit_reason": "reused_from_prior_attempt",
+                "execution_attribution": attr,
+                "execution_attribution_source": attr_source,
+            }
+            reused_job_records.append(
+                {
+                    "job_name": job_facts.job_name,
+                    "job_id": job_facts.job_id,
+                    "job_result": job_result,
+                    "job_url": job_facts.job_url,
+                    "completed_at_ns": job_facts.job_completed_at_ns,
+                    "trace_id": None,
+                    "span_id": None,
+                    "execution_attribution": attr,
+                    "execution_attribution_source": attr_source,
+                }
             )
-        )
+            continue
+
+        if attr == "unknown":
+            expected_by_key[expected_key] = {
+                "source_index": source_index,
+                "job_id": job_facts.job_id,
+                "job_url": job_facts.job_url,
+                "expected_task_span_id": None,
+                "emitted": False,
+                "omitted": False,
+                "omit_reason": "execution_attribution_unknown",
+                "execution_attribution": attr,
+                "execution_attribution_source": attr_source,
+            }
+            unknown_execution_job_records.append(
+                {
+                    "job_name": job_facts.job_name,
+                    "job_id": job_facts.job_id,
+                    "job_result": job_result,
+                    "job_url": job_facts.job_url,
+                    "completed_at_ns": job_facts.job_completed_at_ns,
+                    "trace_id": None,
+                    "span_id": None,
+                    "execution_attribution": attr,
+                    "execution_attribution_source": attr_source,
+                }
+            )
+            continue
+
+        executed_sources.append((source_index, job_facts))
+        emitted_task = False
+        if pre_cutover_active:
+            spans.append(
+                _span(
+                    f"task:{job_facts.job_name}",
+                    kind=SPAN_KIND_INTERNAL,
+                    trace_id=trace_id,
+                    span_id=task_span_id,
+                    parent_span_id=pipeline_span_id,
+                    start_ns=job_facts.job_started_at_ns,
+                    end_ns=job_facts.job_completed_at_ns,
+                    attributes={
+                        ATTR_TASK_NAME: job_facts.job_name,
+                        ATTR_TASK_RUN_ID: job_facts.job_id,
+                        ATTR_TASK_RUN_RESULT: job_result,
+                        ATTR_TASK_RUN_URL: job_facts.job_url,
+                        ATTR_PIPELINE_RUN_ID: pipeline_run_id,
+                        ATTR_ERROR_TYPE: job_error_type,
+                    },
+                )
+            )
+            emitted_task = True
         expected_by_key[expected_key] = {
             "source_index": source_index,
             "job_id": job_facts.job_id,
             "job_url": job_facts.job_url,
             "expected_task_span_id": task_span_id,
-            "emitted": True,
+            "emitted": emitted_task,
             "omitted": False,
             "omit_reason": None,
+            "execution_attribution": attr,
+            "execution_attribution_source": attr_source,
         }
-        # Exact Run bounds: Job after completed Run is inconsistent.
-        # Observed upper-bound Root already refused earlier if observed < job end.
+        terminal_job_records.append(
+            {
+                "job_name": job_facts.job_name,
+                "job_id": job_facts.job_id,
+                "job_result": job_result,
+                "job_url": job_facts.job_url,
+                "completed_at_ns": job_facts.job_completed_at_ns,
+                "trace_id": trace_id,
+                "span_id": task_span_id,
+                "pipeline_run_id": pipeline_run_id,
+                "execution_attribution": attr,
+                "execution_attribution_source": attr_source,
+            }
+        )
         if (
-            time_precision == TIME_PRECISION_EXACT_INPUT
+            facts.run_bounds_state == "ok"
             and run_job_temporal_inconsistency(job_facts)
             and "inconsistent_run_job_timestamps" not in reasons
         ):
             reasons.append("inconsistent_run_job_timestamps")
+
+    if unknown_execution_job_records and "execution_attribution_unknown" not in reasons:
+        reasons.append("execution_attribution_unknown")
+
+    if (
+        pre_cutover_active
+        and observation_ready
+        and not any(span["kind"] == SPAN_KIND_SERVER for span in spans)
+    ):
+        time_precision = TIME_PRECISION_OBSERVED_UPPER_BOUND
+        if max_end_uncertainty_ns is not None and report["terminal"].get(
+            "bounds_valid"
+        ):
+            uncertainty = report["terminal"].get("uncertainty_ns")
+            if uncertainty is not None and uncertainty <= max_end_uncertainty_ns:
+                root_end_ns = report["terminal"]["end_upper_bound_ns"]
+                root_emission = "approximate_root"
+                run_end_source = "terminal_observed_at"
+                duration_valid_for_metrics = False
+                if "temporal_precision_unverified" not in reasons:
+                    reasons.append("temporal_precision_unverified")
+                spans.insert(
+                    0,
+                    _span(
+                        f"RUN {facts.workflow_name}",
+                        kind=SPAN_KIND_SERVER,
+                        trace_id=trace_id,
+                        span_id=pipeline_span_id,
+                        parent_span_id=None,
+                        start_ns=facts.run_started_at_ns,
+                        end_ns=root_end_ns,
+                        attributes={
+                            ATTR_PIPELINE_NAME: facts.workflow_name,
+                            ATTR_PIPELINE_RUN_ID: pipeline_run_id,
+                            ATTR_PIPELINE_RUN_URL: facts.run_url,
+                            ATTR_PIPELINE_RESULT: run_result,
+                            ATTR_VCS_HEAD_REVISION: facts.head_sha,
+                            ATTR_ERROR_TYPE: run_error_type,
+                        },
+                    ),
+                )
+            else:
+                root_emission_reason = "uncertainty_exceeds_budget"
+        elif max_end_uncertainty_ns is None:
+            root_emission_reason = "end_time_uncertain"
 
     expected_completed = []
     if expected_job_stubs:
@@ -1268,7 +1868,7 @@ def produce(
             if detail is None:
                 # Diagnostic --job-id path: unselected completed Jobs are coverage
                 # gaps, not fabricated omissions.
-                _, _, expected_span = _stable_ids(
+                _, _, expected_span = _githubreceiver_ids(
                     facts.run_id, facts.run_attempt, job_id
                 )
                 expected_completed.append(
@@ -1288,6 +1888,21 @@ def produce(
         expected_completed = list(expected_by_key.values())
 
     report["spans"] = spans
+    report["result_inventory"] = partition_info["result_inventory"] or [
+        {
+            "job_id": jf.job_id,
+            "name": jf.job_name,
+            "status": "completed",
+            "conclusion": jf.job_conclusion,
+            "execution_attribution": "executed_in_attempt",
+            "execution_attribution_source": "attempt_1_witness",
+        }
+        for _, jf, _ in valid_job_entries
+    ]
+    report["terminal_job_records"] = terminal_job_records
+    report["reused_job_records"] = reused_job_records
+    report["unknown_execution_jobs"] = unknown_execution_job_records
+    report["coverage"]["trace_producer_retired"] = retired
     report["coverage"]["tasks_omitted"] = omitted
     report["coverage"]["expected_completed_jobs"] = expected_completed
     report["coverage"]["witness_anomalies"] = witness_anomalies
@@ -1295,12 +1910,21 @@ def produce(
     report["coverage"]["task_spans_emitted"] = sum(
         1 for span in spans if span["kind"] == SPAN_KIND_INTERNAL
     )
-    emitted = report["coverage"]["task_spans_emitted"]
+    report["coverage"]["executed_job_ids"] = partition_info["executed_job_ids"]
+    report["coverage"]["reused_job_ids"] = partition_info["reused_job_ids"]
+    report["coverage"]["unknown_execution_job_ids"] = partition_info[
+        "unknown_execution_job_ids"
+    ]
+    report["coverage"]["execution_attribution_status"] = partition_info[
+        "execution_attribution_status"
+    ]
+    valid_job_count = len(terminal_job_records)
+    attributed_total = valid_job_count + len(reused_job_records)
     unselected = any(
         row.get("omit_reason") == "not_selected_job_id_slice"
         for row in expected_completed
     )
-    counted = emitted + len(omitted)
+    counted = attributed_total + len(omitted)
     snapshot_incomplete = (
         api_jobs_snapshot is not None
         and api_jobs_snapshot.get("completeness") != "complete"
@@ -1308,6 +1932,7 @@ def produce(
     if (
         witness_anomalies
         or snapshot_incomplete
+        or unknown_execution_job_records
         or (completed_jobs_total is not None and completed_jobs_total != counted)
     ):
         attempt_coverage = "incomplete"
@@ -1317,7 +1942,6 @@ def produce(
         job_selection == "all_completed"
         and completed_jobs_total is not None
         and completed_jobs_total == counted
-        and report["coverage"]["job_mapping"]["identity_ok"]
         and not snapshot_incomplete
     ):
         attempt_coverage = "complete"
@@ -1326,65 +1950,36 @@ def produce(
     report["coverage"]["attempt_coverage"] = attempt_coverage
     if (
         completed_jobs_total is not None
-        and completed_jobs_total > emitted
+        and completed_jobs_total > attributed_total
         and job_selection in {"job_id", "all_completed"}
         and "partial_job_coverage" not in reasons
     ):
         # --job-id is a diagnostic slice; all_completed may omit incomplete Jobs.
         reasons.append("partial_job_coverage")
 
-    if observation_ready:
-        time_precision = TIME_PRECISION_OBSERVED_UPPER_BOUND
-        time_source_verified = False
-        interval = _observation_interval(
-            job_sources,
-            observed_ns=terminal_observed_at_ns,
-            run_started_ns=facts.run_started_at_ns,
-            completed_jobs_total=completed_jobs_total,
-            job_selection=job_selection,
-            omitted_count=len(omitted),
-        )
-        report["terminal"].update(interval)
-        if not interval["bounds_valid"]:
-            root_emission = "not_emitted"
-            root_emission_reason = interval["bounds_invalid_reason"]
-            reasons.append("end_time_uncertain")
-        elif max_end_uncertainty_ns is None:
-            root_emission = "not_emitted"
-            root_emission_reason = "end_time_uncertain"
-            reasons.append("end_time_uncertain")
-        elif interval["uncertainty_ns"] > max_end_uncertainty_ns:
-            root_emission = "not_emitted"
-            root_emission_reason = "uncertainty_exceeds_budget"
-            reasons.append("end_time_uncertain")
-        else:
-            root_end_ns = interval["end_upper_bound_ns"]
-            root_emission = "approximate_root"
-            run_end_source = "terminal_observed_at"
-            duration_valid_for_metrics = False
-            reasons.append("temporal_precision_unverified")
-            spans.insert(
-                0,
-                _span(
-                    f"RUN {facts.workflow_name}",
-                    kind=SPAN_KIND_SERVER,
-                    trace_id=trace_id,
-                    span_id=pipeline_span_id,
-                    parent_span_id=None,
-                    start_ns=facts.run_started_at_ns,
-                    end_ns=root_end_ns,
-                    attributes={
-                        ATTR_PIPELINE_NAME: facts.workflow_name,
-                        ATTR_PIPELINE_RUN_ID: pipeline_run_id,
-                        ATTR_PIPELINE_RUN_URL: facts.run_url,
-                        ATTR_PIPELINE_RESULT: run_result,
-                        ATTR_VCS_HEAD_REVISION: facts.head_sha,
-                        ATTR_ERROR_TYPE: run_error_type,
-                    },
+    if observation_ready and (
+        omitted or reused_job_records or unknown_execution_job_records
+    ):
+        report["terminal"].update(
+            _observation_interval(
+                executed_sources,
+                observed_ns=terminal_observed_at_ns,
+                run_started_ns=facts.run_started_at_ns,
+                completed_jobs_total=(
+                    len(executed_sources)
+                    if not omitted and not unknown_execution_job_records
+                    else None
                 ),
+                job_selection=job_selection,
+                omitted_count=len(omitted) + len(unknown_execution_job_records),
             )
+        )
     report["terminal"]["root_emission"] = root_emission
-    report["terminal"]["root_emission_reason"] = root_emission_reason
+    report["terminal"]["root_emission_reason"] = (
+        None
+        if root_emission != "not_emitted"
+        else (root_emission_reason or "end_time_uncertain")
+    )
     report["terminal"]["duration_valid_for_metrics"] = duration_valid_for_metrics
     report["terminal"]["end_time_quality"] = time_precision
     report["terminal"]["end_time_source"] = run_end_source
@@ -1394,18 +1989,22 @@ def produce(
         time_precision == TIME_PRECISION_EXACT_INPUT
     )
     report["coverage"]["job_execution_envelope"] = _job_execution_envelope(
-        job_sources,
+        executed_sources,
         source=source,
         facts=facts,
-        completed_jobs_total=completed_jobs_total,
+        completed_jobs_total=(
+            len(executed_sources)
+            if not omitted and not unknown_execution_job_records
+            else None
+        ),
         job_selection=job_selection,
-        omitted_count=len(omitted),
+        omitted_count=len(omitted) + len(unknown_execution_job_records),
     )
 
     pipeline_ok = any(span["kind"] == SPAN_KIND_SERVER for span in spans)
-    task_ok = any(span["kind"] == SPAN_KIND_INTERNAL for span in spans)
+    task_ok = bool(terminal_job_records)
     report["coverage"]["pipeline_terminal_covered"] = pipeline_ok
-    if task_ok and not pipeline_ok:
+    if not pipeline_ok:
         report["coverage"]["withheld_parent_span"] = {
             "trace_id": trace_id,
             "span_id": pipeline_span_id,
@@ -1414,12 +2013,15 @@ def produce(
         }
     else:
         report["coverage"]["withheld_parent_span"] = None
-    if pipeline_ok:
-        report["coverage"]["terminal_check"] = "not_checked"
-    elif report["terminal"].get("terminal_confirmed"):
-        report["coverage"]["terminal_check"] = "not_verified"
-    else:
-        report["coverage"]["terminal_check"] = "not_applicable"
+    report["coverage"]["terminal_check"] = (
+        "not_checked"
+        if pipeline_ok
+        else (
+            "not_verified"
+            if report["terminal"].get("terminal_confirmed")
+            else "not_applicable"
+        )
+    )
     report["coverage"]["expected_trace"] = {
         "id_scheme": ID_SCHEME,
         "run_id": facts.run_id,
@@ -1433,17 +2035,18 @@ def produce(
         report["coverage"]["task_coverage"] = "empty"
     elif (
         completed_jobs_total is not None
-        and completed_jobs_total == emitted
+        and completed_jobs_total == attributed_total
+        and not unknown_execution_job_records
         and not omitted
         and job_selection == "all_completed"
     ):
         report["coverage"]["task_coverage"] = "complete"
-    elif task_ok or omitted:
+    elif task_ok or reused_job_records or omitted:
         report["coverage"]["task_coverage"] = "partial"
     else:
         report["coverage"]["task_coverage"] = "none"
 
-    if pipeline_ok or report["terminal"].get("terminal_confirmed"):
+    if report["terminal"].get("terminal_confirmed") or facts.run_conclusion is not None:
         report["terminal_provenance"] = {
             "repository": facts.repository,
             "run_id": facts.run_id,
@@ -1470,24 +2073,21 @@ def produce(
             "otlp_sha256": None,
         }
 
-    if not spans:
-        report["status"] = "incomplete"
-        report["reason"] = reasons[0] if reasons else "no_candidate_spans"
+    if (
+        reasons
+        or witness_anomalies
+        or snapshot_incomplete
+        or omitted
+        or unknown_execution_job_records
+    ):
+        report["status"] = "partial"
+        report["reason"] = reasons[0] if reasons else "partial_witness_coverage"
         return report
 
-    # Pipeline-only Root is valid when the Attempt has no Task obligation
-    # (e.g. cancelled before Jobs). Exact dual coverage without reasons → produced.
-    no_task_obligation = not job_sources and completed_jobs_total in {None, 0}
-    if pipeline_ok and task_ok and not reasons:
-        report["status"] = "produced"
-        report["reason"] = None
-        return report
-    if pipeline_ok and no_task_obligation and not reasons:
-        report["status"] = "produced"
-        report["reason"] = None
-        return report
-    report["status"] = "partial"
-    report["reason"] = reasons[0] if reasons else "partial_candidate_spans"
+    report["status"] = (
+        "produced" if pre_cutover_active and (spans or pipeline_ok) else "witness_only"
+    )
+    report["reason"] = None
     return report
 
 
@@ -1495,7 +2095,7 @@ def write_artifact(report, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Do not embed nested OTLP documents twice in the candidate artifact.
-    skip = {"otlp_json", "otlp_logs_json", "otlp_metrics_json"}
+    skip = {"otlp_json", "otlp_logs_json", "otlp_metrics_json", "terminal_job_records"}
     payload = {key: value for key, value in report.items() if key not in skip}
     # Authoritative export claim lives in claims.*; mirror consistently.
     claims = report.get("claims") or {}
@@ -1521,11 +2121,9 @@ def _otlp_attr(key, value):
 
 
 def to_otlp_json(report):
-    """Encode candidate spans as OTLP/JSON ExportTraceServiceRequest body.
-
-    This is a file-shaped OTLP JSON artifact for a neutral receiver/replay path.
-    It is not proof of OTLP/gRPC delivery or Weaver sample compatibility.
-    """
+    """Encode pre-cutover fallback candidate spans when retirement is inactive."""
+    if report.get("claims", {}).get("trace_producer_retired", True):
+        raise TelemetryError("duplicate_trace_producer_retired")
     resource_attrs = [
         _otlp_attr(key, value) for key, value in report.get("resource", {}).items()
     ]
@@ -1563,21 +2161,24 @@ def to_otlp_json(report):
 
 
 def attach_otlp_json(report):
-    """Attach OTLP JSON body when candidate spans exist; never invent spans."""
-    if not report.get("spans"):
+    """Attach OTLP Trace JSON only for pre-cutover fallback spans; else None."""
+    if report.get("claims", {}).get("trace_producer_retired", True) or not report.get(
+        "spans"
+    ):
         report["otlp_json"] = None
         report["claims"]["otlp_json_prepared"] = False
         report["claims"]["otlp_json_exported"] = False
         return report
     report["otlp_json"] = to_otlp_json(report)
     report["claims"]["otlp_json_prepared"] = True
-    # Prepared ≠ exported; file flush alone may set exported.
     report["claims"]["otlp_json_exported"] = False
     return report
 
 
 def write_otlp_json(report, path):
-    """Flush OTLP JSON artifact. Failure is an explicit export error, not produced."""
+    """Flush OTLP Trace JSON only during unverified pre-cutover fallback."""
+    if report.get("claims", {}).get("trace_producer_retired", True):
+        raise TelemetryError("duplicate_trace_producer_retired")
     if not report.get("otlp_json"):
         raise TelemetryError("otlp_json_unavailable")
     path = Path(path)
@@ -1586,7 +2187,6 @@ def write_otlp_json(report, path):
         body = (
             json.dumps(report["otlp_json"], indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
-        # Binary write keeps LF so claims.otlp_json_sha256 matches file bytes.
         path.write_bytes(body)
     except OSError as error:
         report["claims"]["otlp_json_exported"] = False
@@ -1598,7 +2198,6 @@ def write_otlp_json(report, path):
     provenance = report.get("terminal_provenance")
     if isinstance(provenance, dict):
         provenance["otlp_sha256"] = digest
-    # File artifact only — not live OTLP/gRPC delivery.
     if report["claims"].get("snapshot_phase") == "before_receiver_confirmation":
         report["claims"]["otlp_delivered"] = False
     return path
@@ -1795,10 +2394,21 @@ def _reconcile_ids(expected_ids, observed_ids):
     return matched, missing, unexpected, duplicate
 
 
+def _trace_spans_for_report(report):
+    if report.get("spans"):
+        return report["spans"]
+    otlp_json = report.get("otlp_json")
+    if isinstance(otlp_json, dict):
+        return github_receiver.extract_capture_spans(otlp_json)
+    return []
+
+
 def _expected_signal_ids(report, signal):
     if signal == "traces":
         return [
-            span["span_id"] for span in report.get("spans") or [] if span.get("span_id")
+            span["span_id"]
+            for span in _trace_spans_for_report(report)
+            if span.get("span_id")
         ]
     if signal == "logs":
         logs = (report.get("signals") or {}).get("logs") or []
@@ -1816,7 +2426,7 @@ def _expected_signal_ids(report, signal):
 
 def _single_trace_id(report, signal):
     if signal == "traces":
-        values = [span.get("trace_id") for span in report.get("spans") or []]
+        values = [span.get("trace_id") for span in _trace_spans_for_report(report)]
     elif signal == "logs":
         logs = (report.get("signals") or {}).get("logs") or []
         values = [item.get("trace_id") for item in logs]
@@ -1978,45 +2588,78 @@ def _severity_for_result(result):
 
 
 def build_job_terminal_log_records(report):
-    """Build LogRecords from emitted Task Spans (GitHub Job terminal facts).
+    """Build LogRecords from verified Job/Attempt facts, bound to githubreceiver IDs.
 
-    Source is the Attempt Job API terminal already mapped into Task Spans — not
-    a fabricated stdout stream. Full Job log archives remain on GitHub Actions.
-    When the Pipeline Root span is withheld, one Attempt-terminal LogRecord
-    carries the confirmed status and the end-time bounds. It is not a duration.
+    Source is the Attempt Job API terminal mapped to upstream githubreceiver
+    Trace/Span IDs — not synthesized Task Spans or fabricated stdout logs.
     """
     records = []
-    for span in report.get("spans") or []:
-        if span.get("kind") != SPAN_KIND_INTERNAL:
-            continue
-        attrs = span.get("attributes") or {}
-        result = attrs.get(ATTR_TASK_RUN_RESULT)
-        severity_number, severity_text = _severity_for_result(result)
-        body = f"GitHub Job terminal {attrs.get(ATTR_TASK_NAME)} conclusion={result}"
-        records.append(
-            {
-                "time_unix_nano": span.get("end_time_unix_nano"),
-                "severity_number": severity_number,
-                "severity_text": severity_text,
-                "body": body,
-                "source": "github_job_terminal",
-                "attributes": {
-                    ATTR_TASK_NAME: attrs.get(ATTR_TASK_NAME),
-                    ATTR_TASK_RUN_ID: attrs.get(ATTR_TASK_RUN_ID),
-                    ATTR_TASK_RUN_RESULT: result,
-                    ATTR_TASK_RUN_URL: attrs.get(ATTR_TASK_RUN_URL),
-                    ATTR_PIPELINE_RUN_ID: attrs.get(ATTR_PIPELINE_RUN_ID),
-                },
-                "trace_id": span.get("trace_id"),
-                "span_id": span.get("span_id"),
-            }
-        )
+    job_rows = report.get("terminal_job_records")
+    if job_rows is not None:
+        for item in job_rows:
+            result = item.get("job_result")
+            severity_number, severity_text = _severity_for_result(result)
+            body = f"GitHub Job terminal {item.get('job_name')} conclusion={result}"
+            records.append(
+                {
+                    "time_unix_nano": item.get("completed_at_ns"),
+                    "severity_number": severity_number,
+                    "severity_text": severity_text,
+                    "body": body,
+                    "source": "github_job_terminal",
+                    "attributes": {
+                        ATTR_TASK_NAME: item.get("job_name"),
+                        ATTR_TASK_RUN_ID: item.get("job_id"),
+                        ATTR_TASK_RUN_RESULT: result,
+                        ATTR_TASK_RUN_URL: item.get("job_url"),
+                        ATTR_PIPELINE_RUN_ID: item.get("pipeline_run_id"),
+                    },
+                    "provenance": {
+                        "execution_attribution": item.get(
+                            "execution_attribution", "executed_in_attempt"
+                        ),
+                        "execution_attribution_source": item.get(
+                            "execution_attribution_source", "attempt_1_witness"
+                        ),
+                    },
+                    "trace_id": item.get("trace_id"),
+                    "span_id": item.get("span_id"),
+                }
+            )
+    else:
+        for span in report.get("spans") or []:
+            if span.get("kind") != SPAN_KIND_INTERNAL:
+                continue
+            attrs = span.get("attributes") or {}
+            result = attrs.get(ATTR_TASK_RUN_RESULT)
+            severity_number, severity_text = _severity_for_result(result)
+            body = (
+                f"GitHub Job terminal {attrs.get(ATTR_TASK_NAME)} conclusion={result}"
+            )
+            records.append(
+                {
+                    "time_unix_nano": span.get("end_time_unix_nano"),
+                    "severity_number": severity_number,
+                    "severity_text": severity_text,
+                    "body": body,
+                    "source": "github_job_terminal",
+                    "attributes": {
+                        ATTR_TASK_NAME: attrs.get(ATTR_TASK_NAME),
+                        ATTR_TASK_RUN_ID: attrs.get(ATTR_TASK_RUN_ID),
+                        ATTR_TASK_RUN_RESULT: result,
+                        ATTR_TASK_RUN_URL: attrs.get(ATTR_TASK_RUN_URL),
+                        ATTR_PIPELINE_RUN_ID: attrs.get(ATTR_PIPELINE_RUN_ID),
+                    },
+                    "trace_id": span.get("trace_id"),
+                    "span_id": span.get("span_id"),
+                }
+            )
     records.extend(_attempt_terminal_log(report))
     return records
 
 
 def _attempt_terminal_log(report):
-    """One correlated terminal fact when no Root span was exported."""
+    """One correlated terminal fact bound to upstream githubreceiver Root Span."""
     terminal = report.get("terminal") or {}
     if terminal.get("root_emission") != "not_emitted":
         return []
@@ -2026,7 +2669,9 @@ def _attempt_terminal_log(report):
     if type(observed) is not int:
         return []
     facts = report.get("facts") or {}
-    trace_id, span_id, _ = _stable_ids(facts.get("run_id"), facts.get("run_attempt"))
+    trace_id, span_id, _ = _githubreceiver_ids(
+        facts.get("run_id"), facts.get("run_attempt")
+    )
     resource = report.get("resource") or {}
     return [
         {
@@ -2085,6 +2730,8 @@ def build_metrics_plan(report):
     points = []
     resource = report.get("resource") or {}
     pipeline_attrs = (_pipeline_span(report) or {}).get("attributes") or {}
+    facts = report.get("facts") or {}
+    fallback_result, fallback_error = map_github_result(facts.get("run_conclusion"))
     include_run = bool(report.get("include_run_entity_metrics"))
     grouped = {PHASE_PENDING: [], PHASE_EXECUTING: [], PHASE_FINALIZING: []}
     for item in report.get("phase_intervals") or []:
@@ -2119,11 +2766,11 @@ def build_metrics_plan(report):
             }
             result = item.get("result")
             if result is None and state == PHASE_FINALIZING:
-                result = pipeline_attrs.get(ATTR_PIPELINE_RESULT)
+                result = pipeline_attrs.get(ATTR_PIPELINE_RESULT, fallback_result)
             if result is not None:
                 attributes[ATTR_PIPELINE_RESULT] = result
             if result in {"failure", "error", "timeout"}:
-                error_type = pipeline_attrs.get(ATTR_ERROR_TYPE)
+                error_type = pipeline_attrs.get(ATTR_ERROR_TYPE, fallback_error)
                 if error_type is not None:
                     attributes[ATTR_ERROR_TYPE] = error_type
             if include_run and resource.get(ATTR_PIPELINE_RUN_ID) is not None:
@@ -2171,11 +2818,18 @@ def attach_signal_candidates(report):
     """Attach O2/O3 candidate LogRecords and Metrics decisions to the report."""
     logs = build_job_terminal_log_records(report)
     metrics, not_observable = build_metrics_plan(report)
+    log_sources = {item["source"] for item in logs}
+    if not logs:
+        logs_source = None
+    elif log_sources == {"github_attempt_terminal"}:
+        logs_source = "github_attempt_terminal"
+    else:
+        logs_source = "github_job_terminal"
     report["signals"] = {
         "logs": logs,
         "metrics": metrics,
         "metrics_not_observable": not_observable,
-        "logs_source": "github_job_terminal" if logs else None,
+        "logs_source": logs_source,
     }
     report["otlp_logs_json"] = to_otlp_logs_json(report) if logs else None
     report["otlp_metrics_json"] = to_otlp_metrics_json(report) if metrics else None
@@ -2854,11 +3508,12 @@ def main(argv=None):
     )
     parser.add_argument(
         "--end-time-mode",
-        choices=[END_TIME_EXACT, END_TIME_OBSERVED_UPPER_BOUND],
+        choices=[END_TIME_WITNESS, END_TIME_EXACT, END_TIME_OBSERVED_UPPER_BOUND],
+        default=END_TIME_WITNESS,
         help=(
-            "exact uses an explicit completed-at. observed_upper_bound records "
-            "a constraint interval and emits an approximate Root only when "
-            "--max-end-uncertainty-ns covers that interval"
+            "witness emits Attempt/Job witness inventory and Log/Metric companions "
+            "aligned to githubreceiver IDs; exact and observed_upper_bound Root "
+            "synthesis modes are retired."
         ),
     )
     parser.add_argument(
@@ -2892,6 +3547,26 @@ def main(argv=None):
         "--event-head-sha",
         help="workflow_run event head_sha for conflict check against Attempt API",
     )
+    parser.add_argument(
+        "--production-handoff",
+        type=Path,
+        help="JSON readiness payload evaluated via evaluate_receiver_production_handoff",
+    )
+    parser.add_argument(
+        "--production-handoff-from-env",
+        action="store_true",
+        help="Evaluate production receiver readiness from ECI_GITHUBRECEIVER_* env vars",
+    )
+    parser.add_argument(
+        "--allow-pre-cutover-trace-fallback",
+        action="store_true",
+        help="Retain transitional ECI Trace synthesis only while production handoff is not_verified",
+    )
+    parser.add_argument(
+        "--executed-job-id",
+        action="append",
+        help="Optional independent executed Job ID for rerun attribution",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     source = "env"
@@ -2904,6 +3579,31 @@ def main(argv=None):
     expected_job_stubs = None
     api_jobs_snapshot = None
     raw_api_witness = None
+    if args.production_handoff is not None:
+        try:
+            handoff_payload = json.loads(
+                args.production_handoff.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, UnicodeError):
+            parser.exit(2, "cicd-telemetry rejected: production_handoff_unreadable\n")
+        handoff = evaluate_production_handoff_payload(handoff_payload)
+    elif args.production_handoff_from_env:
+        handoff = evaluate_receiver_production_handoff_env()
+    else:
+        handoff = evaluate_receiver_production_handoff()
+    if handoff["status"] == "verified" and (
+        args.allow_pre_cutover_trace_fallback
+        or args.otlp_json is not None
+        or args.end_time_mode in RETIRED_END_TIME_MODES
+        or args.max_end_uncertainty_ns is not None
+    ):
+        parser.exit(2, "cicd-telemetry rejected: duplicate_trace_producer_retired\n")
+    if not args.allow_pre_cutover_trace_fallback and (
+        args.otlp_json is not None
+        or args.end_time_mode in RETIRED_END_TIME_MODES
+        or args.max_end_uncertainty_ns is not None
+    ):
+        parser.exit(2, "cicd-telemetry rejected: duplicate_trace_producer_retired\n")
     if args.facts is not None and args.run_id is not None:
         parser.exit(2, "cicd-telemetry rejected: facts_and_run_id_conflict\n")
     if args.facts is not None:
@@ -2950,12 +3650,10 @@ def main(argv=None):
         terminal_observed_at_ns = parse_time_ns(args.terminal_observed_at)
         if terminal_observed_at_ns is None:
             parser.exit(2, "cicd-telemetry rejected: terminal_observed_at_invalid\n")
-    elif args.end_time_mode == END_TIME_OBSERVED_UPPER_BOUND:
-        terminal_observed_at_ns = int(datetime.now(tz=UTC).timestamp() * 1_000_000_000)
+    elif source == "github_api" and github_api_fetched:
+        terminal_observed_at_ns = time_ns()
     else:
         terminal_observed_at_ns = None
-    if args.max_end_uncertainty_ns is not None and args.max_end_uncertainty_ns < 0:
-        parser.exit(2, "cicd-telemetry rejected: max_end_uncertainty_invalid\n")
     try:
         report = produce(
             facts,
@@ -2974,6 +3672,9 @@ def main(argv=None):
             expected_job_stubs=expected_job_stubs,
             max_end_uncertainty_ns=args.max_end_uncertainty_ns,
             api_jobs_snapshot=api_jobs_snapshot if github_api_fetched else None,
+            executed_job_ids=args.executed_job_id,
+            production_handoff=handoff,
+            allow_pre_cutover_trace_fallback=args.allow_pre_cutover_trace_fallback,
         )
     except TelemetryError as error:
         parser.exit(2, f"cicd-telemetry rejected: {error.code}\n")
@@ -3002,11 +3703,22 @@ def main(argv=None):
         }
     export_error = None
     if args.otlp_json is not None:
-        try:
-            write_otlp_json(report, args.otlp_json)
-        except TelemetryError as error:
-            export_error = error
-            sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+        if report.get("otlp_json"):
+            try:
+                write_otlp_json(report, args.otlp_json)
+            except TelemetryError as error:
+                export_error = error
+                sys.stderr.write(f"cicd-telemetry export failed: {error.code}\n")
+        elif (
+            args.allow_pre_cutover_trace_fallback
+            and handoff["status"] != "verified"
+            and args.end_time_mode == END_TIME_OBSERVED_UPPER_BOUND
+            and report["status"] in {"produced", "witness_only", "partial"}
+        ):
+            report["claims"]["otlp_json_skip"] = "no_candidate_spans"
+        else:
+            export_error = TelemetryError("otlp_json_unavailable")
+            sys.stderr.write("cicd-telemetry export failed: otlp_json_unavailable\n")
     if args.otlp_logs_json is not None and export_error is None:
         if report.get("otlp_logs_json"):
             try:
@@ -3064,7 +3776,7 @@ def main(argv=None):
         if args.otlp_endpoint is not None:
             print(f"otlp_endpoint: {args.otlp_endpoint}")
             print(f"rpc_accepted: {report['claims'].get('rpc_accepted')}")
-    if report["status"] in {"produced", "partial"}:
+    if report["status"] in {"produced", "partial", "witness_only"}:
         return 0
     return 3
 

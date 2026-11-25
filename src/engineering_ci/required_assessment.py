@@ -167,7 +167,7 @@ def _optional_internal_ref(value, code):
     return _internal_ref(value, code)
 
 
-def _evidence_ref(value, code):
+def _evidence_ref(value, code, *, allow_prefix=False):
     if not isinstance(value, dict) or set(value) - _EVIDENCE_REF_FIELDS:
         raise RequiredAssessmentError(code)
     _text(value.get("name"), code)
@@ -177,17 +177,21 @@ def _evidence_ref(value, code):
     if not str(version):
         raise RequiredAssessmentError(code)
     sha256 = value.get("sha256")
-    if not isinstance(sha256, str) or not _SHA256_RE.fullmatch(sha256):
+    valid_sha = isinstance(sha256, str) and (
+        bool(_SHA256_RE.fullmatch(sha256))
+        or (allow_prefix and bool(_SHA256_REF_RE.fullmatch(sha256)))
+    )
+    if not valid_sha:
         raise RequiredAssessmentError(code)
     if value.get("path") is not None:
         _text(value["path"], code)
     return dict(value)
 
 
-def _optional_evidence_ref(value, code):
+def _optional_evidence_ref(value, code, *, allow_prefix=False):
     if value is None:
         return None
-    return _evidence_ref(value, code)
+    return _evidence_ref(value, code, allow_prefix=allow_prefix)
 
 
 def _datetime(value, code):
@@ -397,7 +401,9 @@ def _verify_expected_scope(scope):
         if not isinstance(entry.get("input_refs"), list):
             raise RequiredAssessmentError("expected_input_refs_invalid")
         if entry.get("rule_ref") is not None:
-            _evidence_ref(entry["rule_ref"], "expected_rule_ref_invalid")
+            _evidence_ref(
+                entry["rule_ref"], "expected_rule_ref_invalid", allow_prefix=True
+            )
         checks.append(entry)
 
     expected_set_ref = expected_checks.set_identity(
@@ -1184,7 +1190,9 @@ def _applicable_to(value, code):
         "phase": _text(value.get("phase"), code),
         "action": _text(value.get("action"), code),
         "candidate_digest": _optional_internal_ref(value.get("candidate_digest"), code),
-        "rule_ref": _optional_evidence_ref(value.get("rule_ref"), code),
+        "rule_ref": _optional_evidence_ref(
+            value.get("rule_ref"), code, allow_prefix=True
+        ),
         "profile_sha256": _optional_internal_ref(value.get("profile_sha256"), code),
     }
 
@@ -1965,15 +1973,128 @@ def authenticate_obligations_universe(
     return proof
 
 
-def _check_domain_fact(scope, checks, *, phase_verification_reason=None):
+def _authorized_terminal_closures(
+    scope,
+    checks,
+    *,
+    terminal_by_ref,
+    phase_verification,
+    receipt_facts,
+    admission_facts,
+    raw_admission,
+):
+    """Return weaver_terminal refs whose pre-execution unknowns are verified downstream."""
+    if not terminal_by_ref:
+        return {}
+    if scope.get("phase") is not None and (
+        phase_verification is None and scope.get("phase_status") != "unverified"
+    ):
+        return {}
+    raw_entries = {}
+    if isinstance(raw_admission, dict) and isinstance(
+        raw_admission.get("entries"), list
+    ):
+        for item in raw_admission["entries"]:
+            if isinstance(item, dict) and item.get("expected_check_ref"):
+                raw_entries[item["expected_check_ref"]] = item
+    cleared = {}
+    for entry in checks:
+        ref = entry["expected_check_ref"]
+        binding = terminal_by_ref.get(ref)
+        if not reconciliation.terminal_applicability_authorized(entry, binding):
+            continue
+        if binding.get("phase") != scope.get("phase"):
+            continue
+        if entry.get("rule_status") != "resolved":
+            receipt_entry = (
+                receipt_facts["entries"].get(ref) if receipt_facts is not None else None
+            )
+            if not isinstance(receipt_entry, dict) or (
+                receipt_entry.get("binding_status") != "matched"
+            ):
+                continue
+            resolved_expected = receipt_entry.get("resolved_expected")
+            if not isinstance(resolved_expected, dict) or not isinstance(
+                resolved_expected.get("rule_ref"), dict
+            ):
+                continue
+            if admission_facts is None:
+                continue
+            raw_entry = raw_entries.get(ref)
+            if raw_entry is not None:
+                if raw_entry.get("resolution_status") != "verified":
+                    continue
+            elif (
+                ref not in admission_facts["coverage"]
+                and ref not in admission_facts["failures"]
+            ):
+                continue
+        cleared[ref] = binding["binding_ref"]
+    return cleared
+
+
+def _terminal_scope_domain_cleared(scope, checks, cleared_terminal_refs):
+    """True only when scope=='unknown' solely for authorized weaver_terminal refs."""
+    if not cleared_terminal_refs:
+        return False
+    if scope.get("status") != "unknown":
+        return False
+    if scope.get("reason") != "applicability_or_changeset_incomplete":
+        return False
+    if scope.get("conflicts") or scope.get("authority_status") != "verified":
+        return False
+    saw_terminal = False
+    for entry in checks:
+        ref = entry["expected_check_ref"]
+        app_status = (entry.get("applicability") or {}).get("status")
+        if entry.get("name") == "weaver_terminal":
+            if app_status == "unknown" or entry.get("rule_status") != "resolved":
+                if ref not in cleared_terminal_refs:
+                    return False
+                saw_terminal = True
+            continue
+        if app_status not in INAPPLICABLE_CHECK_STATES | {
+            "selected",
+            "targeted",
+            "full",
+            "escalated",
+        }:
+            return False
+        if entry.get("definition_status") != "resolved":
+            return False
+        if (
+            entry.get("required_by_obligations")
+            and entry.get("rule_status") != "resolved"
+        ):
+            return False
+    return saw_terminal
+
+
+def _check_domain_fact(
+    scope,
+    checks,
+    *,
+    phase_verification_reason=None,
+    cleared_terminal_refs=(),
+):
     reasons = []
-    if scope["status"] != "complete":
+    terminal_cleared = _terminal_scope_domain_cleared(
+        scope, checks, cleared_terminal_refs
+    )
+    if scope["status"] != "complete" and not terminal_cleared:
         reasons.append("expected_check_domain_incomplete")
     if scope.get("conflicts"):
         reasons.append("expected_check_conflicts")
     if scope.get("authority_status") != "verified":
         reasons.append("expected_authority_unverified")
-    if scope.get("phase") is not None and phase_verification_reason is not None:
+    if (
+        scope.get("phase") is not None
+        and phase_verification_reason is not None
+        and not (
+            terminal_cleared
+            and phase_verification_reason == "expected_phase_unverified"
+        )
+    ):
         reasons.append(phase_verification_reason)
     if scope["status"] == "complete":
         expected_label = (
@@ -1986,10 +2107,13 @@ def _check_domain_fact(scope, checks, *, phase_verification_reason=None):
             continue
         if entry.get("definition_status") != "resolved":
             reasons.append("expected_check_definition_unresolved")
-        if entry.get("rule_status") != "resolved":
+        if (
+            entry.get("rule_status") != "resolved"
+            and entry["expected_check_ref"] not in cleared_terminal_refs
+        ):
             reasons.append("expected_check_rule_unresolved")
     reasons = _dedupe(reasons)
-    return not reasons, reasons
+    return not reasons, reasons, terminal_cleared
 
 
 def _universe_fact(universe, cross_check_reasons):
@@ -2316,6 +2440,7 @@ def _check_instance_row(
     evaluated_at,
     check_waivers=None,
     expected_checks_by_ref=None,
+    cleared_terminal_refs=(),
 ):
     ref = entry["expected_check_ref"]
     phase = universe["evaluation"]["phase"]
@@ -2384,7 +2509,7 @@ def _check_instance_row(
         reasons.append("check_inapplicable_for_required_obligation")
     if entry.get("definition_status") != "resolved":
         reasons.append("check_definition_unresolved")
-    if entry.get("rule_status") != "resolved":
+    if entry.get("rule_status") != "resolved" and ref not in cleared_terminal_refs:
         reasons.append("check_rule_unresolved")
     coverage = None
     failures = []
@@ -2731,6 +2856,7 @@ def _assemble(
     evidence_satisfied,
     phase_verification=None,
     universe_source_verification=None,
+    terminal_expected_verification=None,
 ):
     blocked_reasons = []
     if not authority_verified:
@@ -2855,6 +2981,11 @@ def _assemble(
                 if universe_source_verification is not None
                 else {}
             ),
+            **(
+                {"terminal_expected_verification": terminal_expected_verification}
+                if terminal_expected_verification is not None
+                else {}
+            ),
             "receipt_ref": (receipt["receipt_ref"] if receipt is not None else None),
             "contract_sample": contract_sample,
         },
@@ -2889,6 +3020,7 @@ def assess_required_obligations(
     admission_contract_sample=False,
     phase_authority=None,
     universe_authority=None,
+    terminal_bindings=(),
 ):
     """Assess the complete current Required Obligations for one staged scope.
 
@@ -2898,7 +3030,9 @@ def assess_required_obligations(
     #66-B v2 Check projection; pass ``ref_scope_id`` for one child of a multi-ref
     container. ``admission`` is the #63 trusted admission projection for this
     exact scope, ``receipt`` is the #66-C structural receipt, and
-    ``non_check_evidence`` is the normalized domain evidence document.
+    ``non_check_evidence`` is the normalized domain evidence document, and
+    optional ``terminal_bindings`` carries verified #52-D4 bindings for
+    post-completion ``weaver_terminal``.
 
     The returned Assessment is additive and versioned. Contract samples may be
     passed to verify the aggregation logic, but they are labeled and never claim
@@ -2909,6 +3043,13 @@ def assess_required_obligations(
     scope = _select_expected_scope(expected, ref_scope_id)
     checks = _verify_expected_scope(scope)
     normalized_universe = _validate_universe(universe)
+    try:
+        terminal_by_ref = reconciliation.normalize_terminal_bindings(
+            terminal_bindings, {entry["expected_check_ref"] for entry in checks}, scope
+        )
+    except reconciliation.ReconciliationError as error:
+        raise RequiredAssessmentError(error.code) from None
+    raw_admission = admission
     projected = (
         isinstance(admission, dict)
         and admission.get("phase") is None
@@ -2987,8 +3128,32 @@ def assess_required_obligations(
     phase_verification, phase_reason = _verify_phase_authority(
         scope, normalized_universe, phase_authority
     )
-    check_domain_verified, check_domain_reasons = _check_domain_fact(
-        scope, checks, phase_verification_reason=phase_reason
+    cleared_terminal_refs = _authorized_terminal_closures(
+        scope,
+        checks,
+        terminal_by_ref=terminal_by_ref,
+        phase_verification=phase_verification,
+        receipt_facts=receipt_facts,
+        admission_facts=admission_facts,
+        raw_admission=raw_admission,
+    )
+    check_domain_verified, check_domain_reasons, terminal_domain_cleared = (
+        _check_domain_fact(
+            scope,
+            checks,
+            phase_verification_reason=phase_reason,
+            cleared_terminal_refs=cleared_terminal_refs,
+        )
+    )
+    terminal_expected_verification = (
+        {
+            "status": "verified",
+            "reason": "applicability_or_changeset_incomplete",
+            "phase_witness_verified": True,
+            "binding_refs": dict(sorted(cleared_terminal_refs.items())),
+        }
+        if terminal_domain_cleared
+        else None
     )
     universe_verified, universe_reasons = _universe_fact(
         normalized_universe, cross_check_reasons
@@ -3043,6 +3208,7 @@ def assess_required_obligations(
             evaluated_at=assessed_at,
             check_waivers=check_waivers,
             expected_checks_by_ref=checks_by_ref,
+            cleared_terminal_refs=cleared_terminal_refs,
         )
         check_rows.append(row)
         check_rows_by_ref[ref] = row
@@ -3152,6 +3318,7 @@ def assess_required_obligations(
         evidence_satisfied=evidence_satisfied,
         phase_verification=phase_verification,
         universe_source_verification=universe_source_verification,
+        terminal_expected_verification=terminal_expected_verification,
     )
 
 
@@ -3408,8 +3575,28 @@ def validate_assessment(assessment):
     expected_evidence = "unsatisfied" if current_due_bad else "satisfied"
     if evidence_fact["status"] != expected_evidence:
         raise RequiredAssessmentError("assessment_verification_inconsistent")
+    term_ver = inputs.get("terminal_expected_verification")
+    terminal_domain_verified = (
+        isinstance(term_ver, dict)
+        and term_ver.get("status") == "verified"
+        and term_ver.get("reason") == "applicability_or_changeset_incomplete"
+        and check_domain_inputs.get("status") == "unknown"
+        and (
+            "phase_verification" in inputs
+            or term_ver.get("phase_witness_verified") is True
+        )
+        and isinstance(term_ver.get("binding_refs"), dict)
+        and bool(term_ver["binding_refs"])
+        and all(
+            isinstance(ref, str)
+            and bool(_SHA256_REF_RE.fullmatch(ref))
+            and isinstance(bref, str)
+            and bool(_SHA256_REF_RE.fullmatch(bref))
+            for ref, bref in term_ver["binding_refs"].items()
+        )
+    )
     if verification["check_domain"]["status"] == "verified" and (
-        check_domain_inputs.get("status") != "complete"
+        check_domain_inputs.get("status") != "complete" and not terminal_domain_verified
     ):
         raise RequiredAssessmentError("assessment_verification_inconsistent")
     if verification["obligations_universe"]["status"] == "verified" and (

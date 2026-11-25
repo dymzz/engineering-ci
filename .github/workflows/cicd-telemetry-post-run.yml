@@ -120,6 +120,11 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.source.outputs.head_sha }}
           OTLP_ENDPOINT: ${{ vars.ECI_OTLP_ENDPOINT }}
           OTLP_INSECURE: ${{ vars.ECI_OTLP_INSECURE }}
+          ECI_GITHUBRECEIVER_WEBHOOK_SUBSCRIPTION_VERIFIED: ${{ vars.ECI_GITHUBRECEIVER_WEBHOOK_SUBSCRIPTION_VERIFIED }}
+          ECI_GITHUBRECEIVER_WEBHOOK_HMAC_VERIFIED: ${{ vars.ECI_GITHUBRECEIVER_WEBHOOK_HMAC_VERIFIED }}
+          ECI_GITHUBRECEIVER_LIVE_INGESTED: ${{ vars.ECI_GITHUBRECEIVER_LIVE_INGESTED }}
+          ECI_GITHUBRECEIVER_OTLP_TRACES_DELIVERED: ${{ vars.ECI_GITHUBRECEIVER_OTLP_TRACES_DELIVERED }}
+          ECI_GITHUBRECEIVER_CONSUMER_VERIFIED: ${{ vars.ECI_GITHUBRECEIVER_CONSUMER_VERIFIED }}
         run: |
           set -euo pipefail
           uv sync --locked
@@ -140,24 +145,61 @@ jobs:
               EXTRA+=(--otlp-insecure)
             fi
           fi
+          uv run --locked python -c '
+          import json
+          from pathlib import Path
+          from engineering_ci import cicd_telemetry
+          handoff = cicd_telemetry.evaluate_receiver_production_handoff_env()
+          policy = cicd_telemetry.select_post_run_cutover_policy(handoff)
+          Path("artifacts/cicd-telemetry/production-handoff.json").write_text(
+              json.dumps({**handoff, "cutover_policy": policy}, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          Path("artifacts/cicd-telemetry/end-time-policy.txt").write_text(
+              "\n".join([
+                  "mode=" + policy["mode"],
+                  "actual_trace_producer=" + policy["actual_trace_producer"],
+                  "target_trace_owner=" + policy["target_trace_owner"],
+                  "production_webhook_cutover=" + policy["cutover_status"],
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          '
+          CUTOVER_STATUS="$(uv run --locked python -c 'import json; print(json.load(open("artifacts/cicd-telemetry/production-handoff.json"))["status"])')"
           set +e
-          # Precision policy is explicit: no uncertainty budget, so a late
-          # observation is recorded and is not used as the Root span end.
-          printf '%s\n' 'mode=observed_upper_bound' 'max_end_uncertainty_ns=' \
-            > artifacts/cicd-telemetry/end-time-policy.txt
-          uv run --locked python -m engineering_ci.cicd_telemetry \
-            --repository "${SOURCE_REPO}" \
-            --run-id "${SOURCE_RUN_ID}" \
-            --attempt "${SOURCE_ATTEMPT}" \
-            --end-time-mode observed_upper_bound \
-            --output artifacts/cicd-telemetry/candidate.json \
-            --otlp-json artifacts/cicd-telemetry/otel.json \
-            --otlp-logs-json artifacts/cicd-telemetry/otel-logs.json \
-            --otlp-metrics-json artifacts/cicd-telemetry/otel-metrics.json \
-            --json \
-            "${EXTRA[@]}" \
-            > artifacts/cicd-telemetry/cli.stdout.json \
-            2> artifacts/cicd-telemetry/stderr.log
+          if [[ "${CUTOVER_STATUS}" == "verified" ]]; then
+            # Production githubreceiver cutover verified: retire duplicate ECI Trace synthesis.
+            uv run --locked python -m engineering_ci.cicd_telemetry \
+              --repository "${SOURCE_REPO}" \
+              --run-id "${SOURCE_RUN_ID}" \
+              --attempt "${SOURCE_ATTEMPT}" \
+              --production-handoff artifacts/cicd-telemetry/production-handoff.json \
+              --end-time-mode witness \
+              --output artifacts/cicd-telemetry/candidate.json \
+              --otlp-logs-json artifacts/cicd-telemetry/otel-logs.json \
+              --otlp-metrics-json artifacts/cicd-telemetry/otel-metrics.json \
+              --json \
+              "${EXTRA[@]}" \
+              > artifacts/cicd-telemetry/cli.stdout.json \
+              2> artifacts/cicd-telemetry/stderr.log
+          else
+            # Production cutover not_verified: retain pre-cutover observed Trace pipeline until verified.
+            uv run --locked python -m engineering_ci.cicd_telemetry \
+              --repository "${SOURCE_REPO}" \
+              --run-id "${SOURCE_RUN_ID}" \
+              --attempt "${SOURCE_ATTEMPT}" \
+              --production-handoff artifacts/cicd-telemetry/production-handoff.json \
+              --allow-pre-cutover-trace-fallback \
+              --end-time-mode observed_upper_bound \
+              --output artifacts/cicd-telemetry/candidate.json \
+              --otlp-json artifacts/cicd-telemetry/otel.json \
+              --otlp-logs-json artifacts/cicd-telemetry/otel-logs.json \
+              --otlp-metrics-json artifacts/cicd-telemetry/otel-metrics.json \
+              --json \
+              "${EXTRA[@]}" \
+              > artifacts/cicd-telemetry/cli.stdout.json \
+              2> artifacts/cicd-telemetry/stderr.log
+          fi
           code=$?
           set -e
           printf '%s\n' "${code}" > artifacts/cicd-telemetry/producer.exit
