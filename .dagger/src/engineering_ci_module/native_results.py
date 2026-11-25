@@ -164,10 +164,14 @@ async def test_result(
     )
     effective_binding = binding
     try:
-        observation = json.loads(
-            await container.with_exec(
-                ["uv", "run", "--no-sync", "python", "-I", "-c", probe]
-            ).stdout()
+        observation = (
+            json.loads(
+                await container.with_exec(
+                    ["uv", "run", "--no-sync", "python", "-I", "-c", probe]
+                ).stdout()
+            )
+            if container is not None
+            else {}
         )
         if isinstance(pre_execution_proof, dict):
             observation.update(pre_execution_proof)

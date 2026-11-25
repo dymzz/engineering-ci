@@ -3267,8 +3267,8 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
         )
         return json.loads(asyncio.run(saved.report())), bound_kwarg_seen
 
-    # 1. Pre-exec proof succeeds on immutable consumed_source despite .git filtering;
-    # runtime test writes/edits in workspace AFTER start do not falsify pre-exec binding.
+    # 1. Bound source with verified source_tree_id delivers source directly without noise
+    # stripping; runtime test writes/edits in workspace AFTER start do not falsify binding.
     def _runtime_side_effects(ws):
         (ws / "runtime_created.log").write_text("runtime output\n", encoding="utf-8")
         (ws / ".env.test").write_bytes(b"APP_ENV=mutated_by_test_after_start\n")
@@ -3280,14 +3280,15 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
     assert ok_report["status"] == "passed", ok_report
     ok_native = ok_report["tests"]["native_result"]
     ok_obs = ok_native["evidence"]["observation"]
-    assert ok_obs["container_source_filtered"] is True
+    assert ok_obs["container_source_filtered"] is False
     assert ok_obs["equivalence_verified_at"] == "pre_execution"
-    assert ok_obs["source_equivalence_status"] == "verified_equivalent"
+    assert ok_obs["source_equivalence_status"] == "unfiltered_identical"
     assert ok_native["source_ref"]["binding_status"] == "byte_tree"
     assert ok_native["source_ref"]["scope_kind"] == "full_input_closure"
     assert "source_limit" not in ok_native["evidence"]
 
-    # 2. Unfiltered identical immutable Directory digest -> skip redundant re-hash.
+    # 2. When a consumer view explicitly filters only .git while matching the bound byte
+    # tree, pre-execution full-tree closure proof verifies equivalence as verified_equivalent.
     same_src = tmp_path / "same_src"
     shutil.copytree(src, same_src, ignore=shutil.ignore_patterns(".git"))
     same_report, _ = run_case(tmp_path / "identical", bind_src=same_src)
@@ -3300,9 +3301,53 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
     assert same_native["source_ref"]["binding_status"] == "byte_tree"
     assert "source_limit" not in same_native["evidence"]
 
+    src_memdir = MemoryDirectory(
+        {
+            rel: path.read_bytes()
+            for path in src.rglob("*")
+            if path.is_file()
+            for rel in [path.relative_to(src).as_posix()]
+        }
+    )
+    src_without_git = _filter_source_with_patterns(src_memdir, [".git", ".git/**"])
+
+    class DirectRefusalNative:
+        def __init__(self):
+            self.invocations = 0
+
+        def _uv_container(self, source, version, _bound_source=None):
+            self.invocations += 1
+            ws = tmp_path / f"direct_ws_{self.invocations}"
+            ws.mkdir(parents=True, exist_ok=True)
+            _write_memdir(_bound_source or source, ws)
+            return _make_runtime_unittest_container_class(ws)()
+
+    git_filtered_native = DirectRefusalNative()
+    git_filtered_plan = json.loads(json.dumps(plan))
+    git_filtered_payload, _ = asyncio.run(
+        collector._tests(
+            git_filtered_native,
+            src_memdir,
+            ("tests.test_controlled",),
+            "unittest",
+            "3.14",
+            plan=git_filtered_plan,
+            binding_root=src,
+            consumed_source=src_without_git,
+        )
+    )
+    assert git_filtered_native.invocations == 1
+    assert git_filtered_payload["tests"]["exit_code"] == 0
+    gf_native = git_filtered_payload["tests"]["native_result"]
+    gf_obs = gf_native["evidence"]["observation"]
+    assert gf_obs["container_source_filtered"] is True
+    assert gf_obs["source_equivalence_status"] == "verified_equivalent"
+    assert gf_native["source_ref"]["binding_status"] == "byte_tree"
+    assert "source_limit" not in gf_native["evidence"]
+
     # 3. P1-01: Bound tracked fixture under a SOURCE_NOISE directory (.ruff_cache/fixture.txt)
-    # actually read by unittest: bare _bound_public_source fails (exit=1), while _tests
-    # restores the bound input before execution and passes (exit=0) with byte_tree proof.
+    # actually read by unittest: bare _bound_public_source fails (exit=1), while fixed _tests
+    # delivers the verified bound Directory directly (no strip/restore churn) and passes (exit=0).
     fix_src = tmp_path / "fix_src"
     shutil.copytree(src, fix_src)
     (fix_src / ".ruff_cache").mkdir()
@@ -3315,17 +3360,15 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
         b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=testing\\n')\n"
         b"        self.assertEqual(Path('.ruff_cache/fixture.txt').read_bytes(), b'fixture-bound=ok\\n')\n"
     )
-    bare_filtered = _filter_source_with_patterns(
-        MemoryDirectory(
-            {
-                rel: path.read_bytes()
-                for path in fix_src.rglob("*")
-                if path.is_file()
-                for rel in [path.relative_to(fix_src).as_posix()]
-            }
-        ),
-        tooling.SOURCE_NOISE,
+    fix_memdir = MemoryDirectory(
+        {
+            rel: path.read_bytes()
+            for path in fix_src.rglob("*")
+            if path.is_file()
+            for rel in [path.relative_to(fix_src).as_posix()]
+        }
     )
+    bare_filtered = _filter_source_with_patterns(fix_memdir, tooling.SOURCE_NOISE)
     assert ".ruff_cache/fixture.txt" not in bare_filtered.files
     bare_ws = tmp_path / "bare_ws"
     bare_ws.mkdir()
@@ -3336,7 +3379,7 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
     assert bare_proc.exit_code_val == 1
     assert "FileNotFoundError" in bare_proc.stderr_text
 
-    # Unfiltered identical source vs fixed filtered-with-bound-preservation produce the same exit=0.
+    # Unfiltered identical source vs fixed direct bound delivery produce the same exit=0.
     unfiltered_fix_src = tmp_path / "unfiltered_fix_src"
     shutil.copytree(fix_src, unfiltered_fix_src, ignore=shutil.ignore_patterns(".git"))
     unfiltered_report, _ = run_case(
@@ -3347,61 +3390,113 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
         "binding_status"
     ] == ("byte_tree")
 
-    restored_report, _ = run_case(tmp_path / "restored_fix", bind_src=fix_src)
-    assert restored_report["tests"]["exit_code"] == 0
-    restored_native = restored_report["tests"]["native_result"]
-    restored_obs = restored_native["evidence"]["observation"]
-    assert restored_obs["container_source_filtered"] is True
-    assert restored_obs["restored_bound_paths"] == [".ruff_cache/fixture.txt"]
-    assert restored_obs["source_equivalence_status"] == "verified_equivalent"
-    assert restored_native["source_ref"]["binding_status"] == "byte_tree"
-    assert restored_native["source_ref"]["scope_kind"] == "full_input_closure"
-    assert "source_limit" not in restored_native["evidence"]
+    direct_report, direct_kwargs = run_case(tmp_path / "direct_bound", bind_src=fix_src)
+    assert direct_kwargs == [True]
+    assert direct_report["tests"]["exit_code"] == 0
+    direct_native = direct_report["tests"]["native_result"]
+    direct_obs = direct_native["evidence"]["observation"]
+    assert direct_obs["container_source_filtered"] is False
+    assert "restored_bound_paths" not in direct_obs
+    assert direct_obs["source_equivalence_status"] == "unfiltered_identical"
+    assert direct_native["source_ref"]["binding_status"] == "byte_tree"
+    assert direct_native["source_ref"]["scope_kind"] == "full_input_closure"
+    assert "source_limit" not in direct_native["evidence"]
 
-    # Unrecoverable missing bound input (no with_file capability on filtered container dir):
-    # preserves native exit=1 and downgrades proof with source_limit.
-    class NoWithFileDir(MemoryDirectory):
-        with_file = (
-            None  # disable restoration on double to exercise missing_bound_inputs
+    # Known missing bound input refuses BEFORE running unittest (no synthetic exit=1).
+    fix_plan = json.loads(json.dumps(plan))
+    fix_plan["git"]["source_tree_id"] = real_selection.directory_content_id(fix_src)
+    miss_native = DirectRefusalNative()
+    miss_payload, miss_files = asyncio.run(
+        collector._tests(
+            miss_native,
+            fix_memdir,
+            ("tests.test_controlled",),
+            "unittest",
+            "3.14",
+            plan=fix_plan,
+            binding_root=fix_src,
+            consumed_source=bare_filtered,
         )
-
-    no_restore_report, _ = run_case(
-        tmp_path / "unrecoverable_missing",
-        bind_src=fix_src,
-        bound_transform=lambda d: NoWithFileDir(d.files, dirs=d.dirs),
     )
-    assert no_restore_report["tests"]["exit_code"] == 1
-    miss_native = no_restore_report["tests"]["native_result"]
-    assert (
-        miss_native["evidence"]["observation"]["source_equivalence_status"]
-        == "missing_bound_inputs"
+    assert miss_native.invocations == 0
+    miss_tests = miss_payload["tests"]
+    assert miss_tests["status"] == "not_executed"
+    assert miss_tests["exit_code"] is None
+    assert miss_tests["reason"] == "missing_bound_inputs"
+    assert miss_tests["check_contract"]["status"] == "not_started"
+    assert miss_tests["native_results"] == []
+    assert miss_tests["source_delivery"]["source_equivalence_status"] == (
+        "missing_bound_inputs"
     )
-    assert miss_native["evidence"]["observation"]["missing_bound_paths"] == [
+    assert miss_tests["source_delivery"]["missing_bound_paths"] == [
         ".ruff_cache/fixture.txt"
     ]
-    assert miss_native["evidence"]["source_limit"] == "input_closure_not_proven"
-    assert miss_native["source_ref"]["binding_status"] == "identity_only"
-    assert miss_native["source_ref"]["scope_kind"] == "changed_paths"
+    miss_delivery = json.loads(
+        asyncio.run(miss_files.file("source-delivery.json").contents())
+    )
+    assert miss_delivery["missing_bound_paths"] == [".ruff_cache/fixture.txt"]
+    miss_agg = collector._aggregate(
+        {
+            "tests": miss_tests,
+            "checks": [],
+            "prerequisites": [],
+            "targets": ["tests.test_controlled"],
+        }
+    )
+    assert miss_agg["status"] == "blocked"
+    assert miss_agg["exit_code"] == 5
+    assert miss_agg["reason"] == "missing_bound_inputs"
 
-    # 4. Unexpected extra file pre-execution in consumed_source ->
-    # caught by full-tree closure check (not expected-paths-only), downgraded cleanly.
-    extra_report, _ = run_case(
-        tmp_path / "extra",
-        bound_transform=lambda d: d.with_new_file(
-            "unexpected_extra.txt", b"extra pre-exec\n"
-        ),
+    # 4. Unexpected extra or tampered pre-exec input in consumed_source ->
+    # refuses BEFORE test execution with not_executed and exact diff paths.
+    extra_native = DirectRefusalNative()
+    extra_payload, _ = asyncio.run(
+        collector._tests(
+            extra_native,
+            src_memdir,
+            ("tests.test_controlled",),
+            "unittest",
+            "3.14",
+            plan=json.loads(json.dumps(plan)),
+            binding_root=src,
+            consumed_source=src_memdir.with_new_file(
+                "unexpected_extra.txt", b"extra pre-exec\n"
+            ),
+        )
     )
-    assert extra_report["tests"]["exit_code"] == 0
-    extra_native = extra_report["tests"]["native_result"]
-    assert (
-        extra_native["evidence"]["observation"]["source_equivalence_status"]
-        == "unexpected_bound_inputs"
-    )
-    assert extra_native["evidence"]["observation"]["unexpected_bound_paths"] == [
+    assert extra_native.invocations == 0
+    extra_tests = extra_payload["tests"]
+    assert extra_tests["status"] == "not_executed"
+    assert extra_tests["exit_code"] is None
+    assert extra_tests["reason"] == "unexpected_bound_inputs"
+    assert extra_tests["check_contract"]["status"] == "not_started"
+    assert extra_tests["native_results"] == []
+    assert extra_tests["source_delivery"]["unexpected_bound_paths"] == [
         "unexpected_extra.txt"
     ]
-    assert extra_native["evidence"]["source_limit"] == "input_closure_not_proven"
-    assert extra_native["source_ref"]["binding_status"] == "identity_only"
+
+    mismatch_native = DirectRefusalNative()
+    mismatch_payload, _ = asyncio.run(
+        collector._tests(
+            mismatch_native,
+            src_memdir,
+            ("tests.test_controlled",),
+            "unittest",
+            "3.14",
+            plan=json.loads(json.dumps(plan)),
+            binding_root=src,
+            consumed_source=src_memdir.with_new_file(
+                ".env.test", b"APP_ENV=tampered\n"
+            ),
+        )
+    )
+    assert mismatch_native.invocations == 0
+    assert mismatch_payload["tests"]["status"] == "not_executed"
+    assert mismatch_payload["tests"]["exit_code"] is None
+    assert mismatch_payload["tests"]["reason"] == "mismatched_bound_inputs"
+    assert mismatch_payload["tests"]["source_delivery"]["mismatched_bound_paths"] == [
+        ".env.test"
+    ]
 
 
 def test_v2_data_overlay_applies_after_source_noise_filtering_and_preserves_env_and_local_toml(
@@ -3523,10 +3618,191 @@ def test_v2_data_overlay_applies_after_source_noise_filtering_and_preserves_env_
         native.test_source.files[".ruff_cache/generated-data.txt"]
         == cache_overlay_bytes
     )
+    overlay_obs = report["tests"]["native_result"]["evidence"]["observation"]
+    assert overlay_obs["consumed_source_directory"]["digest"] == asyncio.run(
+        native.test_source.digest()
+    )
     assert report["tests"]["native_result"]["evidence"]["source_limit"] == (
         "input_closure_not_proven"
     )
     assert len(report["tests"]["generated_input_refs"]) == 3
+
+
+def test_v2_data_overlay_on_verified_git_tree_refreshes_consumed_digest_and_verifies_consumer_view(
+    modules, tmp_path
+):
+    import importlib
+
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+
+    base_bytes = b"base-ruff-fixture=ok\n"
+    local_bytes = b"[overlay]\nport = 9090\n"
+    cache_overlay_bytes = b"overlay-must-survive\n"
+
+    writer = (
+        "import os; from pathlib import Path; "
+        "root = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+        "(root / 'config').mkdir(parents=True, exist_ok=True); "
+        "(root / 'config' / 'generated.local.toml').write_bytes(b'[overlay]\\nport = 9090\\n'); "
+        "(root / '.ruff_cache').mkdir(parents=True, exist_ok=True); "
+        "(root / '.ruff_cache' / 'generated-data.txt').write_bytes(b'overlay-must-survive\\n')"
+    )
+    action = {"type": "command", "argv": [sys.executable, "-c", writer]}
+    edges = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "consumer_ref": {"kind": "tests"},
+            "dependency_kind": "data",
+            "requires_pass": True,
+            "output_ref": {"kind": "file", "path": rel},
+            "source_binding_ref": "git",
+            "declaration_ref": _v2_decl("gen"),
+            "execution_phase": "pre_execution",
+            "resolution": "resolved",
+            "unresolved_reason": None,
+        }
+        for rel in ("config/generated.local.toml", ".ruff_cache/generated-data.txt")
+    ]
+    raw_files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        "ci-selection.toml": b"# clean\n",
+        ".ruff_cache/base.txt": base_bytes,
+        "tests/test_verified_overlay.py": (
+            b"import unittest\n"
+            b"from pathlib import Path\n\n"
+            b"class VerifiedOverlayTest(unittest.TestCase):\n"
+            b"    def test_reads_base_and_overlay(self):\n"
+            b"        self.assertEqual(Path('.ruff_cache/base.txt').read_bytes(), b'base-ruff-fixture=ok\\n')\n"
+            b"        self.assertEqual(Path('config/generated.local.toml').read_bytes(), b'[overlay]\\nport = 9090\\n')\n"
+            b"        self.assertEqual(Path('.ruff_cache/generated-data.txt').read_bytes(), b'overlay-must-survive\\n')\n"
+        ),
+    }
+    base_src = tmp_path / "base_src"
+    for rel, raw in raw_files.items():
+        target = base_src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    tree_hex = "b" * 40
+    plan = _v2_dagger_plan(
+        edges=edges,
+        prerequisites=["gen"],
+        actions={"gen": action},
+        tests=("tests.test_verified_overlay",),
+        checks=("weaver_registry",),
+    )
+    plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": tree_hex,
+        "index_tree": tree_hex,
+        "changed_paths": [".ruff_cache/base.txt"],
+        "source_tree_id": real_selection.directory_content_id(base_src),
+    }
+
+    ws_root = tmp_path / "verified_overlay_ws"
+    ws_root.mkdir(parents=True, exist_ok=True)
+
+    class Native:
+        def __init__(self):
+            self.test_source = None
+            self.bound_kwarg_passed = False
+            self.invocations = 0
+
+        def _bound_public_source(self, source):
+            return _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+
+        def _uv_container(self, source, version, _bound_source=None):
+            self.invocations += 1
+            self.bound_kwarg_passed = _bound_source is not None
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            self.test_source = mounted
+            _write_memdir(mounted, ws_root)
+            return _make_runtime_unittest_container_class(ws_root)()
+
+        async def weaver_artifacts(self, source, kind, config):
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {
+                            "name": "weaver_registry",
+                            "status": "passed",
+                            "exit_code": 0,
+                        }
+                    )
+                }
+            )
+
+    native = Native()
+    base_memdir = MemoryDirectory(raw_files)
+    saved = asyncio.run(
+        collector.execute(
+            native,
+            MemoryFile(json.dumps(plan)),
+            base_memdir,
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["status"] == "passed", report
+    assert report["tests"]["exit_code"] == 0
+    assert native.bound_kwarg_passed is True
+    assert native.test_source.files[".ruff_cache/base.txt"] == base_bytes
+    assert native.test_source.files["config/generated.local.toml"] == local_bytes
+    assert (
+        native.test_source.files[".ruff_cache/generated-data.txt"]
+        == cache_overlay_bytes
+    )
+    raw_digest = asyncio.run(base_memdir.digest())
+    mounted_digest = asyncio.run(native.test_source.digest())
+    obs = report["tests"]["native_result"]["evidence"]["observation"]
+    assert obs["consumed_source_directory"]["digest"] == mounted_digest
+    assert obs["consumed_source_directory"]["digest"] != raw_digest
+    assert obs["consumer_view_closure_verified"] is True
+    assert obs["source_equivalence_status"] == "verified_consumer_view"
+    assert len(report["tests"]["generated_input_refs"]) == 2
+
+    # Corrupted overlaid consumer view (missing base fixture or tampered overlay) refuses BEFORE tests.
+    bad_native = Native()
+    bad_consumed = native.test_source.with_new_file(
+        "unexpected_extra.txt", b"corrupt-consumer-view\n"
+    )
+    bad_payload, bad_files = asyncio.run(
+        collector._tests(
+            bad_native,
+            native.test_source,
+            ("tests.test_verified_overlay",),
+            "unittest",
+            "3.14",
+            plan=plan,
+            generated_inputs=report["tests"]["generated_input_refs"],
+            binding_root=base_src,
+            consumed_source=bad_consumed,
+        )
+    )
+    assert bad_native.invocations == 0
+    bad_tests = bad_payload["tests"]
+    assert bad_tests["status"] == "not_executed"
+    assert bad_tests["exit_code"] is None
+    assert bad_tests["reason"] == "unverified_consumer_view"
+    assert bad_tests["check_contract"]["status"] == "not_started"
+    assert bad_tests["native_results"] == []
+    assert bad_tests["source_delivery"]["consumer_view_closure_verified"] is False
+    bad_delivery = json.loads(
+        asyncio.run(bad_files.file("source-delivery.json").contents())
+    )
+    assert bad_delivery["source_equivalence_status"] == "unverified_consumer_view"
 
 
 def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_targets(
