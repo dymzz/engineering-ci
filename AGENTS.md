@@ -10,8 +10,10 @@ Engineering CI provides reusable Python CI/CD capabilities through Dagger and Gi
 - [Repository overview](docs/architecture/repository-overview.md): architecture, responsibilities and module boundaries.
 - [Technology inventory](docs/architecture/technology.md): adopted, experimental, planned and removed technologies.
 - [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures.
+- [Agent task continuity](docs/architecture/agent-instructions.md#task-continuity-and-evidence-reuse): locate relevant knowledge relations, existing work, evidence and handoff before implementation or review.
+- [Authorization dependency review](docs/verification/authorization-closure/README.md): pinned dependency and evidence coverage snapshots, not current execution or authorization state.
 
-Consult relevant documentation and interfaces when working across module boundaries.
+Consult relevant documentation and interfaces when working across module boundaries. Before starting or resuming work, follow the task continuity procedure: locate the existing owner and applicable evidence, inspect the actual revision delta, and resume from the authoritative task record. Do not duplicate task, defect, dependency or evidence records for relationships already represented by their authoritative resources.
 
 ## Architecture and Ownership
 
