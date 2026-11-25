@@ -27,6 +27,7 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | GitHub Actions | adopted | CI, release workflow | [github-actions](integrations/github-actions.md#github-actions) |
 | Reusable Python CI Workflow | adopted | CI orchestrator | [github-actions](integrations/github-actions.md#reusable-python-ci-workflow) |
 | Ruff | adopted | development, CI | [tools](integrations/tools.md#ruff) |
+| Lefthook | adopted | development, local Git hooks | [tools](integrations/tools.md#lefthook) |
 | Vulture | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
 | Pyright | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
 | deptry | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
@@ -38,8 +39,9 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 
 ## Verification notes
 
-Ruff is locked in root dev dependencies and configured in standard `pyproject.toml`.
-Vulture, Pyright, deptry and Pylint are pinned in the Dagger module and run through
+Ruff and Lefthook 2.2.2 are locked in root dev dependencies; Ruff settings are
+configured in standard `pyproject.toml`, and Git hook orchestration lives in
+`lefthook.yml`. Vulture, Pyright, deptry and Pylint are pinned in the Dagger module and run through
 `uvx` in their own environment, so they are not root dev dependencies and never
 enter a consumer's lockfile. The removed host Runner, input receipt cache and YAML
 mirror validator are not integration layers.

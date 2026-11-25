@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path, PureWindowsPath
 
+from . import check_contract
+
 PLAN_KIND = "engineering-ci-selection-plan"
 PLAN_VERSION = 2
 DEPENDENCY_VERSION = 1
@@ -75,7 +77,7 @@ def _string_list(value):
 
 
 def _validate_expected(expected, git, plan, *, root=None, materialized_sources=None):
-    from . import check_contract, expected_checks
+    from . import expected_checks
 
     if not isinstance(expected, dict):
         raise PlanError("expected_checks_invalid")
@@ -299,6 +301,7 @@ def _validate_consumer_fields(value, chosen, git):
         "index_file",
         "head_commit",
         "base_commit",
+        "base_tree",
         "source_tree_id",
         "tree",
         "merge_tree",
@@ -310,6 +313,18 @@ def _validate_consumer_fields(value, chosen, git):
             raise PlanError("git_invalid")
     if git.get("snapshot") is not None and git["snapshot"] not in GIT_SNAPSHOTS:
         raise PlanError("git_snapshot_unsupported")
+    unborn_baseline = (
+        git.get("base_tree") is not None or git.get("baseline_status") == "unborn"
+    )
+    if unborn_baseline and (
+        git.get("snapshot") != "index"
+        or git.get("head_ref") != "HEAD"
+        or git.get("head_commit") is not None
+        or git.get("base_tip") is not None
+        or git.get("tree") is not None
+        or not check_contract.is_unborn_index_baseline(git)
+    ):
+        raise PlanError("index_unborn_baseline_invalid")
     if (
         git.get("snapshot") == "index"
         and git.get("execution_tree")

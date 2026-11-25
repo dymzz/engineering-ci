@@ -1,0 +1,49 @@
+{
+  "profile_ref": {
+    "name": "eci/local-push",
+    "version": "1.0.0"
+  },
+  "profile_revision": "1",
+  "approval_source": "project-governance",
+  "authority_verified": true,
+  "effective_at": "2026-11-22T16:00:00Z",
+  "evaluated_at": "2026-11-22T16:00:00Z",
+  "context": "push",
+  "action": "create",
+  "target": "refs/*",
+  "required_obligations": [
+    {
+      "obligation_ref": "local-push-whitespace",
+      "check_names": [
+        "whitespace"
+      ],
+      "allow_inapplicable": true
+    }
+  ],
+  "advisory_checks": [],
+  "allowed_inapplicability": [],
+  "domain_complete": true,
+  "declared_checks": [
+    "whitespace"
+  ],
+  "approval_binding": {
+    "approval_source": "project-governance",
+    "profile_revision": "1",
+    "target_scope": {
+      "context": "push",
+      "action": "create",
+      "target": "refs/*"
+    },
+    "effective_window": {
+      "effective_at": "2026-11-22T16:00:00Z"
+    },
+    "declared_domain": {
+      "domain_complete": true,
+      "declared_checks": [
+        "whitespace"
+      ]
+    },
+    "approval_digest": "sha256:061a3169d81e15fbaa0239d6cf4bc6a5db7fef6b83bc1346b37196799231e631"
+  },
+  "profile_sha256": "sha256:e8195024a906211c83d5eb816b66ea763f1f4790916d2ba5553b6789c0354646"
+}

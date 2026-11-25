@@ -99,14 +99,28 @@ The plan records `git.snapshot`, `index_tree`, `merge_tree`, `execution_tree`,
 `content_binding` (worktree) and `source_tree_id` (immutable trees). Host
 `execute` verifies the binding before tests/checks and passes `expected_tree`
 into `run_tests` when immutable. Dagger `execute-plan` compares the mounted
-`source` Directory to `source_tree_id` and sets `tree_verified`/`trusted` only
-when they match; a mismatch is `source_tree_mismatch`.
+`source` Directory to `source_tree_id` when supplied. The byte comparison sets
+`tree_verified`; a mismatch is `source_tree_mismatch`. Native test diagnostics
+can also run with Index identity alone, in which case the result leaves the
+byte comparison `not_requested`. `PlanExecution.enforce` interprets the native
+verdict. A Git Hook using that result as a check of the captured Index also
+requires an independently verified byte binding and same-Invocation
+reconciliation. Evidence admission is a separate #63 decision.
 
 PR merge-tree requires a Git version with `merge-tree --write-tree`; conflicts
 or missing objects produce `complete: false`, never a narrower pass. Multi-ref
 pre-push batches produce a union selection plus `references[]`, but the
 executor refuses to attribute one run to them: `multi_ref_requires_per_ref_execution`.
-Per-ref execution orchestration remains open.
+Hook `pre-push` already implements per-ref planning, isolated execution, and
+per-ref receipts in `engineering_ci.hook_checks` (`prepare_push()`,
+`run_push_checks()`, `reconcile_push()`, `consume_push_result()`) invoked by
+`lefthook.yml`'s `pre-push-checks`. The repository enables it via the top-level
+`pre-push` job and tracks the local push policy in `ci-selection.toml`.
+Push Profiles bind an action and exact Ref or a Ref prefix ending in `/*`.
+Every captured Ref must match a Profile. `[push].select_tests = false` limits
+test selection for this push policy. Other snapshots and explicit full-suite
+selection still use the configured framework. Generic non-Hook multi-ref
+execution remains a per-ref caller responsibility.
 
 ## Per-check impact (not a global ignore)
 

@@ -1094,6 +1094,13 @@ class EngineeringCi:
             source_noise=tooling.SOURCE_NOISE,
         )
 
+    def _git_container(self, source: dagger.Directory) -> dagger.Container:
+        return (
+            prepare_private_git(dag.container().from_(tooling.UV_IMAGE))
+            .with_directory("/workspace", source)
+            .with_workdir("/workspace")
+        )
+
     async def _run_git(
         self,
         source: dagger.Directory,
@@ -1102,13 +1109,8 @@ class EngineeringCi:
         capture=None,
     ) -> dict:
         """Run git inside a container when the Python module lacks git."""
-        container = (
-            prepare_private_git(dag.container().from_(tooling.UV_IMAGE))
-            .with_directory("/workspace", source)
-            .with_workdir("/workspace")
-        )
         argv = ["git", "-c", "safe.directory=/workspace", *argv_tail]
-        result = await (capture or _exec_capture)(container, argv)
+        result = await (capture or _exec_capture)(self._git_container(source), argv)
         result["observation"] = {
             "execution_location": "dagger_container",
             "freshness_policy": "native_exec_cache",
@@ -1118,6 +1120,35 @@ class EngineeringCi:
             "origin_execution_attributed": False,
         }
         return result
+
+    async def _run_index_whitespace(self, source, git, paths):
+        from engineering_ci import git_source
+
+        # Use the module's installed code and the actual Git container. The
+        # input Directory supplies only the repository bytes and object store.
+        helper = "/tmp/eci-git-source.py"
+        output = await (
+            self._git_container(source)
+            .with_new_file(
+                helper, Path(git_source.__file__).read_text(encoding="utf-8")
+            )
+            .with_exec(
+                [
+                    "python",
+                    "-I",
+                    "-c",
+                    (
+                        "import json, runpy, sys\n"
+                        "run = runpy.run_path(sys.argv[1])['run_exported_index_whitespace']\n"
+                        "print(json.dumps(run('.', **json.load(sys.stdin))))"
+                    ),
+                    helper,
+                ],
+                stdin=json.dumps({"git": git, "paths": paths}),
+            )
+            .stdout()
+        )
+        return json.loads(output)
 
     async def _run_dagger_prerequisite(self, source, name, spec, *, capture=None):
         from .native_prerequisite import run

@@ -33,6 +33,10 @@ EXECUTION_PHASE = "execution"
 POST_COMPLETION_PHASE = "post_completion"
 EXECUTION_PHASES = frozenset({EXECUTION_PHASE, POST_COMPLETION_PHASE})
 CHECK_ID_PATTERN = re.compile(r"^eci/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$")
+_EMPTY_GIT_TREE_OIDS = (
+    hashlib.sha1(b"tree 0\0", usedforsecurity=False).hexdigest(),
+    hashlib.sha256(b"tree 0\0").hexdigest(),
+)
 STATUSES = frozenset(
     {"passed", "failed", "advisory", "not_applicable", "not_executed", "unknown"}
 )
@@ -861,9 +865,26 @@ def _validate_baseline(ref):
         _text(ref[key], key)
 
 
-def _has_resolved_base_commit(ref):
+def is_unborn_index_baseline(ref):
+    """Recognize the canonical empty tree in a first-commit comparison."""
+    if (
+        not isinstance(ref, dict)
+        or ref.get("baseline_status") != "unborn"
+        or ref.get("base_commit") is not None
+    ):
+        return False
+    return ref.get("base_tree") in _EMPTY_GIT_TREE_OIDS
+
+
+def _has_resolved_baseline(ref, source):
     if not isinstance(ref, dict):
         return False
+    if ref.get("baseline_status") == "unborn":
+        return (
+            source.get("snapshot") == "index"
+            and source.get("head_commit") is None
+            and is_unborn_index_baseline(ref)
+        )
     commit = ref.get("base_commit")
     return isinstance(commit, str) and bool(
         re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", commit)
@@ -995,7 +1016,7 @@ def native_result(
     if (
         registered.requires_baseline
         and status in {"passed", "failed", "advisory"}
-        and not _has_resolved_base_commit(baseline_ref)
+        and not _has_resolved_baseline(baseline_ref, source)
     ):
         raise CheckContractError("result_baseline_missing")
     if (
@@ -1109,7 +1130,7 @@ def validate_result(result):
     if (
         builtin.requires_baseline
         and status in {"passed", "failed", "advisory"}
-        and not _has_resolved_base_commit(result.get("baseline_ref"))
+        and not _has_resolved_baseline(result.get("baseline_ref"), result["source_ref"])
     ):
         raise CheckContractError("result_baseline_missing")
     phase = result.get("phase")
@@ -1238,7 +1259,7 @@ def validate_expected_instance(expected):
     _validate_baseline(baseline)
     if (
         definition.requires_baseline or expected.get("comparison")
-    ) and not _has_resolved_base_commit(baseline):
+    ) and not _has_resolved_baseline(baseline, source):
         raise CheckContractError("expected_baseline_missing")
     phase = expected.get("phase")
     if phase is not None and phase not in EXECUTION_PHASES:

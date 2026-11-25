@@ -1,7 +1,10 @@
+import base64
 import concurrent.futures
 import hashlib
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -69,6 +72,149 @@ def repo(tmp_path):
     return root
 
 
+@pytest.mark.parametrize(
+    ("staged", "working", "expected_exit"),
+    [("staged \n", "working\n", 2), ("staged\n", "working \n", 0)],
+)
+def test_pre_commit_checks_captured_tree_with_partial_staging(
+    repo, capsys, staged, working, expected_exit
+):
+    path = repo / "a.txt"
+    path.write_text(staged, encoding="utf-8")
+    git(repo, "add", "a.txt")
+    staged_tree = git(repo, "write-tree")
+    path.write_text(working, encoding="utf-8")
+
+    assert hooks.main(["capture", "pre-commit", "--root", str(repo)]) == 0
+    invocation_ref = capsys.readouterr().out.strip()
+    exit_code = hooks.main(
+        [
+            "check",
+            "pre-commit",
+            "--root",
+            str(repo),
+            "--invocation-ref",
+            invocation_ref,
+            "--json",
+        ]
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == report["exit_code"] == expected_exit
+    assert report["check"]["exit_code"] == expected_exit
+    assert report["source_status"] == "matched"
+    assert report["invocation_ref"] == invocation_ref
+    assert report["event"]["index"]["tree"] == staged_tree
+    assert hooks.load_invocation(report["invocation_path"]) == report["event"]
+    assert list(Path(report["invocation_path"]).parent.glob("*.json")) == [
+        Path(report["invocation_path"])
+    ]
+    assert path.read_text(encoding="utf-8") == working
+
+
+def test_pre_commit_rejects_capture_when_staging_changes_before_the_check(repo):
+    path = repo / "a.txt"
+    path.write_text("captured\n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+    event = hooks.capture_pre_commit(repo)
+    reference = hooks.persist_event(repo, event)
+    path.write_text("new staging\n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+
+    report = hooks.check_pre_commit(repo, invocation_ref=reference.invocation_ref)
+
+    assert report["event"] == event
+    assert report["exit_code"] == 1
+    assert report["source_status"] == "stale"
+    assert report["reason"] == "index_changed_during_check"
+
+
+def test_pre_commit_does_not_recapture_an_unavailable_invocation(repo, capsys):
+    invocation_ref = "invocation:" + "0" * 32
+
+    exit_code = hooks.main(
+        ["check", "pre-commit", "--root", str(repo), "--invocation-ref", invocation_ref]
+    )
+
+    assert exit_code == 2
+    assert capsys.readouterr().err.strip() == "invocation_file_unavailable"
+    assert not (repo / ".git" / "eci-hooks").exists()
+
+
+def test_pre_commit_rejects_an_event_tree_different_from_the_actual_index(repo):
+    (repo / "a.txt").write_text("staged whitespace \n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+    event = hooks.capture_pre_commit(repo)
+    event["index"]["tree"] = event["base_tree"]
+    reference = hooks.persist_event(repo, event)
+
+    report = hooks.check_pre_commit(repo, invocation_ref=reference.invocation_ref)
+
+    assert report["check"]["exit_code"] == 0
+    assert report["source_status"] == "stale"
+    assert report["exit_code"] == 1
+
+
+def test_pre_commit_uses_git_attributes_from_staged_tree(repo):
+    attributes = repo / ".gitattributes"
+    attributes.write_text("*.txt whitespace=-blank-at-eol\n", encoding="utf-8")
+    (repo / "a.txt").write_text("staged \n", encoding="utf-8")
+    git(repo, "add", ".gitattributes", "a.txt")
+    attributes.write_text("*.txt whitespace=blank-at-eol\n", encoding="utf-8")
+
+    report = hooks.check_pre_commit(repo)
+
+    assert report["check"]["status"] == "passed"
+    assert report["exit_code"] == 0
+
+
+def test_pre_commit_treats_tree_oid_as_revision_when_a_path_has_the_same_name(repo):
+    base_tree = git(repo, "rev-parse", "HEAD^{tree}")
+    (repo / base_tree).touch()
+    (repo / "a.txt").write_text("clean staged change\n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+
+    report = hooks.check_pre_commit(repo)
+
+    assert report["exit_code"] == 0, report["check"]
+    assert report["check"]["status"] == "passed"
+
+
+def test_pre_commit_checks_initial_index_against_empty_tree(tmp_path):
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("first \n", encoding="utf-8")
+    git(tmp_path, "add", "a.txt")
+
+    report = hooks.check_pre_commit(tmp_path)
+
+    assert report["source_status"] == "matched"
+    assert report["check"]["status"] == "failed"
+    assert "trailing whitespace" in report["check"]["stdout"]
+
+
+def test_pre_commit_blocks_index_change_even_after_clean_native_result(
+    repo, monkeypatch
+):
+    path = repo / "a.txt"
+    path.write_text("staged\n", encoding="utf-8")
+    git(repo, "add", "a.txt")
+    native_check = hooks.hygiene.check_git_whitespace
+
+    def change_index_after_check(*args, **kwargs):
+        result = native_check(*args, **kwargs)
+        path.write_text("other staging\n", encoding="utf-8")
+        git(repo, "add", "a.txt")
+        return result
+
+    monkeypatch.setattr(hooks.hygiene, "check_git_whitespace", change_index_after_check)
+    report = hooks.check_pre_commit(repo)
+
+    assert report["check"]["exit_code"] == 0
+    assert report["source_status"] == "stale"
+    assert report["exit_code"] != 0
+    assert report["reason"] == "index_changed_during_check"
+
+
 def write_remote_file(path, value):
     path.write_text(value, encoding="utf-8")
     try:
@@ -111,6 +257,34 @@ def test_capture_pre_push_preserves_args_and_redacts_location(repo):
         "update",
         "delete",
     ]
+
+
+def test_framed_pre_push_keeps_native_arguments_and_order(repo):
+    remote_name = "origin"
+    remote_location = "C:/a folder with ' quotes and $ signs/repo.git"
+    oid = git(repo, "rev-parse", "HEAD")
+    zero = "0" * 40
+    text = (
+        f"refs/heads/main {oid} refs/heads/main {zero}\n"
+        f"refs/heads/topic {oid} refs/heads/topic {zero}\n"
+    )
+    payload = b":".join(
+        (
+            b"ECI-PRE-PUSH",
+            base64.b64encode(remote_name.encode()),
+            base64.b64encode(remote_location.encode()),
+            text.encode(),
+        )
+    )
+    args = hooks._read_pre_push_frame(io.BytesIO(payload))
+    assert args == (remote_name, remote_location, text)
+    event = hooks.capture_pre_push(repo, *args)
+    assert [ref["local_ref"] for ref in event["refs"]] == [
+        "refs/heads/main",
+        "refs/heads/topic",
+    ]
+    with pytest.raises(hooks.HookEventError, match="pre_push_argument_frame_invalid"):
+        hooks._read_pre_push_frame(io.BytesIO(text.encode()))
 
 
 def test_capture_pre_push_redacts_credentialed_name_and_location(repo):
@@ -198,6 +372,33 @@ def test_capture_pre_commit_uses_actual_index(repo, tmp_path):
     assert event["index"]["locator"]["kind"] == "absolute"
     assert Path(event["index"]["locator"]["path"]).resolve() == index.resolve()
     assert hooks.resolve_index_path(event, root=repo) == index.resolve()
+
+
+def test_pre_commit_keeps_index_locator_distinct_for_equal_bytes(tmp_path, monkeypatch):
+    worktree = tmp_path / "work"
+    worktree.mkdir()
+    store = tmp_path / "repo.git"
+    git(worktree, "init", "-q", "--separate-git-dir", str(store))
+    (worktree / "a.txt").write_bytes(b"staged\n")
+    git(worktree, "add", "a.txt")
+    default = hooks.capture_pre_commit(worktree)
+    reference = hooks.persist_event(worktree, default)
+    assert default["index"]["locator"] == {"kind": "git_dir", "path": "index"}
+    assert (
+        hooks.resolve_index_path(default, root=worktree) == (store / "index").resolve()
+    )
+
+    alternate = worktree / "index"
+    alternate.write_bytes((store / "index").read_bytes())
+    monkeypatch.setenv("GIT_INDEX_FILE", str(alternate))
+    explicit = hooks.capture_pre_commit(worktree)
+    assert explicit["index"]["locator"] == {"kind": "worktree", "path": "index"}
+    assert explicit["index"]["sha256"] == default["index"]["sha256"]
+    assert explicit["index"]["tree"] == default["index"]["tree"]
+    assert hooks.resolve_index_path(explicit, root=worktree) == alternate.resolve()
+    result = hooks.check_pre_commit(worktree, invocation_ref=reference.invocation_ref)
+    assert result["reason"] == "index_changed_during_check"
+    assert result["exit_code"] != 0
 
 
 def test_pre_commit_index_change_during_capture_is_refused(repo, monkeypatch):
@@ -607,3 +808,243 @@ def test_cli_default_handoff_identifies_each_invocation(repo, tmp_path):
     assert second_ref.startswith("invocation:")
     assert first_ref != second_ref
     assert name_file.exists() and location_file.exists()
+
+
+def _git_sh_env():
+    repo_root = Path(__file__).parents[1].resolve()
+    env = {
+        **os.environ,
+        "UV_PROJECT": str(repo_root),
+        "PYTHONPATH": str(repo_root / "src"),
+    }
+    git_bin = shutil.which("git")
+    if git_bin:
+        git_root = Path(git_bin).resolve().parents[1]
+        extra = [
+            str(Path(sys.executable).resolve().parent),
+            str(git_root / "bin"),
+            str(git_root / "usr" / "bin"),
+        ]
+        env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "")])
+    return env
+
+
+def _copy_lefthook_command(root):
+    path = Path("scripts/lefthook-arguments.sh")
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path(__file__).resolve().parents[1] / path, target)
+
+
+def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
+    tmp_path,
+):
+    repo_root = Path(__file__).parents[1].resolve()
+    env = _git_sh_env()
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "config", "user.email", "hooks@example.invalid")
+    git(tmp_path, "config", "user.name", "Hooks Test")
+    (tmp_path / "lefthook.yml").write_bytes((repo_root / "lefthook.yml").read_bytes())
+    _copy_lefthook_command(tmp_path)
+
+    validate = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "validate"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert validate.returncode == 0, validate.stderr
+
+    dumped = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "dump"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert dumped.returncode == 0, dumped.stderr
+    assert "--no-stage-fixed" in dumped.stdout
+    assert "pre-commit-checks" in dumped.stdout
+
+    install = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "install", "pre-commit"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert install.returncode == 0, install.stderr
+    hook_file = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook_text = hook_file.read_text(encoding="utf-8")
+    assert 'sh scripts/lefthook-arguments.sh "$@"' in hook_text
+    assert 'call_lefthook run "pre-commit" "$@"' in hook_text
+
+    target = tmp_path / "a.txt"
+    target.write_text("staged \n", encoding="utf-8")
+    git(tmp_path, "add", "a.txt")
+    target.write_text("working\n", encoding="utf-8")
+
+    blocked = subprocess.run(
+        ["git", "commit", "-m", "first commit blocked by staged whitespace"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    blocked_diag = f"stdout:\n{blocked.stdout}\nstderr:\n{blocked.stderr}"
+    assert blocked.returncode != 0, blocked_diag
+    assert target.read_text(encoding="utf-8") == "working\n", blocked_diag
+    inv_dir = tmp_path / ".git" / "eci-hooks" / "invocations"
+    invocations = sorted(inv_dir.glob("*.json"))
+    plans = sorted(inv_dir.glob("*.plan"))
+    activations = sorted(inv_dir.glob("*.activation"))
+    executions = sorted(inv_dir.glob("*.execution"))
+    receipts = sorted(inv_dir.glob("*.receipt"))
+    assert len(invocations) == 1, blocked_diag
+    assert len(plans) == 1, blocked_diag
+    assert len(activations) == 1, blocked_diag
+    assert len(executions) == 1, blocked_diag
+    assert len(receipts) == 1, blocked_diag
+    assert (
+        len(
+            {
+                invocations[0].stem,
+                plans[0].stem,
+                activations[0].stem,
+                executions[0].stem,
+                receipts[0].stem,
+            }
+        )
+        == 1
+    )
+    assert isinstance(json.loads(plans[0].read_text(encoding="utf-8")), dict)
+    assert isinstance(json.loads(activations[0].read_text(encoding="utf-8")), dict)
+    execution_payload = json.loads(executions[0].read_text(encoding="utf-8"))
+    assert isinstance(execution_payload, dict), execution_payload
+    assert execution_payload["report"]["exit_code"] == 2, execution_payload
+    assert execution_payload["report"]["check"]["exit_code"] == 2, execution_payload
+    receipt_payload = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert isinstance(receipt_payload, dict), receipt_payload
+    assert receipt_payload["exit_code"] == 2, f"{blocked_diag}\n{receipt_payload}"
+    if isinstance(receipt_payload.get("receipt"), dict):
+        assert receipt_payload["receipt"]["trusted"] is False
+        assert receipt_payload["receipt"]["required"] is False
+        assert receipt_payload["receipt"]["evidence_admission"] == "not_evaluated"
+    lefthook_text = (Path(__file__).parents[1] / "lefthook.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "python -P -m engineering_ci.cli hooks" in lefthook_text
+    assert "python -m engineering_ci.cli hooks" not in lefthook_text
+    assert "uv run --locked --no-sync engineering-ci hooks" not in lefthook_text
+
+    target.write_text("staged\n", encoding="utf-8")
+    git(tmp_path, "add", "a.txt")
+    staged_tree = git(tmp_path, "write-tree")
+    target.write_text("working \n", encoding="utf-8")
+
+    allowed = subprocess.run(
+        ["git", "commit", "-m", "first commit allowed despite dirty worktree"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert allowed.returncode == 0, allowed.stderr + allowed.stdout
+    assert target.read_text(encoding="utf-8") == "working \n"
+    assert git(tmp_path, "rev-parse", "HEAD^{tree}") == staged_tree
+    assert git(tmp_path, "show", "HEAD:a.txt") == "staged"
+
+
+def test_lefthook_installs_pre_push_and_frames_the_original_git_arguments(
+    tmp_path,
+):
+    repo_root = Path(__file__).parents[1].resolve()
+    env = _git_sh_env()
+
+    default_repo = tmp_path / "default_repo"
+    default_repo.mkdir()
+    git(default_repo, "init", "-q", "-b", "main")
+    (default_repo / "lefthook.yml").write_bytes(
+        (repo_root / "lefthook.yml").read_bytes()
+    )
+    _copy_lefthook_command(default_repo)
+    install_default = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "install"],
+        cwd=default_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert install_default.returncode == 0, install_default.stderr
+    assert (default_repo / ".git" / "hooks" / "pre-commit").is_file()
+    assert (default_repo / ".git" / "hooks" / "pre-push").is_file()
+
+    remote = tmp_path / "remote repo.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-q", "-b", "main", str(remote)],
+        env=env,
+        check=True,
+    )
+    push_repo = tmp_path / "push_repo"
+    push_repo.mkdir()
+    git(push_repo, "init", "-q", "-b", "main")
+    git(push_repo, "config", "user.email", "hooks@example.invalid")
+    git(push_repo, "config", "user.name", "Hooks Test")
+    repo_yml = (repo_root / "lefthook.yml").read_text(encoding="utf-8")
+    enabled_yml = (
+        repo_yml.split("\npre-push:\n", 1)[0]
+        + "\npre-push:\n  jobs:\n    - name: capture-push\n      use_stdin: true\n"
+        + "      run: uv run --locked --no-sync python -P -m engineering_ci.cli hooks capture pre-push --framed-stdin --json\n"
+    )
+    (push_repo / "lefthook.yml").write_text(enabled_yml, encoding="utf-8")
+    _copy_lefthook_command(push_repo)
+    (push_repo / "a.txt").write_text("hello\n", encoding="utf-8")
+    git(push_repo, "add", "-A")
+    git(push_repo, "commit", "-q", "-m", "init")
+    install_push = subprocess.run(
+        ["uv", "run", "--locked", "--no-sync", "lefthook", "install", "pre-push"],
+        cwd=push_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert install_push.returncode == 0, install_push.stderr
+    hook_file = push_repo / ".git" / "hooks" / "pre-push"
+    assert hook_file.is_file()
+    assert 'sh scripts/lefthook-arguments.sh "$@"' in hook_file.read_text(
+        encoding="utf-8"
+    )
+
+    pushed = subprocess.run(
+        ["git", "push", str(remote), "main"],
+        cwd=push_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert pushed.returncode == 0, pushed.stdout + pushed.stderr
+    invocations = sorted(
+        (push_repo / ".git" / "eci-hooks" / "invocations").glob("*.json")
+    )
+    assert len(invocations) == 1, pushed.stdout + pushed.stderr
+    event = hooks.load_invocation_binding(invocations[0]).event
+    assert event["hook"] == "pre-push"
+    assert [ref["remote_ref"] for ref in event["refs"]] == ["refs/heads/main"]
+    assert event["remote"]["location"]["kind"] == "path"

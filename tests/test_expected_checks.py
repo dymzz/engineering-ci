@@ -42,6 +42,7 @@ def repo(tmp_path):
     run(target, "init", "-q", "-b", "main")
     run(target, "config", "user.email", "expected@example.invalid")
     run(target, "config", "user.name", "Expected Test")
+    run(target, "config", "core.autocrlf", "false")
     run(target, "add", "-A")
     run(target, "commit", "-q", "-m", "base")
     return target, run(target, "rev-parse", "HEAD").strip()
@@ -626,6 +627,57 @@ def _sample_effective_profile(
         governed_rules=governed_rules,
         phase=phase,
     )
+
+
+def test_push_profile_prefix_only_matches_covered_refs_and_actions():
+    profile = _sample_effective_profile(
+        context="push", action="update", target="refs/heads/team/*"
+    )
+    git = {
+        "snapshot": "push",
+        "head_ref": "refs/heads/team/feature",
+        "ref_action": "update",
+    }
+    assert expected_checks.validate_effective_profile(profile, git=git) == profile
+    for change in (
+        {"head_ref": "refs/heads/team-other/feature"},
+        {"ref_action": "delete"},
+    ):
+        with pytest.raises(
+            expected_checks.ExpectedError, match="effective_profile_event_mismatch"
+        ):
+            expected_checks.validate_effective_profile(profile, git={**git, **change})
+
+
+def test_profile_plan_validates_with_selection_hygiene_defaults(repo):
+    path, base = repo
+    (path / "ci-hygiene.toml").unlink()
+    config_path = path / "ci-selection.toml"
+    profile = _sample_effective_profile(
+        governed_rules=expected_checks.governed_domain_rules(
+            path, config_path=config_path
+        ),
+        declared_checks=[
+            "whitespace",
+            "forwarding",
+            "docs",
+            "vulture",
+            "tach",
+            "unittest",
+        ],
+    )
+    config = _attach_effective_profile_policy(config_path, profile)
+    changes = selection.changeset(path, base=base, mode="worktree")
+    plan = selection.plan(
+        selection.select(changes, config, root=path),
+        config=config,
+        config_path=config_path,
+        root=path,
+        effective_profile=profile,
+    )
+    assert plan["expected_checks"]["schema_version"] == 2
+    assert "hygiene" not in plan["inputs"]
+    assert plan_contract.validate(plan) is plan
 
 
 def test_multi_ref_per_ref_identities_distinguish_baselines_on_same_tree(repo):

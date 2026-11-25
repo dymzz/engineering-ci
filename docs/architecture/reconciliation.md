@@ -2,8 +2,11 @@
 
 Status: additive #66-C contract and first implementation slice
 (`engineering_ci.reconciliation`). It does not change Plan schema 2, the
-Execution Report schema, or any pre-execution Expected identity. Scheduler and
-Hook lifecycle remain #66/#72 work; this module consumes their evidence.
+Execution Report schema, or any pre-execution Expected identity. The current
+[#66 decision](https://github.com/dymzz/engineering-ci/issues/66) assigns Git Hook
+installation and scheduling to Lefthook 2.2.2, not to ECI's historical L2/
+Event Coordinator design. This module consumes **actually observed** activation,
+Report and Attempt evidence; it does not implement or authorize a scheduler.
 
 ## Position
 
@@ -21,7 +24,11 @@ versioned **Binding/Reconciliation Receipt**. It:
 - keeps `matched` / `missing` / `insufficient` / `unknown` / `unrouted` /
   `not_applicable` distinct, and reports `unexpected`, `duplicate`, rejected
   execution objects and inactive attempts;
-- never admits trusted evidence (#63) or decides Required/Release (#61).
+- never admits trusted evidence (#63) or decides Required/Release (#61);
+- in the `#152` Stage ① Hook caller slice (`engineering_ci.hook_checks`),
+  produces local structural Receipts (`trusted=false`) for developer-side
+  `pre-commit` / `pre-push` exit verdicts while `#63` admission, `#61` gates,
+  and non-Workflow controlled CI Providers remain Stage ②–⑤ deliverables.
 
 ## Inputs
 
@@ -61,6 +68,11 @@ resolutions=(), observations=())`
   }
   ```
 
+  The JSON above is a contract **example**, not evidence that a Lefthook Job ran. The
+  `scheduler_ref` and `effective_config_ref` must be bound to the real effective
+  Lefthook configuration and invocation; a default literal `lefthook:2.2.2`
+  or `hook-job:1` does not prove scheduling, activation or source authority.
+
   `job_refs` are Job names; `job_instances` are the actually activated
   identities `(job_ref, run_ref, attempt_ref)`. A `routed` binding without
   instances is `unknown` (`job_activation_identity_missing`); it cannot produce
@@ -78,6 +90,15 @@ resolutions=(), observations=())`
   consumes this qualification; it does not infer it from result order, ID size
   or success. `mapping_status` is `routed`, `unrouted`, `filtered`,
   `not_configured`, `skipped`, or `unknown`.
+
+  At the structural `#66-C` API level (`reconciliation.py`),
+  `scheduler_ref` and `effective_config_ref` are optional nullable mappings:
+  missing values serialize as `null` rather than synthetic literal defaults.
+  Stage ① `hook_checks._reconcile_plan()` omits both instead of inventing
+  literal `lefthook:2.2.2` / `hook-job:1` strings; binding them to the actual
+  merged effective Lefthook configuration (`lefthook dump`) and invocation, and
+  independently authenticating the scheduler issuer, apply to `#63` admission
+  and controlled execution rather than local structural Hook exits.
 
 - `resolutions` — separately sourced evidence that turns the pre-execution
   projection into a strict #52 Expected instance:
@@ -106,8 +127,13 @@ resolutions=(), observations=())`
   Evidence references use `name`, `version`, and a raw 64-hex `sha256`. A
   resolution may not override a non-null rule or comparison baseline that the
   immutable Expected instance already declared: when its own `rule_ref` or
-  resolved `baseline_ref` is omitted, the Expected declaration stands; a
-  differing value is `insufficient`.
+  resolved Commit `baseline_ref` is omitted, the Expected declaration stands.
+  A differing value is `insufficient`.
+
+  A first-commit Index may use
+  `{"base_tree": "<Git empty tree OID>", "baseline_status": "unborn"}`.
+  The source resolver verifies the unborn branch and its Git empty tree.
+  The resolved baseline and its evidence reference are required for matching.
 
   The immutable Expected `input_refs` are a floor. Resolution `input_refs` may
   add native input evidence but may not omit or shrink an expected input
@@ -359,15 +385,31 @@ mistaking them for a full observation ledger.
 - The caller must pass a Plan-validated Expected projection. This module
   recomputes its immutable identities but does not re-authorize the engineering
   Profile or Plan (`expected_projection_authority_not_reverified`).
-- Scheduler routing, Hook Dispatch/Collect, and Qualification evidence remain
-  upstream in #72/#102 (`engineering-ci.hook.dispatch.v1`); this module verifies
-  supplied routing and `job_receipt` / `invocation_ref` / `event_ref`
-  attribution without generating Hook receipts itself. A routed Expected without
-  activated Job instances stays `unknown`.
+- The Hook caller derives routing from actual Lefthook Job activation, binds
+  each Job/Attempt to the native Report it produced, and supplies `job_receipt`,
+  `invocation_ref` and `event_ref`. Reconciliation verifies those associations.
+  Routed Expected entries without an activated Job remain `unknown`.
+  #102 continues to supply Git event and Invocation capture. The old #72
+  `engineering-ci.hook.dispatch.v1` proposal describes historical routing.
 - The Job/Attempt receipt is consumed as an upstream proof state. #66-C verifies
   the Report digest, Report->Result membership, attribution fields, and receipt
   logical consistency, but does not authenticate the issuer; #63 remains
   responsible for admission.
+- Stage ① local Hook caller boundary (`engineering_ci.hook_checks`):
+  `hook_checks._reconcile_plan()` supplies `expected`, `routing`,
+  `resolutions` (via `execution.evaluate_source_resolution()`), and
+  `observations` (bound Execution Reports and local `job_receipt`) to
+  `reconcile_expected_results()` and outputs the structural Receipt
+  (`trusted=false`, `required=false`). Specifically, `run_checks()` /
+  `run_push_checks()` record exclusive `.activation*` lock markers before check
+  execution, `_observe()` verifies `run_ref`/`attempt_ref`/`execution_ref`/
+  `plan.git` and emits self-attested `issuer_ref`
+  (`engineering-ci.local-hook-job` + module SHA-256), `qualification_ref`, and
+  `job_receipt` (`verification_status="upstream_verified"`), and `_reconcile_plan()`
+  leaves optional `scheduler_ref`/`effective_config_ref` omitted. Native Hook
+  tests verify Lefthook activation of those jobs for developer Hook exits, but
+  these local self-assertions neither prove an external Lefthook authority nor
+  grant `#63` admission or Source App authorization.
 - Cross-Run/Attempt historical reuse is not accepted as current execution
   evidence here (`cross_run_reuse_requires_upstream_admission`). Replaying a
   report from another `invocation_ref`, `event_ref`, `scope_id`, or
@@ -416,7 +458,7 @@ mistaking them for a full observation ledger.
 
 `#63` 消费端的独立取回与验证步骤：
 
-1. **定位原始载荷**：通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从 Run Artifact / 归档存储（或本仓库现有 `gh` Run/Artifact 下载通道与 `#72/#102` 调度产物）获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**。
+1. **定位原始载荷**。通过 `entries[i].selected_results[]`（或 `observed_results[]`）的 `(job_ref, run_ref, attempt_ref, report_ref, job_receipt_ref, result_id)`，从对应运行来源的原始载荷位置获取完整的 **Raw Execution Report (`engineering-ci-execution-report`)** 与原始 **Job/Attempt Receipt (`job_receipt`)**：现行 GitHub Actions CI 的产物通过 `gh` 按 Run/Attempt 读取，本地 Hook 的结果从 `.git/eci-hooks/invocations/` 取回。既有 Actions 制品按原 Run/Attempt 只读核验。
 2. **摘要与签发者独立验真**：
    - 重新计算 Raw Execution Report SHA-256 并核对等于 `report_ref.sha256`；
    - 重新计算 `job_receipt` SHA-256 并核对等于 `job_receipt_ref`；
@@ -437,7 +479,7 @@ mistaking them for a full observation ledger.
    - **跨次历史复用 (`#63`)**：历史 Run 具有不同的 `event_ref`（如不同的 `head_ref`/`head_commit`/`base_ref`）或不同 `invocation_ref` 属于**正常跨 Run 前提**，不得仅因 `expected_event_ref` 不同就否决复用；`#63` 保留历史原始 `(run_ref, attempt_ref, runner_ref, result_origin, event_ref)` 溯源，独立验证以下 **语义等价要件**：
      - 同一 `check_id`、`definition_version` 与受批准的 `rule_ref` / `profile_ref`（含当前生效窗与策略许可）；
      - 静态闭合的 `source_ref`（`scope_kind` 为 `check_input_closure` / `full_input_closure`，实际被检输入闭包摘要/材质一致性且满足当前 Target 实例语义）；开放范围（`changed_paths`/`identity_only`，如 `vulture`/`source`）不得冒充全闭包等价复用；
-     - 若 Check 依赖对比基线或输入清单：实际消耗的 `baseline_ref.base_commit`、`tool` 版本/配置、`input_refs`、`coverage` 与环境约束必须完全等价。
+     - 若 Check 依赖对比基线或输入清单，实际消耗的 `baseline_ref`（基线 Commit 或首次提交的空 Tree）、`tool` 版本/配置、`input_refs`、`coverage` 与环境约束必须完全等价。
 
 ### 4. `#63` L2 消费投影合同样例
 

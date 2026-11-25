@@ -178,3 +178,46 @@
 - Assessment: no attribution to a specific upstream bug or competing process.
   This warning is not a tool result, cache-hit proof or fresh Origin identity.
   No Dagger binary, user profile file or third-party source was modified.
+
+## Dagger CLI@1.0.0-beta.16: Windows File argument path
+
+- Status: reproduced with the native Windows CLI against the matching Engine.
+- Seen: 2026-11-22, #152/#153 Hook module and path verification.
+- Evidence: `plan-execution --plan` with the absolute Windows path to the
+  same test input returned CLI exit 1 and `failed to match includepatterns:
+  syntax error in pattern`. The workspace-relative path reached the function
+  and returned its native `plan_invalid` report for the intentionally invalid
+  input. A valid Plan using relative inputs passed and exported its bundle.
+- Integration: place the Plan and Source in one temporary Dagger workspace
+  and use workspace-relative arguments. A Git-pinned module call also exposed
+  `WinError 32` while removing its Windows temporary workspace after export.
+  The process holding the handle was undetermined. Windows cleanup is
+  best-effort after the verified bundle is retained.
+
+## Lefthook 2.2.2: push file selection can skip a Ref event
+
+- Status: reproduced with installed Windows Lefthook during #153 validation.
+- Evidence: in a real ECI checkout whose branch was current with its upstream,
+  `git push origin HEAD:main HEAD:refs/heads/feature/push-policy` updated both
+  destination Refs. Lefthook reported `capture-refs (skip) no matching push files`,
+  Git exited 0 and no Hook Invocation was recorded.
+- The pinned [PushFiles implementation](https://github.com/evilmartians/lefthook/blob/v2.2.2/internal/git/wrapper/push_files.go)
+  first compares the current HEAD with `@{push}`. That comparison can be empty
+  during an explicit push to a different remote or target Ref.
+- Integration: a nonempty `files` command alone still falls through to the push
+  file check in the pinned [command builder](https://github.com/evilmartians/lefthook/blob/v2.2.2/internal/run/controller/command/build_command.go).
+  Use the native [job-level files option](https://lefthook.dev/configuration/files/)
+  with `{files}` to activate the capture Job from the Hook configuration path.
+  Git's stdin supplies the Ref updates for Source binding and final reconciliation.
+
+## Lefthook 2.2.2: inline command expansion in installed Hooks
+
+- Status: reproduced in native Linux pre-commit and pre-push Hooks during
+  #153/#154 validation.
+- Evidence: the generated Hook interpolates the configured command into
+  `test -n "..."`. With `"$@"` inside an inline `sh -c` body, the probe
+  receives multiple arguments and reports `unexpected operator`. Git then
+  uses Lefthook's fallback command, losing the custom Index options and
+  pre-push input frame. Four installed-Hook tests reproduced this.
+- Integration: keep the `lefthook:` command literal and put the argument
+  handling in the script called by that command.

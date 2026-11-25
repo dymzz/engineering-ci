@@ -10,6 +10,15 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 - **Contract:** [local checks](../local-checks.md).
 - **Verify:** `dagger check --engineering-ci --check=lint --check=format-check`.
 
+## Lefthook
+
+- **Status:** adopted
+- **Pin:** `lefthook==2.2.2` in root dev dependencies (`pyproject.toml`, `uv.lock`) and `min_version: "2.2.2"` in `lefthook.yml`.
+- **Used by:** root `lefthook.yml`, `src/engineering_ci/hooks.py`, `src/engineering_ci/hook_checks.py` — native Git hook installation (`pre-commit`, `pre-push`), job activation, safe parallelism, and explicit `verify`; `engineering-ci` owns Git event capture, Source materialization, Execution, Reconciliation, and local exit propagation.
+- **Constraints:** `2.2.2` requires top-level `lefthook:` stream framing for space-containing `pre-push` arguments, single-consumer `use_stdin` handling, and native `files` / `{files}` activation on `pre-push` (see [upstream observations](../../../.agent/upstream-observations.md)). Local Hook Receipts remain `trusted=false`, `required=false`.
+- **Contract:** [selection](../selection.md), [reconciliation](../reconciliation.md), [common tasks](../../../guides/common-tasks.md#lefthook-本地入口).
+- **Verify:** `tests/test_hooks.py`, `tests/test_native_hooks.py`.
+
 ## Git CLI
 
 - **Status:** adopted; host / runner Git is not separately pinned.

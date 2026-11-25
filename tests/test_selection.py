@@ -304,7 +304,10 @@ def test_directory_content_id_matches_tree_content_id(repo, tmp_path):
     }
     subprocess.run(["git", "read-tree", tree], cwd=path, env=env, check=True)
     subprocess.run(
-        ["git", "checkout-index", "-a", "-f"], cwd=export, env=env, check=True
+        ["git", "-c", "core.autocrlf=false", "checkout-index", "-a", "-f"],
+        cwd=export,
+        env=env,
+        check=True,
     )
     assert selection.directory_content_id(export) == expected
 
@@ -989,6 +992,31 @@ def test_push_snapshot_uses_before_after_commits(repo):
     assert pushed.paths == ("src/pkg/other.py",)
 
 
+def test_push_policy_disables_test_selection_only_for_push(repo):
+    path, base = repo
+    config_path = path / "ci-selection.toml"
+    with config_path.open("ab") as stream:
+        stream.write(b"\n[push]\nselect_tests = false\n")
+    cfg = config(path)
+    restored = selection.config_from_identity(
+        selection.config_identity(config_path, cfg)
+    )
+    assert restored.push.select_tests is False
+    (path / "src/pkg/sub.py").write_bytes(b"VALUE = 8\n")
+    run(path, "add", "src/pkg/sub.py")
+    run(path, "commit", "-qm", "Change mapped source")
+    head = run(path, "rev-parse", "HEAD").strip()
+    pushed = changes(path, base=base, mode="push", before=base, after=head)
+
+    assert selection.select(pushed, restored, root=path).status == "no_tests"
+    assert (
+        "tests.test_sub"
+        in selection.select(pushed, restored, root=path, full=True).tests
+    )
+    committed = selection.changeset(path, base=base, head=head, mode="commit")
+    assert "tests.test_sub" in selection.select(committed, restored, root=path).tests
+
+
 def test_pr_merge_snapshot_records_merge_tree(repo):
     path, base = repo
     run(path, "checkout", "-q", "-b", "feature")
@@ -1375,7 +1403,18 @@ def test_plan_recomputes_dependency_prerequisites_from_final_scope(repo, tmp_pat
 def test_linked_worktree_tree_content_id_and_worktree_tree_refusal(repo, tmp_path):
     path, base = repo
     linked = tmp_path / "linked-wt"
-    run(path, "worktree", "add", "-q", "-b", "wt-branch", str(linked), base)
+    run(
+        path,
+        "-c",
+        "core.autocrlf=false",
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "wt-branch",
+        str(linked),
+        base,
+    )
     try:
         tree = run(linked, "rev-parse", "HEAD^{tree}").strip()
         assert selection._resolve_git_dir(linked) is not None
@@ -1453,11 +1492,11 @@ def test_push_ref_classification_new_delete_force_missing_and_non_commit(repo):
     assert new_policy.paths == ("src/pkg/sub.py",)
 
     # Controlled [push] policy in ci-selection.toml resolves new_ref_baseline per target pattern
-    orig_sel_toml = (path / "ci-selection.toml").read_text(encoding="utf-8")
-    (path / "ci-selection.toml").write_text(
-        orig_sel_toml
-        + f'\n[push]\nnew_ref_baseline = "{base}"\n[push.target_baselines]\n"refs/heads/*" = "{base}"\n',
-        encoding="utf-8",
+    policy_path = path / "ci-selection.toml"
+    original_policy = policy_path.read_bytes()
+    policy_path.write_bytes(
+        original_policy
+        + f'\n[push]\nnew_ref_baseline = "{base}"\n[push.target_baselines]\n"refs/heads/*" = "{base}"\n'.encode(),
     )
     push_cfg = selection.load_config(path / "ci-selection.toml")
     cfg_policy = selection.changeset(
@@ -1473,7 +1512,7 @@ def test_push_ref_classification_new_delete_force_missing_and_non_commit(repo):
     assert cfg_policy.baseline_status == "policy"
     assert cfg_policy.complete is True
     assert cfg_policy.paths == ("src/pkg/sub.py",)
-    (path / "ci-selection.toml").write_text(orig_sel_toml, encoding="utf-8")
+    policy_path.write_bytes(original_policy)
 
     # Deleting remote ref marks content checks not_applicable and preserves ref_deletion obligation
     deleted_cs = selection.changeset(

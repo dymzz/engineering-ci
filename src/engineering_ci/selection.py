@@ -108,6 +108,8 @@ class WorkflowChecksConfig:
 class PushPolicyConfig:
     new_ref_baseline: str | None = None
     target_baselines: dict[str, str] = field(default_factory=dict)
+    effective_profiles: tuple[str, ...] = ()
+    select_tests: bool = True
 
 
 @dataclass(frozen=True)
@@ -131,7 +133,7 @@ class Config:
     check_scope: CheckScopeConfig
     dependency_edges: tuple[dict, ...] = ()
     push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
-    effective_profile_policy: dict | None = None
+    effective_profile_policy: dict | list[dict] | None = None
     workflow_checks: WorkflowChecksConfig = field(default_factory=WorkflowChecksConfig)
 
 
@@ -162,6 +164,7 @@ class ChangeSet:
     force_push: bool = False
     baseline_status: str | None = None
     non_check_obligations: tuple[str, ...] = ()
+    base_tree: str | None = None
 
     @property
     def execution_tree(self):
@@ -478,7 +481,12 @@ def _parse_config_bytes(raw):
     if not isinstance(push_raw, dict) or set(push_raw) - {
         "new_ref_baseline",
         "target_baselines",
+        "effective_profiles",
+        "select_tests",
     }:
+        raise SelectionError("push_policy_invalid")
+    select_push_tests = push_raw.get("select_tests", True)
+    if type(select_push_tests) is not bool:
         raise SelectionError("push_policy_invalid")
     new_ref_base = (
         _text(push_raw["new_ref_baseline"], "new_ref_baseline")
@@ -495,8 +503,12 @@ def _parse_config_bytes(raw):
     push_policy = PushPolicyConfig(
         new_ref_baseline=new_ref_base,
         target_baselines=target_bases,
+        effective_profiles=_string_list(
+            push_raw.get("effective_profiles", []), "push_effective_profiles"
+        ),
+        select_tests=select_push_tests,
     )
-    effective_profile_policy = _parse_effective_profile_policy(
+    effective_profile_policy = _parse_effective_profile_approvals(
         value.get("effective_profile")
     )
     return Config(
@@ -539,6 +551,17 @@ def load_config(path):
     except OSError:
         raise SelectionError("config_missing") from None
     return _parse_config_bytes(raw)
+
+
+def _parse_effective_profile_approvals(raw):
+    if not isinstance(raw, list):
+        return _parse_effective_profile_policy(raw)
+    if not raw or any(not isinstance(item, dict) for item in raw):
+        raise SelectionError("effective_profile_policy_invalid")
+    approvals = [_parse_effective_profile_policy(item) for item in raw]
+    if len({item["approval_digest"] for item in approvals}) != len(approvals):
+        raise SelectionError("effective_profile_policy_duplicate_approval")
+    return approvals
 
 
 def _parse_effective_profile_policy(raw):
@@ -679,6 +702,12 @@ def _normalize_config(config):
         "push": {
             "new_ref_baseline": config.push.new_ref_baseline,
             "target_baselines": dict(sorted(config.push.target_baselines.items())),
+            **(
+                {"effective_profiles": list(config.push.effective_profiles)}
+                if config.push.effective_profiles
+                else {}
+            ),
+            **({"select_tests": False} if not config.push.select_tests else {}),
         },
         "effective_profile": config.effective_profile_policy,
         "dependency_edges": json.loads(
@@ -797,6 +826,9 @@ def config_from_identity(identity):
         raise SelectionError("config_identity_mismatch")
     scope = norm.get("check_scope") or {}
     push_raw = norm.get("push") or {}
+    select_push_tests = push_raw.get("select_tests", True)
+    if type(select_push_tests) is not bool:
+        raise SelectionError("config_identity_invalid")
     return Config(
         schema_version=int(norm.get("schema_version", SCHEMA_VERSION)),
         tach=str(norm.get("tach", "tach.toml")),
@@ -848,6 +880,8 @@ def config_from_identity(identity):
         push=PushPolicyConfig(
             new_ref_baseline=push_raw.get("new_ref_baseline"),
             target_baselines=dict(push_raw.get("target_baselines") or {}),
+            effective_profiles=tuple(push_raw.get("effective_profiles") or ()),
+            select_tests=select_push_tests,
         ),
         effective_profile_policy=norm.get("effective_profile"),
         workflow_checks=WorkflowChecksConfig(
@@ -895,7 +929,7 @@ def resolve_new_ref_baseline(
     return push_cfg.new_ref_baseline
 
 
-def _git(root, *args, env=None):
+def _git(root, *args, env=None, data=None):
     environment = {**os.environ, **env} if env else None
     try:
         return subprocess.run(
@@ -907,6 +941,7 @@ def _git(root, *args, env=None):
             errors="replace",
             check=False,
             env=environment,
+            input=data,
         )
     except FileNotFoundError:
         return subprocess.CompletedProcess(
@@ -1069,6 +1104,20 @@ def _tree_of(root, commit):
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
+def unborn_index_base(root, *, base="HEAD"):
+    """Return Git's empty tree for the current unborn branch, if applicable."""
+    branch = _git(root, "symbolic-ref", "--quiet", "HEAD")
+    ref = branch.stdout.strip()
+    if branch.returncode or not ref.startswith("refs/heads/"):
+        return None
+    if base not in ("HEAD", ref):
+        return None
+    if _git(root, "show-ref", "--exists", ref).returncode != 2:
+        return None
+    empty = _git(root, "mktree", data="")
+    return (empty.stdout.strip() or None) if empty.returncode == 0 else None
+
+
 def worktree_content_binding(root, paths, *, require_files=False):
     """Bind regular bytes, requiring each listed member for an immutable snapshot."""
     root = Path(root).resolve()
@@ -1205,42 +1254,16 @@ def _diff_deleted_paths(root, *diff_args, env=None):
 
 def tree_content_id(root, tree):
     """Content id for a Git tree, matching directory_content_id on a raw checkout."""
-    import tempfile
+    from . import git_source
 
     root = Path(root).resolve()
-    git_dir = _resolve_git_dir(root)
-    if git_dir is None:
+    if _resolve_git_dir(root) is None:
         return None
-    with tempfile.TemporaryDirectory() as temporary:
-        temporary = Path(temporary)
-        index = temporary / "index"
-        work = temporary / "work"
-        work.mkdir()
-        env = {
-            **os.environ,
-            "GIT_DIR": str(git_dir),
-            "GIT_INDEX_FILE": str(index),
-            "GIT_WORK_TREE": str(work),
-        }
-        read = subprocess.run(
-            ["git", "read-tree", tree],
-            cwd=root,
-            env=env,
-            capture_output=True,
-            check=False,
-        )
-        if read.returncode != 0:
-            return None
-        checkout = subprocess.run(
-            ["git", "checkout-index", "-a", "-f"],
-            cwd=work,
-            env=env,
-            capture_output=True,
-            check=False,
-        )
-        if checkout.returncode != 0:
-            return None
-        return directory_content_id(work)
+    try:
+        with git_source.raw_checkout(root, tree) as (worktree, _env, _format):
+            return directory_content_id(worktree)
+    except git_source.GitSourceError:
+        return None
 
 
 def parse_pre_push_stdin(text):
@@ -1630,7 +1653,12 @@ def changeset(
             new_ref_baseline=resolved_baseline,
         )
     head_commit = _resolve(root, head)
-    if head_commit is None:
+    base_tree = (
+        unborn_index_base(root, base=base)
+        if mode == "index" and head == "HEAD" and head_commit is None
+        else None
+    )
+    if head_commit is None and base_tree is None:
         return ChangeSet(
             root,
             base,
@@ -1644,10 +1672,13 @@ def changeset(
             "head_unresolved",
             snapshot=mode,
         )
-    tree = _tree_of(root, head_commit)
-    merge = _git(root, "merge-base", head_commit, base)
-    base_commit = merge.stdout.strip() if merge.returncode == 0 else None
-    if base_commit is None:
+    tree = None
+    base_commit = None
+    if head_commit is not None:
+        tree = _tree_of(root, head_commit)
+        merge = _git(root, "merge-base", head_commit, base)
+        base_commit = merge.stdout.strip() if merge.returncode == 0 else None
+    if base_commit is None and base_tree is None:
         return ChangeSet(
             root,
             base,
@@ -1686,29 +1717,28 @@ def changeset(
             deleted_paths=deleted,
         )
     if mode == "index":
+        baseline = base_commit or base_tree
         index_env = (
             {"GIT_INDEX_FILE": str(Path(index_file).resolve())}
             if index_file is not None
             else None
         )
+        write_tree = _git(root, "write-tree", env=index_env)
+        index_tree = write_tree.stdout.strip() if write_tree.returncode == 0 else None
+        comparison = (baseline, index_tree) if index_tree else ("--cached", baseline)
         diff = _git(
             root,
             "diff",
             "--no-renames",
             "--name-only",
             "-z",
-            "--cached",
-            base_commit,
+            *comparison,
+            "--",
             env=index_env,
-        )
-        index_tree = None
-        write_tree = _git(root, "write-tree", env=index_env)
-        index_tree = (
-            write_tree.stdout.strip() if write_tree.returncode == 0 else index_tree
         )
         paths = [path for path in diff.stdout.split("\0") if path]
         deleted = (
-            _diff_deleted_paths(root, "--cached", base_commit, env=index_env)
+            _diff_deleted_paths(root, *comparison, "--", env=index_env)
             if diff.returncode == 0
             else ()
         )
@@ -1744,6 +1774,8 @@ def changeset(
             else None,
             source_refusal=refusal,
             deleted_paths=deleted,
+            base_tree=base_tree,
+            baseline_status="unborn" if base_tree is not None else None,
         )
     if mode == "pr":
         base_tip = _resolve(root, base)
@@ -2172,6 +2204,21 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             status="not_applicable",
             escalated=False,
             reasons={"skipped": ["remote_ref_deleted"]},
+            base_prerequisites=frozenset(),
+        )
+    if (
+        changes.snapshot == "push"
+        and changes.complete
+        and not config.push.select_tests
+        and not full
+    ):
+        return Selection(
+            changeset=changes,
+            tests=(),
+            checks=config.checks,
+            status="no_tests",
+            escalated=False,
+            reasons={"skipped": ["Test selection is disabled by the push policy"]},
             base_prerequisites=frozenset(),
         )
     tests_dir = root / config.tests_dir
@@ -3941,6 +3988,11 @@ def plan(
             "base_ref": selection.changeset.base_ref,
             "head_ref": selection.changeset.head_ref,
             "base_commit": selection.changeset.base_commit,
+            **(
+                {"base_tree": selection.changeset.base_tree}
+                if selection.changeset.base_tree is not None
+                else {}
+            ),
             "base_tip": selection.changeset.base_tip,
             "head_commit": selection.changeset.head_commit,
             "tree": selection.changeset.tree,
@@ -4435,6 +4487,8 @@ def run_tests(
             print(f"execution refused: {refusal}", file=sys.stderr)
             return 4
     environment = dict(os.environ)
+    if expected_tree is not None or index_tree is not None:
+        environment.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     source = str((root / src_root).resolve())
     existing = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = source + (os.pathsep + existing if existing else "")

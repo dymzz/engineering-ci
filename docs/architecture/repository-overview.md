@@ -37,11 +37,13 @@ Workflow Runtime，从而避免反向依赖和引导循环。
 | 可复用容器检查 | `.dagger/src/engineering_ci_module/` | Lint、Format、pytest、质量策略、Matrix、单次执行报告 |
 | Plan 原生结果 | `.dagger/src/engineering_ci_module/plan_execution.py`、`plan_result.py` | 独立原生分支收集、同一 Directory 的 Report/Artifact/Enforce；不授予 Source/Trusted 接纳 |
 | 共享检查实现 | `src/engineering_ci/{selection,execution,hygiene,sources,cicd_telemetry}.py` | CLI 与 Dagger 共同消费的选择、执行、来源和遥测实现 |
+| 本地 Hook 调度 | `lefthook.yml`、`ci-selection.toml`、`ci-hygiene.toml`、`config/hook-profiles/` | Lefthook 2.2.2 生命周期与 Job 调度；本仓已启用 `pre-commit`、`pre-push` 与显式 `verify` |
+| Hook 来源与对账 | `src/engineering_ci/{hooks,hook_checks,git_source,dagger_plan,reconciliation}.py` | Git Event/Index/Push 捕获、blob 隔离物化、Dagger 交接与 #66-C 对账（本地 Receipt 保持 `trusted=false`、`required=false`） |
 | GitHub Run 操作 | `src/engineering_ci/github_cli.py`、`cli/` | 原生 gh 查询、等待、Artifact 与日志下载 |
 | 发布请求及证据 | `src/engineering_ci/release/` | 具体 Dispatch 意图、版本、Manifest、身份核验与发布操作 |
 | 远端编排 | `.github/workflows/` | PR CI、共享 Workflow、手动 Release 的权限和门禁 |
 
-宿主检查 Runner、Profile、输入散列和 passed 收据、通用执行 FSM / Store / Backend 以及本地 Git/PR 交付生命周期均已删除。
+旧版宿主检查 Runner、input-hash `passed` 收据缓存、通用执行 FSM / Store / Backend 以及本地 Git/PR 交付生命周期均已删除；本地 Hook 仅通过 `lefthook.yml` 与 `config/hook-profiles/` 生成结构性自用 Receipt，不授予服务端 `trusted` 接纳。
 Git/PR 由原生工具操作；仅具体 Dispatch 保留防重复请求的未决意图，不实现通用任务持久化。
 基础检查定义见[本地检查](local-checks.md)，公共消费者接口见[支持范围](../delivery/public-components.md)。
 
@@ -49,12 +51,13 @@ Git/PR 由原生工具操作；仅具体 Dispatch 保留防重复请求的未决
 
 - 用户 CLI：`engineering-ci version / release / download`。
 - 两个脚本：`scripts/release.py` 与 `scripts/download.py`；使用方式见[用户指南](../../guides/README.md)。
+- 本地 Git Hook 与显式检查：`uv run --locked --no-sync lefthook install / validate / run verify`；配置位于 `lefthook.yml`、`ci-selection.toml`、`ci-hygiene.toml` 与 `config/hook-profiles/`。
 - Actions 内部操作：`python -m engineering_ci.workflow_actions`。
 - Dagger 模块：`dagger.toml`、`dagger-module.toml` 与生成的 SDK / 锁文件。
 - 标准 Ruff 设置和锁定开发工具：根 `pyproject.toml`、`uv.lock`；原生 Check 与容器定义在 Dagger 模块中。
 - Run 下载：原生 gh 参数，由两个用户入口显式传入；没有另一个下载配置来源。
 
-Python 包使用 Python >=3.14 标准库，无第三方运行时依赖；开发工具为 pytest / pytest-cov / Ruff。
+Python 包使用 Python >=3.14 标准库，无第三方运行时依赖；开发工具为 pytest / pytest-cov / Ruff / Lefthook。
 Dagger 模块有独立 SDK 环境；GitHub 操作使用现有 Git / gh 认证，不额外配置下载后端。
 私有消费者依赖的 Secret 由调用方显式提供，基础开发环境不再需要 Vesryn 仓库的读取凭据。
 

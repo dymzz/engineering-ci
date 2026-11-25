@@ -166,6 +166,29 @@ def _report_ref(value, code):
     return value
 
 
+def execution_report_ref(report):
+    """Identify one original Execution Report by its canonical content."""
+    if not isinstance(report, dict) or report.get("kind") != EXECUTION_REPORT_KIND:
+        raise ReconciliationError("execution_report_invalid")
+    version = report.get("schema_version")
+    if type(version) is not int or version < 1:
+        raise ReconciliationError("execution_report_invalid")
+    return {
+        "kind": EXECUTION_REPORT_KIND,
+        "schema_version": version,
+        "sha256": _digest(report).removeprefix("sha256:"),
+    }
+
+
+def verify_execution_report(report, report_ref=None):
+    """Verify one Report reference and return its accepted Native Results."""
+    actual = execution_report_ref(report)
+    if report_ref is not None and report_ref != actual:
+        raise ReconciliationError("execution_report_digest_mismatch")
+    results, rejections = _execution_report(report, actual)
+    return results, rejections, actual
+
+
 def _optional_scope_id(value, code):
     if value is None:
         return None
@@ -229,6 +252,29 @@ def _job_receipt(value, *, job_ref, run_ref, attempt_ref, runner_ref, report_ref
     _optional_scope_id(value.get("scope_id"), "observation_job_receipt_invalid")
     _optional_scope_id(value.get("expected_set_ref"), "observation_job_receipt_invalid")
     return value
+
+
+def _matches_job_runner(result, runner_ref, report):
+    observed_runner = result.get("runner_ref")
+    if runner_ref is None or observed_runner in {None, runner_ref}:
+        return True
+    if (
+        runner_ref != "execution:dagger"
+        or observed_runner != "execution:dagger_export"
+        or not isinstance(report, dict)
+        or report.get("execution_context") != "dagger_export"
+    ):
+        return False
+    evidence = result.get("evidence") or {}
+    handoff = report.get("source_handoff") or {}
+    return (
+        result.get("result_origin") == "host"
+        and evidence.get("execution_context") == "dagger_export"
+        and evidence.get("parent_execution_context") == "dagger"
+        and result["result_id"] in (handoff.get("host_result_ids") or ())
+        and handoff.get("parent_execution_ref")
+        == (report.get("execution_identity") or {}).get("execution_ref")
+    )
 
 
 def _check_report_rejection(
@@ -832,11 +878,7 @@ def _normalize_observations(observations):
                 raise ReconciliationError(
                     "native_result_invalid", native_code=error.code
                 ) from None
-            if (
-                runner_ref is not None
-                and result.get("runner_ref") is not None
-                and result["runner_ref"] != runner_ref
-            ):
+            if not _matches_job_runner(result, runner_ref, item.get("report")):
                 raise ReconciliationError("observation_runner_mismatch")
             received_results[result["result_id"]] = _canonical(result)
         if report_results is not None and provided is not None:
@@ -1037,7 +1079,12 @@ def derive_strict_expected(entry, resolved):
     expected_baseline = entry.get("baseline_ref")
     if isinstance(expected_baseline, dict):
         base_commit = expected_baseline.get("base_commit")
-        if base_commit is not None:
+        if check_contract.is_unborn_index_baseline(expected_baseline):
+            if resolved_baseline is None:
+                return None, "unknown", "expected_baseline_unresolved"
+            if resolved_baseline != expected_baseline:
+                return None, "insufficient", "expected_baseline_mismatch"
+        elif base_commit is not None:
             if resolved_baseline is None:
                 # The immutable Expected baseline stays authoritative when the
                 # resolution supplies no competing comparison envelope.
@@ -1975,6 +2022,38 @@ def reconcile_expected_results(
         )
     payload["receipt_ref"] = _digest(payload)
     return payload
+
+
+def hook_exit_code(receipts):
+    """Return the local exit for the receipts covering one Hook Invocation.
+
+    Callers supply the full set of scope receipts. Success requires complete
+    Expected enumeration and reconciled observations in every scope.
+    """
+    if not isinstance(receipts, list) or not receipts:
+        return 1
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            return 1
+        if (
+            receipt.get("status") != "matched"
+            or receipt.get("all_observations_reconciled") is not True
+        ):
+            return 1
+        completeness = receipt.get("expected_completeness")
+        closed = completeness in ("expected_domain_complete", "domain_complete_empty")
+        if not (
+            closed or (receipt.get("ref") is not None and completeness == "per_ref")
+        ):
+            return 1
+        entries = receipt.get("entries")
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, dict)
+            or entry.get("binding_status") not in ("matched", "not_applicable")
+            for entry in entries
+        ):
+            return 1
+    return 0
 
 
 def _result_id_list(value, code):
