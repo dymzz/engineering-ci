@@ -3300,21 +3300,84 @@ def test_pre_execution_closure_proof_preserves_verified_and_downgrades_deviation
     assert same_native["source_ref"]["binding_status"] == "byte_tree"
     assert "source_limit" not in same_native["evidence"]
 
-    # 3. Missing bound input (.ruff_cache/bound.txt) stripped by SOURCE_NOISE pre-execution ->
-    # retain native exit=0 and downgrade binding with source_limit.
-    miss_src = tmp_path / "miss_src"
-    shutil.copytree(src, miss_src)
-    (miss_src / ".ruff_cache").mkdir()
-    (miss_src / ".ruff_cache/bound.txt").write_bytes(b"bound-cache\n")
-    miss_report, _ = run_case(tmp_path / "missing", bind_src=miss_src)
-    assert miss_report["tests"]["exit_code"] == 0
-    miss_native = miss_report["tests"]["native_result"]
+    # 3. P1-01: Bound tracked fixture under a SOURCE_NOISE directory (.ruff_cache/fixture.txt)
+    # actually read by unittest: bare _bound_public_source fails (exit=1), while _tests
+    # restores the bound input before execution and passes (exit=0) with byte_tree proof.
+    fix_src = tmp_path / "fix_src"
+    shutil.copytree(src, fix_src)
+    (fix_src / ".ruff_cache").mkdir()
+    (fix_src / ".ruff_cache/fixture.txt").write_bytes(b"fixture-bound=ok\n")
+    (fix_src / "tests/test_controlled.py").write_bytes(
+        b"import unittest\n"
+        b"from pathlib import Path\n\n"
+        b"class ControlledTest(unittest.TestCase):\n"
+        b"    def test_ok(self):\n"
+        b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=testing\\n')\n"
+        b"        self.assertEqual(Path('.ruff_cache/fixture.txt').read_bytes(), b'fixture-bound=ok\\n')\n"
+    )
+    bare_filtered = _filter_source_with_patterns(
+        MemoryDirectory(
+            {
+                rel: path.read_bytes()
+                for path in fix_src.rglob("*")
+                if path.is_file()
+                for rel in [path.relative_to(fix_src).as_posix()]
+            }
+        ),
+        tooling.SOURCE_NOISE,
+    )
+    assert ".ruff_cache/fixture.txt" not in bare_filtered.files
+    bare_ws = tmp_path / "bare_ws"
+    bare_ws.mkdir()
+    _write_memdir(bare_filtered, bare_ws)
+    bare_proc = _make_runtime_unittest_container_class(bare_ws)().with_exec(
+        ["uv", "run", "--no-sync", "python", "-m", "unittest", "tests.test_controlled"]
+    )
+    assert bare_proc.exit_code_val == 1
+    assert "FileNotFoundError" in bare_proc.stderr_text
+
+    # Unfiltered identical source vs fixed filtered-with-bound-preservation produce the same exit=0.
+    unfiltered_fix_src = tmp_path / "unfiltered_fix_src"
+    shutil.copytree(fix_src, unfiltered_fix_src, ignore=shutil.ignore_patterns(".git"))
+    unfiltered_report, _ = run_case(
+        tmp_path / "unfiltered_fix", bind_src=unfiltered_fix_src
+    )
+    assert unfiltered_report["tests"]["exit_code"] == 0
+    assert unfiltered_report["tests"]["native_result"]["source_ref"][
+        "binding_status"
+    ] == ("byte_tree")
+
+    restored_report, _ = run_case(tmp_path / "restored_fix", bind_src=fix_src)
+    assert restored_report["tests"]["exit_code"] == 0
+    restored_native = restored_report["tests"]["native_result"]
+    restored_obs = restored_native["evidence"]["observation"]
+    assert restored_obs["container_source_filtered"] is True
+    assert restored_obs["restored_bound_paths"] == [".ruff_cache/fixture.txt"]
+    assert restored_obs["source_equivalence_status"] == "verified_equivalent"
+    assert restored_native["source_ref"]["binding_status"] == "byte_tree"
+    assert restored_native["source_ref"]["scope_kind"] == "full_input_closure"
+    assert "source_limit" not in restored_native["evidence"]
+
+    # Unrecoverable missing bound input (no with_file capability on filtered container dir):
+    # preserves native exit=1 and downgrades proof with source_limit.
+    class NoWithFileDir(MemoryDirectory):
+        with_file = (
+            None  # disable restoration on double to exercise missing_bound_inputs
+        )
+
+    no_restore_report, _ = run_case(
+        tmp_path / "unrecoverable_missing",
+        bind_src=fix_src,
+        bound_transform=lambda d: NoWithFileDir(d.files, dirs=d.dirs),
+    )
+    assert no_restore_report["tests"]["exit_code"] == 1
+    miss_native = no_restore_report["tests"]["native_result"]
     assert (
         miss_native["evidence"]["observation"]["source_equivalence_status"]
         == "missing_bound_inputs"
     )
     assert miss_native["evidence"]["observation"]["missing_bound_paths"] == [
-        ".ruff_cache/bound.txt"
+        ".ruff_cache/fixture.txt"
     ]
     assert miss_native["evidence"]["source_limit"] == "input_closure_not_proven"
     assert miss_native["source_ref"]["binding_status"] == "identity_only"
@@ -3646,3 +3709,308 @@ def test_repository_script_scan_keeps_docker_targets_and_refuses_filtered_target
     assert (
         tooling.SOURCE_NOISE
     )  # keeps import explicitly used and checked alongside main_mod
+
+
+def test_pre_execution_metadata_failure_preserves_source_execution_while_mount_failure_blocks(
+    modules, tmp_path
+):
+    import importlib
+
+    from engineering_ci import selection as real_selection
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+
+    src = tmp_path / "src"
+    raw_files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        "ci-selection.toml": (
+            b'schema_version = 1\ntests_dir = "tests"\nsrc_root = "src"\nframework = "unittest"\n'
+        ),
+        "ci-weaver.toml": b"# weaver\n",
+        ".env.test": b"APP_ENV=meta\n",
+        ".ruff_cache/fixture.txt": b"fixture-meta=ok\n",
+        "tests/test_controlled.py": (
+            b"import unittest\nfrom pathlib import Path\n\n"
+            b"class MetaTest(unittest.TestCase):\n"
+            b"    def test_ok(self):\n"
+            b"        self.assertEqual(Path('.env.test').read_bytes(), b'APP_ENV=meta\\n')\n"
+            b"        self.assertEqual(Path('.ruff_cache/fixture.txt').read_bytes(), b'fixture-meta=ok\\n')\n"
+        ),
+    }
+    for rel, raw in raw_files.items():
+        target = src / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    tree_hex = "a" * 40
+    plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=("tests.test_controlled",),
+        checks=("weaver_registry",),
+    )
+    plan["git"] = {
+        "base_ref": "HEAD",
+        "head_ref": "HEAD",
+        "base_commit": "1" * 40,
+        "head_commit": "1" * 40,
+        "snapshot": "index",
+        "execution_tree": tree_hex,
+        "index_tree": tree_hex,
+        "changed_paths": [".env.test", ".ruff_cache/fixture.txt"],
+        "source_tree_id": real_selection.directory_content_id(src),
+    }
+
+    class FailingDigestDir(MemoryDirectory):
+        async def digest(self):
+            raise RuntimeError("directory digest rpc failed")
+
+        def with_file(self, path, file):
+            base = super().with_file(path, file)
+            return FailingDigestDir(base.files, dirs=base.dirs)
+
+        def with_new_file(self, path, contents):
+            base = super().with_new_file(path, contents)
+            return FailingDigestDir(base.files, dirs=base.dirs)
+
+    # 1. Optional metadata failure (digest RPC error) keeps execution running with limited proof.
+    ws_ok = tmp_path / "ws_meta_fail"
+    ws_ok.mkdir()
+
+    class NativeMetaFail:
+        def _bound_public_source(self, source):
+            filtered = _filter_source_with_patterns(source, tooling.SOURCE_NOISE)
+            return FailingDigestDir(filtered.files, dirs=filtered.dirs)
+
+        def _uv_container(self, source, version, _bound_source=None):
+            mount = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            _write_memdir(mount, ws_ok)
+            return _make_runtime_unittest_container_class(ws_ok)()
+
+        async def weaver_artifacts(self, source, kind, config):
+            return MemoryDirectory(
+                {
+                    "report.json": json.dumps(
+                        {"name": "weaver_registry", "status": "passed", "exit_code": 0}
+                    )
+                }
+            )
+
+    case_files = {
+        rel: path.read_bytes()
+        for path in src.rglob("*")
+        if path.is_file()
+        for rel in [path.relative_to(src).as_posix()]
+    }
+    saved = asyncio.run(
+        collector.execute(
+            NativeMetaFail(),
+            MemoryFile(json.dumps(plan)),
+            FailingDigestDir(case_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    report = json.loads(asyncio.run(saved.report()))
+    assert report["tests"]["exit_code"] == 0, report
+    native = report["tests"]["native_result"]
+    obs = native["evidence"]["observation"]
+    assert obs["metadata_status"] == "unavailable"
+    assert obs["source_directory"]["status"] == "unavailable"
+    assert obs["consumed_source_directory"]["status"] == "unavailable"
+    assert obs["source_equivalence_status"] == "unproven"
+    assert native["evidence"]["source_limit"] == "input_closure_not_proven"
+    assert native["source_ref"]["binding_status"] == "identity_only"
+
+    # 2. Genuine Source mount failure stops test execution as not_executed blockage.
+    class NativeMountFail(NativeMetaFail):
+        def _uv_container(self, source, version, _bound_source=None):
+            raise RuntimeError("cannot mount /workspace directory")
+
+    blocked = asyncio.run(
+        collector.execute(
+            NativeMountFail(),
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(case_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    blocked_report = json.loads(asyncio.run(blocked.report()))
+    assert blocked_report["tests"]["status"] == "not_executed"
+    assert blocked_report["tests"]["exit_code"] is None
+    assert blocked_report["tests"]["reason"] == "native_execution_error"
+
+
+def test_weaver_result_preserves_native_exit_and_report_when_metadata_fails(
+    modules,
+):
+    import importlib
+
+    _, collector = modules
+    native_results = importlib.import_module(collector.__package__ + ".native_results")
+    plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=("tests.controlled",),
+        checks=("weaver_registry",),
+    )
+
+    def _weaver_raw(exit_code):
+        status = "passed" if exit_code == 0 else "failed"
+        commands = [
+            {
+                "argv": ["weaver", "registry", "check"],
+                "exit_code": exit_code,
+                "stdout": "registry-check.stdout",
+            }
+        ]
+        if exit_code == 0:
+            commands.extend(
+                [
+                    {
+                        "argv": ["weaver", "registry", "package"],
+                        "exit_code": 0,
+                        "stdout": "registry-package.stdout",
+                    },
+                    {
+                        "argv": ["weaver", "registry", "check"],
+                        "exit_code": 0,
+                        "stdout": "registry-local-check.stdout",
+                    },
+                ]
+            )
+        return {
+            "name": "weaver_registry",
+            "status": status,
+            "exit_code": exit_code,
+            "gate_status": status,
+            "gate_exit_code": exit_code,
+            "version": weaver_tool.VERSION,
+            "tool_asset_sha256": weaver_tool.LINUX_SHA256,
+            "baseline_required": False,
+            "source_digest": "sha256:" + "a" * 64,
+            "inputs": {"config_sha256": "b" * 64},
+            "commands": commands,
+        }
+
+    class FailingDigestDir(MemoryDirectory):
+        async def digest(self):
+            raise RuntimeError("metadata transport unavailable")
+
+    # Baseline normal delivery passes cleanly without metadata_errors.
+    base_dir = MemoryDirectory(
+        {"report.json": json.dumps(_weaver_raw(0)), "raw.log": "ok"}
+    )
+    ok_out = asyncio.run(
+        native_results.weaver_result(
+            base_dir,
+            MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+            "registry",
+            plan=plan,
+            input_source=MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+        )
+    )
+    ok_check = json.loads(asyncio.run(ok_out.file("check-result.json").contents()))
+    assert ok_check["status"] == "passed"
+    assert ok_check["check_contract"]["status"] == "valid"
+    assert ok_check["native_satisfaction"]["status"] == "satisfied"
+    assert ok_check["native_results"][0]["native_exit_code"] == 0
+    assert "metadata_status" not in ok_check
+
+    # 1. Native failure (exit=1) + artifact digest failure -> keep native failed/1 & report.json!
+    fail_files = FailingDigestDir(
+        {"report.json": json.dumps(_weaver_raw(1)), "raw.log": "err"}
+    )
+    fail_out = asyncio.run(
+        native_results.weaver_result(
+            fail_files,
+            MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+            "registry",
+            plan=plan,
+            input_source=MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+        )
+    )
+    fail_check = json.loads(asyncio.run(fail_out.file("check-result.json").contents()))
+    assert fail_check["status"] == "failed"
+    assert fail_check["exit_code"] == 1
+    assert fail_check["native_results"][0]["native_exit_code"] == 1
+    assert fail_check["metadata_status"] == "unavailable"
+    assert fail_check["metadata_errors"]["native_artifacts"]["status"] == "unavailable"
+    assert (
+        json.loads(asyncio.run(fail_out.file("report.json").contents()))["exit_code"]
+        == 1
+    )
+    assert asyncio.run(fail_out.file("raw.log").contents()) == "err"
+
+    # 2. Native pass (exit=0) + consumed source digest failure -> keep passed/0, block Gate!
+    src_fail_out = asyncio.run(
+        native_results.weaver_result(
+            base_dir,
+            FailingDigestDir({"ci-weaver.toml": "# clean\n"}),
+            "registry",
+            plan=plan,
+            input_source=MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+        )
+    )
+    src_fail_check = json.loads(
+        asyncio.run(src_fail_out.file("check-result.json").contents())
+    )
+    assert src_fail_check["status"] == "passed"
+    assert src_fail_check["exit_code"] == 0
+    assert src_fail_check["native_results"][0]["native_exit_code"] == 0
+    assert src_fail_check["metadata_status"] == "unavailable"
+    assert (
+        src_fail_check["metadata_errors"]["consumed_source_directory"]["status"]
+        == "unavailable"
+    )
+    blocked_agg = collector._aggregate(
+        {
+            "tests": {"status": "passed", "exit_code": 0},
+            "checks": [src_fail_check],
+            "prerequisites": [],
+            "targets": [],
+        }
+    )
+    assert blocked_agg["status"] == "blocked"
+    assert blocked_agg["reason"] == "weaver_metadata_unavailable"
+
+    # Native failed stays failed at Gate even when metadata also failed!
+    failed_agg = collector._aggregate(
+        {
+            "tests": {"status": "passed", "exit_code": 0},
+            "checks": [fail_check],
+            "prerequisites": [],
+            "targets": [],
+        }
+    )
+    assert failed_agg["status"] == "failed"
+    assert failed_agg["exit_code"] == 1
+
+    # 3. Optional input_source digest failure alone marks partial and preserves passed Gate.
+    opt_fail_out = asyncio.run(
+        native_results.weaver_result(
+            base_dir,
+            MemoryDirectory({"ci-weaver.toml": "# clean\n"}),
+            "registry",
+            plan=plan,
+            input_source=FailingDigestDir({"ci-weaver.toml": "# clean\n"}),
+        )
+    )
+    opt_check = json.loads(
+        asyncio.run(opt_fail_out.file("check-result.json").contents())
+    )
+    assert opt_check["status"] == "passed"
+    assert opt_check["metadata_status"] == "partial"
+    assert opt_check["container_source_filtered"] is None
+    assert (
+        opt_check["metadata_errors"]["input_source_directory"]["status"]
+        == "unavailable"
+    )

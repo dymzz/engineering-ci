@@ -272,6 +272,8 @@ class EngineeringCi:
         report = json.loads(await self.weaver_report(source, kind, config_path))
         if report["status"] != "passed":
             raise ValueError(f"{report['name']}: {report['reason']}")
+        if kind != "sample" and report.get("metadata_status") == "unavailable":
+            raise ValueError(f"{report['name']}: metadata_unavailable")
         if kind != "sample" and (
             report.get("check_contract", {}).get("status") != "valid"
             or report.get("native_satisfaction", {}).get("status") != "satisfied"

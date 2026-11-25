@@ -487,12 +487,14 @@ class SourceBoundaryTests(unittest.TestCase):
         plan_exec_text = (MODULES / "plan_execution.py").read_text(encoding="utf-8")
         self.assertIn("_overlay_bound_source", plan_exec_text)
         self.assertIn("_verify_pre_execution_source_closure", plan_exec_text)
+        self.assertIn("_restore_missing_bound_files", plan_exec_text)
         self.assertIn("_accepts_bound_source_kwarg", plan_exec_text)
         native_results_text = (MODULES / "native_results.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("_downgrade_binding_source", native_results_text)
         self.assertIn("pre_execution_proof", native_results_text)
+        self.assertIn("metadata_errors", native_results_text)
         self.assertNotIn("_WORKSPACE_CLOSURE_PROBE", native_results_text)
 
 

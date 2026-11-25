@@ -60,16 +60,33 @@ async def weaver_result(
         return files
     impl, hashes = implementation("weaver")
     raw_for_adapter = dict(raw)
-    raw_for_adapter["native_artifacts"] = await directory_reference(files)
+    metadata_errors = {}
+    try:
+        raw_for_adapter["native_artifacts"] = await directory_reference(files)
+    except Exception as error:  # noqa: BLE001 - retain completed Weaver report when artifact identity fails
+        err = {"status": "unavailable", "reason": str(error)}
+        metadata_errors["native_artifacts"] = err
+        raw_for_adapter["artifact_identity"] = err
     if kind == "terminal":
         raw_for_adapter["phase"] = check_contract.POST_COMPLETION_PHASE
-    consumed_ref = await directory_reference(source)
-    input_ref = (
-        await directory_reference(input_source)
-        if input_source is not None
-        else consumed_ref
+    try:
+        consumed_ref = await directory_reference(source)
+    except Exception as error:  # noqa: BLE001 - retain completed Weaver report when source identity fails
+        consumed_ref = {"status": "unavailable", "reason": str(error)}
+        metadata_errors["consumed_source_directory"] = consumed_ref
+    if input_source is not None:
+        try:
+            input_ref = await directory_reference(input_source)
+        except Exception as error:  # noqa: BLE001 - retain completed Weaver report when input identity fails
+            input_ref = {"status": "unavailable", "reason": str(error)}
+            metadata_errors["input_source_directory"] = input_ref
+    else:
+        input_ref = consumed_ref
+    filtered = (
+        input_ref["digest"] != consumed_ref["digest"]
+        if "digest" in input_ref and "digest" in consumed_ref
+        else None
     )
-    filtered = input_ref["digest"] != consumed_ref["digest"]
     try:
         enriched = native_producer.weaver_check(
             raw_for_adapter,
@@ -87,6 +104,13 @@ async def weaver_result(
         enriched["container_source_filtered"] = filtered
         if filtered and source_excludes:
             enriched["container_source_excludes"] = list(source_excludes)
+    if metadata_errors:
+        enriched["metadata_errors"] = metadata_errors
+        enriched["metadata_status"] = (
+            "unavailable"
+            if {"native_artifacts", "consumed_source_directory"} & set(metadata_errors)
+            else "partial"
+        )
     enriched["implementation_sources"] = hashes
     enriched["trusted"] = False
     return files.with_new_file(
