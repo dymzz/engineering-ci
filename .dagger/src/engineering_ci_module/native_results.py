@@ -45,7 +45,15 @@ async def directory_reference(source):
 
 
 async def weaver_result(
-    files, source, kind, *, context=None, plan=None, generated_inputs=()
+    files,
+    source,
+    kind,
+    *,
+    context=None,
+    plan=None,
+    generated_inputs=(),
+    input_source=None,
+    source_excludes=(),
 ):
     raw = json.loads(await files.file("report.json").contents())
     if kind not in {"registry", "live", "terminal"}:
@@ -55,17 +63,30 @@ async def weaver_result(
     raw_for_adapter["native_artifacts"] = await directory_reference(files)
     if kind == "terminal":
         raw_for_adapter["phase"] = check_contract.POST_COMPLETION_PHASE
+    consumed_ref = await directory_reference(source)
+    input_ref = (
+        await directory_reference(input_source)
+        if input_source is not None
+        else consumed_ref
+    )
+    filtered = input_ref["digest"] != consumed_ref["digest"]
     try:
         enriched = native_producer.weaver_check(
             raw_for_adapter,
             source=native_producer.source_reference(plan),
             context=child_context(context),
             impl=impl,
-            source_directory=await directory_reference(source),
+            source_directory=consumed_ref,
             generated_inputs=generated_inputs,
         )
     except check_contract.CheckContractError as error:
         enriched = {**raw_for_adapter, "check_contract": {"status": error.code}}
+    if input_source is not None:
+        enriched["input_source_directory"] = input_ref
+        enriched["consumed_source_directory"] = consumed_ref
+        enriched["container_source_filtered"] = filtered
+        if filtered and source_excludes:
+            enriched["container_source_excludes"] = list(source_excludes)
     enriched["implementation_sources"] = hashes
     enriched["trusted"] = False
     return files.with_new_file(
@@ -84,6 +105,8 @@ async def test_result(
     context=None,
     plan=None,
     generated_inputs=(),
+    consumed_source=None,
+    source_excludes=(),
 ):
     # This reads the environment of the retained result Container. It never
     # invokes pytest/unittest a second time.
@@ -104,7 +127,16 @@ async def test_result(
                 ["uv", "run", "--no-sync", "python", "-I", "-c", probe]
             ).stdout()
         )
-        observation["source_directory"] = await directory_reference(source)
+        input_ref = await directory_reference(source)
+        observation["source_directory"] = input_ref
+        if consumed_source is not None:
+            consumed_ref = await directory_reference(consumed_source)
+            observation["consumed_source_directory"] = consumed_ref
+            observation["container_source_filtered"] = (
+                consumed_ref["digest"] != input_ref["digest"]
+            )
+            if observation["container_source_filtered"] and source_excludes:
+                observation["container_source_excludes"] = list(source_excludes)
     except Exception as error:  # noqa: BLE001 - retain a completed test even if metadata transport fails
         # A failed metadata read cannot erase the completed test process.
         observation = {"status": "unavailable", "reason": str(error)}

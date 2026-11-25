@@ -5,8 +5,42 @@ from dagger import dag
 
 from . import tooling
 
+WORKSPACE_SCRATCH = [
+    ".test-tools",
+    "**/.test-tools",
+    ".test-deps",
+    "**/.test-deps",
+    ".tmp",
+    "**/.tmp",
+    ".log",
+    "**/.log",
+    ".work",
+    "**/.work",
+    ".tools",
+    "**/.tools",
+    ".weaver-74-probe",
+    "**/.weaver-74-probe",
+    ".artifacts",
+    "**/.artifacts",
+    "dist",
+    "build",
+    "*.egg-info",
+    "**/*.egg-info",
+    "htmlcov",
+    ".coverage*",
+    "core-junit.xml",
+    "core-coverage.xml",
+    "core-coverage.json",
+    ".codex",
+    ".claude",
+    ".agents",
+    ".idea",
+    ".vscode",
+]
+
 SOURCE_EXCLUDES = [
     *tooling.SOURCE_NOISE,
+    *WORKSPACE_SCRATCH,
     "get_vesryn-log_docs.ps1",
     "guides",
     "design",

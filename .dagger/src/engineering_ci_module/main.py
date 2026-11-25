@@ -173,6 +173,16 @@ class EngineeringCi:
         """Export one Weaver execution, its native logs, package and report."""
         return await self._weaver_execution(source, kind, config_path)
 
+    def _bound_public_source(self, source: dagger.Directory) -> dagger.Directory:
+        """Bind caller source with generic VCS/cache/secret exclusions only.
+
+        Never strips project source, declared targets, Plan overlays (e.g.
+        ``build/``), or explicitly bound Weaver inputs (e.g. ``.artifacts/``).
+        """
+        return dag.directory().with_directory(
+            "/", source, exclude=list(tooling.SOURCE_NOISE)
+        )
+
     async def _weaver_execution(
         self, source, kind, config_path, *, context=None, plan=None, generated_inputs=()
     ):
@@ -180,9 +190,7 @@ class EngineeringCi:
 
         if kind not in {"registry", "sample", "live", "terminal"}:
             raise ValueError("Unknown Weaver check")
-        bound = dag.directory().with_directory(
-            "/", source, exclude=list(tooling.SOURCE_NOISE)
-        )
+        bound = self._bound_public_source(source)
         result = (
             self._weaver_container()
             .with_directory("/workspace", bound)
@@ -201,6 +209,8 @@ class EngineeringCi:
             context=context,
             plan=plan,
             generated_inputs=generated_inputs,
+            input_source=source,
+            source_excludes=tooling.SOURCE_NOISE,
         )
 
     @function
@@ -626,6 +636,9 @@ class EngineeringCi:
         sync_dependencies: bool = True,
         git_token: dagger.Secret | None = None,
         dependency_packages: dagger.Directory | None = None,
+        *,
+        _bound_source: dagger.Directory | None = None,
+        system_packages: tuple[str, ...] = (),
     ) -> dagger.Container:
         """Create an isolated uv environment for a Python project."""
 
@@ -642,8 +655,24 @@ class EngineeringCi:
         if dependency_packages is not None and git_token is not None:
             raise ValueError("Local dependency packages do not accept Git credentials")
         base = dag.container().from_(image)
+        if system_packages:
+            base = base.with_exec(["apt-get", "update", "-qq"]).with_exec(
+                [
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "-qq",
+                    "--no-install-recommends",
+                    *system_packages,
+                ]
+            )
         if git_token is not None:
             base = prepare_private_git(base)
+        bound = (
+            _bound_source
+            if _bound_source is not None
+            else self._bound_public_source(source)
+        )
         container = (
             base.with_env_variable("UV_NO_MANAGED_PYTHON", "1")
             .with_env_variable("UV_PYTHON_DOWNLOADS", "0")
@@ -652,11 +681,7 @@ class EngineeringCi:
                 dag.cache_volume(f"engineering-ci-uv-python{python_version}"),
             )
             .with_env_variable("UV_LINK_MODE", "copy")
-            .with_directory(
-                "/workspace",
-                source,
-                exclude=list(tooling.SOURCE_NOISE),
-            )
+            .with_directory("/workspace", bound)
             .with_workdir("/workspace")
         )
         if dependency_packages is not None:
@@ -742,7 +767,17 @@ class EngineeringCi:
             .stdout()
         )
 
-    def _uv_tool_container(self, source: dagger.Directory) -> dagger.Container:
+    def _uv_tool_container(
+        self,
+        source: dagger.Directory,
+        *,
+        _bound_source: dagger.Directory | None = None,
+    ) -> dagger.Container:
+        bound = (
+            _bound_source
+            if _bound_source is not None
+            else self._bound_public_source(source)
+        )
         return (
             dag.container()
             .from_("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
@@ -752,7 +787,7 @@ class EngineeringCi:
             .with_env_variable("UV_LINK_MODE", "copy")
             .with_env_variable("UV_PYTHON_DOWNLOADS", "never")
             .without_env_variable("SHELLCHECK_OPTS")
-            .with_directory("/workspace", source, exclude=repository.SOURCE_EXCLUDES)
+            .with_directory("/workspace", bound)
             .with_workdir("/workspace")
         )
 
@@ -763,7 +798,8 @@ class EngineeringCi:
     async def _run_repository_script(self, source, policy, arguments, tool_key):
         from engineering_ci import workflow_analysis
 
-        container = self._uv_tool_container(source)
+        bound = self._bound_public_source(source)
+        container = self._uv_tool_container(source, _bound_source=bound)
         # Inspect the exact filtered mount in the same immutable container
         # snapshot used by the native tool.
         inspected = container.with_new_file(
@@ -805,8 +841,14 @@ class EngineeringCi:
             or stdout.lstrip().startswith("[")
             else "",
         )
+        input_digest = await source.digest()
+        consumed_digest = await bound.digest()
         report["target_sources"] = observed["targets"]
-        report["source_directory_digest"] = await source.digest()
+        report["source_directory_digest"] = input_digest
+        report["consumed_directory_digest"] = consumed_digest
+        report["container_source_filtered"] = consumed_digest != input_digest
+        if report["container_source_filtered"]:
+            report["container_source_excludes"] = list(tooling.SOURCE_NOISE)
         return report
 
     async def _run_actionlint(self, source: dagger.Directory, policy: dict) -> dict:
@@ -948,26 +990,14 @@ class EngineeringCi:
             python_version,
             git_token=git_token,
             dependency_packages=dependency_packages,
+            system_packages=("libatomic1",) if tool == "pyright" else (),
         )
         if tool == "pyright":
-            # Prebuilt Node 26 downloaded by pyright-python requires libatomic1
-            # on Debian trixie-slim; caching the Node download avoids repeat fetches.
-            container = (
-                container.with_exec(["apt-get", "update", "-qq"])
-                .with_exec(
-                    [
-                        "apt-get",
-                        "install",
-                        "-y",
-                        "-qq",
-                        "--no-install-recommends",
-                        "libatomic1",
-                    ]
-                )
-                .with_mounted_cache(
-                    "/root/.cache/pyright-python",
-                    dag.cache_volume("engineering-ci-pyright-node"),
-                )
+            # Libatomic1 is installed on the base image in _uv_container before
+            # mounting source; caching the Node download avoids repeat fetches.
+            container = container.with_mounted_cache(
+                "/root/.cache/pyright-python",
+                dag.cache_volume("engineering-ci-pyright-node"),
             )
         result = container.with_exec(
             static.runner_prefix(tool, policy["pinned_version"])
@@ -1027,7 +1057,7 @@ class EngineeringCi:
                 "/root/.cache/uv",
                 dag.cache_volume("engineering-ci-uv-native-tools"),
             )
-            .with_directory("/workspace", source, exclude=list(tooling.SOURCE_NOISE))
+            .with_directory("/workspace", self._bound_public_source(source))
             .with_workdir("/workspace")
         )
         result = container.with_exec(
@@ -1276,6 +1306,7 @@ class EngineeringCi:
         git_token: dagger.Secret | None = None,
         dependency_packages: dagger.Directory | None = None,
         _targets: list[str] | None = None,
+        _bound_source: dagger.Directory | None = None,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
         report_path = "/tmp/engineering-ci-pytest.xml"
@@ -1290,6 +1321,7 @@ class EngineeringCi:
                 python_version,
                 git_token=git_token,
                 dependency_packages=dependency_packages,
+                _bound_source=_bound_source,
             )
         )
         arguments = pytest_arguments(policy, report_path)

@@ -405,5 +405,63 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("ImportError", summary)
 
 
+class SourceBoundaryTests(unittest.TestCase):
+    def test_public_source_noise_keeps_consumer_artifacts_builds_and_design(self):
+        import ast
+
+        tooling_ast = ast.parse((MODULES / "tooling.py").read_text(encoding="utf-8"))
+        source_noise = next(
+            ast.literal_eval(node.value)
+            for node in tooling_ast.body
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == "SOURCE_NOISE" for t in node.targets)
+        )
+        for required_kept in (
+            "build",
+            "dist",
+            ".artifacts",
+            "**/.artifacts",
+            "design",
+            "guides",
+            ".agent",
+            ".work",
+            ".tools",
+            ".tmp",
+            ".log",
+        ):
+            self.assertNotIn(required_kept, source_noise)
+        for required_noise in (
+            ".git",
+            ".venv",
+            "**/.venv",
+            "__pycache__",
+            ".ruff_cache",
+        ):
+            self.assertIn(required_noise, source_noise)
+
+        main_text = (MODULES / "main.py").read_text(encoding="utf-8")
+        main_ast = ast.parse(main_text)
+        root = next(
+            node
+            for node in main_ast.body
+            if isinstance(node, ast.ClassDef) and node.name == "EngineeringCi"
+        )
+        methods = {
+            node.name: ast.get_source_segment(main_text, node) or ""
+            for node in root.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        self.assertNotIn("repository.SOURCE_EXCLUDES", methods["_uv_tool_container"])
+        self.assertIn("_bound_public_source", methods["_uv_tool_container"])
+        self.assertIn("_bound_public_source", methods["_uv_container"])
+        self.assertIn("_bound_public_source", methods["_weaver_execution"])
+        self.assertIn("_bound_public_source", methods["tach_check"])
+        # P2-01: system_packages installs libatomic1 inside _uv_container before mounting source
+        self.assertIn("system_packages", methods["_uv_container"])
+        self.assertIn("libatomic1", methods["_run_static"])
+        uv_src = methods["_uv_container"]
+        self.assertLess(uv_src.index("system_packages"), uv_src.index('"/workspace"'))
+
+
 if __name__ == "__main__":
     unittest.main()
