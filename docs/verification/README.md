@@ -5,6 +5,7 @@
 - [发布风险审查](release-risk-review.md) — v0.4.9 发布证据审查、验证层次及当时剩余风险。
 - [授权依赖审阅](authorization-closure/README.md) — #125 A/B 版本化双向依赖图、源码索引，C 逐边 Coverage/Gap、D 独立审阅；固定快照不代表当前生产授权或全仓图谱。
 - [统一缺陷发现台账候选（PR #129）](https://github.com/dymzz/engineering-ci/pull/129) — 原缺陷编号、主责 Issue 与实施结算；从 PR 读取当前状态和实际版本，未合并版本不作为 main 已接纳定义。
+- [现行工程关系工具采用（#162 C）](https://github.com/dymzz/engineering-ci/issues/162) — 已有 Sphinx/MyST/Needs/CodeLinks/AutoAPI/Test Reports 与适用 RDF 能力的分批采用任务，实际输出按采用进度使用；不替代 #125 固定历史图或 #129 缺陷台账。Agent 使用与维护规则见[任务接续](../architecture/agent-instructions.md#task-continuity-and-evidence-reuse)。
 - [Dagger 原生配置迁移](dagger-migration.md) — 模块加载、生成兼容性与输入稳定性验证。
 - [安全策略快照](security-policy.md) — 可信策略输入、接收/防回退与判定契约的本地验证。
 - [Plan 依赖盘点](plan-dependencies/README.md) — #86 A 实例矩阵、版本拒绝与 Host/Dagger 上下文证据。
