@@ -113,7 +113,13 @@ def _normalize_executed_job_ids(executed_job_ids: Any) -> set[int] | None:
 def _parse_executed_job_witness(
     witness: Any, *, rid: int, att: int
 ) -> tuple[set[int], bool]:
-    """Validate structured execution-event witness identity, source, and completeness."""
+    """Validate structured execution-event witness identity, source, and status.
+
+    Because engineering-ci currently has no authenticated native producer
+    closure proving an execution-event collection captured every executed job,
+    a caller-supplied ``complete=True`` flag is checked for status consistency
+    and contradiction detection only, never treated as certified completeness.
+    """
     if not isinstance(witness, dict):
         raise GitHubReceiverError("executed_job_witness_invalid")
     source = witness.get("source")
@@ -146,18 +152,18 @@ def _parse_executed_job_witness(
             or (not complete_flag and collection_status == "complete")
         ):
             raise GitHubReceiverError("executed_job_witness_status_invalid")
-        is_complete = complete_flag
+        claimed_complete = complete_flag
     else:
-        is_complete = collection_status == "complete"
+        claimed_complete = collection_status == "complete"
 
     run_status = witness.get("run_status")
-    if is_complete and run_status is not None and run_status != "completed":
+    if claimed_complete and run_status != "completed":
         raise GitHubReceiverError("executed_job_witness_status_invalid")
 
     ids = _normalize_executed_job_ids(witness.get("executed_job_ids"))
     if ids is None:
         raise GitHubReceiverError("executed_job_ids_invalid")
-    return ids, is_complete
+    return ids, claimed_complete
 
 
 def _attribution_source(
@@ -486,12 +492,13 @@ def partition_witness_jobs(
     """Separate full Attempt Result Inventory from Attempt Executed Job Inventory.
 
     GitHub rerun API snapshots can carry ``run_attempt == N`` on historical jobs
-    reused from earlier Attempts (with ``started_at < run_started_at``). A bare
-    ``executed_job_ids`` collection is positive execution evidence only for listed
-    IDs and never proves absence means reuse; only a verified complete
-    ``executed_job_witness`` (matching ``source``, ``run_id``, ``attempt``, and
-    ``complete=True``) or independent start-time bounds may classify unlisted
-    ``attempt > 1`` jobs as ``reused``. Ambiguous jobs stay in
+    reused from earlier Attempts (with ``started_at < run_started_at``). Because
+    ``engineering-ci`` currently has no authenticated native producer closure
+    proving an execution-event collection captured every executed job, both bare
+    ``executed_job_ids`` and structured ``executed_job_witness`` (even when
+    caller-supplied ``complete=True``) provide positive execution evidence only
+    for listed IDs. Only independent start-time bounds may classify unlisted
+    ``attempt > 1`` jobs as ``reused``; ambiguous jobs stay in
     ``unknown_execution_jobs`` rather than shrinking Result Inventory.
     """
     completed, noncompleted = _validate_witness_jobs(jobs, rid=rid, att=att)
@@ -504,24 +511,27 @@ def partition_witness_jobs(
         raise GitHubReceiverError("wrong_reuse_attribution")
 
     witness_ids: set[int] | None = None
+    claimed_complete = False
+    # No authenticated native event-set closure producer exists in this repository yet.
     witness_complete = False
     observed_executed_set = bare_executed_set
     if executed_job_witness is not None:
-        witness_ids, witness_complete = _parse_executed_job_witness(
+        witness_ids, claimed_complete = _parse_executed_job_witness(
             executed_job_witness, rid=rid, att=att
         )
         if witness_ids - completed_ids:
             raise GitHubReceiverError("wrong_reuse_attribution")
-        if witness_complete:
-            if bare_executed_set is not None and bare_executed_set != witness_ids:
-                raise GitHubReceiverError("wrong_reuse_attribution")
-            observed_executed_set = witness_ids
-        else:
-            observed_executed_set = (
-                witness_ids
-                if bare_executed_set is None
-                else (witness_ids | bare_executed_set)
-            )
+        if (
+            claimed_complete
+            and bare_executed_set is not None
+            and bare_executed_set != witness_ids
+        ):
+            raise GitHubReceiverError("wrong_reuse_attribution")
+        observed_executed_set = (
+            witness_ids
+            if bare_executed_set is None
+            else (witness_ids | bare_executed_set)
+        )
 
     result_inventory: list[dict[str, Any]] = []
     executed_jobs: list[dict[str, Any]] = []
@@ -547,16 +557,21 @@ def partition_witness_jobs(
         if run_started_ns is not None and job_started_ns is not None:
             time_signal = "executed" if job_started_ns >= run_started_ns else "reused"
 
+        if (
+            claimed_complete
+            and witness_ids is not None
+            and cid not in witness_ids
+            and (att == 1 or time_signal == "executed")
+        ):
+            raise GitHubReceiverError("wrong_reuse_attribution")
+
         event_signal: str | None = None
-        if observed_executed_set is not None:
-            if cid in observed_executed_set:
-                event_signal = "executed"
-            elif witness_complete:
-                event_signal = "reused"
+        if observed_executed_set is not None and cid in observed_executed_set:
+            event_signal = "executed"
 
         row_event_label = (
             "executed_job_witness"
-            if (witness_complete or (witness_ids is not None and cid in witness_ids))
+            if (witness_ids is not None and cid in witness_ids)
             else "executed_job_ids"
         )
         attr_source = _attribution_source(
@@ -567,7 +582,7 @@ def partition_witness_jobs(
         )
 
         if att == 1:
-            if time_signal == "reused" or event_signal == "reused":
+            if time_signal == "reused":
                 raise GitHubReceiverError("wrong_reuse_attribution")
             attribution = "executed_in_attempt"
             executed_jobs.append(job)
@@ -617,6 +632,7 @@ def partition_witness_jobs(
             "unknown" if unknown_execution_jobs else "verified"
         ),
         "execution_witness_complete": witness_complete,
+        "execution_witness_claimed_complete": claimed_complete,
     }
 
 
@@ -723,9 +739,11 @@ def build_weaver_expectations(
             }
         )
     composite_run_id = f"{rid}/{att}"
-    gaps = (
-        ["execution_attribution_unknown"] if partition["unknown_execution_jobs"] else []
-    )
+    gaps: list[str] = []
+    if partition["unknown_execution_jobs"]:
+        gaps.append("execution_attribution_unknown")
+    if partition["execution_witness_claimed_complete"]:
+        gaps.append("execution_witness_completeness_unverified")
     return {
         "schema_version": 1,
         "id_scheme": ID_SCHEME,

@@ -27,9 +27,9 @@
 - 任务中 `workflow_job.id` 缺失或等于 `0` 会被 `UseCheckRunID` 拒绝；同一 Job 内同名 Step 会产生相同 `step_span_id`。
 - 原始 `githubreceiver`（`0.165.0` 未经规范化）在固定 SemConv `v1.45.0` Weaver 下产生 `27` 条 `violation`（`type_mismatch`、`missing_attribute`、`required_attribute_not_present`、`illegal_namespace`）；经 [otel-collector-github-receiver.yaml](../../config/otel-collector-github-receiver.yaml) 规范化后可达到 `0` violation、且仅对已证明映射的 GitHub Conclusion 设置 `cicd.pipeline.result` / `cicd.pipeline.task.run.result`（未映射值如 `neutral` 仍由 Weaver 拒绝）。
 - 部分重跑（`attempt > 1`）时，GitHub API 列表中带 `run_attempt=N` 的复用 Job 不一定在本 Attempt 新执行。[github_receiver.py](../../src/engineering_ci/github_receiver.py) 中的 `partition_witness_jobs()`、`build_weaver_expectations()` 与 `reconcile_github_receiver_trace()` 始终完整保留 `result_inventory` / `result_completed_jobs`：
-  - 仅在受约束且已验证完整的 `executed_job_witness`（含 `source`、`run_id`、`attempt`、`complete=True`）或独立 `run_started_at`/`job.started_at` 时间界定时，才允许将未执行 Job 归为 `reused_jobs`；
-  - 裸列表 `executed_job_ids`（及 `complete=False` 的局部事件集合）仅对列出 ID 提供正向执行证据，**绝不用“不在列表”推断 reused**——缺独立开始时间时未列出 Job 留在 `unknown_execution_jobs` 并触发 `execution_attribution_unknown`，不缩小 Expected 制造假 PASS；
-  - 零执行 Task（包含全部 Job 均来自历史复用的纯复用 Attempt 2）在无错时输出 `task_coverage="zero_task_confirmed"` 与 `expected_matchers=["gh.pipeline"]`，同时完整保留 `result_completed_jobs`。
+  - 目前仅当提供独立 `run_started_at` 与 Job `started_at` 时间界定（`started_at < run_started_at`）时，才允许将未执行 Job 归为 `reused_jobs`；本仓尚无独立认证执行事件全集闭包的原生 Producer，因此 `execution_witness_complete` 恒为 `False`；
+  - 裸列表 `executed_job_ids` 与结构化 `executed_job_witness`（即使调用方自报 `complete=True`）都仅对列出 ID 提供正向执行证据，**绝不用“不在列表”推断 reused**——缺独立开始时间时未列出 Job 留在 `unknown_execution_jobs` 并触发 `execution_attribution_unknown`，不缩小 Expected 制造假 PASS；
+  - 零执行 Task（如空 Job 运行，或经独立 `run_started_at` 证明全部完成 Job 均来自历史复用的纯复用 Attempt 2）在无错时输出 `task_coverage="zero_task_confirmed"` 与 `expected_matchers=["gh.pipeline"]`，同时完整保留 `result_completed_jobs`。
 - **职责与适用范围（`#75` vs `#52A`/`#52B`/`#63`/`#61`）**：
   - `build_weaver_expectations()` 与 `reconcile_github_receiver_trace()` 面向包含官方 Pipeline Root Span 的 **`#52B` Root-dependent 对账**（缺少 Root 返回 `root_span_missing`）；不用于驳回合法的无 Root **Task-only（`#52A`）** 原生 Live 校验。
   - 本仓 `#75` 仅提供官方 Receiver 集成与共享 ID/映射/分类合同；`#52` 负责消费者独立 Expected/Observed 验收，`#63` 负责 Trusted 准入，`#61` 负责 Required 门禁。共享辅助函数本身不授予 `trusted` / `required_satisfied`。

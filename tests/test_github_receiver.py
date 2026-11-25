@@ -826,65 +826,103 @@ def test_partial_executed_job_ids_never_infers_reuse_without_complete_witness():
     assert incomplete_witness_verdict["unknown_execution_jobs"] == ["136212523496"]
     assert incomplete_witness_verdict["reused_jobs"] == []
 
-    # Verified complete witness proves B is reused even without run_started_at.
-    complete_witness = {
-        "source": "github_webhook_events",
-        "run_id": run_id,
-        "attempt": attempt,
-        "run_status": "completed",
-        "complete": True,
-        "collection_status": "complete",
-        "executed_job_ids": [136212522105],
-    }
-    verified_exp = gr.build_weaver_expectations(
-        run_id=run_id,
-        attempt=attempt,
-        run_status="completed",
-        run_conclusion="success",
-        jobs=[job_a, job_b],
-        executed_job_witness=complete_witness,
-    )
-    assert verified_exp["execution_attribution_status"] == "verified"
-    assert verified_exp["execution_witness_complete"] is True
-    assert verified_exp["executed_jobs"] == ["136212522105"]
-    assert verified_exp["reused_jobs"] == ["136212523496"]
-    assert verified_exp["expected_matchers"] == ["gh.pipeline", "gh.task"]
+    # Caller self-reported complete=True without independent completeness proof MUST NOT
+    # infer unlisted B is reused or turn missing B spans into ok=True / complete PASS.
+    for witness_source in ("github_webhook_events", "github_api"):
+        claimed_complete_witness = {
+            "source": witness_source,
+            "run_id": run_id,
+            "attempt": attempt,
+            "run_status": "completed",
+            "complete": True,
+            "collection_status": "complete",
+            "executed_job_ids": [136212522105],
+        }
+        with pytest.raises(
+            gr.GitHubReceiverError, match="execution_attribution_unknown"
+        ):
+            gr.build_weaver_expectations(
+                run_id=run_id,
+                attempt=attempt,
+                run_status="completed",
+                run_conclusion="success",
+                jobs=[job_a, job_b],
+                executed_job_witness=claimed_complete_witness,
+            )
 
-    verified_verdict = gr.reconcile_github_receiver_trace(
-        run_id=run_id,
-        attempt=attempt,
-        run_status="completed",
-        run_conclusion="success",
-        jobs=[job_a, job_b],
-        capture=cap_a_only,
-        executed_job_witness=complete_witness,
-    )
-    assert verified_verdict["ok"] is True, verified_verdict
-    assert verified_verdict["task_coverage"] == "complete"
-    assert verified_verdict["execution_witness_complete"] is True
-    assert verified_verdict["reused_jobs"] == ["136212523496"]
-    assert verified_verdict["result_inventory"][0]["execution_attribution_source"] == (
-        "executed_job_witness"
-    )
+        diag_claimed_exp = gr.build_weaver_expectations(
+            run_id=run_id,
+            attempt=attempt,
+            run_status="completed",
+            run_conclusion="success",
+            jobs=[job_a, job_b],
+            executed_job_witness=claimed_complete_witness,
+            allow_unproven_execution_attribution=True,
+        )
+        assert diag_claimed_exp["execution_attribution_status"] == "unknown"
+        assert diag_claimed_exp["execution_witness_complete"] is False
+        assert diag_claimed_exp["executed_jobs"] == ["136212522105"]
+        assert diag_claimed_exp["reused_jobs"] == []
+        assert diag_claimed_exp["unknown_execution_jobs"] == ["136212523496"]
+        assert "execution_attribution_unknown" in diag_claimed_exp["provenance_gaps"]
+        assert (
+            "execution_witness_completeness_unverified"
+            in diag_claimed_exp["provenance_gaps"]
+        )
 
-    # Reused-only Attempt 2 confirmed via complete witness yields zero_task_confirmed (P2-A)
+        claimed_complete_verdict = gr.reconcile_github_receiver_trace(
+            run_id=run_id,
+            attempt=attempt,
+            run_status="completed",
+            run_conclusion="success",
+            jobs=[job_a, job_b],
+            capture=cap_a_only,
+            executed_job_witness=claimed_complete_witness,
+        )
+        assert claimed_complete_verdict["ok"] is False
+        assert claimed_complete_verdict["task_coverage"] == (
+            "execution_attribution_unknown"
+        )
+        assert claimed_complete_verdict["errors"] == ["execution_attribution_unknown"]
+        assert claimed_complete_verdict["execution_witness_complete"] is False
+        assert claimed_complete_verdict["executed_jobs"] == ["136212522105"]
+        assert claimed_complete_verdict["reused_jobs"] == []
+        assert claimed_complete_verdict["unknown_execution_jobs"] == ["136212523496"]
+        assert claimed_complete_verdict["result_inventory"][0][
+            "execution_attribution_source"
+        ] == ("executed_job_witness")
+
+    # Claimed complete=True with empty executed_job_ids also stays unproven without timestamps
     root_only_cap = _normalized_span_capture(
         run_id=run_id, attempt=attempt, run_conclusion="success", jobs=[]
     )
-    reused_only_witness = gr.reconcile_github_receiver_trace(
+    unproven_zero_verdict = gr.reconcile_github_receiver_trace(
         run_id=run_id,
         attempt=attempt,
         run_status="completed",
         run_conclusion="success",
         jobs=[job_a, job_b],
         capture=root_only_cap,
-        executed_job_witness={**complete_witness, "executed_job_ids": []},
+        executed_job_witness={
+            "source": "github_webhook_events",
+            "run_id": run_id,
+            "attempt": attempt,
+            "run_status": "completed",
+            "complete": True,
+            "collection_status": "complete",
+            "executed_job_ids": [],
+        },
     )
-    assert reused_only_witness["ok"] is True
-    assert reused_only_witness["task_coverage"] == "zero_task_confirmed"
-    assert reused_only_witness["executed_jobs"] == []
-    assert reused_only_witness["reused_jobs"] == ["136212522105", "136212523496"]
-    assert reused_only_witness["result_completed_jobs"] == [
+    assert unproven_zero_verdict["ok"] is False
+    assert unproven_zero_verdict["task_coverage"] == "execution_attribution_unknown"
+    assert unproven_zero_verdict["execution_witness_complete"] is False
+    assert unproven_zero_verdict["executed_jobs"] == []
+    assert unproven_zero_verdict["reused_jobs"] == []
+    assert unproven_zero_verdict["unknown_execution_jobs"] == [
+        "136212522105",
+        "136212523496",
+    ]
+    assert unproven_zero_verdict["result_completed_jobs"] == [
         "136212522105",
         "136212523496",
     ]
@@ -922,7 +960,52 @@ def test_partial_executed_job_ids_never_infers_reuse_without_complete_witness():
     assert partial_with_times["task_coverage"] == "complete"
     assert partial_with_times["executed_jobs"] == ["136212522105", "136212523496"]
 
-    # Reject untrusted source, mismatched identity, or incomplete run claiming completeness.
+    # Independent time bounds classify reused B via run_started_at even when complete=True
+    # is supplied, while keeping execution_witness_complete=False.
+    reused_b_timed = {
+        **job_b,
+        "created_at": "2026-11-20T09:40:00Z",
+        "started_at": "2026-11-20T09:41:00Z",
+        "completed_at": "2026-11-20T09:45:00Z",
+    }
+    witness_plus_times = gr.reconcile_github_receiver_trace(
+        run_id=run_id,
+        attempt=attempt,
+        run_status="completed",
+        run_conclusion="success",
+        jobs=[job_a_timed, reused_b_timed],
+        capture=cap_a_only,
+        run_started_at="2026-11-20T09:49:34Z",
+        executed_job_witness={
+            "source": "github_webhook_events",
+            "run_id": run_id,
+            "attempt": attempt,
+            "run_status": "completed",
+            "complete": True,
+            "collection_status": "complete",
+            "executed_job_ids": [136212522105],
+        },
+    )
+    assert witness_plus_times["ok"] is True, witness_plus_times
+    assert witness_plus_times["execution_witness_complete"] is False
+    assert witness_plus_times["reused_jobs"] == ["136212523496"]
+    assert witness_plus_times["result_inventory"][1][
+        "execution_attribution_source"
+    ] == ("run_started_at")
+
+    # Reject untrusted source, mismatched identity, missing/incomplete run_status when complete=True.
+    complete_witness = {
+        "source": "github_webhook_events",
+        "run_id": run_id,
+        "attempt": attempt,
+        "run_status": "completed",
+        "complete": True,
+        "collection_status": "complete",
+        "executed_job_ids": [136212522105],
+    }
+    witness_without_status = {
+        k: v for k, v in complete_witness.items() if k != "run_status"
+    }
     for bad_witness, err in (
         (
             {**complete_witness, "source": "otlp_capture"},
@@ -940,6 +1023,10 @@ def test_partial_executed_job_ids_never_infers_reuse_without_complete_witness():
             {**complete_witness, "run_status": "in_progress"},
             "executed_job_witness_status_invalid",
         ),
+        (
+            witness_without_status,
+            "executed_job_witness_status_invalid",
+        ),
     ):
         with pytest.raises(gr.GitHubReceiverError, match=err):
             gr.partition_witness_jobs(
@@ -948,6 +1035,18 @@ def test_partial_executed_job_ids_never_infers_reuse_without_complete_witness():
                 att=attempt,
                 executed_job_witness=bad_witness,
             )
+
+    # Attempt 1 completed jobs omitting an entry under claimed complete=True contradicts Attempt 1.
+    with pytest.raises(gr.GitHubReceiverError, match="wrong_reuse_attribution"):
+        gr.partition_witness_jobs(
+            [
+                {**job_a, "run_attempt": 1},
+                {**job_b, "run_attempt": 1},
+            ],
+            rid=run_id,
+            att=1,
+            executed_job_witness={**complete_witness, "attempt": 1},
+        )
 
 
 def test_reconcile_rejects_negative_tampered_captures():
