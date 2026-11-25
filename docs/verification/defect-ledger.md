@@ -8,9 +8,13 @@
 
 > **2026-11-18 表述纠偏说明：** 保留历史发现 ID、源码/测试链接及既有证据；原 NEW 候选的预估 P1/P2 统一改为“优先级待评估”。代码观察、合同违例、生产可达性和修复方式分开裁决；历史判断仍可由 PR #129 的先前提交追溯。
 
-## 2026-11-20 · 最新合并结算与当前执行导航
+## 2026-11-25 · 增量结算
 
-本节依据 ECI main f18e520f9a5fcf958080f4d6a77e7a5596a1dca4、实际 GitHub 合并记录、对应源码差分及定向验证记录更新至 2026-11-20。文件旧基线 main@fc0df2a 是 2026-11-18 的审计快照，并非现行源码；后续原文的旧版“未修复/待合并”只作为发现历史。**以本节和 §0A 为当前结算，所有修复的原始证据不删除。**
+基于 [main e5e86228](https://github.com/dymzz/engineering-ci/commit/e5e86228b51460b0cb825540d24c44180f3d8b4d) 和固定 PR 源码差分/合并记录更新 §0A.1 的 NEW-014/017/041/049/050/051/052/055/059 实施入口。#140/#143/#157 已合并合同、#146 在途候选及 #141 生成物独立可重读合同切片分别记录。§0A.1 是这些编号的更新导航；下文 2026-11-20 的旧顺位、源码观察及生产链路待验记录保留为当时快照，不再作为重启相同实现的依据。没有重新执行原生工具或扩大已有证据的生产适用性。
+
+## 2026-11-20 · 合并结算与当时执行导航
+
+本节依据 ECI main f18e520f9a5fcf958080f4d6a77e7a5596a1dca4、实际 GitHub 合并记录、对应源码差分及定向验证记录更新至 2026-11-20。文件旧基线 main@fc0df2a 是 2026-11-18 的审计快照，并非现行源码；后续原文的旧版“未修复/待合并”只作为发现历史。**以较新增量结算和 §0A.1 为更新导航；本节保存 2026-11-20 原有结算，所有修复的原始证据不删除。**
 
 | 已完成的具体问题 | GitHub 合并与定向 CI | 明确未由该切片证明的边界 |
 | --- | --- | --- |
@@ -27,7 +31,7 @@
 
 **仍未交付的生产链路不能随旧缺陷结算消失：** #86 生成 File/Directory 可重读 Producer 证明 → #66 Source Resolution/Expected/Native，#66-P0 历史 Blob Readiness 与 #63 T2 等价，#63 T1-b Local→Actions 真正授权，#61 G2/G3 服务端 Required 和 R4/R5 真实 Release/Trigger，#52 Terminal/Weaver 生产身份，#57 Policy 签发/撤销，以及 #87 OTel 可核查消费。按原 Issue 和实际受影响接口验收，保留已完成的 Native/合同正反例。
 
-## 0A. 逐项责任与实施追踪（2026-11-20）
+## 0A. 逐项责任与实施追踪（原 2026-11-20；§0A.1 已增量更新）
 
 本节只维护**稳定缺陷 ID → 单一主责 Issue → 现存代码 PR/待启动状态**，实施验收和修法在各原 Issue/代码 PR；调查结论留在本台账。单一主责不排除跨模块原子实现与 Producer/Consumer 协作；各项仍以其原证据等级为准。这里的已分发表示任务已写入 Issue，**不表示缺陷已确诊、代码已验收、真实生产覆盖已闭合**。每项由实际变更对应的代码 PR 独立验收，不用数量强制划分 PR。
 
@@ -48,10 +52,10 @@
 | [NEW-011](#new-011) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
 | [NEW-012](#new-012) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #136](https://github.com/dymzz/engineering-ci/pull/136) **已合并**（5f81e373）；R4 原始 Assessment Action/Target/Refs/Phase/Candidate 授权身份绑定；生产 Release Provider 另证 |
 | [NEW-013](#new-013) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-014](#new-014) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-014](#new-014) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | [PR #143](https://github.com/dymzz/engineering-ci/pull/143) **已合并**（a99efd5b）；独立实例/Report 隔离、Consumed Result 传递来源与作用域核验；实际 Producer 多 Report 归属、生产认证仍另证 |
 | [NEW-015](#new-015) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-016](#new-016) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-017](#new-017) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-017](#new-017) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | [PR #143](https://github.com/dymzz/engineering-ci/pull/143) **已合并**（a99efd5b）；历史候选稳定排序及身份去重合同；实际 T2 来源与 Remaining Work 消费仍另证 |
 | [NEW-018](#new-018) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-019](#new-019) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-020](#new-020) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
@@ -75,7 +79,7 @@
 | [NEW-038](#new-038) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-039](#new-039) | [#86](https://github.com/dymzz/engineering-ci/issues/86) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-040](#new-040) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-041](#new-041) | [#74](https://github.com/dymzz/engineering-ci/issues/74) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-041](#new-041) | [#74](https://github.com/dymzz/engineering-ci/issues/74) | [PR #157](https://github.com/dymzz/engineering-ci/pull/157) **已合并**（7be3cf97）；Terminal correlation、gate_status/exit 参与 Native Satisfaction；[#145](https://github.com/dymzz/engineering-ci/pull/145) 旧候选仅核独有净差分，不重复实施；实际生产身份另证 |
 | [NEW-042](#new-042) | [#57](https://github.com/dymzz/engineering-ci/issues/57) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-043](#new-043) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-044](#new-044) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
@@ -83,17 +87,17 @@
 | [NEW-046](#new-046) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
 | [NEW-047](#new-047) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #142](https://github.com/dymzz/engineering-ci/pull/142) **已合并**（f18e520f）；G2/G3 有权发布、原 Assessment/Scope/App ID 或服务端配置观察的**代码合同**通过；D-G03 真实受信 Publisher、Source App/Permissions、有效 Ruleset/Protection 与服务端拒绝另验 |
 | [NEW-048](#new-048) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-049](#new-049) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-050](#new-050) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-051](#new-051) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-052](#new-052) | [#87](https://github.com/dymzz/engineering-ci/issues/87) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-049](#new-049) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | [PR #140](https://github.com/dymzz/engineering-ci/pull/140) **已合并**（bb52c6d2）；请求 JSON 的异常输出不再 clean；原生 Actionlint 正例与定向负例见 PR |
+| [NEW-050](#new-050) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | [PR #146](https://github.com/dymzz/engineering-ci/pull/146) **Draft 候选**（d634f5dd）；Pyright/Pylint stdout JSON 交付；未完成独立验收 |
+| [NEW-051](#new-051) | [#52](https://github.com/dymzz/engineering-ci/issues/52) | [PR #146](https://github.com/dymzz/engineering-ci/pull/146) **Draft 候选**（d634f5dd）；Windows 重复 -Path 参数合同；未完成独立验收 |
+| [NEW-052](#new-052) | [#87](https://github.com/dymzz/engineering-ci/issues/87) | [PR #146](https://github.com/dymzz/engineering-ci/pull/146) **Draft 候选**（d634f5dd）；A.1 隐藏路径、NUL 与重命名影响；未完成独立验收 |
 | [NEW-053](#new-053) | [#66](https://github.com/dymzz/engineering-ci/issues/66) | [PR #132](https://github.com/dymzz/engineering-ci/pull/132) **已合并**（b10dce6a）；Host Forwarding Git Source/ODB/删除/链接/Native Receipt；历史 Blob Readiness、Dagger 正向 Handoff 属 #66/#86，AST 语义由 [PR #139](https://github.com/dymzz/engineering-ci/pull/139) **已合并**（e6e20986） |
 | [NEW-054](#new-054) | [#61](https://github.com/dymzz/engineering-ci/issues/61) | [PR #136](https://github.com/dymzz/engineering-ci/pull/136) **已合并**（5f81e373）；R4 Artifact ID/Run/Attempt/上传证据绑定；完整 Release 发布链另证 |
-| [NEW-055](#new-055) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | [PR #135](https://github.com/dymzz/engineering-ci/pull/135) **已合并**（edd40943）；Workflow/Shell 扫描目标 Source 准入；生成 File/Directory 独立可重读 Handoff 仍归 #86/#66；#133 已核实重叠并关闭（未合并） |
+| [NEW-055](#new-055) | [#58](https://github.com/dymzz/engineering-ci/issues/58) | [PR #135](https://github.com/dymzz/engineering-ci/pull/135) **已合并**（edd40943）；Workflow/Shell 扫描目标 Source 准入；生成 File/Directory 独立可重读 Handoff 由 [PR #141](https://github.com/dymzz/engineering-ci/pull/141) 已合并合同切片（c1f30196），生产权威仍另证；#133 已核实重叠并关闭（未合并） |
 | [NEW-056](#new-056) | [#51](https://github.com/dymzz/engineering-ci/issues/51) | [PR #137](https://github.com/dymzz/engineering-ci/pull/137) **已合并**（da5e9397）；OSV Git/PyPI 同名实体拆分；仅证明现有批准的单 Git pin 加 Registry 范围 |
 | [NEW-057](#new-057) | [#51](https://github.com/dymzz/engineering-ci/issues/51) | [PR #137](https://github.com/dymzz/engineering-ci/pull/137) **已合并**（da5e9397）；OSV Native Input 来源分组及脱敏投影；不宣称保存未修改的完整 Native JSON |
 | [NEW-058](#new-058) | [#57](https://github.com/dymzz/engineering-ci/issues/57) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
-| [NEW-059](#new-059) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
+| [NEW-059](#new-059) | [#63](https://github.com/dymzz/engineering-ci/issues/63) | [PR #143](https://github.com/dymzz/engineering-ci/pull/143) **已合并**（a99efd5b）；Producer check_ids 原始类型检查与有效 ID 去重；生产 Local→Actions 授权另证 |
 | [NEW-060](#new-060) | [#130](https://github.com/dymzz/engineering-ci/issues/130) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 | [NEW-061](#new-061) | [#131](https://github.com/dymzz/engineering-ci/issues/131) | 已分发调查与合同裁决；未核到可独立结算的修复 PR；是否修改依赖实际证据 |
 
