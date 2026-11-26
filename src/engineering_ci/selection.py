@@ -9,10 +9,12 @@ configuration, not code.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -1922,23 +1924,77 @@ def _normalized(path):
     return path.replace("\\", "/")
 
 
-def _test_modules(tests_dir, prefix):
-    if not tests_dir.is_dir():
+def _pytest_norecursedirs_from_text(text):
+    try:
+        data = tomllib.loads(text)
+    except ValueError:
         return ()
-    return tuple(
-        sorted(
-            f"{prefix}.{'.'.join(path.relative_to(tests_dir).with_suffix('').parts)}"
-            for path in tests_dir.rglob("test_*.py")
-            if path.is_file()
-        )
+    pytest_cfg = (data.get("tool") or {}).get("pytest") or {}
+    if not isinstance(pytest_cfg, dict):
+        return ()
+    ini = pytest_cfg.get("ini_options") or {}
+    if not isinstance(ini, dict):
+        return ()
+    raw = ini.get("norecursedirs")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
+
+
+def _pytest_norecursedirs(root, *, tree=None):
+    if tree is not None:
+        shown = _git(root, "cat-file", "-p", f"{tree}:pyproject.toml")
+        if shown.returncode != 0:
+            return ()
+        return _pytest_norecursedirs_from_text(shown.stdout)
+    pyproject = Path(root) / "pyproject.toml"
+    if not pyproject.is_file():
+        return ()
+    try:
+        return _pytest_norecursedirs_from_text(pyproject.read_text(encoding="utf-8"))
+    except OSError:
+        return ()
+
+
+def _is_excluded_test_parts(rel_parts, norecursedirs):
+    if not norecursedirs or len(rel_parts) <= 1:
+        return False
+    return any(
+        fnmatch.fnmatchcase(part, pattern)
+        for part in rel_parts[:-1]
+        for pattern in norecursedirs
     )
 
 
-def _tree_test_modules(root, tree, tests_dir_rel, prefix):
+def _test_modules(tests_dir, prefix, *, norecursedirs=None):
+    if not tests_dir.is_dir():
+        return ()
+    excluded = (
+        _pytest_norecursedirs(tests_dir.parent)
+        if norecursedirs is None
+        else tuple(norecursedirs)
+    )
+    modules = []
+    for path in tests_dir.rglob("test_*.py"):
+        if not path.is_file():
+            continue
+        rel_parts = path.relative_to(tests_dir).with_suffix("").parts
+        if _is_excluded_test_parts(rel_parts, excluded):
+            continue
+        modules.append(f"{prefix}.{'.'.join(rel_parts)}")
+    return tuple(sorted(modules))
+
+
+def _tree_test_modules(root, tree, tests_dir_rel, prefix, *, norecursedirs=None):
     rel_dir = _normalized(tests_dir_rel).strip("/")
     ls = _git(root, "ls-tree", "-r", "--name-only", "-z", tree, "--", rel_dir)
     if ls.returncode != 0:
         return None
+    excluded = (
+        _pytest_norecursedirs(root, tree=tree)
+        if norecursedirs is None
+        else tuple(norecursedirs)
+    )
     modules = []
     base_parts = Path(rel_dir).parts
     for item in ls.stdout.split("\0"):
@@ -1951,6 +2007,8 @@ def _tree_test_modules(root, tree, tests_dir_rel, prefix):
         try:
             rel_parts = p.relative_to(Path(*base_parts)).with_suffix("").parts
         except ValueError:
+            continue
+        if _is_excluded_test_parts(rel_parts, excluded):
             continue
         modules.append(f"{prefix}.{'.'.join(rel_parts)}")
     return tuple(sorted(modules))
@@ -2273,21 +2331,36 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
         bool(exec_tree)
         and _git(root, "cat-file", "-e", f"{exec_tree}^{{tree}}").returncode == 0
     )
+    excluded_test_dirs = (
+        _pytest_norecursedirs(root, tree=exec_tree if tree_in_odb else None)
+        if config.framework == "pytest"
+        else ()
+    )
     if tree_in_odb:
-        tree_tests = _tree_test_modules(root, exec_tree, config.tests_dir, test_prefix)
+        tree_tests = _tree_test_modules(
+            root,
+            exec_tree,
+            config.tests_dir,
+            test_prefix,
+            norecursedirs=excluded_test_dirs,
+        )
         resolved_all_tests = (
             tree_tests
             if tree_tests is not None
             else (
                 tuple(all_tests)
                 if all_tests is not None
-                else _test_modules(tests_dir, test_prefix)
+                else _test_modules(
+                    tests_dir, test_prefix, norecursedirs=excluded_test_dirs
+                )
             )
         )
     elif all_tests is not None:
         resolved_all_tests = tuple(all_tests)
     else:
-        resolved_all_tests = _test_modules(tests_dir, test_prefix)
+        resolved_all_tests = _test_modules(
+            tests_dir, test_prefix, norecursedirs=excluded_test_dirs
+        )
     if full:
         return _escalated(
             changes,
@@ -2358,6 +2431,10 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             path.startswith(config.tests_dir.rstrip("/") + "/")
             and path.endswith(".py")
             and path.split("/")[-1].startswith("test_")
+            and not _is_excluded_test_parts(
+                Path(path).relative_to(Path(config.tests_dir.rstrip("/"))).parts,
+                excluded_test_dirs,
+            )
         ):
             if deleted_resolved:
                 is_deleted_test = path in deleted_set
@@ -3254,7 +3331,17 @@ def _ref_source_snapshot(
             except SelectionError:
                 tach_graph_digest = None
         test_prefix = ".".join(Path(config.tests_dir).parts)
-        tree_tests = _tree_test_modules(root, tree, config.tests_dir, test_prefix)
+        tree_tests = _tree_test_modules(
+            root,
+            tree,
+            config.tests_dir,
+            test_prefix,
+            norecursedirs=(
+                _pytest_norecursedirs(root, tree=tree)
+                if config.framework == "pytest"
+                else ()
+            ),
+        )
         tests_modules = list(tree_tests) if tree_tests is not None else []
         tests_digest = f"sha256:{_json_sha256(tests_modules)}"
     else:
@@ -3480,7 +3567,15 @@ def verify_materialized_source_snapshot(
     ):
         raise SelectionError("expected_per_ref_source_unverifiable")
     test_prefix = ".".join(Path(sel_cfg.tests_dir).parts)
-    mat_tests = list(_test_modules(mat_path / sel_cfg.tests_dir, test_prefix))
+    mat_tests = list(
+        _test_modules(
+            mat_path / sel_cfg.tests_dir,
+            test_prefix,
+            norecursedirs=(
+                _pytest_norecursedirs(mat_path) if sel_cfg.framework == "pytest" else ()
+            ),
+        )
+    )
     if mat_tests != list(snap.get("tests_modules") or ()):
         raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
@@ -3714,20 +3809,23 @@ _NATIVE_TACH_HANDOFF_KEYS = (
 )
 
 
-def _register_native_tach_handoff(result):
+def _register_native_tach_handoff(result, *, root=None, resolved_executable=None):
     """Attach a process-local proof token after a real `tach check` invocation."""
     if not isinstance(result, dict) or result.get("status") not in {"passed", "failed"}:
         return result
     token = secrets.token_hex(16)
     payload = dict(result)
     payload["native_execution_token"] = token
-    _NATIVE_TACH_HANDOFFS[token] = {
-        key: payload.get(key) for key in _NATIVE_TACH_HANDOFF_KEYS
-    }
+    entry = {key: payload.get(key) for key in _NATIVE_TACH_HANDOFF_KEYS}
+    if root is not None:
+        entry["root"] = str(Path(root).resolve())
+    if resolved_executable is not None:
+        entry["resolved_executable"] = resolved_executable
+    _NATIVE_TACH_HANDOFFS[token] = entry
     return payload
 
 
-def lookup_native_tach_handoff(graph):
+def lookup_native_tach_handoff(graph, *, root=None, expected_executable=None):
     """Return the registered native result when ``graph`` carries a live proof."""
     if not isinstance(graph, dict):
         return None
@@ -3740,6 +3838,12 @@ def lookup_native_tach_handoff(graph):
     for key in _NATIVE_TACH_HANDOFF_KEYS:
         if graph.get(key, registered.get(key)) != registered.get(key):
             return None
+    if root is not None and registered.get("root") != str(Path(root).resolve()):
+        return None
+    if expected_executable is not None and (
+        registered.get("resolved_executable") != expected_executable
+    ):
+        return None
     return registered
 
 
@@ -3763,6 +3867,7 @@ def _tach_check(root, config, changes):
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
+    resolved_tach = shutil.which("tach")
     try:
         result = subprocess.run(
             ["tach", "check"],
@@ -3794,7 +3899,9 @@ def _tach_check(root, config, changes):
             "tach_sha256": _digest(root / config.tach),
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
-        }
+        },
+        root=root,
+        resolved_executable=resolved_tach,
     )
 
 
@@ -3943,7 +4050,13 @@ def plan(
     except SelectionError:
         tach_graph = None
     test_prefix = ".".join(Path(config.tests_dir).parts)
-    all_tests = _test_modules(root / config.tests_dir, test_prefix)
+    all_tests = _test_modules(
+        root / config.tests_dir,
+        test_prefix,
+        norecursedirs=(
+            _pytest_norecursedirs(root) if config.framework == "pytest" else ()
+        ),
+    )
     graph = _graph_validation(selection, config, root, tach_validation)
     profile_changed = False
     if resolved_profile_path is not None:
@@ -4617,7 +4730,17 @@ def run_tests(
         command = [executable, "-X", "utf8", "-m", "pytest", "-q"]
         if junit_path is not None:
             command.append(f"--junitxml={Path(junit_path).resolve()}")
-        command.extend(modules)
+        for target in modules:
+            if (
+                target.endswith(".py")
+                or "/" in target
+                or "\\" in target
+                or "::" in target
+                or target.startswith("-")
+            ):
+                command.append(target)
+            else:
+                command.extend(["--pyargs", target])
     elif framework == "unittest":
         command = [executable, "-X", "utf8", "-m", "unittest", *modules, "-v"]
     else:

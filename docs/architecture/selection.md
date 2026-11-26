@@ -472,10 +472,19 @@ for actual request/reader counts and failure preservation.
 ### Repository boundary mapping & Tach validation reuse (#162 A2)
 
 - Root `ci-selection.toml` registers `tach = "tach.toml"`, `strict_modules = true`,
-  `[module_tests]` for all `src/engineering_ci` modules, and `[[non_code_rules]]`
-  mapping `.dagger/src/engineering_ci_module/*`, `scripts/*`, `config/*`, and test
-  fixtures while retaining Index/push `select_tests = false` and #164 revision-2
-  governed hook profiles (`declared_checks = ["whitespace", "forwarding"]`).
+  `[module_tests]` for all `src/engineering_ci` modules, explicit `[check_scope]`
+  (`code_prefixes = ["src/", "scripts/", "tests/", ".dagger/src/"]`,
+  `shell_prefixes = ["scripts/"]`), and `[[non_code_rules]]` mapping
+  `.dagger/src/engineering_ci_module/*`, `scripts/*`, `config/*`, and test
+  fixtures while retaining Index/push `select_tests = false` and #166 revision-3
+  governed hook profiles (`declared_checks = ["whitespace", "forwarding", "actionlint", "shellcheck", "zizmor"]`).
+- Schema 1 omitted `[check_scope].code_prefixes` keeps its historical default
+  `("src/", "scripts/", "tests/")` across config parsing and identity
+  reconstruction; explicit `.dagger/src/` inclusion lives in `[check_scope]`.
+- When `framework = "pytest"`, `_test_modules`, `_tree_test_modules`, direct
+  test matching, and per-ref source snapshots honor `[tool.pytest.ini_options]`
+  `norecursedirs` (excluding `tests/fixtures/` from root collection while
+  preserving standalone fixture project test discovery).
 - **Adoption scope (R15 independent slice):** this delivers selection mapping,
   hygiene applicability, root `tach.toml` / `ci-selection.toml` artifacts, and
   host-native `tach check` / `tach check-external` evidence when those tools are

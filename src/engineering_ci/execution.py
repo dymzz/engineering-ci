@@ -727,7 +727,11 @@ def _reusable_tach_graph_result(plan, config, *, root, execution_context):
         return None
     chosen = plan.get("selection") or {}
     graph = chosen.get("tach_graph_validation")
-    native = selection.lookup_native_tach_handoff(graph)
+    native = selection.lookup_native_tach_handoff(
+        graph,
+        root=root,
+        expected_executable=shutil.which(config.tach.executable),
+    )
     if native is None:
         return None
     if (

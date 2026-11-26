@@ -35,7 +35,7 @@ MAX_CONFIG_BYTES = 1024 * 1024
 MAX_OUTPUT = 8000
 _DEFAULT_CHECKS = ("whitespace", "forwarding", "docs", "vulture", "tach")
 SUPPORTED_CHECKS = (*_DEFAULT_CHECKS, "tach_external")
-DEFAULT_CODE_PREFIXES = ("src/", "scripts/", "tests/", ".dagger/src/")
+DEFAULT_CODE_PREFIXES = ("src/", "scripts/", "tests/")
 _DEPENDENCY_FILES = frozenset(
     {"uv.lock", "poetry.lock", "pdm.lock", "requirements.txt"}
 )
@@ -624,32 +624,24 @@ def _hygiene_config_triggers(paths, root, changes, *, hygiene_config_path=None):
     Unreadable or unprovable snapshots select every rule rather than treating an
     unknown edit as irrelevant; source/doc candidate `inputs` stay unpolluted.
     """
-    triggers, _previous = _hygiene_config_trigger_state(
-        paths, root, changes, hygiene_config_path=hygiene_config_path
-    )
-    return triggers
-
-
-def _hygiene_config_trigger_state(paths, root, changes, *, hygiene_config_path=None):
-    """Return ``(triggers, previous_normalized_or_None)`` for rule-change scope."""
     rel_cfg = _resolved_hygiene_relpath(root, hygiene_config_path)
     if rel_cfg is None or rel_cfg not in paths:
-        return {}, None
+        return {}
     all_triggered = {name: True for name in _HYGIENE_RULES}
     current_raw = _read_hygiene_config_at_snapshot(root, rel_cfg, changes)
     if current_raw is None:
-        return all_triggered, None
+        return all_triggered
     base = getattr(changes, "base_commit", None)
     if not isinstance(base, str) or not base.strip():
-        return all_triggered, None
+        return all_triggered
     shown = _run_bytes(["git", "show", f"{base.strip()}:{rel_cfg}"], root)
     if shown.returncode != 0:
-        return all_triggered, None
+        return all_triggered
     try:
         current_norm = _normalize_config(_parse_config_bytes(current_raw))
         previous_norm = _normalize_config(_parse_config_bytes(shown.stdout))
     except HygieneError:
-        return all_triggered, None
+        return all_triggered
     triggers = {
         name: _normalized_hygiene_rule_slice(current_norm, name)
         != _normalized_hygiene_rule_slice(previous_norm, name)
@@ -660,7 +652,7 @@ def _hygiene_config_trigger_state(paths, root, changes, *, hygiene_config_path=N
     for name in current_checks - previous_checks:
         if name in triggers:
             triggers[name] = True
-    return triggers, previous_norm
+    return triggers
 
 
 def _path_under_roots(path, roots):
@@ -691,56 +683,6 @@ def _tach_configured_roots(root, config, changes):
         if isinstance(item, str) and item.strip():
             normalized.append(item.replace("\\", "/").rstrip("/") + "/")
     return tuple(normalized) or ("src/",)
-
-
-def _forwarding_paths_under_prefix(entries, prefix):
-    return [
-        path
-        for path in entries
-        if path.startswith(prefix)
-        and path.endswith(".py")
-        and not path.endswith("/__init__.py")
-    ]
-
-
-def _forwarding_config_scope_inputs(config, root, changes, *, previous_norm=None):
-    """Real forwarding targets when the rule changes (never inject TOML as AST input).
-
-    Uses the bound target tree when available. Rule changes check modules under
-    the *current* ``source_prefix`` (the rule that now applies). ``previous_norm``
-    is reserved for future migration diagnostics and does not widen the scan.
-    Returns ``None`` when the scope cannot be proven from the bound snapshot.
-    """
-    _ = previous_norm
-    prefix = config.forwarding.source_prefix
-    target_tree = getattr(changes, "execution_tree", None) or getattr(
-        changes, "tree", None
-    )
-    if isinstance(target_tree, str) and _GIT_OID.fullmatch(target_tree):
-        entries, failure = _forwarding_tree_entries(
-            target_tree,
-            lambda *args: _run(["git", *args], root),
-            {},
-            side="current",
-        )
-        if failure is not None or entries is None:
-            return None
-        return sorted(_forwarding_paths_under_prefix(entries, prefix))
-    if getattr(changes, "snapshot", None) != "worktree":
-        return None
-    base = Path(root) / prefix
-    if not base.is_dir():
-        return []
-    found = []
-    for path in base.rglob("*.py"):
-        if path.name == "__init__.py":
-            continue
-        try:
-            rel = path.resolve().relative_to(Path(root).resolve()).as_posix()
-        except (OSError, ValueError):
-            continue
-        found.append(rel)
-    return sorted(set(found))
 
 
 def check_applicability(
@@ -807,7 +749,7 @@ def check_applicability(
 
     vulture_inputs = [path for path in paths if is_vulture_path(path)]
     tach_inputs = [path for path in paths if is_tach_path(path)]
-    rule_triggers, previous_norm = _hygiene_config_trigger_state(
+    rule_triggers = _hygiene_config_triggers(
         paths, root, changes, hygiene_config_path=hygiene_config_path
     )
     dep_inputs = [path for path in paths if _is_dependency_input(path)]
@@ -834,48 +776,22 @@ def check_applicability(
             }
         elif name == "forwarding":
             cfg_triggered = bool(rule_triggers.get(name))
-            inputs = list(forwarding_inputs)
-            if (cfg_triggered or full) and not inputs:
-                scope_inputs = _forwarding_config_scope_inputs(
-                    config, root, changes, previous_norm=previous_norm
+            selected = bool(forwarding_inputs)
+            if selected:
+                reason = (
+                    "hygiene_forwarding_config_changed"
+                    if cfg_triggered
+                    else "python source changed"
                 )
-                if scope_inputs is None:
-                    scopes[name] = {
-                        "name": name,
-                        "status": "unknown",
-                        "inputs": [],
-                        "reason": (
-                            "hygiene_forwarding_config_changed_scope_unreadable"
-                            if cfg_triggered
-                            else "forwarding_scope_unreadable"
-                        ),
-                    }
-                    continue
-                if not scope_inputs:
-                    scopes[name] = {
-                        "name": name,
-                        "status": "not_applicable",
-                        "inputs": [],
-                        "reason": (
-                            "hygiene_forwarding_config_changed_no_targets"
-                            if cfg_triggered
-                            else "no_python_changes"
-                        ),
-                    }
-                    continue
-                inputs = scope_inputs
-            selected = full or bool(inputs)
+            elif cfg_triggered:
+                reason = "hygiene_forwarding_config_changed_no_targets"
+            else:
+                reason = "no_python_changes"
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
-                "inputs": inputs if selected else [],
-                "reason": (
-                    "hygiene_forwarding_config_changed"
-                    if cfg_triggered and selected
-                    else "python source changed"
-                    if selected
-                    else "no_python_changes"
-                ),
+                "inputs": forwarding_inputs,
+                "reason": reason,
             }
         elif name == "docs":
             cfg_triggered = bool(rule_triggers.get(name))
@@ -1132,8 +1048,8 @@ def _observe_forwarding_path_error(root, observation, error):
     return "forwarding_worktree_link_unsupported"
 
 
-def _forwarding(candidates, changes, root, runner, *, allow_empty=False):
-    if not candidates and not allow_empty:
+def _forwarding(candidates, changes, root, runner):
+    if not candidates:
         return _result("forwarding", "not_applicable", reason="no_python_changes")
     empty_base = _unborn_base_tree(changes)
     base = empty_base or getattr(changes, "base_commit", None)
@@ -1589,15 +1505,12 @@ def run(
         if name == "whitespace":
             results.append(_whitespace(changes, root, runner, None if full else paths))
         elif name == "forwarding":
-            # Empty candidates must not PASS via allow_empty: config-triggered
-            # scope either supplies real tree targets or stays not_applicable.
             results.append(
                 _forwarding(
                     app_entry.get("inputs") or [],
                     changes,
                     root,
                     runner,
-                    allow_empty=False,
                 )
             )
         elif name == "docs":

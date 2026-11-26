@@ -1890,3 +1890,99 @@ def test_repository_root_selection_and_tach_configs_target_src_and_dagger():
     )
     assert docs_sel.status == "no_tests"
     assert docs_sel.escalated is False
+
+
+def test_schema1_default_code_prefixes_identity_and_explicit_dagger_scope(tmp_path):
+    legacy = tmp_path / "legacy-selection.toml"
+    legacy.write_text('schema_version = 1\nframework = "pytest"\n', encoding="utf-8")
+    loaded = selection.load_config(legacy)
+    assert loaded.check_scope.code_prefixes == ("src/", "scripts/", "tests/")
+    identity = selection.config_identity(legacy, loaded, root=tmp_path)
+    assert identity["normalized"]["check_scope"]["code_prefixes"] == [
+        "src/",
+        "scripts/",
+        "tests/",
+    ]
+    reconstructed = selection.verify_config_identity_matches_file(
+        identity, root=tmp_path, require_file=True
+    )
+    assert reconstructed.check_scope.code_prefixes == ("src/", "scripts/", "tests/")
+
+    explicit = tmp_path / "dagger-selection.toml"
+    explicit.write_text(
+        "schema_version = 1\n"
+        'framework = "pytest"\n'
+        "[check_scope]\n"
+        'code_prefixes = ["src/", "scripts/", "tests/", ".dagger/src/"]\n',
+        encoding="utf-8",
+    )
+    explicit_cfg = selection.load_config(explicit)
+    assert ".dagger/src/" in explicit_cfg.check_scope.code_prefixes
+    explicit_id = selection.config_identity(explicit, explicit_cfg, root=tmp_path)
+    verified_explicit = selection.verify_config_identity_matches_file(
+        explicit_id, root=tmp_path, require_file=True
+    )
+    assert ".dagger/src/" in verified_explicit.check_scope.code_prefixes
+
+
+def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixture(
+    repo, tmp_path
+):
+    root = Path(__file__).resolve().parents[1]
+    cfg = selection.load_config(root / "ci-selection.toml")
+    worktree_mods = selection._test_modules(root / "tests", "tests")
+    tree_id = run(root, "rev-parse", "HEAD^{tree}").strip()
+    tree_mods = selection._tree_test_modules(root, tree_id, "tests", "tests")
+    assert worktree_mods == tree_mods
+    assert not any("fixtures" in mod for mod in worktree_mods)
+    assert "tests.test_selection" in worktree_mods
+
+    full_worktree = selection.select(
+        selection.ChangeSet(
+            root=root,
+            base_ref="HEAD",
+            head_ref="WORKTREE",
+            base_commit="0" * 40,
+            head_commit="1" * 40,
+            tree=None,
+            paths=(),
+            worktree_dirty=False,
+            complete=True,
+        ),
+        cfg,
+        root=root,
+        full=True,
+    )
+    assert full_worktree.tests == worktree_mods
+
+    head = run(root, "rev-parse", "HEAD").strip()
+    snap = selection._ref_source_snapshot(
+        root,
+        {"tree": tree_id, "ref_action": "update"},
+        config=cfg,
+        entry={
+            "remote_ref": "refs/heads/main",
+            "local_ref": "refs/heads/main",
+            "before": head,
+            "after": head,
+            "tree": tree_id,
+            "ref_action": "update",
+            "tests": [],
+        },
+    )
+    assert tuple(snap["tests_modules"]) == tree_mods
+
+    # Standalone fixture project continues discovering its own tests and running dotted pytest targets.
+    fixture_repo, _ = repo
+    standalone_mods = selection._test_modules(fixture_repo / "tests", "tests")
+    assert standalone_mods == ("tests.test_other", "tests.test_pkg", "tests.test_sub")
+    assert (
+        selection.run_tests(("tests.test_pkg",), root=fixture_repo, framework="pytest")
+        == 0
+    )
+    assert (
+        selection.run_tests(
+            ("tests.missing_target",), root=fixture_repo, framework="pytest"
+        )
+        != 0
+    )

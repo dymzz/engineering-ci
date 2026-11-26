@@ -3258,6 +3258,12 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
     path, _base = repo
     (path / "custom_pkg").mkdir()
     (path / "custom_pkg/mod.py").write_text("X = 1\n", encoding="utf-8")
+    (path / "tach.toml").write_text(
+        (path / "tach.toml")
+        .read_text(encoding="utf-8")
+        .replace('source_roots = ["src"]', 'source_roots = ["src", "custom_pkg"]'),
+        encoding="utf-8",
+    )
     run(path, "add", "-A")
     run(path, "commit", "-q", "-m", "add custom pkg")
     base = run(path, "rev-parse", "HEAD~1").strip()
@@ -3268,7 +3274,11 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
         + '\n[check_scope]\ncode_prefixes = ["custom_pkg/"]\n',
         encoding="utf-8",
     )
-    hygiene_text = (path / "ci-hygiene.toml").read_text(encoding="utf-8")
+    hygiene_text = (
+        (path / "ci-hygiene.toml")
+        .read_text(encoding="utf-8")
+        .replace('paths = ["src"]', 'paths = ["src", "custom_pkg"]')
+    )
     (path / "ci-hygiene.toml").write_text(
         hygiene_text.replace("external = false", "external = true"),
         encoding="utf-8",
@@ -3277,7 +3287,7 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
     run(path, "commit", "-q", "-m", "custom code prefix and tach external")
     base = run(path, "rev-parse", "HEAD").strip()
 
-    # Modify custom_pkg/mod.py only; default code_prefixes would miss it
+    # Modify custom_pkg/mod.py only; configured roots trigger tach, tach_external, and vulture.
     (path / "custom_pkg/mod.py").write_text("X = 2\n", encoding="utf-8")
     changes = selection.changeset(path, base=base, mode="worktree")
     cfg = selection.load_config(path / "ci-selection.toml")
@@ -3300,8 +3310,22 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
     by_name = {item["name"]: item for item in report["checks"]}
     assert by_name["tach"]["status"] == "passed"
     assert by_name["tach_external"]["status"] == "passed"
+    assert by_name["vulture"]["status"] == "passed"
     assert any("check-external" in call[0] for call in runner.calls)
     assert any("vulture" in call[0] for call in runner.calls)
+
+    # Tampered selection.code_prefixes in Plan fails closed before starting tools.
+    bad_prefixes = json.loads(json.dumps(p))
+    bad_prefixes["selection"]["code_prefixes"] = ["src/"]
+    bad_prefix_runner = FakeRunner()
+    bad_prefix_report = execution.execute(
+        bad_prefixes, root=path, runner=bad_prefix_runner
+    )
+    assert bad_prefix_report["status"] == "failed"
+    assert (
+        bad_prefix_report["checks"][0]["reason"] == "selection_code_prefixes_mismatch"
+    )
+    assert [call for call in bad_prefix_runner.calls if call[0][0] != "git"] == []
 
     # 1. Unauthorized deletion of tach_external from Plan while ci-hygiene.toml has external = true:
     #    execution MUST NOT start tach check-external AND MUST block the report as configured_check_omitted_from_plan
@@ -3493,6 +3517,12 @@ def test_p1_2_selection_to_execution_event_external_handoff(repo, tmp_path):
     path, _base = repo
     (path / "custom_pkg").mkdir()
     (path / "custom_pkg/mod.py").write_text("X = 1\n", encoding="utf-8")
+    (path / "tach.toml").write_text(
+        (path / "tach.toml")
+        .read_text(encoding="utf-8")
+        .replace('source_roots = ["src"]', 'source_roots = ["src", "custom_pkg"]'),
+        encoding="utf-8",
+    )
     (path / "data/catalog").mkdir(parents=True)
     content = b"source-bytes"
     (path / "data/acquired").mkdir(parents=True)
@@ -3529,7 +3559,9 @@ def test_p1_2_selection_to_execution_event_external_handoff(repo, tmp_path):
     )
     ext_hyg = ext_dir / "ci-hygiene.toml"
     ext_hyg.write_text(
-        in_repo_hygiene.replace("external = false", "external = true"),
+        in_repo_hygiene.replace(
+            'paths = ["src"]', 'paths = ["src", "custom_pkg"]'
+        ).replace("external = false", "external = true"),
         encoding="utf-8",
     )
     ext_src = ext_dir / "ci-sources.toml"
@@ -3572,6 +3604,7 @@ require_text_unset = false
     assert report["status"] == "passed"
     by_name = {item["name"]: item for item in report["checks"]}
     assert by_name["tach_external"]["status"] == "passed"
+    assert by_name["vulture"]["status"] == "passed"
     assert by_name["source"]["status"] == "passed"
     assert any("check-external" in call[0] for call in runner.calls)
 
@@ -6213,6 +6246,112 @@ def test_execution_reuses_selection_tach_validation_and_runs_external_separately
     assert "check" in forged_subcommands
     forged_tach = next(c for c in forged_report["checks"] if c["name"] == "tach")
     assert "reused_from" not in forged_tach.get("observation", {})
+
+    # Same-tree/token handoff is bound to its origin repo root; another root re-runs native tach.
+    other_root = path.parent / "cloned_repo"
+    shutil.copytree(path, other_root)
+    run(other_root, "update-index", "-q", "--refresh")
+    other_plan = json.loads(json.dumps(p))
+    other_plan["inputs"]["config"]["path"] = "ci-selection.toml"
+    other_plan["inputs"]["hygiene"]["path"] = "ci-hygiene.toml"
+    other_subcommands = []
+
+    def other_tracker(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            other_subcommands.append(argv[1])
+            return subprocess.CompletedProcess(argv, 0, "validated\n", "")
+        return hygiene._run(argv, root, data)
+
+    other_report = execution.execute(
+        other_plan,
+        root=other_root,
+        hygiene_config=other_root / "ci-hygiene.toml",
+        runner=other_tracker,
+    )
+    assert other_report["status"] == "passed"
+    assert "check" in other_subcommands
+
+    # Real failing native handoff propagates failure once without re-running tach check.
+    (path / "src/pkg/sub.py").write_text("from pkg.other import X\n", encoding="utf-8")
+    (path / "src/pkg/other.py").write_text("X = 1\n", encoding="utf-8")
+    run(path, "add", "src/pkg/sub.py", "src/pkg/other.py")
+    run(path, "commit", "-qm", "introduce undeclared dependency")
+    fail_changes = selection.changeset(path, base=prereq_base, mode="commit")
+    fail_sel = selection.select(fail_changes, cfg, root=path)
+    fail_tach = selection._tach_check(path, cfg, fail_changes)
+    assert fail_tach["status"] == "failed"
+    fail_plan = selection.plan(
+        fail_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation=fail_tach,
+    )
+    fail_subcommands = []
+
+    def fail_tracker(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            fail_subcommands.append(argv[1])
+            if argv[1] == "check":
+                raise AssertionError("failed native handoff must be reused, not re-run")
+            return subprocess.CompletedProcess(argv, 0, "external ok\n", "")
+        return hygiene._run(argv, root, data)
+
+    blocked_report = execution.execute(
+        fail_plan,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=fail_tracker,
+    )
+    assert blocked_report["status"] == "blocked"
+    assert blocked_report["reason"] == "tach_graph_unvalidated"
+
+    # When tests are not selected (e.g. push policy with select_tests=false), execute propagates failed native tach once.
+    (path / "ci-selection.toml").write_text(
+        (path / "ci-selection.toml").read_text(encoding="utf-8")
+        + "\n[push]\nselect_tests = false\n",
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-qm", "disable push tests")
+    push_cfg = selection.load_config(path / "ci-selection.toml")
+    push_changes = selection.changeset(
+        path,
+        base=prereq_base,
+        head="HEAD",
+        mode="push",
+        before=prereq_base,
+        after=run(path, "rev-parse", "HEAD").strip(),
+    )
+    push_sel = selection.select(push_changes, push_cfg, root=path)
+    push_tach = selection._tach_check(path, push_cfg, push_changes)
+    assert push_tach["status"] == "failed"
+    push_fail_plan = selection.plan(
+        push_sel,
+        config=push_cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation=push_tach,
+    )
+
+    fail_report = execution.execute(
+        push_fail_plan,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=fail_tracker,
+    )
+    assert fail_report["status"] == "failed"
+    fail_tach_check = next(c for c in fail_report["checks"] if c["name"] == "tach")
+    assert fail_tach_check["status"] == "failed"
+    assert fail_tach_check["reason"] == "tach_check_failed"
+    assert (
+        fail_tach_check["observation"]["reused_from"] == "selection.native_tach_handoff"
+    )
+    assert "check-external" in fail_subcommands
 
 
 def test_multi_ref_push_hygiene_config_vulture_only_parity(repo):
