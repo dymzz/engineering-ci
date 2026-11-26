@@ -1,6 +1,20 @@
 schema_version = 1
 framework = "pytest"
 checks = ["hygiene"]
+ignored_files = [
+    "ci-selection.toml",
+    "ci-hygiene.toml",
+    "ci-effective-profile.json",
+    "ci-effective-profile.toml",
+    "tach.toml",
+    "lefthook.yml",
+]
+
+[commit]
+# Index / pre-commit stays low-cost: hygiene obligations only. Full pytest / Dagger
+# remain on explicit verify / PR / Actions. Enabling tests here requires Tach baselines
+# and an intentional cost review (#162 A2 / #66).
+select_tests = false
 
 [push]
 # New refs compare against the last observed main of the project remote.
@@ -13,6 +27,15 @@ effective_profiles = [
     "config/hook-profiles/force-update.json",
     "config/hook-profiles/delete.json",
 ]
+
+# index / pre-commit
+[[effective_profile]]
+profile_ref = { name = "eci/local-commit", version = "1.0.0" }
+profile_revision = "1"
+approval_source = "project-governance"
+approval_digest = "sha256:002d08ebdd67e33954569daeecb0353a1cb1eb5c6c6d303698e03f9543d3db67"
+effective_at = "2026-11-26T02:00:00Z"
+declared_checks = ["whitespace"]
 
 # create
 [[effective_profile]]

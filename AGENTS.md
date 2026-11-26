@@ -9,7 +9,7 @@ Engineering CI provides reusable Python CI/CD capabilities through Dagger and Gi
 - [Documentation index](docs/README.md): technical documentation and maintenance conventions.
 - [Repository overview](docs/architecture/repository-overview.md): architecture, responsibilities and module boundaries.
 - [Technology inventory](docs/architecture/technology.md): adopted, experimental, planned and removed technologies.
-- [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures.
+- [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures. Before running repository verification, decide the actual obligation scope, then use the matching standard entry in [Explicit local full verification](guides/common-tasks.md#显式本地综合验证); reuse still-valid native evidence instead of expanding scope or re-running for a receipt.
 - [Agent task continuity](docs/architecture/agent-instructions.md#task-continuity-and-evidence-reuse): locate relevant knowledge relations, existing work, evidence and handoff before implementation or review.
 - [Authorization dependency review](docs/verification/authorization-closure/README.md): pinned dependency and evidence coverage snapshots, not current execution or authorization state.
 
@@ -34,6 +34,7 @@ Consult relevant documentation and interfaces when working across module boundar
 
 ## Delivery
 
+- Choose verification entries from [Common tasks](guides/common-tasks.md): decide the obligation scope first, then use that guide's standard entry (default full local verify under [Explicit local full verification](guides/common-tasks.md#显式本地综合验证)). Do not invent parallel runners or re-run solely to produce timing receipts.
 - **Maintain engineering knowledge graph relations and task handoff with every submission** (commit, PR update, Review, or acceptance). Before submitting, reconcile affected relations and evidence against the actual change; update their authoritative records in the same submission or a linked companion update. Record the scope and outcome, including why no relation changed when applicable. Follow [graph maintenance on every submission](docs/architecture/agent-instructions.md#graph-maintenance-on-every-submission). Preserve pinned historical graphs; update original authorities and refresh applicable projections using adopted tools. Derive mechanical facts from Git/GitHub and native tool outputs instead of transcribing them. Tool adoption and projection automation belong to [#162 C](https://github.com/dymzz/engineering-ci/issues/162); use existing sources until those capabilities are available, without duplicating ledgers or unrelated revalidation.
 - PR merging is authorized for this repository after task acceptance, code review and required CI checks on the current head.
 - Before preparing a formal Release, review

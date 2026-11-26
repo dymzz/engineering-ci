@@ -62,6 +62,7 @@ _CONFIG_KEYS = {
     "strict_modules",
     "coverage_required",
     "check_scope",
+    "commit",
     "push",
     "effective_profile",
     "workflow_checks",
@@ -105,6 +106,13 @@ class WorkflowChecksConfig:
 
 
 @dataclass(frozen=True)
+class CommitPolicyConfig:
+    """Index / pre-commit test selection policy (snapshot ``index``)."""
+
+    select_tests: bool = True
+
+
+@dataclass(frozen=True)
 class PushPolicyConfig:
     new_ref_baseline: str | None = None
     target_baselines: dict[str, str] = field(default_factory=dict)
@@ -132,6 +140,7 @@ class Config:
     coverage_required: bool
     check_scope: CheckScopeConfig
     dependency_edges: tuple[dict, ...] = ()
+    commit: CommitPolicyConfig = field(default_factory=CommitPolicyConfig)
     push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
     effective_profile_policy: dict | list[dict] | None = None
     workflow_checks: WorkflowChecksConfig = field(default_factory=WorkflowChecksConfig)
@@ -477,6 +486,13 @@ def _parse_config_bytes(raw):
         zizmor_offline=z_offline,
         shellcheck_inline=sc_inline,
     )
+    commit_raw = value.get("commit", {})
+    if not isinstance(commit_raw, dict) or set(commit_raw) - {"select_tests"}:
+        raise SelectionError("commit_policy_invalid")
+    select_commit_tests = commit_raw.get("select_tests", True)
+    if type(select_commit_tests) is not bool:
+        raise SelectionError("commit_policy_invalid")
+    commit_policy = CommitPolicyConfig(select_tests=select_commit_tests)
     push_raw = value.get("push", {})
     if not isinstance(push_raw, dict) or set(push_raw) - {
         "new_ref_baseline",
@@ -538,6 +554,7 @@ def _parse_config_bytes(raw):
         coverage_required=coverage_required,
         check_scope=check_scope,
         dependency_edges=dependency_edges,
+        commit=commit_policy,
         push=push_policy,
         effective_profile_policy=effective_profile_policy,
         workflow_checks=workflow_checks,
@@ -699,6 +716,9 @@ def _normalize_config(config):
             "zizmor_offline": config.workflow_checks.zizmor_offline,
             "shellcheck_inline": config.workflow_checks.shellcheck_inline,
         },
+        "commit": {
+            **({"select_tests": False} if not config.commit.select_tests else {}),
+        },
         "push": {
             "new_ref_baseline": config.push.new_ref_baseline,
             "target_baselines": dict(sorted(config.push.target_baselines.items())),
@@ -825,6 +845,10 @@ def config_from_identity(identity):
     ):
         raise SelectionError("config_identity_mismatch")
     scope = norm.get("check_scope") or {}
+    commit_raw = norm.get("commit") or {}
+    select_commit_tests = commit_raw.get("select_tests", True)
+    if type(select_commit_tests) is not bool:
+        raise SelectionError("config_identity_invalid")
     push_raw = norm.get("push") or {}
     select_push_tests = push_raw.get("select_tests", True)
     if type(select_push_tests) is not bool:
@@ -877,6 +901,7 @@ def config_from_identity(identity):
             ),
             shell_prefixes=tuple(scope.get("shell_prefixes") or ()),
         ),
+        commit=CommitPolicyConfig(select_tests=select_commit_tests),
         push=PushPolicyConfig(
             new_ref_baseline=push_raw.get("new_ref_baseline"),
             target_baselines=dict(push_raw.get("target_baselines") or {}),
@@ -2204,6 +2229,21 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             status="not_applicable",
             escalated=False,
             reasons={"skipped": ["remote_ref_deleted"]},
+            base_prerequisites=frozenset(),
+        )
+    if (
+        changes.snapshot == "index"
+        and changes.complete
+        and not config.commit.select_tests
+        and not full
+    ):
+        return Selection(
+            changeset=changes,
+            tests=(),
+            checks=config.checks,
+            status="no_tests",
+            escalated=False,
+            reasons={"skipped": ["Test selection is disabled by the commit policy"]},
             base_prerequisites=frozenset(),
         )
     if (

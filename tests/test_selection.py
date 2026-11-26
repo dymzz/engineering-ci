@@ -1017,6 +1017,36 @@ def test_push_policy_disables_test_selection_only_for_push(repo):
     assert "tests.test_sub" in selection.select(committed, restored, root=path).tests
 
 
+def test_commit_policy_disables_index_test_selection_only(repo):
+    path, base = repo
+    config_path = path / "ci-selection.toml"
+    with config_path.open("ab") as stream:
+        stream.write(b"\n[commit]\nselect_tests = false\n")
+    (path / "src/pkg/sub.py").write_bytes(b"VALUE = 8\n")
+    run(path, "add", "ci-selection.toml", "src/pkg/sub.py")
+    cfg = config(path)
+    restored = selection.config_from_identity(
+        selection.config_identity(config_path, cfg)
+    )
+    assert restored.commit.select_tests is False
+    indexed = selection.changeset(path, base=base, mode="index")
+    assert indexed.snapshot == "index"
+    assert indexed.source_refusal is None
+    selected = selection.select(indexed, restored, root=path)
+    assert selected.status == "no_tests"
+    assert selected.tests == ()
+    assert (
+        "tests.test_sub"
+        in selection.select(indexed, restored, root=path, full=True).tests
+    )
+    run(path, "commit", "-qm", "Change mapped source")
+    head = run(path, "rev-parse", "HEAD").strip()
+    committed = selection.changeset(path, base=base, head=head, mode="commit")
+    assert "tests.test_sub" in selection.select(committed, restored, root=path).tests
+    pushed = changes(path, base=base, mode="push", before=base, after=head)
+    assert "tests.test_sub" in selection.select(pushed, restored, root=path).tests
+
+
 def test_pr_merge_snapshot_records_merge_tree(repo):
     path, base = repo
     run(path, "checkout", "-q", "-b", "feature")
