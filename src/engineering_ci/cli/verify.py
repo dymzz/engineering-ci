@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 from time import perf_counter, time_ns
@@ -60,18 +61,42 @@ def _safe_native_outputs(stdout_path, stderr_path):
 
 
 def _write_json_atomic(path, payload):
-    temp_path = path.with_suffix(".json.tmp")
-    temp_path.write_text(
-        json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n"
-    )
-    temp_path.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(json.dumps(payload, indent=2) + "\n")
+            handle.flush()
+            with suppress(OSError):
+                os.fsync(handle.fileno())
+        tmp_path.replace(path)
+    finally:
+        if tmp_path is not None:
+            with suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
 
 
 def _write_status_best_effort(invocation, payload):
+    path = invocation / "verify-status.json"
+    text = json.dumps(payload, indent=2) + "\n"
     try:
-        _write_json_atomic(invocation / "verify-status.json", payload)
-    except OSError as exc:
-        print(f"verify: status record unavailable: {exc}", file=sys.stderr)
+        _write_json_atomic(path, payload)
+    except OSError:
+        # Atomic replace/cleanup can fail after a seal error. A direct write
+        # still records the observed native exit instead of dropping it.
+        try:
+            path.write_text(text, encoding="utf-8", newline="\n")
+        except OSError as exc:
+            print(f"verify: status record unavailable: {exc}", file=sys.stderr)
 
 
 def _status_payload(
@@ -212,7 +237,7 @@ def _verify(out):
         invocation,
         _status_payload(
             invocation_id=invocation.name,
-            status="running",
+            status="preflight_ok",
             total_started_mono=total_started_mono,
             stages={
                 "cli_preflight": {
@@ -223,7 +248,7 @@ def _verify(out):
             observed_git_head=observed_git_head,
             observed_config_sha256=observed_config_sha256,
             lefthook_version=lefthook_version,
-            native_started=True,
+            native_started=False,
         ),
     )
 
@@ -234,26 +259,99 @@ def _verify(out):
 
     native_started_mono = perf_counter()
     started_at_ns = None
+    opened_streams = False
     try:
-        with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
-            started_at_ns = time_ns()
-            result = subprocess.run(
-                (lefthook, "run", "verify", "--no-auto-install"),
-                stdout=stdout,
-                stderr=stderr,
-                check=False,
+        try:
+            stdout_cm = stdout_path.open("xb")
+            try:
+                stderr_cm = stderr_path.open("xb")
+            except BaseException:
+                with suppress(OSError):
+                    stdout_cm.close()
+                raise
+        except OSError as exc:
+            _write_status_best_effort(
+                invocation,
+                _status_payload(
+                    invocation_id=invocation.name,
+                    status="output_open_failed",
+                    total_started_mono=total_started_mono,
+                    stages={
+                        "cli_preflight": {
+                            "elapsed_seconds": cli_preflight_seconds,
+                            "status": "ok",
+                        },
+                        "lefthook_native": {
+                            "elapsed_seconds": 0.0,
+                            "status": "output_open_failed",
+                        },
+                    },
+                    observed_git_head=observed_git_head,
+                    observed_config_sha256=observed_config_sha256,
+                    lefthook_version=lefthook_version,
+                    native_started=False,
+                    native_exit_code=None,
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                ),
             )
+            raise
+
+        opened_streams = True
+        with stdout_cm as stdout, stderr_cm as stderr:
+            native_started_mono = perf_counter()
+            started_at_ns = time_ns()
+            try:
+                result = subprocess.run(
+                    (lefthook, "run", "verify", "--no-auto-install"),
+                    stdout=stdout,
+                    stderr=stderr,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                _write_status_best_effort(
+                    invocation,
+                    _status_payload(
+                        invocation_id=invocation.name,
+                        status="spawn_failed",
+                        total_started_mono=total_started_mono,
+                        stages={
+                            "cli_preflight": {
+                                "elapsed_seconds": cli_preflight_seconds,
+                                "status": "ok",
+                            },
+                            "lefthook_native": {
+                                "elapsed_seconds": perf_counter() - native_started_mono,
+                                "status": "spawn_failed",
+                            },
+                        },
+                        observed_git_head=observed_git_head,
+                        observed_config_sha256=observed_config_sha256,
+                        lefthook_version=lefthook_version,
+                        native_started=False,
+                        native_exit_code=None,
+                        started_at_ns=None,
+                        completed_at_ns=None,
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                    ),
+                )
+                raise
             ended_at_ns = time_ns()
             native_elapsed_seconds = perf_counter() - native_started_mono
     except KeyboardInterrupt:
         native_elapsed_seconds = perf_counter() - native_started_mono
         report_started_mono = perf_counter()
-        native_outputs = _safe_native_outputs(stdout_path, stderr_path)
-        lefthook_summary = parse_lefthook_output(
-            stdout_path,
-            stderr_path,
-            verify_config=parsed_verify_config,
-            native_exit_code=None,
+        native_outputs = (
+            _safe_native_outputs(stdout_path, stderr_path) if opened_streams else None
+        )
+        lefthook_summary = (
+            parse_lefthook_output(
+                stdout_path,
+                stderr_path,
+                verify_config=parsed_verify_config,
+                native_exit_code=None,
+            )
+            if opened_streams
+            else None
         )
         report_prep_seconds = perf_counter() - report_started_mono
         _write_status_best_effort(
@@ -269,7 +367,7 @@ def _verify(out):
                     },
                     "lefthook_native": {
                         "elapsed_seconds": native_elapsed_seconds,
-                        "status": "interrupted",
+                        "status": "interrupted" if opened_streams else "not_started",
                     },
                     "report_preparation": {
                         "elapsed_seconds": report_prep_seconds,
@@ -279,7 +377,7 @@ def _verify(out):
                 observed_git_head=observed_git_head,
                 observed_config_sha256=observed_config_sha256,
                 lefthook_version=lefthook_version,
-                native_started=True,
+                native_started=opened_streams and started_at_ns is not None,
                 native_exit_code=None,
                 started_at_ns=started_at_ns,
                 completed_at_ns=None,
@@ -329,6 +427,7 @@ def _verify(out):
         receipt = {
             "schema_version": 2,
             "invocation_id": invocation.name,
+            "report_status": "sealed",
             "observed_git_head": observed_git_head,
             "observed_lefthook_config_sha256": observed_config_sha256,
             "lefthook_version": lefthook_version,
@@ -351,14 +450,45 @@ def _verify(out):
         }
         receipt_path = invocation / "verify-timing.json"
         _write_json_atomic(receipt_path, receipt)
-    except OSError as exc:
+    except KeyboardInterrupt:
+        stages["report_preparation"] = {
+            "elapsed_seconds": perf_counter() - report_started_mono,
+            "status": "interrupted",
+        }
+        if native_outputs is None:
+            native_outputs = _safe_native_outputs(stdout_path, stderr_path)
+        _write_status_best_effort(
+            invocation,
+            _status_payload(
+                invocation_id=invocation.name,
+                status="report_preparation_interrupted",
+                total_started_mono=total_started_mono,
+                stages=stages,
+                observed_git_head=observed_git_head,
+                observed_config_sha256=observed_config_sha256,
+                lefthook_version=lefthook_version,
+                native_started=True,
+                native_exit_code=native_exit,
+                started_at_ns=started_at_ns,
+                completed_at_ns=ended_at_ns if wall_clock_monotonic else None,
+                native_outputs=native_outputs,
+                lefthook_summary=lefthook_summary,
+                signal_name="SIGINT_OR_SIGBREAK",
+            ),
+        )
+        print(
+            f"verify interrupted; partial outputs in {invocation}",
+            file=sys.stderr,
+        )
+        return 130
+    except (OSError, ValueError, TypeError) as exc:
         report_prep_seconds = perf_counter() - report_started_mono
         stages["report_preparation"] = {
             "elapsed_seconds": report_prep_seconds,
             "status": "failed",
         }
-        temp_receipt = invocation / "verify-timing.json.tmp"
-        temp_receipt.unlink(missing_ok=True)
+        if native_outputs is None:
+            native_outputs = _safe_native_outputs(stdout_path, stderr_path)
         _write_status_best_effort(
             invocation,
             _status_payload(

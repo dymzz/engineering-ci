@@ -379,6 +379,31 @@ def test_verify_seal_failure_records_status_without_timing_receipt(
     assert "disk full" in status_data["error"]["message"]
     assert "timing receipt unavailable: disk full" in capsys.readouterr().err
 
+    # Unlink failure after atomic replace error must not mask observed native exit
+    orig_replace = verify.Path.replace
+
+    def fail_timing_replace(self, target):
+        if Path(target).name == "verify-timing.json":
+            raise OSError("replace failed")
+        return orig_replace(self, target)
+
+    monkeypatch.setattr(verify.Path, "replace", fail_timing_replace)
+    monkeypatch.setattr(
+        verify.Path,
+        "unlink",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("unlink failed")),
+    )
+    monkeypatch.setattr(verify, "_write_json_atomic", orig_write)
+    timestamps_2 = iter([600, 700])
+    monkeypatch.setattr(verify, "time_ns", lambda: next(timestamps_2))
+    out2 = tmp_path / "out2"
+    assert main(["verify", "--out", str(out2)]) == 1
+    assert not list(out2.glob("*/verify-timing.json"))
+    (status2,) = out2.glob("*/verify-status.json")
+    data2 = json.loads(status2.read_text(encoding="utf-8"))
+    assert data2["status"] == "seal_failed"
+    assert data2["native_exit_code"] == 0
+
 
 def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
     tmp_path, monkeypatch
@@ -473,3 +498,94 @@ def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
         "skipped": 2,
         "unknown": 0,
     }
+
+
+def test_verify_output_open_and_spawn_failures_never_mark_native_started(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+
+    def spawn_fail_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n")
+        raise FileNotFoundError("lefthook binary disappeared")
+
+    monkeypatch.setattr(verify.subprocess, "run", spawn_fail_run)
+    out_spawn = tmp_path / "spawn-fail"
+    assert main(["verify", "--out", str(out_spawn)]) == 1
+    assert not list(out_spawn.glob("*/verify-timing.json"))
+    (spawn_status_path,) = out_spawn.glob("*/verify-status.json")
+    spawn_status = json.loads(spawn_status_path.read_text(encoding="utf-8"))
+    assert spawn_status["status"] == "spawn_failed"
+    assert spawn_status["native_started"] is False
+    assert spawn_status["native_exit_code"] is None
+
+    orig_open = verify.Path.open
+
+    def fail_stderr_open(self, *args, **kwargs):
+        if self.name == "lefthook.stderr" and "x" in (args[0] if args else ""):
+            raise PermissionError("stderr blocked")
+        return orig_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
+    )
+    monkeypatch.setattr(verify.Path, "open", fail_stderr_open)
+    out_open = tmp_path / "open-fail"
+    assert main(["verify", "--out", str(out_open)]) == 1
+    assert not list(out_open.glob("*/verify-timing.json"))
+    (open_status_path,) = out_open.glob("*/verify-status.json")
+    open_status = json.loads(open_status_path.read_text(encoding="utf-8"))
+    assert open_status["status"] == "output_open_failed"
+    assert open_status["native_started"] is False
+    assert open_status["native_exit_code"] is None
+
+
+def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.CompletedProcess(cmd, 0, b"d" * 40 + b"\n")
+        kwargs["stdout"].write(b"raw stdout\n")
+        return subprocess.CompletedProcess(cmd, 2)
+
+    monkeypatch.setattr(verify.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        verify,
+        "parse_lefthook_output",
+        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    out = tmp_path / "prep-interrupt"
+    assert main(["verify", "--out", str(out)]) == 130
+    assert not list(out.glob("*/verify-timing.json"))
+    (status_path,) = out.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "report_preparation_interrupted"
+    assert status_data["native_started"] is True
+    assert status_data["native_exit_code"] == 2
+    assert status_data["stages"]["report_preparation"]["status"] == "interrupted"
+    assert "verify interrupted; partial outputs in" in capsys.readouterr().err

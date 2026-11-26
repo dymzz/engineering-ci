@@ -346,6 +346,34 @@ def _active_index_path(root, environ, *, git_dir=None):
     return Path(root) / index_file
 
 
+def _write_index_tree(root, index_path, env):
+    """Return ``git write-tree`` for the active Index.
+
+    ``git commit`` holds ``index.lock`` across the pre-commit hook. On Windows
+    that exclusive lock makes a second ``write-tree`` unable to lock the live
+    Index, so fall back to a private copy of the bytes already read.
+    """
+    tree = _git(root, "write-tree", env=env)
+    if tree.returncode == 0:
+        return tree
+    detail = f"{tree.stderr or ''}{tree.stdout or ''}"
+    if "index.lock" not in detail:
+        return tree
+    snapshot_dir = Path(tempfile.mkdtemp())
+    snapshot = snapshot_dir / "index"
+    try:
+        snapshot.write_bytes(index_path.read_bytes())
+        return _git(
+            root,
+            "write-tree",
+            env={**env, "GIT_INDEX_FILE": str(snapshot)},
+        )
+    finally:
+        with suppress(OSError):
+            snapshot.unlink(missing_ok=True)
+            snapshot_dir.rmdir()
+
+
 def capture_pre_commit(root, *, environ=None):
     """Capture the actual Index used by a pre-commit invocation.
 
@@ -370,7 +398,7 @@ def capture_pre_commit(root, *, environ=None):
     # mutated concurrently and must be refused.
     for _attempt in range(3):
         before = index_path.read_bytes()
-        tree = _git(root, "write-tree", env={**os.environ, **environ})
+        tree = _write_index_tree(root, index_path, {**os.environ, **environ})
         if tree.returncode != 0:
             raise HookEventError("index_tree_unavailable")
         after = index_path.read_bytes()
@@ -725,7 +753,7 @@ def _record_stage_timing(
     *,
     invocation_ref,
     event_payload_ref,
-    hook_name,
+    hook,
     stage,
     started_ns,
     completed_ns,
@@ -734,6 +762,7 @@ def _record_stage_timing(
     job_ref=None,
     suffix=None,
     extra=None,
+    exclusive_activation=False,
 ):
     """Record a bounded monotonic stage timing sidecar inside the invocation dir."""
     stage_suffix = suffix or f".timing-{stage}"
@@ -749,7 +778,7 @@ def _record_stage_timing(
         "schema_version": 1,
         "invocation_ref": invocation_ref,
         "event_payload_ref": event_payload_ref,
-        "hook_name": hook_name,
+        "hook": hook,
         "stage": stage,
         "timing_clock": "monotonic_perf_counter",
         "started_at_ns": started_ns,
@@ -764,6 +793,17 @@ def _record_stage_timing(
         payload.update(extra)
     git_dir = _invocation_git_dir(invocation_path)
     with _capture_lock(git_dir):
+        if path.exists():
+            if exclusive_activation:
+                return path
+            if status not in ("ok", "passed"):
+                with suppress(OSError, ValueError):
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(existing, dict) and existing.get("status") in (
+                        "ok",
+                        "passed",
+                    ):
+                        return path
         _write_private_file(path, canonical_event_bytes(payload))
     return path
 
@@ -1113,7 +1153,7 @@ def main(argv=None):
                 reference.invocation_path,
                 invocation_ref=reference.invocation_ref,
                 event_payload_ref=reference.event_payload_ref,
-                hook_name=event.get("hook"),
+                hook=event.get("hook"),
                 stage="capture",
                 job_ref="capture",
                 started_ns=capture_started_ns,

@@ -1074,6 +1074,7 @@ def test_hook_stage_timings_recorded_and_pruned_without_altering_receipts(repo, 
         assert sidecar.is_file(), f"missing {sidecar}"
         data = json.loads(sidecar.read_text(encoding="utf-8"))
         assert data["invocation_ref"] == inv_ref
+        assert data["hook"] == "pre-commit"
         assert data["stage"] == expected_stage
         assert data["status"] == expected_status
         assert data["timing_clock"] == "monotonic_perf_counter"
@@ -1186,3 +1187,69 @@ def test_push_hook_stage_timings_record_per_ref_durations(repo, monkeypatch):
     assert len(timing_run["per_ref"]) == 1
     assert timing_run["per_ref"][0]["remote_ref"] == "refs/heads/main"
     assert timing_run["per_ref"][0]["elapsed_seconds"] >= 0
+
+    with pytest.raises(hooks.HookEventError, match="hook_job_already_activated"):
+        hook_checks.run_push_checks(repo, binding)
+    assert (
+        json.loads(
+            binding.invocation_path.with_suffix(".timing-run").read_text(
+                encoding="utf-8"
+            )
+        )
+        == timing_run
+    )
+
+
+def test_duplicate_and_concurrent_activation_never_overwrites_valid_hook_timing(
+    repo, capsys
+):
+    (repo / "sample.txt").write_text("ok\n", encoding="utf-8")
+    git(repo, "add", "sample.txt")
+    assert hooks.main(["capture", "pre-commit", "--root", str(repo), "--json"]) == 0
+    inv_ref = json.loads(capsys.readouterr().out)["invocation_ref"]
+    binding = hooks._load_invocation_ref(repo, inv_ref)
+    inv_path = binding.invocation_path
+
+    assert hook_checks.prepare(repo, binding)["exit_code"] == 0
+    first = hook_checks.run_checks(repo, binding)
+    assert first["exit_code"] == 0
+    first_timing_bytes = inv_path.with_suffix(".timing-run").read_bytes()
+    first_exec_bytes = inv_path.with_suffix(".execution").read_bytes()
+
+    # Duplicate activation is rejected without clobbering the first genuine sample.
+    with pytest.raises(hooks.HookEventError, match="hook_job_already_activated"):
+        hook_checks.run_checks(repo, binding)
+    assert inv_path.with_suffix(".timing-run").read_bytes() == first_timing_bytes
+    assert inv_path.with_suffix(".execution").read_bytes() == first_exec_bytes
+    assert hook_checks.reconcile(repo, binding)["exit_code"] == 0
+
+    # Concurrent calls on a fresh invocation allow only one winner to write .timing-run.
+    hooks.main(["capture", "pre-commit", "--root", str(repo), "--json"])
+    conc_ref = json.loads(capsys.readouterr().out)["invocation_ref"]
+    conc_binding = hooks._load_invocation_ref(repo, conc_ref)
+    hook_checks.prepare(repo, conc_binding)
+
+    results = []
+    errors = []
+
+    def worker():
+        try:
+            results.append(hook_checks.run_checks(repo, conc_binding))
+        except hooks.HookEventError as exc:
+            errors.append(exc.code)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(worker)
+        f2 = pool.submit(worker)
+        f1.result()
+        f2.result()
+
+    assert len(results) == 1
+    assert errors == ["hook_job_already_activated"]
+    conc_timing = json.loads(
+        conc_binding.invocation_path.with_suffix(".timing-run").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert conc_timing["status"] == "passed"
+    assert hook_checks.reconcile(repo, conc_binding)["exit_code"] == 0

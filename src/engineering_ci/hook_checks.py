@@ -61,10 +61,19 @@ def _artifact(binding, suffix, payload=None, *, exclusive=False):
 
 
 @contextmanager
-def _stage_timing(binding, stage, *, job_ref=None, suffix=None):
+def _stage_timing(
+    binding,
+    stage,
+    *,
+    job_ref=None,
+    suffix=None,
+    started_mono=None,
+    started_ns=None,
+    exclusive_activation=False,
+):
     """Measure monotonic and UTC Hook stage timings into an invocation sidecar."""
-    started_mono = time.perf_counter()
-    started_ns = time.time_ns()
+    mono_start = time.perf_counter() if started_mono is None else started_mono
+    ns_start = time.time_ns() if started_ns is None else started_ns
     details = {"status": "ok", "extra": {}}
     try:
         yield details
@@ -80,21 +89,22 @@ def _stage_timing(binding, stage, *, job_ref=None, suffix=None):
             details["status"] = "passed" if exit_code == 0 else "failed"
     finally:
         completed_ns = time.time_ns()
-        elapsed = time.perf_counter() - started_mono
+        elapsed = time.perf_counter() - mono_start
         with suppress(OSError, hooks.HookEventError):
             hooks._record_stage_timing(
                 binding.invocation_path,
                 invocation_ref=binding.invocation_ref,
                 event_payload_ref=binding.event_payload_ref,
-                hook_name=binding.hook,
+                hook=binding.hook,
                 stage=stage,
-                started_ns=started_ns,
+                started_ns=ns_start,
                 completed_ns=completed_ns,
                 elapsed_seconds=elapsed,
                 status=details["status"],
                 job_ref=job_ref,
                 suffix=suffix,
                 extra=details["extra"] or None,
+                exclusive_activation=exclusive_activation,
             )
 
 
@@ -435,18 +445,28 @@ def _index_activation_suffix(job_ref):
 
 
 def run_checks(root, binding, *, job_ref=_JOB_REF):
+    entry_mono = time.perf_counter()
+    entry_ns = time.time_ns()
+    prepared = _planned(root, binding)
+    jobs = _index_jobs(prepared)
+    if job_ref not in jobs:
+        raise hooks.HookEventError("hook_index_job_not_applicable")
+    _artifact(
+        binding,
+        _index_activation_suffix(job_ref),
+        _identity(binding),
+        exclusive=True,
+    )
     timing_suffix = ".timing-run" if job_ref == _JOB_REF else f".timing-run-{job_ref}"
-    with _stage_timing(binding, "run", job_ref=job_ref, suffix=timing_suffix) as timing:
-        prepared = _planned(root, binding)
-        jobs = _index_jobs(prepared)
-        if job_ref not in jobs:
-            raise hooks.HookEventError("hook_index_job_not_applicable")
-        _artifact(
-            binding,
-            _index_activation_suffix(job_ref),
-            _identity(binding),
-            exclusive=True,
-        )
+    with _stage_timing(
+        binding,
+        "run",
+        job_ref=job_ref,
+        suffix=timing_suffix,
+        started_mono=entry_mono,
+        started_ns=entry_ns,
+        exclusive_activation=True,
+    ) as timing:
         suffix = _index_execution_suffix(job_ref)
         if prepared["plan"] is None:
             report = hooks.check_pre_commit(root, invocation_ref=binding.invocation_ref)
@@ -811,11 +831,19 @@ def _push_needs_execution(plan):
 
 
 def run_push_checks(root, binding):
+    entry_mono = time.perf_counter()
+    entry_ns = time.time_ns()
+    prepared, refs = _push_plans(root, binding)
+    _artifact(binding, ".activation", _identity(binding), exclusive=True)
     with _stage_timing(
-        binding, "run", job_ref=_PUSH_JOB_REF, suffix=".timing-run"
+        binding,
+        "run",
+        job_ref=_PUSH_JOB_REF,
+        suffix=".timing-run",
+        started_mono=entry_mono,
+        started_ns=entry_ns,
+        exclusive_activation=True,
     ) as timing:
-        prepared, refs = _push_plans(root, binding)
-        _artifact(binding, ".activation", _identity(binding), exclusive=True)
         reports = []
         per_ref = []
         for index, (plan, source) in enumerate(

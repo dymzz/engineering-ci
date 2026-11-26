@@ -139,26 +139,33 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 起止边界（发生时钟回拨时 `completed_at_ns=null` 并保持单调耗时与
 `time_source_verified=false`）；HEAD/config 为启动前观察，不认证工作区 Tree。
 
-若准备工作失败、收到中断信号或最终回执落盘失败，会在同目录写入
-`verify-status.json`（含 `status`、已有观察事实与已知/未知 `native_exit_code`，
-不写虚假完成回执 `verify-timing.json`）。返回原生检查退出状态；被中断时返回
-`130`、保留已写入的部分输出并在 `stderr` 打印目录路径。原始输出写文件而非实时透传终端，
+若准备工作失败（含输出文件打开或进程拉起失败 `output_open_failed` / `spawn_failed`）、
+收到中断信号（含原生返回后报告准备阶段中断 `report_preparation_interrupted`）或最终回执落盘失败（`seal_failed`），
+会在同目录写入 `verify-status.json`（按实际进展区分 `native_started`、已有观察事实与
+已知或 `null` 的 `native_exit_code`，不写虚假完成回执 `verify-timing.json`）。其中
+`seal_failed` 会保留真实的 `native_exit_code`，而 `verify` CLI 以 `native_exit_code or 1`
+退出（即原生检查退 `0` 但无法封存回执时返回 `1`）；`SIGKILL` 等不可捕获强杀仅保证强杀前已落盘字节。
+返回原生检查退出状态；被中断时返回 `130`、保留已写入的部分输出并在 `stderr` 打印目录路径。原始输出写文件而非实时透传终端，
 请从 `stderr` 提示的 Invocation 目录定位输出。
 
 真实 Git Hook（`pre-commit` / `pre-push`）在原有 `.git/eci-hooks/invocations/<id>.*`
 下同步写入各阶段单调耗时 sidecar（`.timing-capture`、`.timing-prepare`、
 `.timing-run` / `.timing-run-<job>`、`.timing-reconcile`、`.timing-consume`），
-不篡改原有 `.plan` / `.execution` / `.receipt` 规范字节，并在过期清理时一并回收。
+绑定首次有效排他激活且不因重复或并发拒绝覆盖合法耗时样本，不篡改原有 `.plan` / `.execution` / `.receipt` 规范字节，并在过期清理时一并回收。
+本能力只提供过程内单调计时与 Hook 阶段观测，不改动 `lefthook.yml` 中的多次 `uv run` 冷启动路径，内部 `perf_counter` 亦不覆盖外层启动耗时（`#162 R17`）。
 
-需要只读汇总结算与跨源关联时，使用 `verify report`（严格只读、不重跑任何工具、
-仅依据显式共享键关联，不使用“最新修改时间/相近时间戳/文件名”猜测，且保持
-`time_source_verified=false` 与 `#75` CI Provider provenance 边界独立）：
+需要只读汇总结算与跨源关联时，使用 `verify report`（严格只读、不启动任何检查/Git 子进程，
+拒绝 `--out` 覆盖任何已消费输入或产物目录，仅按真实共享身份区分
+`execution_matched` / `content_shared_distinct_execution` / `revision_only` /
+`colocated_unverified` / `standalone_uncorrelated` / `conflict`，
+不把同 commit / 同 Event / 目录共存当成同次执行，冲突或非法 `--out` 返回退出码 `2`，且保持
+`time_source_verified=false`、保留 `#87` 原生 `correlation`/`source_binding`、及 `#75` CI Provider provenance 与 `#131` rerun 诊断边界独立）：
 
 ```powershell
 uv run --locked --no-sync engineering-ci verify report `
   --verify-dir .artifacts/verify/<verify-invocation> `
-  --hook-root .git `
-  --invocation-ref <hook-invocation-id> `
+  --hook-root . `
+  --invocation-ref invocation:<32hex> `
   --execution-report <bundle-dir-or-report.json> `
   --junit-xml <junit.xml> `
   --pytest-reportlog <pytest-reportlog.jsonl> `
