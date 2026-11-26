@@ -16,6 +16,8 @@ from uuid import uuid4
 
 from engineering_ci.verify_report import parse_lefthook_output, run_report_cli
 
+_DEFAULT_SUBPROCESS_RUN = subprocess.run
+
 _TIMING_BOUNDARIES = {
     "post_seal_io_excluded": True,
     "outer_launcher_startup_excluded": True,
@@ -297,16 +299,41 @@ def _verify(out):
             raise
 
         opened_streams = True
+        spawn_attempted = False
+        native_spawn_confirmed = False
         with stdout_cm as stdout, stderr_cm as stderr:
             native_started_mono = perf_counter()
             started_at_ns = time_ns()
             try:
-                result = subprocess.run(
-                    (lefthook, "run", "verify", "--no-auto-install"),
-                    stdout=stdout,
-                    stderr=stderr,
-                    check=False,
-                )
+                spawn_attempted = True
+                cmd = (lefthook, "run", "verify", "--no-auto-install")
+                if subprocess.run is _DEFAULT_SUBPROCESS_RUN:
+                    proc = None
+                    try:
+                        proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
+                        native_spawn_confirmed = True
+                        returncode = proc.wait()
+                    except KeyboardInterrupt:
+                        if proc is not None:
+                            native_spawn_confirmed = True
+                            if proc.poll() is None:
+                                with suppress(OSError, subprocess.TimeoutExpired):
+                                    proc.terminate()
+                                    proc.wait(timeout=2)
+                                if proc.poll() is None:
+                                    with suppress(OSError):
+                                        proc.kill()
+                                        proc.wait(timeout=2)
+                        raise
+                    result = subprocess.CompletedProcess(cmd, returncode)
+                else:
+                    result = subprocess.run(
+                        cmd,
+                        stdout=stdout,
+                        stderr=stderr,
+                        check=False,
+                    )
+                    native_spawn_confirmed = True
             except (OSError, subprocess.SubprocessError) as exc:
                 _write_status_best_effort(
                     invocation,
@@ -343,6 +370,26 @@ def _verify(out):
         native_outputs = (
             _safe_native_outputs(stdout_path, stderr_path) if opened_streams else None
         )
+        observed_output = False
+        if opened_streams:
+            for stream_file in (stdout_path, stderr_path):
+                with suppress(OSError):
+                    if stream_file.is_file() and stream_file.stat().st_size > 0:
+                        observed_output = True
+                        break
+        if not opened_streams or not spawn_attempted:
+            native_started: bool | str = False
+            effective_started_ns = None
+            native_stage_status = "not_started"
+        elif native_spawn_confirmed or observed_output:
+            native_started = True
+            effective_started_ns = started_at_ns
+            native_stage_status = "interrupted"
+        else:
+            # Around unconfirmed spawn without child bytes we cannot prove start.
+            native_started = "unknown"
+            effective_started_ns = None
+            native_stage_status = "unknown"
         lefthook_summary = (
             parse_lefthook_output(
                 stdout_path,
@@ -367,7 +414,7 @@ def _verify(out):
                     },
                     "lefthook_native": {
                         "elapsed_seconds": native_elapsed_seconds,
-                        "status": "interrupted" if opened_streams else "not_started",
+                        "status": native_stage_status,
                     },
                     "report_preparation": {
                         "elapsed_seconds": report_prep_seconds,
@@ -377,9 +424,9 @@ def _verify(out):
                 observed_git_head=observed_git_head,
                 observed_config_sha256=observed_config_sha256,
                 lefthook_version=lefthook_version,
-                native_started=opened_streams and started_at_ns is not None,
+                native_started=native_started,
                 native_exit_code=None,
-                started_at_ns=started_at_ns,
+                started_at_ns=effective_started_ns,
                 completed_at_ns=None,
                 native_outputs=native_outputs,
                 lefthook_summary=lefthook_summary,

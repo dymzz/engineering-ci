@@ -140,7 +140,7 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 `time_source_verified=false`）；HEAD/config 为启动前观察，不认证工作区 Tree。
 
 若准备工作失败（含输出文件打开或进程拉起失败 `output_open_failed` / `spawn_failed`）、
-收到中断信号（含原生返回后报告准备阶段中断 `report_preparation_interrupted`）或最终回执落盘失败（`seal_failed`），
+收到中断信号（含原生返回后报告准备阶段中断 `report_preparation_interrupted`；在 `subprocess.run` 前后尚未观察到任何子进程输出即中断时记 `native_started="unknown"` 与 `started_at_ns=null`）或最终回执落盘失败（`seal_failed`），
 会在同目录写入 `verify-status.json`（按实际进展区分 `native_started`、已有观察事实与
 已知或 `null` 的 `native_exit_code`，不写虚假完成回执 `verify-timing.json`）。其中
 `seal_failed` 会保留真实的 `native_exit_code`，而 `verify` CLI 以 `native_exit_code or 1`
@@ -150,16 +150,27 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 
 真实 Git Hook（`pre-commit` / `pre-push`）在原有 `.git/eci-hooks/invocations/<id>.*`
 下同步写入各阶段单调耗时 sidecar（`.timing-capture`、`.timing-prepare`、
-`.timing-run` / `.timing-run-<job>`、`.timing-reconcile`、`.timing-consume`），
-绑定首次有效排他激活且不因重复或并发拒绝覆盖合法耗时样本，不篡改原有 `.plan` / `.execution` / `.receipt` 规范字节，并在过期清理时一并回收。
+`.timing-run` / `.timing-run-<job>`、`.timing-reconcile`、`.timing-consume`）：
+`run` 绑定首次有效排他激活且并发/重复不覆盖合法样本，`prepare` / `reconcile` / `consume`
+亦保留首次成功消费的阶段计时并记录重复尝试计数（不引入阶段状态机）；`pre-push` 在循环内逐 Ref
+实时写入 `per_ref`，中途失败仍保留已完成 Ref 与出错 Ref 的部分耗时；`capture_pre_commit`
+与 `_active_index_matches` 共用带 `before == after` 字节复核的 `index.lock` 受控快照回退，
+不篡改原有 `.plan` / `.execution` / `.receipt` 规范字节，并在过期清理时一并回收。
 本能力只提供过程内单调计时与 Hook 阶段观测，不改动 `lefthook.yml` 中的多次 `uv run` 冷启动路径，内部 `perf_counter` 亦不覆盖外层启动耗时（`#162 R17`）。
 
 需要只读汇总结算与跨源关联时，使用 `verify report`（严格只读、不启动任何检查/Git 子进程，
-拒绝 `--out` 覆盖任何已消费输入或产物目录，仅按真实共享身份区分
-`execution_matched` / `content_shared_distinct_execution` / `revision_only` /
-`colocated_unverified` / `standalone_uncorrelated` / `conflict`，
-不把同 commit / 同 Event / 目录共存当成同次执行，冲突或非法 `--out` 返回退出码 `2`，且保持
-`time_source_verified=false`、保留 `#87` 原生 `correlation`/`source_binding`、及 `#75` CI Provider provenance 与 `#131` rerun 诊断边界独立）：
+使用与 `hooks.load_invocation_binding(..., max_bytes=...)` 同源的严格字节上限且拒绝 `--out` 覆盖任何已消费输入或产物目录）：
+关联判定按连通分量区分具体执行匹配 `execution_matched`（多组互不相连或仅子集匹配记
+`partial_execution_matched` 并列出 `execution_groups`）、上层 Run/Invocation/`#87` Trace 共享上下文
+`shared_context_only`、内容等价 `content_shared_distinct_execution`、版本重合 `revision_only`、
+未认证共存 `colocated_unverified`、`standalone_uncorrelated` 与 `conflict`（同一次多 Ref `pre-push`
+共享 `run_ref`/`attempt_ref` 且推送不同 Ref Commit/Tree 时不误判冲突），并独立核验 `.execution*`
+`report_digest`、`.activation*` 与 `#66-C` `validate_receipt` / 缺失 Execution 诊断（保留原生
+`native_status` 与 `verifiable_evidence_status`）、消费真实 `#86` `PlanExecution` `tests/` / `checks/` /
+`producer_artifact_handoff` 产物与声明摘要、按 `<testsuite>`/`<testcase>` 与 `nodeid` 作用域隔离 pytest
+`verifies` 属性（不将 `call passed` 缺 `teardown` 计为通过，保留重复阶段记录与局限声明）、完整保留 `#87`
+Trace/Session/Engine/Anchor/DagQL/Core/Lineage 与 `source_binding` 语义，以及 `#75`/`#131`/`#63`/`#61`
+独立边界；冲突或非法 `--out` 返回退出码 `2`，且全程保持 `time_source_verified=false`：
 
 ```powershell
 uv run --locked --no-sync engineering-ci verify report `

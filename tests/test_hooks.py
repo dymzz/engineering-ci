@@ -1253,3 +1253,220 @@ def test_duplicate_and_concurrent_activation_never_overwrites_valid_hook_timing(
     )
     assert conc_timing["status"] == "passed"
     assert hook_checks.reconcile(repo, conc_binding)["exit_code"] == 0
+
+
+def test_index_lock_fallback_closure_and_fail_closed_cases(repo, tmp_path, monkeypatch):
+    # Default Index with active .git/index.lock closes Capture -> Prepare -> Run -> Reconcile.
+    (repo / "locked.txt").write_text("clean\n", encoding="utf-8")
+    git(repo, "add", "locked.txt")
+    lock_file = repo / ".git" / "index.lock"
+    lock_file.write_text("commit-lock", encoding="utf-8")
+    try:
+        event = hooks.capture_pre_commit(repo)
+        inv = hooks.persist_event(repo, event)
+        binding = hooks.load_invocation_binding(inv.invocation_path)
+        assert hook_checks.prepare(repo, binding)["exit_code"] == 0
+        assert hook_checks.run_checks(repo, binding)["exit_code"] == 0
+        assert hook_checks.reconcile(repo, binding)["exit_code"] == 0
+        # Mutating Index under index.lock must still fail verification.
+        (repo / "extra.txt").write_text("mutated\n", encoding="utf-8")
+        git_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_path / "other.idx")}
+        subprocess.run(["git", "read-tree", "HEAD"], cwd=repo, env=git_env, check=True)
+        assert (
+            hooks._active_index_matches(
+                repo, (repo / ".git" / "index").resolve(), event["index"]
+            )
+            is True
+        )
+    finally:
+        lock_file.unlink(missing_ok=True)
+
+    # Alternate GIT_INDEX_FILE with <custom>.lock and split-index with index.lock.
+    alt_idx = tmp_path / "alt.idx"
+    alt_env = {"GIT_INDEX_FILE": str(alt_idx)}
+    subprocess.run(
+        ["git", "add", "locked.txt"],
+        cwd=repo,
+        env={**os.environ, **alt_env},
+        check=True,
+    )
+    alt_lock = Path(f"{alt_idx}.lock")
+    alt_lock.write_text("alt-lock", encoding="utf-8")
+    try:
+        alt_event = hooks.capture_pre_commit(repo, environ=alt_env)
+        monkeypatch.setenv("GIT_INDEX_FILE", str(alt_idx))
+        assert (
+            hooks._active_index_matches(repo, alt_idx.resolve(), alt_event["index"])
+            is True
+        )
+    finally:
+        alt_lock.unlink(missing_ok=True)
+    monkeypatch.delenv("GIT_INDEX_FILE", raising=False)
+
+    # Split index under index.lock produces identical tree via private snapshot.
+    subprocess.run(["git", "update-index", "--split-index"], cwd=repo, check=True)
+    split_lock = repo / ".git" / "index.lock"
+    split_lock.write_text("split-lock", encoding="utf-8")
+    try:
+        split_event = hooks.capture_pre_commit(repo)
+        split_inv = hooks.persist_event(repo, split_event)
+        split_binding = hooks.load_invocation_binding(split_inv.invocation_path)
+        assert hook_checks.prepare(repo, split_binding)["exit_code"] == 0
+    finally:
+        split_lock.unlink(missing_ok=True)
+
+    # Non-lock git write-tree error must never fall back (fail closed).
+    orig_git = hooks._git
+
+    def fail_write_tree(repo_root, *args, **kwargs):
+        if args and args[0] == "write-tree":
+            return subprocess.CompletedProcess(
+                ["git", "write-tree"], 128, "", "fatal: invalid object in index"
+            )
+        return orig_git(repo_root, *args, **kwargs)
+
+    monkeypatch.setattr(hooks, "_git", fail_write_tree)
+    with pytest.raises(hooks.HookEventError, match="index_tree_unavailable"):
+        hooks.capture_pre_commit(repo)
+
+
+def test_non_exclusive_stage_timing_and_push_midloop_per_ref_preservation(
+    repo, tmp_path, monkeypatch, capsys
+):
+    (repo / "sample.txt").write_text("ok\n", encoding="utf-8")
+    git(repo, "add", "sample.txt")
+    assert hooks.main(["capture", "pre-commit", "--root", str(repo), "--json"]) == 0
+    inv_ref = json.loads(capsys.readouterr().out)["invocation_ref"]
+    binding = hooks._load_invocation_ref(repo, inv_ref)
+    prep_timing_path = binding.invocation_path.with_suffix(".timing-prepare")
+
+    assert hook_checks.prepare(repo, binding)["exit_code"] == 0
+    first_prep = json.loads(prep_timing_path.read_text(encoding="utf-8"))
+    assert first_prep["status"] == "passed"
+    assert first_prep["attempt_count"] == 1
+
+    # Duplicate successful prepare preserves first timing values and counts duplicates.
+    assert hook_checks.prepare(repo, binding)["exit_code"] == 0
+    dup_prep = json.loads(prep_timing_path.read_text(encoding="utf-8"))
+    assert dup_prep["started_at_ns"] == first_prep["started_at_ns"]
+    assert dup_prep["elapsed_seconds"] == first_prep["elapsed_seconds"]
+    assert dup_prep["attempt_count"] == 2
+    assert dup_prep["duplicate_attempts"] == 1
+    assert dup_prep["primary_record_policy"] == "first_success_preserved"
+
+    # Initial failure followed by successful retry retains attempt metadata.
+    cons_timing_path = binding.invocation_path.with_suffix(".timing-consume")
+    hooks._record_stage_timing(
+        binding.invocation_path,
+        invocation_ref=binding.invocation_ref,
+        event_payload_ref=binding.event_payload_ref,
+        hook="pre-commit",
+        stage="consume",
+        started_ns=10,
+        completed_ns=20,
+        elapsed_seconds=0.001,
+        status="failed",
+    )
+    hooks._record_stage_timing(
+        binding.invocation_path,
+        invocation_ref=binding.invocation_ref,
+        event_payload_ref=binding.event_payload_ref,
+        hook="pre-commit",
+        stage="consume",
+        started_ns=30,
+        completed_ns=50,
+        elapsed_seconds=0.002,
+        status="passed",
+    )
+    retried_cons = json.loads(cons_timing_path.read_text(encoding="utf-8"))
+    assert retried_cons["status"] == "passed"
+    assert retried_cons["attempt_count"] == 2
+    assert retried_cons["prior_failed_attempts"] == 1
+    assert retried_cons["primary_record_policy"] == "latest_success_after_failure"
+
+    # Multi-ref pre-push failure on ref #2 preserves completed ref #1 timing in .timing-run.
+    subprocess.run(
+        ["git", "config", "user.email", "ci@example.invalid"], cwd=repo, check=True
+    )
+    head1 = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
+    (repo / "b.txt").write_text("b\n", encoding="utf-8")
+    git(repo, "add", "b.txt")
+    subprocess.run(["git", "commit", "-qm", "second"], cwd=repo, check=True)
+    head2 = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
+    zero = "0" * 40
+    push_event = hooks.capture_pre_push(
+        repo,
+        "origin",
+        "https://example.invalid/repo.git",
+        f"refs/heads/a {head1} refs/heads/a {zero}\nrefs/heads/b {head2} refs/heads/b {zero}\n",
+    )
+    push_inv = hooks.persist_event(repo, push_event)
+    push_binding = hooks.load_invocation_binding(push_inv.invocation_path)
+
+    def fake_multi_source_worker(_root, _tree, _head, _op, payload):
+        ref_entry = payload["reference"]
+        return {
+            "schema_version": 2,
+            "git": {
+                "snapshot": "push",
+                "references": [ref_entry],
+                "head_commit": ref_entry["after"],
+                "base_commit": ref_entry["before"],
+                "tree": ref_entry["tree"],
+                "execution_tree": ref_entry["tree"],
+                "ref_action": ref_entry["ref_action"],
+                "changed_paths": list(ref_entry["paths"]),
+                "deleted_paths": list(ref_entry["deleted_paths"]),
+            },
+            "selection": {
+                "checks": [{"name": "lint"}],
+                "tests": [],
+                "prerequisites": [],
+            },
+            "expected_checks": {
+                "status": "complete",
+                "scope_id": "scope-1",
+                "expected_set_ref": "set-1",
+                "checks": [{"applicability": {"status": "applicable"}}],
+            },
+        }
+
+    monkeypatch.setattr(hook_checks, "_source_worker", fake_multi_source_worker)
+    monkeypatch.setattr(hook_checks, "_requires_dagger", lambda *a, **kw: False)
+    assert (
+        hook_checks.prepare_push(
+            repo,
+            push_binding,
+            new_ref_baseline=head1,
+            effective_profiles=["ci-effective-profile.json"],
+        )["exit_code"]
+        == 0
+    )
+
+    def flaky_push_plan(_root, plan, _source, _prep, _suffix, _op):
+        if plan["git"]["references"][0]["remote_ref"] == "refs/heads/b":
+            raise hooks.HookEventError("simulated_second_ref_failure")
+        return {
+            "exit_code": 0,
+            "execution_identity": hook_checks._identity(push_binding),
+            "plan": {"git": plan["git"]},
+        }
+
+    monkeypatch.setattr(hook_checks, "_run_push_plan", flaky_push_plan)
+    with pytest.raises(hooks.HookEventError, match="simulated_second_ref_failure"):
+        hook_checks.run_push_checks(repo, push_binding)
+    mid_timing = json.loads(
+        push_binding.invocation_path.with_suffix(".timing-run").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert mid_timing["status"] == "failed"
+    assert len(mid_timing["per_ref"]) == 2
+    assert mid_timing["per_ref"][0]["remote_ref"] == "refs/heads/a"
+    assert mid_timing["per_ref"][0]["exit_code"] == 0
+    assert mid_timing["per_ref"][1]["remote_ref"] == "refs/heads/b"
+    assert mid_timing["per_ref"][1]["status"] == "errored"

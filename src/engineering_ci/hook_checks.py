@@ -846,35 +846,47 @@ def run_push_checks(root, binding):
     ) as timing:
         reports = []
         per_ref = []
+        timing["extra"].update(plan_ref=prepared["plan_ref"], per_ref=per_ref)
         for index, (plan, source) in enumerate(
             zip(prepared["plan"], refs, strict=True)
         ):
             ref_started = time.perf_counter()
             report = None
-            if source["ref_action"] != "delete" and _push_needs_execution(plan):
-                artifact_suffix = f".execution-{index}"
-                report = _run_push_plan(
-                    root,
-                    plan,
-                    source,
+            errored = False
+            try:
+                if source["ref_action"] != "delete" and _push_needs_execution(plan):
+                    artifact_suffix = f".execution-{index}"
+                    report = _run_push_plan(
+                        root,
+                        plan,
+                        source,
+                        {
+                            **prepared,
+                            "dagger_bundle": str(
+                                _dagger_bundle(binding, artifact_suffix)
+                            ),
+                        },
+                        _push_execution_suffix(index),
+                        "execute",
+                    )
+                    _record_execution(binding, prepared, report, suffix=artifact_suffix)
+                reports.append(report)
+            except BaseException:
+                errored = True
+                raise
+            finally:
+                per_ref.append(
                     {
-                        **prepared,
-                        "dagger_bundle": str(_dagger_bundle(binding, artifact_suffix)),
-                    },
-                    _push_execution_suffix(index),
-                    "execute",
+                        "remote_ref": source["remote_ref"],
+                        "ref_action": source["ref_action"],
+                        "elapsed_seconds": time.perf_counter() - ref_started,
+                        "exit_code": None
+                        if errored
+                        else (report.get("exit_code") if report else 0),
+                        "skipped_execution": False if errored else (report is None),
+                        **({"status": "errored"} if errored else {}),
+                    }
                 )
-                _record_execution(binding, prepared, report, suffix=artifact_suffix)
-            reports.append(report)
-            per_ref.append(
-                {
-                    "remote_ref": source["remote_ref"],
-                    "ref_action": source["ref_action"],
-                    "elapsed_seconds": time.perf_counter() - ref_started,
-                    "exit_code": report.get("exit_code") if report else 0,
-                    "skipped_execution": report is None,
-                }
-            )
         exit_code = next((r["exit_code"] for r in reports if r and r["exit_code"]), 0)
         timing["extra"].update(
             plan_ref=prepared["plan_ref"],

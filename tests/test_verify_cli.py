@@ -589,3 +589,34 @@ def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
     assert status_data["native_exit_code"] == 2
     assert status_data["stages"]["report_preparation"]["status"] == "interrupted"
     assert "verify interrupted; partial outputs in" in capsys.readouterr().err
+
+
+def test_verify_unconfirmed_spawn_interrupt_reports_unknown_started(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+
+    def interrupt_at_spawn(cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.CompletedProcess(cmd, 0, b"e" * 40 + b"\n")
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(verify.subprocess, "run", interrupt_at_spawn)
+    out = tmp_path / "unknown-interrupt"
+    assert main(["verify", "--out", str(out)]) == 130
+    (status_path,) = out.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "interrupted"
+    assert status_data["native_started"] == "unknown"
+    assert status_data["started_at_ns"] is None
+    assert status_data["native_exit_code"] is None
+    assert status_data["stages"]["lefthook_native"]["status"] == "unknown"
