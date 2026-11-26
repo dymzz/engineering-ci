@@ -1,14 +1,6 @@
 schema_version = 1
 framework = "pytest"
 checks = ["hygiene"]
-ignored_files = [
-    "ci-selection.toml",
-    "ci-hygiene.toml",
-    "ci-effective-profile.json",
-    "ci-effective-profile.toml",
-    "tach.toml",
-    "lefthook.yml",
-]
 
 [commit]
 # Index / pre-commit stays low-cost: hygiene obligations only. Full pytest / Dagger

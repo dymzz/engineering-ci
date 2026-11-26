@@ -1047,6 +1047,55 @@ def test_commit_policy_disables_index_test_selection_only(repo):
     assert "tests.test_sub" in selection.select(pushed, restored, root=path).tests
 
 
+def test_commit_policy_normalize_omits_default_and_binds_false(repo):
+    path, _base = repo
+    config_path = path / "ci-selection.toml"
+    base_text = config_path.read_text(encoding="utf-8")
+
+    undeclared = config(path)
+    undeclared_norm = selection._normalize_config(undeclared)
+    assert "commit" not in undeclared_norm
+    undeclared_identity = selection.config_identity(config_path, undeclared)
+    assert (
+        selection.verify_config_identity_matches_file(
+            undeclared_identity, root=path
+        ).commit.select_tests
+        is True
+    )
+
+    config_path.write_text(
+        base_text + "\n[commit]\nselect_tests = true\n", encoding="utf-8"
+    )
+    explicit_true = config(path)
+    true_norm = selection._normalize_config(explicit_true)
+    assert "commit" not in true_norm
+    assert true_norm == undeclared_norm
+    true_identity = selection.config_identity(config_path, explicit_true)
+    assert (
+        selection.verify_config_identity_matches_file(
+            true_identity, root=path
+        ).commit.select_tests
+        is True
+    )
+
+    config_path.write_text(
+        base_text + "\n[commit]\nselect_tests = false\n", encoding="utf-8"
+    )
+    disabled = config(path)
+    disabled_norm = selection._normalize_config(disabled)
+    assert disabled_norm["commit"] == {"select_tests": False}
+    disabled_identity = selection.config_identity(config_path, disabled)
+    restored_false = selection.verify_config_identity_matches_file(
+        disabled_identity, root=path
+    )
+    assert restored_false.commit.select_tests is False
+    assert disabled_identity["normalized"] != undeclared_identity["normalized"]
+    assert (
+        disabled_identity["effective_config_ref"]
+        != undeclared_identity["effective_config_ref"]
+    )
+
+
 def test_pr_merge_snapshot_records_merge_tree(repo):
     path, base = repo
     run(path, "checkout", "-q", "-b", "feature")

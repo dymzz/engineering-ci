@@ -716,9 +716,13 @@ def _normalize_config(config):
             "zizmor_offline": config.workflow_checks.zizmor_offline,
             "shellcheck_inline": config.workflow_checks.shellcheck_inline,
         },
-        "commit": {
-            **({"select_tests": False} if not config.commit.select_tests else {}),
-        },
+        # Omit commit when select_tests stays at the default True so undeclared
+        # consumers keep the same effective_config_ref digest under schema 1.
+        **(
+            {"commit": {"select_tests": False}}
+            if not config.commit.select_tests
+            else {}
+        ),
         "push": {
             "new_ref_baseline": config.push.new_ref_baseline,
             "target_baselines": dict(sorted(config.push.target_baselines.items())),
