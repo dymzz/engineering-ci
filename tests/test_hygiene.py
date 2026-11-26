@@ -596,6 +596,50 @@ def test_omitted_checks_respects_tach_external_flag_without_silent_expansion(tmp
     assert hygiene.effective_checks(loaded_ext).count("tach_external") == 1
 
 
+def test_dagger_module_source_selects_code_checks(repo):
+    path, base = repo
+    module = path / ".dagger/src/tool.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    app = hygiene.check_applicability(
+        changes(path, base), config(path, ("vulture", "tach")), root=path
+    )
+    assert app["tach"]["status"] == "selected"
+    assert ".dagger/src/tool.py" in app["tach"]["inputs"]
+    assert app["vulture"]["status"] == "selected"
+
+
+def test_vulture_config_change_does_not_select_docs_or_tach(repo):
+    path, base = repo
+    cfg_path = path / "ci-hygiene.toml"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace(
+            "min_confidence = 60", "min_confidence = 80"
+        ),
+        encoding="utf-8",
+    )
+    loaded = hygiene.load_config(cfg_path)
+    loaded = dataclasses.replace(loaded, checks=("vulture", "docs", "tach"))
+    app = hygiene.check_applicability(changes(path, base), loaded, root=path)
+    assert app["vulture"]["reason"] == "hygiene_vulture_config_changed"
+    assert app["docs"]["status"] == "not_applicable"
+    assert app["tach"]["status"] == "not_applicable"
+
+
+def test_offline_lychee_does_not_claim_external_coverage(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    loaded = config(path, ("docs",))
+    loaded = dataclasses.replace(
+        loaded, lychee=dataclasses.replace(loaded.lychee, arguments=("--offline",))
+    )
+    result = hygiene.run(changes(path, base), loaded, root=path, runner=FakeRunner())
+    docs = by_name(result)["docs"]
+    assert docs["status"] == "passed"
+    assert docs["link_scope"] == "offline"
+    assert "external URLs were not requested" in docs["link_scope_note"]
+
+
 def test_shared_applicability_and_config_identity(repo):
     path, base = repo
     cfg_path = path / "ci-hygiene.toml"

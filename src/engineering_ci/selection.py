@@ -423,7 +423,7 @@ def _parse_config_bytes(raw):
     check_scope = CheckScopeConfig(
         docs_suffixes=docs_suffixes,
         code_prefixes=_string_list(
-            scope.get("code_prefixes", ["src/", "scripts/", "tests/"]),
+            scope.get("code_prefixes", ["src/", "scripts/", "tests/", ".dagger/src/"]),
             "code_prefixes",
         ),
         source_prefixes=_string_list(
@@ -894,7 +894,8 @@ def config_from_identity(identity):
         check_scope=CheckScopeConfig(
             docs_suffixes=tuple(scope.get("docs_suffixes") or (".md", ".html")),
             code_prefixes=tuple(
-                scope.get("code_prefixes") or ("src/", "scripts/", "tests/")
+                scope.get("code_prefixes")
+                or ("src/", "scripts/", "tests/", ".dagger/src/")
             ),
             source_prefixes=tuple(
                 scope.get("source_prefixes") or ("data/", "sources/")

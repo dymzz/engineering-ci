@@ -531,6 +531,67 @@ def _deleted_paths(changes, paths, root):
     return set(paths).difference(entries) if entries is not None else set()
 
 
+_HYGIENE_CONFIG = "ci-hygiene.toml"
+_HYGIENE_RULES = ("docs", "vulture", "tach", "tach_external", "forwarding")
+
+
+def _with_config_input(inputs, triggered):
+    selected = list(inputs)
+    if triggered and _HYGIENE_CONFIG not in selected:
+        selected.append(_HYGIENE_CONFIG)
+    return selected
+
+
+def _hygiene_rule_slice(data, name):
+    data = data if isinstance(data, dict) else {}
+    if name == "docs":
+        return (data.get("docs"), data.get("lychee"))
+    if name == "vulture":
+        return data.get("vulture")
+    tach = data.get("tach") if isinstance(data.get("tach"), dict) else {}
+    if name == "tach":
+        return (tach.get("executable"), tach.get("path"))
+    if name == "tach_external":
+        return bool(tach.get("external", False))
+    if name == "forwarding":
+        return data.get("forwarding")
+    return None
+
+
+def _hygiene_config_triggers(paths, root, changes):
+    """Select only the hygiene rules whose own config slice changed.
+
+    An unreadable base or current file selects those rules rather than treating
+    the unknown edit as proof that no check applies. Other keys in the file do
+    not select them.
+    """
+    if _HYGIENE_CONFIG not in paths:
+        return {}
+    try:
+        current = tomllib.loads((root / _HYGIENE_CONFIG).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return {name: True for name in _HYGIENE_RULES}
+    base = getattr(changes, "base_commit", None)
+    if not isinstance(base, str) or not base.strip():
+        return {name: True for name in _HYGIENE_RULES}
+    shown = _run(["git", "show", f"{base.strip()}:{_HYGIENE_CONFIG}"], root)
+    if shown.returncode != 0:
+        return {name: True for name in _HYGIENE_RULES}
+    try:
+        previous = tomllib.loads(shown.stdout)
+    except ValueError:
+        return {name: True for name in _HYGIENE_RULES}
+    triggers = {
+        name: _hygiene_rule_slice(current, name) != _hygiene_rule_slice(previous, name)
+        for name in _HYGIENE_RULES
+    }
+    current_checks = set(current.get("checks") or [])
+    previous_checks = set(previous.get("checks") or [])
+    for name in current_checks - previous_checks:
+        triggers[name] = True
+    return triggers
+
+
 def check_applicability(changes, config, *, root=None, full=False, code_prefixes=None):
     """One authoritative applicability model shared by selection and hygiene."""
     root = Path(root) if root is not None else Path(".")
@@ -566,7 +627,7 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
     )
     docs_paths = sorted(set(paths) | set(generated_paths))
     deleted = _deleted_paths(changes, paths, root)
-    prefixes = tuple(code_prefixes or ("src/", "scripts/", "tests/"))
+    prefixes = tuple(code_prefixes or ("src/", "scripts/", "tests/", ".dagger/src/"))
     vulture_prefixes = tuple(item.rstrip("/") + "/" for item in config.vulture.paths)
     tach_path = config.tach.path.replace("\\", "/")
 
@@ -579,6 +640,7 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
         )
 
     code_inputs = [path for path in paths if is_code_path(path)]
+    rule_triggers = _hygiene_config_triggers(paths, root, changes)
     dep_inputs = [path for path in paths if _is_dependency_input(path)]
     ext_inputs = sorted(set(code_inputs) | set(dep_inputs))
     changed_docs = sorted(_changed_documents(set(docs_paths), config))
@@ -602,44 +664,64 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
                 "reason": "changed files" if selected else "no_changes",
             }
         elif name == "forwarding":
-            selected = full or bool(forwarding_inputs)
+            selected = full or bool(forwarding_inputs) or rule_triggers.get(name)
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
-                "inputs": forwarding_inputs,
-                "reason": "python source changed" if selected else "no_python_changes",
+                "inputs": _with_config_input(
+                    forwarding_inputs, rule_triggers.get(name)
+                ),
+                "reason": (
+                    "hygiene_forwarding_config_changed"
+                    if rule_triggers.get(name) and not forwarding_inputs
+                    else "python source changed"
+                    if selected
+                    else "no_python_changes"
+                ),
             }
         elif name == "docs":
-            selected = full or bool(changed_docs) or removed
+            selected = full or bool(changed_docs) or removed or rule_triggers.get(name)
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
-                "inputs": changed_docs,
+                "inputs": _with_config_input(changed_docs, rule_triggers.get(name)),
                 "recheck_all": removed,
                 "reason": (
                     "deleted path may break unchanged documents"
                     if removed
+                    else "hygiene_docs_config_changed"
+                    if rule_triggers.get(name) and not changed_docs
                     else "changed documents"
                     if changed_docs
                     else "no document changes"
                 ),
             }
         elif name in {"vulture", "tach"}:
-            selected = full or bool(code_inputs)
+            selected = full or bool(code_inputs) or rule_triggers.get(name)
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
-                "inputs": code_inputs,
-                "reason": "code changed" if selected else "no code changes",
+                "inputs": _with_config_input(code_inputs, rule_triggers.get(name)),
+                "reason": (
+                    f"hygiene_{name}_config_changed"
+                    if rule_triggers.get(name) and not code_inputs
+                    else "code changed"
+                    if selected
+                    else "no code changes"
+                ),
             }
         elif name == "tach_external":
-            selected = full or bool(ext_inputs)
+            selected = full or bool(ext_inputs) or rule_triggers.get("tach_external")
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
-                "inputs": ext_inputs,
+                "inputs": _with_config_input(
+                    ext_inputs, rule_triggers.get("tach_external")
+                ),
                 "reason": (
-                    "code or dependency inputs changed"
+                    "hygiene_tach_external_config_changed"
+                    if rule_triggers.get("tach_external") and not ext_inputs
+                    else "code or dependency inputs changed"
                     if selected
                     else "no code or dependency changes"
                 ),
@@ -1122,13 +1204,21 @@ def _docs(paths, tracked, changes, root, runner, config, full, *, inventory_ok=T
         return _result("docs", "not_applicable", reason="no_applicable_documents")
     # Lychee requires explicit inputs; passing the document set as stdin is
     # not an accepted invocation and fails before any link is checked.
-    return _tool(
+    result = _tool(
         "docs",
         [config.lychee.executable, *config.lychee.arguments, *sorted(targets)],
         root,
         runner,
         failure_reason="lychee_findings",
     )
+    offline = "--offline" in config.lychee.arguments
+    # Offline mode does not request external URLs, so a pass is not full coverage.
+    result["link_scope"] = "offline" if offline else "network"
+    if offline:
+        result["link_scope_note"] = (
+            "offline lychee check; external URLs were not requested"
+        )
+    return result
 
 
 def _vulture(root, runner, config, code_changed):
@@ -1152,6 +1242,11 @@ def _vulture(root, runner, config, code_changed):
 
 
 def _tach(paths, root, runner, config, code_changed):
+    # selection._tach_check is the plan path: it refuses a mismatched source
+    # before `tach check` and records the config digest. This function is the
+    # hygiene execution of the same native command. They are not one shared
+    # result; a later adoption can reuse a result only when source, rule,
+    # environment and order match.
     if not code_changed:
         return _result("tach", "not_applicable", reason="no_code_changes")
     if not (root / config.tach.path).is_file():
