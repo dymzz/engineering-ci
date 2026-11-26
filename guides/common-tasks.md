@@ -48,10 +48,12 @@ uv run --locked --no-sync lefthook install
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
-本仓根目录已提供 `ci-effective-profile.json`（Index whitespace 义务）与
+本仓根目录已提供 `ci-effective-profile.json`（Index `whitespace` / `forwarding` 义务）与
 `ci-selection.toml` 中的 `[commit] select_tests = false`：普通 commit 激活
 Profile→Plan→Host Job→Receipt，但不选择 pytest / 不因选中测试拉起 Dagger。
-无 Profile 的兼容路径仍可只跑本地暂存空白检查。准备 Job 从隔离检出读取暂存策略；
+`forwarding` 仅在适用的 Python 变更上执行；`docs` / `vulture` / `tach` 仍未纳入本仓
+默认 Hygiene，留给后续 A2/B 切片。无 Profile 的兼容路径仍可只跑本地暂存空白检查。
+准备 Job 从隔离检出读取暂存策略；
 该检出采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`
 和干净的 Git 默认值。
 

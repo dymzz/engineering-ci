@@ -3,11 +3,11 @@
     "name": "eci/local-commit",
     "version": "1.0.0"
   },
-  "profile_revision": "1",
+  "profile_revision": "2",
   "approval_source": "project-governance",
   "authority_verified": true,
-  "effective_at": "2026-11-26T02:00:00Z",
-  "evaluated_at": "2026-11-26T02:00:00Z",
+  "effective_at": "2026-11-26T03:15:00Z",
+  "evaluated_at": "2026-11-26T03:15:00Z",
   "context": "index",
   "action": "index",
   "target": "HEAD",
@@ -18,32 +18,41 @@
         "whitespace"
       ],
       "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-commit-forwarding",
+      "check_names": [
+        "forwarding"
+      ],
+      "allow_inapplicable": true
     }
   ],
   "advisory_checks": [],
   "allowed_inapplicability": [],
   "domain_complete": true,
   "declared_checks": [
-    "whitespace"
+    "whitespace",
+    "forwarding"
   ],
   "approval_binding": {
     "approval_source": "project-governance",
-    "profile_revision": "1",
+    "profile_revision": "2",
     "target_scope": {
       "context": "index",
       "action": "index",
       "target": "HEAD"
     },
     "effective_window": {
-      "effective_at": "2026-11-26T02:00:00Z"
+      "effective_at": "2026-11-26T03:15:00Z"
     },
     "declared_domain": {
       "domain_complete": true,
       "declared_checks": [
-        "whitespace"
+        "whitespace",
+        "forwarding"
       ]
     },
-    "approval_digest": "sha256:002d08ebdd67e33954569daeecb0353a1cb1eb5c6c6d303698e03f9543d3db67"
+    "approval_digest": "sha256:7f8e327bc25f7536603b1982427d1568ee42eea290d9e97e9fc83016fe1cf39d"
   },
-  "profile_sha256": "sha256:e62920082f7de38efdf35b5eea3a7be3ad9d67d4048ed335f3466b2a5dfd0ab5"
+  "profile_sha256": "sha256:878b694d46530984795db0e33c5bff30967792f72c209f3dc4e5308bd19ff15e"
 }

@@ -37,7 +37,7 @@ import sys
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -180,17 +180,13 @@ def _capture_lock(git_dir):
             if os.name == "nt":
                 import msvcrt
 
-                try:
+                with suppress(OSError):
                     msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                except OSError:
-                    pass
             else:
                 import fcntl
 
-                try:
+                with suppress(OSError):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
 
 
 def _identity_value(value, *, field):
@@ -638,10 +634,8 @@ def _write_private_file(path, payload):
     corruption.
     """
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
+    with suppress(OSError):
         os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
     for attempt in range(5):
         temporary = None
         try:
@@ -655,10 +649,8 @@ def _write_private_file(path, payload):
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            try:
+            with suppress(OSError):
                 os.chmod(temporary, 0o600)
-            except OSError:
-                pass
             try:
                 os.replace(temporary, path)
             except OSError as error:
@@ -672,17 +664,13 @@ def _write_private_file(path, payload):
                     raise HookEventError("event_publish_failed") from error
                 time.sleep(0.02 * (attempt + 1))
                 continue
-            try:
+            with suppress(OSError):
                 os.chmod(path, 0o600)
-            except OSError:
-                pass
             return path
         finally:
             if temporary is not None and temporary.exists():
-                try:
+                with suppress(OSError):
                     temporary.unlink()
-                except OSError:
-                    pass
     raise HookEventError("event_publish_failed")
 
 
@@ -704,10 +692,8 @@ def persist_event(root, event):
         if target.exists():
             if target.read_bytes() != payload:
                 raise HookEventError("event_payload_conflict")
-            try:
+            with suppress(OSError):
                 os.chmod(target, 0o600)
-            except OSError:
-                pass
         else:
             _write_private_file(target, payload)
         invocation_id = uuid.uuid4().hex
@@ -795,10 +781,8 @@ def prune_events(root, *, now=None, retention_seconds=EVENT_RETENTION_SECONDS):
                                 path.parent.glob(f"{path.stem}.{suffix}-check-*")
                             )
                         for sidecar in sidecars:
-                            try:
+                            with suppress(OSError):
                                 sidecar.unlink(missing_ok=True)
-                            except OSError:
-                                pass
                     try:
                         path.unlink()
                         removed += 1

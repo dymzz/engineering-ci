@@ -382,7 +382,9 @@ def _attributes(paths, root, runner):
                 }
             )
             continue
-        for path, _attribute, value in zip(fields[::3], fields[1::3], fields[2::3]):
+        for path, _attribute, value in zip(
+            fields[::3], fields[1::3], fields[2::3], strict=True
+        ):
             if value != "unset":
                 failures.append(
                     {"code": "attributes", "path": path, "detail": f"text={value}"}

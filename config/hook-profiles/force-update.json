@@ -3,19 +3,26 @@
     "name": "eci/local-push",
     "version": "1.0.0"
   },
-  "profile_revision": "1",
+  "profile_revision": "2",
   "approval_source": "project-governance",
   "authority_verified": true,
-  "effective_at": "2026-11-22T16:00:00Z",
-  "evaluated_at": "2026-11-22T16:00:00Z",
+  "effective_at": "2026-11-26T03:15:00Z",
+  "evaluated_at": "2026-11-26T03:15:00Z",
   "context": "push",
   "action": "force_update",
   "target": "refs/*",
   "required_obligations": [
     {
-      "obligation_ref": "local-push-whitespace",
+      "obligation_ref": "local-push-force_update-whitespace",
       "check_names": [
         "whitespace"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-force_update-forwarding",
+      "check_names": [
+        "forwarding"
       ],
       "allow_inapplicable": true
     }
@@ -24,26 +31,28 @@
   "allowed_inapplicability": [],
   "domain_complete": true,
   "declared_checks": [
-    "whitespace"
+    "whitespace",
+    "forwarding"
   ],
   "approval_binding": {
     "approval_source": "project-governance",
-    "profile_revision": "1",
+    "profile_revision": "2",
     "target_scope": {
       "context": "push",
       "action": "force_update",
       "target": "refs/*"
     },
     "effective_window": {
-      "effective_at": "2026-11-22T16:00:00Z"
+      "effective_at": "2026-11-26T03:15:00Z"
     },
     "declared_domain": {
       "domain_complete": true,
       "declared_checks": [
-        "whitespace"
+        "whitespace",
+        "forwarding"
       ]
     },
-    "approval_digest": "sha256:2b043d767e83a6c93de10afe1bd92dc00bea46c8df39ac418bb213cc2c9e4971"
+    "approval_digest": "sha256:477c60424d02412d39d790993d8706b74bdf746fbaa6bcf68540ac124f2632fd"
   },
-  "profile_sha256": "sha256:6ed1445373ab59365792cae66d310d712dcfeb1546dbd2ac7836f7efac33c956"
+  "profile_sha256": "sha256:9eadd9ac02359989de754e66e275354d11d0804afb535940063311cf22ed4fc6"
 }
