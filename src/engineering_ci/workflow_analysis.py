@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -1092,6 +1093,31 @@ def _tool_run_timed_out(completed) -> bool:
     return bool(getattr(completed, "timed_out", False))
 
 
+def _posix_process_gone(pid: int) -> bool:
+    """True when ``pid`` is not a live (non-zombie) process we still own."""
+    try:
+        waited, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        # Already reaped or not our child — fall through to existence probe.
+        waited = 0
+    except (ProcessLookupError, PermissionError, OSError):
+        return True
+    if waited == pid:
+        return True
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return True
+    # kill(0) succeeds for zombies; a second non-blocking wait catches that.
+    try:
+        waited, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return True
+    return waited == pid
+
+
 def _kill_process_tree(pid: int) -> dict:
     """Terminate a timed-out tool tree; return cleanup evidence (not a framework)."""
     evidence = {
@@ -1122,25 +1148,27 @@ def _kill_process_tree(pid: int) -> dict:
         return evidence
     evidence["term_attempted"] = True
     with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.killpg(pid, 15)
+        os.killpg(pid, signal.SIGTERM)
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
-        try:
-            os.killpg(pid, 0)
-        except (ProcessLookupError, PermissionError, OSError):
+        if _posix_process_gone(pid):
             evidence["still_running_after_cleanup"] = False
             return evidence
         time.sleep(0.05)
     evidence["kill_attempted"] = True
     with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.killpg(pid, 9)
+        os.killpg(pid, signal.SIGKILL)
     with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.kill(pid, 9)
-    try:
-        os.killpg(pid, 0)
-        evidence["still_running_after_cleanup"] = True
-    except (ProcessLookupError, PermissionError, OSError):
-        evidence["still_running_after_cleanup"] = False
+        os.kill(pid, signal.SIGKILL)
+    # Reap before judging liveness — SIGKILL'd children remain visible to
+    # kill(0)/killpg(0) as zombies until waitpid.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if _posix_process_gone(pid):
+            evidence["still_running_after_cleanup"] = False
+            return evidence
+        time.sleep(0.05)
+    evidence["still_running_after_cleanup"] = not _posix_process_gone(pid)
     return evidence
 
 
@@ -1185,6 +1213,11 @@ def default_run(
             stdout, stderr = partial_out, partial_err
             with contextlib.suppress(OSError):
                 proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError, ValueError):
+                stdout, stderr = proc.communicate(timeout=2)
+        # Reconcile liveness after Popen reap — zombies look alive to kill(0).
+        if os.name != "nt" and cleanup.get("still_running_after_cleanup") is not False:
+            cleanup["still_running_after_cleanup"] = not _posix_process_gone(proc.pid)
         detail = f"tool_execution_timeout after {timeout}s"
         merged_err = "\n".join(
             part for part in ((stderr or partial_err), detail) if part

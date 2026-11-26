@@ -337,17 +337,27 @@ def test_host_default_run_timeout_kills_process_tree(tmp_path):
     """Host default_run marks timed_out and cleans up a SIGTERM-ignoring child."""
     script = tmp_path / "hang.py"
     ready = tmp_path / "ready"
+    child_ready = tmp_path / "child-ready"
+    # Parent forks a SIGTERM-ignoring child (review counter-example), then
+    # ignores SIGTERM itself so only SIGKILL / process-group reclaim works.
     script.write_text(
         "import os, signal, sys, time\n"
         "from pathlib import Path\n"
-        "Path(sys.argv[1]).write_text('ready', encoding='utf-8')\n"
+        "ready, child_ready = Path(sys.argv[1]), Path(sys.argv[2])\n"
         "if hasattr(signal, 'SIGTERM'):\n"
         "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "if os.name != 'nt' and hasattr(os, 'fork'):\n"
+        "    if os.fork() == 0:\n"
+        "        signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "        child_ready.write_text('ready', encoding='utf-8')\n"
+        "        time.sleep(60)\n"
+        "        raise SystemExit(0)\n"
+        "ready.write_text('ready', encoding='utf-8')\n"
         "time.sleep(60)\n",
         encoding="utf-8",
     )
     completed = workflow_analysis.default_run(
-        [sys.executable, str(script), str(ready)],
+        [sys.executable, str(script), str(ready), str(child_ready)],
         tmp_path,
         timeout=1.5,
     )
@@ -357,10 +367,11 @@ def test_host_default_run_timeout_kills_process_tree(tmp_path):
     assert ready.read_text(encoding="utf-8") == "ready"
     cleanup = completed.cleanup
     assert cleanup["term_attempted"] is True
-    # Forced cleanup should reclaim the ignoring child on POSIX; on Windows
+    # Forced cleanup should reclaim the ignoring tree on POSIX; on Windows
     # taskkill /T /F is best-effort and recorded in taskkill_returncode.
     assert cleanup["still_running_after_cleanup"] in {False, None, True}
     if os.name != "nt":
+        assert child_ready.read_text(encoding="utf-8") == "ready"
         assert cleanup["kill_attempted"] is True
         assert cleanup["still_running_after_cleanup"] is False
 
