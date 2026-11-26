@@ -1099,3 +1099,47 @@ def test_tool_scan_roots_normalization_lazy_tach_and_fail_closed_unknown(repo):
         dagger_changes, config(path, ("tach",)), root=path
     )
     assert omitted_app["tach"]["status"] == "selected"
+
+    # 5. Multi-ref push resolves per-ref tach.toml union cleanly and fails closed if any active ref is corrupt.
+    from engineering_ci import selection
+
+    (path / "tach.toml").write_text(original_tach, encoding="utf-8")
+    run(path, "checkout", "--", ".dagger/src/engineering_ci_module/sample.py")
+    run(path, "switch", "-qc", "multi-ok", dagger_base)
+    (path / "docs/guide.md").write_text("# ref a doc\n", encoding="utf-8")
+    run(path, "add", "docs/guide.md")
+    run(path, "commit", "-qm", "ref a doc")
+    ok_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "switch", "-qc", "multi-corrupt", dagger_base)
+    (path / "tach.toml").write_bytes(b"\xff\xfe\x00bad")
+    run(path, "add", "tach.toml")
+    run(path, "commit", "-qm", "ref b corrupt tach")
+    bad_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "switch", "-q", "main")
+    ok_multi = selection.changeset_multi(
+        path, [("refs/heads/multi-ok", ok_commit, "refs/heads/multi-ok", dagger_base)]
+    )
+    ok_multi_app = hygiene.check_applicability(
+        ok_multi, config(path, ("tach",)), root=path
+    )
+    assert ok_multi_app["tach"]["status"] == "not_applicable"
+
+    bad_multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/multi-ok", ok_commit, "refs/heads/multi-ok", dagger_base),
+            (
+                "refs/heads/multi-corrupt",
+                bad_commit,
+                "refs/heads/multi-corrupt",
+                dagger_base,
+            ),
+        ],
+    )
+    bad_multi_app = hygiene.check_applicability(
+        bad_multi, config(path, ("tach",)), root=path
+    )
+    assert bad_multi_app["tach"]["status"] == "unknown"
+    assert bad_multi_app["tach"]["reason"] == "tach_config_invalid"

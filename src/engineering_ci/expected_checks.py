@@ -1176,6 +1176,7 @@ def _recompute_ref_projection(
     selection_check_rule=None,
     workflow_rule_by_check=None,
     authority_proven=True,
+    materialized_tree=False,
 ):
     from engineering_ci import selection as _selection
 
@@ -1268,6 +1269,7 @@ def _recompute_ref_projection(
         tree=ref.get("tree"),
         execution_tree=ref.get("tree"),
         ref_action=ref_action,
+        materialized_tree=materialized_tree,
     )
     hygiene_app = (
         hygiene.check_applicability(
@@ -3067,6 +3069,7 @@ def _validate_per_ref(
                 selection_check_rule=ref_sel_rule,
                 workflow_rule_by_check=ref_wf_rules,
                 authority_proven=authority_proven,
+                materialized_tree=(odb_root is None and ref_root is not None),
             )
             recomputed_by_name = {c["name"]: c for c in recomputed["checks"]}
             actual_names = [c.get("name") for c in ref_checks]

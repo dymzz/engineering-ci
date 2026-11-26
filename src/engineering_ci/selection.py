@@ -175,6 +175,7 @@ class ChangeSet:
     force_push: bool = False
     baseline_status: str | None = None
     non_check_obligations: tuple[str, ...] = ()
+    materialized_tree: bool = False
     base_tree: str | None = None
 
     @property
@@ -3578,7 +3579,7 @@ def verify_materialized_source_snapshot(
     if mat_tests != list(snap.get("tests_modules") or ()):
         raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
-        ref_cs = ref_changeset(mat_path, plan_ref)
+        ref_cs = replace(ref_changeset(mat_path, plan_ref), materialized_tree=True)
         ref_sel = select(
             ref_cs,
             sel_cfg,

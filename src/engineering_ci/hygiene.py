@@ -604,7 +604,7 @@ def _normalized_hygiene_rule_slice(normalized, name):
 
 def _read_hygiene_config_at_snapshot(root, rel_cfg, changes):
     snapshot = getattr(changes, "snapshot", "worktree")
-    if snapshot == "worktree":
+    if snapshot == "worktree" or getattr(changes, "materialized_tree", False):
         try:
             return read_source_file(root, rel_cfg)
         except (SourcePathError, OSError):
@@ -700,29 +700,7 @@ def _resolve_vulture_roots(config):
     return tuple(normalized), None
 
 
-def _resolve_tach_roots(root, config, changes):
-    """Resolve bound ``tach.toml`` ``source_roots``; fail closed on missing/corrupt/invalid config."""
-    rel = _normalize_scan_root(config.tach.path)
-    if not rel:
-        return None, "tach_config_path_invalid"
-    snapshot = getattr(changes, "snapshot", "worktree")
-    if snapshot == "worktree":
-        try:
-            raw = read_source_file(root, rel)
-        except (FileNotFoundError, NotADirectoryError):
-            return None, "tach_config_missing"
-        except (SourcePathError, OSError):
-            return None, "tach_config_invalid"
-    else:
-        target_tree = getattr(changes, "execution_tree", None) or getattr(
-            changes, "tree", None
-        )
-        if not isinstance(target_tree, str) or not _GIT_OID.fullmatch(target_tree):
-            return None, "tach_config_unreadable"
-        shown = _run_bytes(["git", "cat-file", "-p", f"{target_tree}:{rel}"], root)
-        if shown.returncode != 0:
-            return None, "tach_config_missing"
-        raw = shown.stdout
+def _parse_tach_source_roots_bytes(raw):
     try:
         text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
         data = tomllib.loads(text)
@@ -741,6 +719,55 @@ def _resolve_tach_roots(root, config, changes):
             return None, "tach_source_roots_invalid"
         normalized.append(root_norm)
     return tuple(normalized), None
+
+
+def _resolve_tach_roots_from_tree(root, rel, target_tree):
+    if not isinstance(target_tree, str) or not _GIT_OID.fullmatch(target_tree):
+        return None, "tach_config_unreadable"
+    shown = _run_bytes(["git", "cat-file", "-p", f"{target_tree}:{rel}"], root)
+    if shown.returncode != 0:
+        return None, "tach_config_missing"
+    return _parse_tach_source_roots_bytes(shown.stdout)
+
+
+def _resolve_tach_roots(root, config, changes):
+    """Resolve bound ``tach.toml`` ``source_roots``; fail closed on missing/corrupt/invalid config."""
+    rel = _normalize_scan_root(config.tach.path)
+    if not rel:
+        return None, "tach_config_path_invalid"
+    snapshot = getattr(changes, "snapshot", "worktree")
+    if snapshot == "worktree" or getattr(changes, "materialized_tree", False):
+        try:
+            raw = read_source_file(root, rel)
+        except (FileNotFoundError, NotADirectoryError):
+            return None, "tach_config_missing"
+        except (SourcePathError, OSError):
+            return None, "tach_config_invalid"
+        return _parse_tach_source_roots_bytes(raw)
+    if snapshot == "multi":
+        refs = getattr(changes, "references", ()) or ()
+        active_refs = [
+            ref
+            for ref in refs
+            if isinstance(ref, dict) and ref.get("ref_action") != "delete"
+        ]
+        if not active_refs:
+            return (), None
+        combined = []
+        seen = set()
+        for ref in active_refs:
+            ref_roots, err = _resolve_tach_roots_from_tree(root, rel, ref.get("tree"))
+            if err is not None:
+                return None, err
+            for item in ref_roots:
+                if item not in seen:
+                    seen.add(item)
+                    combined.append(item)
+        return tuple(combined), None
+    target_tree = getattr(changes, "execution_tree", None) or getattr(
+        changes, "tree", None
+    )
+    return _resolve_tach_roots_from_tree(root, rel, target_tree)
 
 
 def check_applicability(
