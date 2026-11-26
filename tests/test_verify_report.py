@@ -700,6 +700,8 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
         s for s in matched["sources"] if s["source_type"] == "hook_invocation"
     )
     assert len(hook_entry["executions"]) == 2
+    assert hook_entry["receipt"]["status"] == "matched"
+    assert len(hook_entry["receipt"]["report_refs"]) >= 1
 
     # 2. Bundle with verified source_handoff artifact manifest binds junit.xml -> execution_matched
     manifest_bundle = tmp_path / "bundle-manifest"

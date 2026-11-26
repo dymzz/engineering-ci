@@ -974,17 +974,51 @@ def _load_hook_entry(
                     }
                 )
             receipt_report_refs: list[str] = []
-            direct_rref = _report_ref_key(receipt_data.get("report_ref"))
-            if direct_rref:
-                receipt_report_refs.append(direct_rref)
-            for key in ("receipts", "results", "references"):
-                seq = receipt_data.get(key)
-                if isinstance(seq, list):
+
+            def _scan_receipt_obj(obj: dict[str, Any]) -> None:
+                exp_inv = _norm_optional_str(obj.get("expected_invocation_ref"))
+                if exp_inv is not None and exp_inv != binding.invocation_ref:
+                    entry["internal_conflicts"].append(
+                        {
+                            "reason": "hook_receipt_invocation_ref_mismatch",
+                            "expected": binding.invocation_ref,
+                            "observed": exp_inv,
+                        }
+                    )
+                direct_rref = _report_ref_key(obj.get("report_ref"))
+                if direct_rref:
+                    receipt_report_refs.append(direct_rref)
+                for seq_key in ("entries", "results", "references"):
+                    seq = obj.get(seq_key)
+                    if not isinstance(seq, list):
+                        continue
                     for item in seq:
-                        if isinstance(item, dict):
-                            rr = _report_ref_key(item.get("report_ref"))
-                            if rr:
-                                receipt_report_refs.append(rr)
+                        if not isinstance(item, dict):
+                            continue
+                        rr = _report_ref_key(item.get("report_ref"))
+                        if rr:
+                            receipt_report_refs.append(rr)
+                        for sub_key in (
+                            "evidence",
+                            "job_instances",
+                            "rejected_observations",
+                        ):
+                            sub = item.get(sub_key)
+                            if isinstance(sub, list):
+                                for sub_item in sub:
+                                    if isinstance(sub_item, dict):
+                                        srr = _report_ref_key(
+                                            sub_item.get("report_ref")
+                                        )
+                                        if srr:
+                                            receipt_report_refs.append(srr)
+                sub_receipts = obj.get("receipts")
+                if isinstance(sub_receipts, list):
+                    for sub_rec in sub_receipts:
+                        if isinstance(sub_rec, dict):
+                            _scan_receipt_obj(sub_rec)
+
+            _scan_receipt_obj(receipt_data)
             exec_report_refs = {
                 ex["report_ref"] for ex in executions if ex.get("report_ref")
             }
@@ -998,6 +1032,8 @@ def _load_hook_entry(
                             }
                         )
             receipt_summary = {
+                "status": receipt_data.get("status"),
+                "receipt_ref": receipt_data.get("receipt_ref"),
                 "plan_ref": receipt_plan_ref,
                 "report_refs": sorted(set(receipt_report_refs)),
                 "exit_code": receipt_data.get("exit_code"),
