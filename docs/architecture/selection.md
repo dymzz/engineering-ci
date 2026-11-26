@@ -468,3 +468,19 @@ module-local and execute for every new Plan; only declared source-only
 `dagger_command` computation receives independent native Exec caching.
 See the [mixed-Plan observations](../verification/dagger-input-cache/mixed-plan/README.md)
 for actual request/reader counts and failure preservation.
+
+### Repository boundary mapping & Tach validation reuse (#162 A2)
+
+- Root `ci-selection.toml` registers `tach = "tach.toml"`, `strict_modules = true`,
+  `[module_tests]` for all `src/engineering_ci` modules, and `[[non_code_rules]]`
+  mapping `.dagger/src/engineering_ci_module/*`, `scripts/*`, `config/*`, and test
+  fixtures while retaining A0 `commit` / `push` `select_tests = false` and
+  governed hook profile expectations until profile digest settlement.
+- `selection._tach_check` records `executable`, `tach_path`, `tach_sha256`,
+  `source_tree`, `snapshot`, `stdout`, and `stderr` when `tach check` runs during
+  selection; `execution._reusable_tach_graph_result` reuses that result only on
+  exact host, tree, config-digest, config-path, executable, and clean-snapshot
+  match while continuing to run `tach_external` independently.
+- `expected_checks.derive_expected_checks` / `validate_projection` forward
+  `hygiene_config_path` and per-ref `base_commit` / `head_commit` so single-ref
+  and per-ref projections agree on config-triggered hygiene applicability.

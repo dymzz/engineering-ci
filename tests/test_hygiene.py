@@ -663,3 +663,191 @@ def test_shared_applicability_and_config_identity(repo):
     assert app["tach"]["status"] == "not_applicable"
     assert app["tach_external"]["status"] == "selected"
     assert app["tach_external"]["inputs"] == ["requirements-dev.txt"]
+
+
+def test_docs_config_trigger_rechecks_all_without_contaminating_inputs(repo):
+    path, _base = repo
+    hyg = path / "ci-hygiene.toml"
+    hyg.write_text(
+        "schema_version = 1\n"
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        'excluded_prefixes = ["docs/archive/"]\n\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--no-progress"]\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "baseline docs config")
+    cfg_base = run(path, "rev-parse", "HEAD").strip()
+
+    hyg.write_text(
+        "schema_version = 1\n"
+        "[docs]\n"
+        'suffixes = [".md", ".html"]\n'
+        'excluded_prefixes = ["docs/archive/"]\n\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--offline", "--no-progress"]\n',
+        encoding="utf-8",
+    )
+    cfg = hygiene.load_config(hyg)
+    value = changes(path, cfg_base)
+    app = hygiene.check_applicability(value, cfg, root=path, hygiene_config_path=hyg)
+    assert app["docs"]["status"] == "selected"
+    assert app["docs"]["recheck_all"] is True
+    assert "ci-hygiene.toml" not in app["docs"]["inputs"]
+    assert app["forwarding"]["status"] == "not_applicable"
+
+    fake = FakeRunner()
+    result = hygiene.run(value, cfg, root=path, runner=fake, hygiene_config_path=hyg)
+    docs_check = by_name(result)["docs"]
+    assert result["status"] == "passed"
+    assert docs_check["status"] == "passed"
+    lychee_calls = [argv for argv, _ in fake.calls if argv and argv[0] == "lychee"]
+    assert len(lychee_calls) == 1
+    assert any(arg.endswith("docs/guide.md") for arg in lychee_calls[0])
+    assert any(arg.endswith("README.md") for arg in lychee_calls[0])
+    assert "ci-hygiene.toml" not in lychee_calls[0]
+
+
+def test_forwarding_config_trigger_keeps_python_inputs_and_normalizes_equivalence(
+    repo,
+):
+    path, _base = repo
+    hyg = path / "ci-hygiene.toml"
+    hyg.write_text(
+        'schema_version = 1\n[forwarding]\nsource_prefix = "src/"\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "explicit forwarding defaults")
+    cfg_base = run(path, "rev-parse", "HEAD").strip()
+
+    # Rewriting an equivalent config (comment + omitted default section) must not false-trigger.
+    hyg.write_text("# comment only\nschema_version = 1\n", encoding="utf-8")
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "equivalent normalized hygiene config")
+    equiv_cfg = hygiene.load_config(hyg)
+    equiv_changes = changes(path, cfg_base)
+    equiv_app = hygiene.check_applicability(
+        equiv_changes, equiv_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert equiv_app["forwarding"]["status"] == "not_applicable"
+    assert equiv_app["forwarding"]["reason"] == "no_python_changes"
+    assert equiv_app["docs"]["status"] == "not_applicable"
+    assert equiv_app["tach"]["status"] == "not_applicable"
+
+    # Real [forwarding] policy change triggers forwarding WITHOUT putting ci-hygiene.toml in inputs.
+    head_base = run(path, "rev-parse", "HEAD").strip()
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["forwarding"]\n'
+        "[forwarding]\n"
+        'source_prefix = "src/pkg/"\n',
+        encoding="utf-8",
+    )
+    changed_cfg = hygiene.load_config(hyg)
+    changed_changes = changes(path, head_base)
+    changed_app = hygiene.check_applicability(
+        changed_changes, changed_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert changed_app["forwarding"]["status"] == "selected"
+    assert "ci-hygiene.toml" not in changed_app["forwarding"]["inputs"]
+    assert all(item.endswith(".py") for item in changed_app["forwarding"]["inputs"])
+
+    res = hygiene.run(
+        changed_changes,
+        changed_cfg,
+        root=path,
+        runner=FakeRunner(),
+        hygiene_config_path=hyg,
+    )
+    assert res["status"] == "passed"
+    assert by_name(res)["forwarding"]["status"] == "passed"
+
+
+def test_tach_config_trigger_and_snapshot_isolation_and_fail_closed_fallback(repo):
+    from engineering_ci import selection
+
+    path, _base = repo
+    hyg = path / "ci-hygiene.toml"
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["vulture", "tach", "tach_external"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 60\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "tach and vulture baseline")
+    cfg_base = run(path, "rev-parse", "HEAD").strip()
+
+    # Commit a [tach] rule change, then dirty worktree differently and evaluate commit snapshot.
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["vulture", "tach", "tach_external"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 60\n\n"
+        "[tach]\n"
+        'path = "tach-alt.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "change tach path")
+    commit_cfg = hygiene.load_config(hyg)
+
+    # Dirty worktree alters [vulture] instead of [tach]; commit snapshot must read execution_tree!
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["vulture", "tach", "tach_external"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 80\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    commit_changes = selection.changeset(path, base=cfg_base, mode="commit")
+    app = hygiene.check_applicability(
+        commit_changes, commit_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert app["tach"]["status"] == "selected"
+    assert app["tach_external"]["status"] == "selected"
+    assert "ci-hygiene.toml" not in app["tach"]["inputs"]
+    assert app["vulture"]["status"] == "not_applicable"
+
+    # Unreadable/corrupt base config or missing base_commit falls back conservatively.
+    corrupt_base = dataclasses.replace(
+        changes(path, cfg_base),
+        base_commit="0" * 40,
+        paths=("ci-hygiene.toml",),
+    )
+    conservative = hygiene.check_applicability(
+        corrupt_base, commit_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert conservative["tach"]["status"] == "selected"
+    assert conservative["tach_external"]["status"] == "selected"
+    assert conservative["vulture"]["status"] == "selected"
+
+
+def test_is_offline_lychee_arguments_respects_overrides_and_separator():
+    assert hygiene.is_offline_lychee_arguments(["--offline", "--no-progress"]) is True
+    assert hygiene.is_offline_lychee_arguments(["--offline=true"]) is True
+    assert hygiene.is_offline_lychee_arguments(["--offline=false"]) is False
+    assert (
+        hygiene.is_offline_lychee_arguments(["--offline", "--offline=false"]) is False
+    )
+    assert (
+        hygiene.is_offline_lychee_arguments(["--offline=false", "--offline"]) is False
+    )
+    assert hygiene.is_offline_lychee_arguments(["--", "--offline"]) is False
+    assert hygiene.is_offline_lychee_arguments(["--no-progress"]) is False

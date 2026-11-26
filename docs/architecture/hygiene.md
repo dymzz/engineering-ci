@@ -290,3 +290,19 @@ commands run against a disposable fixture repository: clean/dirty whitespace,
 not-applicable documents, one Lychee invocation with the active file list,
 missing/broken Lychee, Vulture advisory vs failure, Tach missing config/failure,
 forwarding advisory, report identity and CLI exit propagation.
+
+### Structure & applicability hardening (#162 A2)
+
+- Snapshot-aware `ci-hygiene.toml` trigger comparison normalizes base and
+  target (`worktree` vs immutable `execution_tree`) rule slices without injecting
+  config files into `inputs`; `[docs]` / `[lychee]` changes trigger `docs` with
+  `recheck_all = true`, while equivalent normalized configs do not false-trigger.
+- `DEFAULT_CODE_PREFIXES` aligns across `hygiene.py` and `selection.py`
+  (`src/`, `scripts/`, `tests/`, `.dagger/src/`).
+- `docs` preserves `link_scope` (`offline` vs `network`) and `link_scope_note`
+  on both the check summary and `NativeResult.evidence` (aligned with
+  `link_check.py` via `is_offline_lychee_arguments()`).
+- Repository root `tach.toml` defines `exact = true` boundaries for the
+  `src/engineering_ci` modules and `[external]` distribution mappings (`tach check`
+  and `tach check-external`), while documenting the three existing internal cyclic
+  groups until follow-up cycle refactors remove them.

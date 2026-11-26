@@ -710,6 +710,64 @@ def _resolved_code_prefixes(plan, root):
     return (tuple(code_prefixes) if code_prefixes is not None else None), None
 
 
+def _reusable_tach_graph_result(plan, config, *, root, execution_context):
+    """Reuse selection._tach_check only when tool, rule, source and host env match."""
+    if execution_context != "host" or "tach" not in config.checks:
+        return None
+    tach_path = config.tach.path.replace("\\", "/")
+    if config.tach.executable != "tach" or tach_path != "tach.toml":
+        return None
+    tach_file = Path(root) / config.tach.path
+    if not tach_file.is_file():
+        return None
+    chosen = plan.get("selection") or {}
+    graph = chosen.get("tach_graph_validation")
+    if not isinstance(graph, dict) or graph.get("status") not in {"passed", "failed"}:
+        return None
+    if (
+        graph.get("executable") != "tach"
+        or type(graph.get("exit_code")) is not int
+        or not isinstance(graph.get("stdout"), str)
+        or not isinstance(graph.get("stderr"), str)
+        or (graph.get("tach_path") or "tach.toml") != "tach.toml"
+    ):
+        return None
+    if selection._digest(tach_file) != graph.get("tach_sha256"):
+        return None
+    git = plan.get("git") or {}
+    plan_snapshot = str(git.get("snapshot") or "worktree")
+    if graph.get("snapshot") != plan_snapshot:
+        return None
+    expected_tree = git.get("execution_tree") or git.get("tree")
+    if not isinstance(expected_tree, str) or graph.get("source_tree") != expected_tree:
+        return None
+    if (
+        plan_snapshot == "worktree"
+        and selection.worktree_tree_refusal(Path(root), expected_tree) is not None
+    ):
+        return None
+    passed = graph["exit_code"] == 0
+    return {
+        **hygiene._result(
+            "tach",
+            "passed" if passed else "failed",
+            exit_code=graph["exit_code"],
+            reason=None if passed else "tach_check_failed",
+            stdout=graph["stdout"],
+            stderr=graph["stderr"],
+            executable="tach",
+            observation={
+                "kind": "reused_tach_graph_validation",
+                "reused_from": "selection.tach_graph_validation",
+                "source_tree": graph["source_tree"],
+                "tach_sha256": graph["tach_sha256"],
+                "tach_path": "tach.toml",
+                "snapshot": plan_snapshot,
+            },
+        )
+    }
+
+
 def _find_omitted_hygiene_entries(
     plan,
     selected_names,
@@ -720,6 +778,7 @@ def _find_omitted_hygiene_entries(
     code_prefixes,
     rule,
     config_input=None,
+    hygiene_config_path=None,
 ):
     has_bound_hygiene = isinstance((plan.get("inputs") or {}).get("hygiene"), dict)
     if not has_bound_hygiene:
@@ -730,6 +789,7 @@ def _find_omitted_hygiene_entries(
         root=root,
         full=False,
         code_prefixes=code_prefixes,
+        hygiene_config_path=hygiene_config_path,
     )
     raw_scope = {
         item.get("name"): item
@@ -808,6 +868,7 @@ def omitted_hygiene_checks(
         code_prefixes=code_prefixes,
         rule=rule,
         config_input=config_input,
+        hygiene_config_path=config_path,
     )
 
 
@@ -867,6 +928,7 @@ def _run_hygiene_checks(
             code_prefixes=code_prefixes,
             rule=rule,
             config_input=config_input,
+            hygiene_config_path=config_path,
         )
         if check_omitted
         else []
@@ -892,13 +954,23 @@ def _run_hygiene_checks(
     isolated_whitespace = "whitespace" in checks and _uses_exported_index_comparison(
         plan, execution_context, extra_paths=extra_paths
     )
-    remaining = (
-        tuple(name for name in checks if name != "whitespace")
-        if isolated_whitespace
-        else checks
+    base_config = dataclasses.replace(config, checks=checks, tach=effective_tach)
+    reused_tach = _reusable_tach_graph_result(
+        plan, base_config, root=root, execution_context=execution_context
     )
-    run_config = dataclasses.replace(config, checks=remaining, tach=effective_tach)
-    run_kwargs = {"root": root, "runner": runner or hygiene._run}
+    skipped_in_run = set()
+    if isolated_whitespace:
+        skipped_in_run.add("whitespace")
+    if reused_tach is not None:
+        skipped_in_run.add("tach")
+    remaining = tuple(name for name in checks if name not in skipped_in_run)
+    run_config = dataclasses.replace(base_config, checks=remaining)
+    run_kwargs = {
+        "root": root,
+        "runner": runner or hygiene._run,
+    }
+    if _stored_rule_path(config_path, root) != hygiene._HYGIENE_CONFIG:
+        run_kwargs["hygiene_config_path"] = config_path
     if code_prefixes is not None:
         run_kwargs["code_prefixes"] = code_prefixes
     ws_before = None
@@ -911,13 +983,19 @@ def _run_hygiene_checks(
     report = (
         hygiene.run(changes, run_config, **run_kwargs) if remaining else {"checks": []}
     )
-    if isolated_whitespace:
-        report["checks"].insert(
-            checks.index("whitespace"),
+    for check_name, precomputed in (
+        (
+            "whitespace",
             _run_exported_index_whitespace(
                 root, plan["git"], changes.paths, whitespace_runner
-            ),
-        )
+            )
+            if isolated_whitespace
+            else None,
+        ),
+        ("tach", reused_tach),
+    ):
+        if precomputed is not None:
+            report["checks"].insert(checks.index(check_name), precomputed)
     ws_after = None
     ws_err_after = None
     if "whitespace" in remaining:
@@ -3085,7 +3163,7 @@ def _closure_supported(
         if hygiene_config is None:
             return False
         args = tuple(getattr(hygiene_config.lychee, "arguments", ()) or ())
-        if "--offline" not in args:
+        if not hygiene.is_offline_lychee_arguments(args):
             return False
         inv = (item or {}).get("inventory")
         return not (isinstance(inv, dict) and inv.get("exit_code") not in (None, 0))
@@ -5530,6 +5608,10 @@ def _check_evidence(item, name):
             "admission",
         ):
             if key in item and item[key] is not None:
+                evidence[key] = item[key]
+    if name == "docs":
+        for key in ("link_scope", "link_scope_note"):
+            if isinstance(item.get(key), str):
                 evidence[key] = item[key]
     if name == "whitespace" and isinstance(item.get("git_whitespace_config"), dict):
         evidence["git_whitespace_config"] = item["git_whitespace_config"]

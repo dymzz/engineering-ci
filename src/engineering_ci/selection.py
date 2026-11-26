@@ -423,7 +423,7 @@ def _parse_config_bytes(raw):
     check_scope = CheckScopeConfig(
         docs_suffixes=docs_suffixes,
         code_prefixes=_string_list(
-            scope.get("code_prefixes", ["src/", "scripts/", "tests/", ".dagger/src/"]),
+            scope.get("code_prefixes", list(hygiene.DEFAULT_CODE_PREFIXES)),
             "code_prefixes",
         ),
         source_prefixes=_string_list(
@@ -894,8 +894,7 @@ def config_from_identity(identity):
         check_scope=CheckScopeConfig(
             docs_suffixes=tuple(scope.get("docs_suffixes") or (".md", ".html")),
             code_prefixes=tuple(
-                scope.get("code_prefixes")
-                or ("src/", "scripts/", "tests/", ".dagger/src/")
+                scope.get("code_prefixes") or hygiene.DEFAULT_CODE_PREFIXES
             ),
             source_prefixes=tuple(
                 scope.get("source_prefixes") or ("data/", "sources/")
@@ -2615,6 +2614,7 @@ def _non_test_check_scopes(
     root,
     *,
     hygiene_config=None,
+    hygiene_config_path=None,
     sources_config=None,
     sources_identity=None,
     config_path=None,
@@ -2623,7 +2623,11 @@ def _non_test_check_scopes(
 ):
     """Per-check non-test impact aligned with authoritative Hygiene and Sources configs."""
     if hygiene_config is None:
-        hygiene_config, _ = _resolve_hygiene_input(root, config)
+        hygiene_config, hygiene_id = _resolve_hygiene_input(
+            root, config, hygiene_config_path=hygiene_config_path
+        )
+        if hygiene_config_path is None and isinstance(hygiene_id, dict):
+            hygiene_config_path = hygiene_id.get("path")
     if sources_config is None and sources_identity is None:
         sources_config, sources_identity = _resolve_sources_input(root)
     hygiene_scopes = hygiene.check_applicability(
@@ -2632,6 +2636,7 @@ def _non_test_check_scopes(
         root=root,
         full=False,
         code_prefixes=config.check_scope.code_prefixes,
+        hygiene_config_path=hygiene_config_path,
     )
     is_delete = getattr(changes, "ref_action", None) == "delete"
     paths = [_normalized(path) for path in changes.paths]
@@ -3041,6 +3046,7 @@ def _check_scope(
     root,
     *,
     hygiene_config=None,
+    hygiene_config_path=None,
     sources_config=None,
     sources_identity=None,
     config_path=None,
@@ -3071,6 +3077,7 @@ def _check_scope(
             config,
             root,
             hygiene_config=hygiene_config,
+            hygiene_config_path=hygiene_config_path,
             sources_config=sources_config,
             sources_identity=sources_identity,
             config_path=config_path,
@@ -3512,6 +3519,7 @@ def verify_materialized_source_snapshot(
             sel_cfg,
             mat_path,
             hygiene_config=hygiene_config,
+            hygiene_config_path=(inputs or {}).get("hygiene", {}).get("path"),
             sources_config=sources_config,
             sources_identity=sources_identity,
             config_path=(inputs or {}).get("config", {}).get("path"),
@@ -3622,6 +3630,7 @@ def per_ref_selections_and_scopes(
             config,
             root,
             hygiene_config=hygiene_config,
+            hygiene_config_path=hygiene_config_path,
             sources_config=sources_config,
             sources_identity=sources_identity,
             config_path=config_path,
@@ -3731,6 +3740,8 @@ def _tach_check(root, config, changes):
     return {
         "status": "passed" if result.returncode == 0 else "failed",
         "exit_code": result.returncode,
+        "executable": "tach",
+        "tach_path": _normalized(config.tach),
         "stdout": result.stdout[-4000:],
         "stderr": result.stderr[-4000:],
         "tach_sha256": _digest(root / config.tach),
@@ -3756,6 +3767,10 @@ def _graph_validation(selection, config, root, value):
     }
     if value.get("reason") is not None:
         report["reason"] = value.get("reason")
+    if report["status"] in {"passed", "failed"}:
+        for key in ("executable", "tach_path", "snapshot", "stdout", "stderr"):
+            if key in value and value[key] is not None:
+                report[key] = value[key]
     return report
 
 
@@ -3892,6 +3907,11 @@ def plan(
         config,
         root,
         hygiene_config=loaded_hygiene,
+        hygiene_config_path=(
+            hygiene_identity.get("path")
+            if isinstance(hygiene_identity, dict)
+            else hygiene_config_path
+        ),
         sources_config=loaded_sources,
         sources_identity=sources_identity,
         config_path=config_path,

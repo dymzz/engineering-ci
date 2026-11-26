@@ -1163,6 +1163,7 @@ def _recompute_ref_projection(
     profile_ref,
     profile_source,
     hygiene_config,
+    hygiene_config_path=None,
     code_prefixes,
     source_prefixes=None,
     weaver_prefixes=None,
@@ -1262,6 +1263,8 @@ def _recompute_ref_projection(
         deleted_paths_resolved=True,
         complete=ref_complete,
         snapshot="push",
+        base_commit=ref.get("before"),
+        head_commit=ref.get("after"),
         tree=ref.get("tree"),
         execution_tree=ref.get("tree"),
         ref_action=ref_action,
@@ -1273,6 +1276,7 @@ def _recompute_ref_projection(
             root=root,
             full=False,
             code_prefixes=code_prefixes,
+            hygiene_config_path=hygiene_config_path,
         )
         if hygiene_config is not None
         else {}
@@ -1546,6 +1550,7 @@ def _derive_per_ref_projections(
     profile_ref,
     profile_source,
     hygiene_config,
+    hygiene_config_path=None,
     code_prefixes,
     source_prefixes=None,
     weaver_prefixes=None,
@@ -1571,6 +1576,7 @@ def _derive_per_ref_projections(
             profile_ref=profile_ref,
             profile_source=profile_source,
             hygiene_config=hygiene_config,
+            hygiene_config_path=hygiene_config_path,
             code_prefixes=code_prefixes,
             source_prefixes=source_prefixes,
             weaver_prefixes=weaver_prefixes,
@@ -2227,6 +2233,9 @@ def derive_expected_checks(
         profile_source=profile_source
         or (effective_profile or {}).get("approval_source"),
         hygiene_config=hygiene_config,
+        hygiene_config_path=(
+            hygiene_identity.get("path") if isinstance(hygiene_identity, dict) else None
+        ),
         code_prefixes=code_prefixes,
         source_prefixes=source_prefixes,
         weaver_prefixes=weaver_prefixes,
@@ -3041,6 +3050,7 @@ def _validate_per_ref(
                 profile_ref=expected.get("profile_ref"),
                 profile_source=expected.get("profile_source"),
                 hygiene_config=hygiene_config,
+                hygiene_config_path=hyg_path_str,
                 code_prefixes=code_prefixes,
                 source_prefixes=source_prefixes,
                 weaver_prefixes=weaver_prefixes,

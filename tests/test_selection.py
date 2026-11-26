@@ -1844,3 +1844,49 @@ acquired_roots = ["vendor/src"]
         ]["status"]
         == "not_applicable"
     )
+
+
+def test_repository_root_selection_and_tach_configs_target_src_and_dagger():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = selection.load_config(root / "ci-selection.toml")
+    modules, _ = selection._tach_graph(root / cfg.tach)
+    assert modules
+    assert not (set(modules) - set(cfg.module_tests))
+
+    def _worktree_changes(*rels):
+        return selection.ChangeSet(
+            root=root,
+            base_ref="HEAD",
+            head_ref="WORKTREE",
+            base_commit="0" * 40,
+            head_commit="1" * 40,
+            tree=None,
+            paths=tuple(rels),
+            worktree_dirty=True,
+            complete=True,
+        )
+
+    hyg_sel = selection.select(
+        _worktree_changes("src/engineering_ci/hygiene.py"), cfg, root=root
+    )
+    assert hyg_sel.status == "targeted"
+    assert hyg_sel.escalated is False
+    assert "tests.test_hygiene" in hyg_sel.tests
+    assert "tests.test_selection" in hyg_sel.tests
+
+    dagger_sel = selection.select(
+        _worktree_changes(".dagger/src/engineering_ci_module/link_check.py"),
+        cfg,
+        root=root,
+    )
+    assert dagger_sel.status == "targeted"
+    assert dagger_sel.escalated is False
+    assert "tests.test_link_check" in dagger_sel.tests
+
+    docs_sel = selection.select(
+        _worktree_changes("docs/architecture/hygiene.md"), cfg, root=root
+    )
+    assert docs_sel.status == "no_tests"
+    assert docs_sel.escalated is False

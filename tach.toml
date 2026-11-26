@@ -1,0 +1,394 @@
+# Module boundaries and dependency graph for Engineering CI (#162 A2).
+source_roots = ["src"]
+exact = true
+
+root_module = "ignore"
+# Circular dependencies remain temporarily allowed across three existing multi-module groups:
+# 1. selection <-> expected_checks <-> plan_contract <-> hygiene
+# 2. hooks <-> hook_checks <-> dagger_plan
+# 3. release.manifest <-> release.publishing
+forbid_circular_dependencies = false
+exclude = [
+    ".dagger/sdk/**",
+    ".dagger/.venv/**",
+    ".venv/**",
+    "tests/**",
+    "scripts/**",
+    ".git/**",
+]
+
+[[modules]]
+path = "engineering_ci"
+depends_on = [
+    "engineering_ci.cli",
+]
+
+[[modules]]
+path = "engineering_ci._paths"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.admission"
+depends_on = [
+    "engineering_ci.check_contract",
+    "engineering_ci.execution",
+    "engineering_ci.reconciliation",
+]
+
+[[modules]]
+path = "engineering_ci.check_contract"
+depends_on = [
+    "engineering_ci.weaver_tool",
+]
+
+[[modules]]
+path = "engineering_ci.cicd_telemetry"
+depends_on = [
+    "engineering_ci.github_receiver",
+]
+
+[[modules]]
+path = "engineering_ci.cli"
+depends_on = [
+    "engineering_ci.cicd_telemetry",
+    "engineering_ci.cli.download",
+    "engineering_ci.cli.release",
+    "engineering_ci.cli.verify",
+    "engineering_ci.dagger_telemetry",
+    "engineering_ci.execution",
+    "engineering_ci.hooks",
+    "engineering_ci.hygiene",
+    "engineering_ci.release.version",
+    "engineering_ci.security_policy",
+    "engineering_ci.selection",
+    "engineering_ci.sources",
+]
+
+[[modules]]
+path = "engineering_ci.cli.__main__"
+depends_on = [
+    "engineering_ci.cli",
+]
+
+[[modules]]
+path = "engineering_ci.cli.download"
+depends_on = [
+    "engineering_ci.github_cli",
+]
+
+[[modules]]
+path = "engineering_ci.cli.release"
+depends_on = [
+    "engineering_ci.github_cli",
+    "engineering_ci.release.publishing",
+    "engineering_ci.release.request",
+    "engineering_ci.release.verification",
+    "engineering_ci.release.version", "engineering_ci.release",
+]
+
+[[modules]]
+path = "engineering_ci.cli.verify"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.dagger_plan"
+depends_on = [
+    "engineering_ci.execution",
+    "engineering_ci.git_source",
+    "engineering_ci.hooks",
+    "engineering_ci.selection",
+]
+
+[[modules]]
+path = "engineering_ci.dagger_telemetry"
+depends_on = [
+    "engineering_ci.cicd_telemetry",
+]
+
+[[modules]]
+path = "engineering_ci.dependency_security"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.execution"
+depends_on = [
+    "engineering_ci._paths",
+    "engineering_ci.check_contract",
+    "engineering_ci.expected_checks",
+    "engineering_ci.git_source",
+    "engineering_ci.hygiene",
+    "engineering_ci.native_producer",
+    "engineering_ci.plan_contract",
+    "engineering_ci.security_policy",
+    "engineering_ci.selection",
+    "engineering_ci.sources",
+    "engineering_ci.workflow_analysis",
+]
+
+[[modules]]
+path = "engineering_ci.expected_checks"
+depends_on = [
+    "engineering_ci.check_contract",
+    "engineering_ci.hygiene",
+    "engineering_ci.selection",
+    "engineering_ci.sources",
+    "engineering_ci.workflow_analysis",
+]
+
+[[modules]]
+path = "engineering_ci.git_source"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.github_cli"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.github_receiver"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.hook_checks"
+depends_on = [
+    "engineering_ci.dagger_plan",
+    "engineering_ci.execution",
+    "engineering_ci.expected_checks",
+    "engineering_ci.git_source",
+    "engineering_ci.hooks",
+    "engineering_ci.reconciliation",
+    "engineering_ci.selection",
+]
+
+[[modules]]
+path = "engineering_ci.hooks"
+depends_on = [
+    "engineering_ci.hook_checks",
+    "engineering_ci.hygiene",
+    "engineering_ci.selection",
+]
+
+[[modules]]
+path = "engineering_ci.hygiene"
+depends_on = [
+    "engineering_ci._paths",
+    "engineering_ci.check_contract",
+    "engineering_ci.git_source",
+    "engineering_ci.selection",
+]
+
+[[modules]]
+path = "engineering_ci.local_actions_handoff"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.native_producer"
+depends_on = [
+    "engineering_ci.check_contract",
+    "engineering_ci.weaver_tool",
+]
+
+[[modules]]
+path = "engineering_ci.plan_contract"
+depends_on = [
+    "engineering_ci.check_contract",
+    "engineering_ci.expected_checks",
+]
+
+[[modules]]
+path = "engineering_ci.powershell_analysis"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.reconciliation"
+depends_on = [
+    "engineering_ci.check_contract",
+    "engineering_ci.expected_checks",
+    "engineering_ci.terminal_expected",
+]
+
+[[modules]]
+path = "engineering_ci.release"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.release.manifest"
+depends_on = [
+    "engineering_ci.github_cli",
+    "engineering_ci.release",
+    "engineering_ci.release.publishing",
+    "engineering_ci.release.registry",
+]
+
+[[modules]]
+path = "engineering_ci.release.publishing"
+depends_on = [
+    "engineering_ci.github_cli",
+    "engineering_ci.release",
+    "engineering_ci.release.manifest",
+    "engineering_ci.release.registry",
+    "engineering_ci.release.version",
+]
+
+[[modules]]
+path = "engineering_ci.release.registry"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.release.request"
+depends_on = [
+    "engineering_ci.github_cli",
+    "engineering_ci.release",
+]
+
+[[modules]]
+path = "engineering_ci.release.verification"
+depends_on = [
+    "engineering_ci.release.manifest",
+    "engineering_ci.release.publishing",
+    "engineering_ci.release.version",
+]
+
+[[modules]]
+path = "engineering_ci.release.version"
+depends_on = [
+    "engineering_ci._paths",
+]
+
+[[modules]]
+path = "engineering_ci.required_assessment"
+depends_on = [
+    "engineering_ci.admission",
+    "engineering_ci.expected_checks",
+    "engineering_ci.reconciliation",
+]
+
+[[modules]]
+path = "engineering_ci.required_assessment_check"
+depends_on = [
+    "engineering_ci.github_cli",
+    "engineering_ci.required_assessment",
+]
+
+[[modules]]
+path = "engineering_ci.required_assessment_post"
+depends_on = [
+    "engineering_ci.required_assessment",
+]
+
+[[modules]]
+path = "engineering_ci.required_assessment_protection"
+depends_on = [
+    "engineering_ci.github_cli",
+    "engineering_ci.required_assessment_check",
+]
+
+[[modules]]
+path = "engineering_ci.required_assessment_publish"
+depends_on = [
+    "engineering_ci.required_assessment_check",
+]
+
+[[modules]]
+path = "engineering_ci.required_assessment_release"
+depends_on = [
+    "engineering_ci.github_cli",
+    "engineering_ci.release.manifest",
+    "engineering_ci.release.publishing",
+    "engineering_ci.release.registry",
+    "engineering_ci.release.verification",
+    "engineering_ci.required_assessment",
+]
+
+[[modules]]
+path = "engineering_ci.security_policy"
+depends_on = [
+    "engineering_ci.github_cli",
+    "engineering_ci.release.manifest",
+    "engineering_ci.release.verification",
+]
+
+[[modules]]
+path = "engineering_ci.selection"
+depends_on = [
+    "engineering_ci._paths",
+    "engineering_ci.check_contract",
+    "engineering_ci.expected_checks",
+    "engineering_ci.git_source",
+    "engineering_ci.hygiene",
+    "engineering_ci.plan_contract",
+    "engineering_ci.semconv_registry",
+    "engineering_ci.sources",
+    "engineering_ci.weaver_tool",
+    "engineering_ci.workflow_analysis",
+]
+
+[[modules]]
+path = "engineering_ci.semconv_registry"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.sources"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.terminal_expected"
+depends_on = [
+    "engineering_ci.check_contract",
+    "engineering_ci.expected_checks",
+    "engineering_ci.selection",
+]
+
+[[modules]]
+path = "engineering_ci.tools"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.tools.consumer"
+depends_on = [
+    "engineering_ci._paths",
+]
+
+[[modules]]
+path = "engineering_ci.tools.performance"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.tools.security"
+depends_on = [
+    "engineering_ci.dependency_security",
+]
+
+[[modules]]
+path = "engineering_ci.weaver_tool"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.workflow_actions"
+depends_on = [
+    "engineering_ci.powershell_analysis",
+    "engineering_ci.release.manifest",
+    "engineering_ci.release.publishing",
+    "engineering_ci.tools.security",
+]
+
+[[modules]]
+path = "engineering_ci.workflow_analysis"
+depends_on = [
+    "engineering_ci.check_contract",
+]
+
+# External dependency boundary:
+# - Engineering CI may depend on vesryn-log and vesryn-tool-runtime when adopted,
+#   never on vesryn or vesryn-workflow (AGENTS.md Architecture and Ownership).
+# - release/publishing.py dynamically loads pytest_ci / pytest_report from
+#   .dagger/src/engineering_ci_module at runtime for release evidence checks.
+[external]
+rename = [
+    "opentelemetry:opentelemetry-proto",
+    "grpc:grpcio",
+    "google:protobuf",
+]
+exclude = [
+    "pytest_ci",
+    "pytest_report",
+]

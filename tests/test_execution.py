@@ -5999,3 +5999,309 @@ output_ref = {{ kind = "file", path = "{artifact_rel}", sha256 = "{sha}" }}
         ]
         == "matched"
     )
+
+
+def test_docs_offline_execution_retains_link_scope_in_native_result(repo):
+    from engineering_ci import check_contract
+
+    path, base = repo
+    (path / "docs/guide.md").write_text("# offline guide\n", encoding="utf-8")
+
+    # Case 1: explicit --offline preserves offline link_scope in check & native_result.evidence.
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["docs"]\n'
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--offline", "--no-progress"]\n',
+        encoding="utf-8",
+    )
+    offline_report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    offline_check = next(c for c in offline_report["checks"] if c["name"] == "docs")
+    assert offline_check["link_scope"] == "offline"
+    assert offline_check["native_result"]["evidence"]["link_scope"] == "offline"
+    assert offline_check["native_result"]["evidence"]["link_scope_note"]
+    check_contract.validate_result(offline_check["native_result"])
+
+    # Case 2: network arguments record link_scope == "network" in native_result.evidence.
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["docs"]\n'
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--no-progress"]\n',
+        encoding="utf-8",
+    )
+    online_report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    online_check = next(c for c in online_report["checks"] if c["name"] == "docs")
+    assert online_check["link_scope"] == "network"
+    assert online_check["native_result"]["evidence"]["link_scope"] == "network"
+    check_contract.validate_result(online_check["native_result"])
+
+
+def test_execution_reuses_selection_tach_validation_and_runs_external_separately(
+    repo,
+):
+    import subprocess
+    from pathlib import Path
+
+    from engineering_ci import check_contract, hygiene, selection
+
+    path, _base = repo
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n'
+        "exact = true\n"
+        "forbid_circular_dependencies = true\n"
+        'root_module = "forbid"\n\n'
+        '[[modules]]\npath = "pkg"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.sub"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.other"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "src/pkg/sub.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "src/pkg/other.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["tach", "tach_external"]\n'
+        "[tach]\n"
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    run(
+        path,
+        "add",
+        "tach.toml",
+        "ci-hygiene.toml",
+        "src/pkg/sub.py",
+        "src/pkg/other.py",
+    )
+    run(path, "commit", "-qm", "clean tach graph")
+    clean_base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "ci-selection.toml").write_text(
+        (path / "ci-selection.toml").read_text(encoding="utf-8")
+        + "\n[prerequisite_actions.identity_commit]\n"
+        + 'type = "git_commit_present"\n'
+        + f'commit = "{clean_base}"\n'
+        + "\n[prerequisite_actions.wheel_smoke]\n"
+        + 'type = "git_commit_present"\n'
+        + f'commit = "{clean_base}"\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-qm", "declare prerequisite actions")
+    prereq_base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(path, "add", "src/pkg/sub.py")
+    run(path, "commit", "-qm", "modify pkg.sub")
+
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    changes = selection.changeset(path, base=prereq_base, mode="commit")
+    sel = selection.select(changes, cfg, root=path)
+    tach_val = selection._tach_check(path, cfg, changes)
+    assert tach_val["status"] == "passed"
+    assert tach_val["executable"] == "tach"
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation=tach_val,
+    )
+
+    tach_subcommands = []
+
+    def tracking_runner(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            tach_subcommands.append(argv[1])
+            if argv[1] == "check":
+                raise AssertionError("tach check must be reused, not re-executed")
+            if argv[1] == "check-external":
+                return subprocess.CompletedProcess(
+                    argv, 0, "External dependencies validated\n", ""
+                )
+        return hygiene._run(argv, root, data)
+
+    reused_report = execution.execute(
+        p,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=tracking_runner,
+    )
+    assert reused_report["status"] == "passed", reused_report
+    by_name = {c["name"]: c for c in reused_report["checks"]}
+    assert by_name["tach"]["status"] == "passed"
+    assert (
+        by_name["tach"]["observation"]["reused_from"]
+        == "selection.tach_graph_validation"
+    )
+    check_contract.validate_result(by_name["tach"]["native_result"])
+    # tach_external must NOT be satisfied by reusing tach check!
+    assert "check-external" in tach_subcommands
+    assert by_name["tach_external"]["status"] == "passed"
+
+    # Mismatch / fallback: altering recorded tach_sha256 invalidates reuse and reruns tach check.
+    stale_plan = json.loads(json.dumps(p))
+    stale_plan["selection"]["tach_graph_validation"]["tach_sha256"] = "0" * 64
+    rerun_subcommands = []
+
+    def rerun_tracker(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            rerun_subcommands.append(argv[1])
+            return subprocess.CompletedProcess(argv, 0, "validated\n", "")
+        return hygiene._run(argv, root, data)
+
+    rerun_report = execution.execute(
+        stale_plan,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=rerun_tracker,
+    )
+    assert rerun_report["status"] == "passed"
+    assert "check" in rerun_subcommands
+    assert "check-external" in rerun_subcommands
+    rerun_tach = next(c for c in rerun_report["checks"] if c["name"] == "tach")
+    assert "reused_from" not in rerun_tach.get("observation", {})
+
+
+def test_multi_ref_push_hygiene_config_vulture_only_parity(repo):
+    from engineering_ci import expected_checks, hygiene, selection
+
+    path, _base = repo
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["docs", "vulture", "tach"]\n'
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 60\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n',
+        encoding="utf-8",
+    )
+    (path / "ci-selection.toml").write_text(
+        (path / "ci-selection.toml").read_text(encoding="utf-8")
+        + '\n[check_scope]\ncode_prefixes = ["src/"]\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml", "ci-selection.toml")
+    run(path, "commit", "-qm", "vulture multi-ref baseline")
+    base2 = run(path, "rev-parse", "HEAD").strip()
+
+    # Ref A changes ONLY [vulture] in ci-hygiene.toml.
+    run(path, "switch", "-qc", "vulture-only", base2)
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["docs", "vulture", "tach"]\n'
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 75\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "tighten vulture confidence")
+    vulture_commit = run(path, "rev-parse", "HEAD").strip()
+
+    # Ref B changes ONLY README.md.
+    run(path, "switch", "-qc", "docs-only", base2)
+    (path / "README.md").write_text("# Updated\n", encoding="utf-8")
+    run(path, "add", "README.md")
+    run(path, "commit", "-qm", "update readme")
+    docs_commit = run(path, "rev-parse", "HEAD").strip()
+    # Single-ref push checked out at vulture-only keeps expected_checks & selection in parity.
+    run(path, "switch", "-q", "vulture-only")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    single_changes = selection.changeset(
+        path,
+        base=base2,
+        mode="push",
+        before=base2,
+        after=vulture_commit,
+        local_ref="refs/heads/vulture-only",
+        remote_ref="refs/heads/vulture-only",
+    )
+    single_sel = selection.select(single_changes, cfg, root=path)
+    single_plan = selection.plan(
+        single_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+    )
+    s_checks = {c["name"]: c for c in single_plan["expected_checks"]["checks"]}
+    assert s_checks["vulture"]["applicability"]["status"] == "selected"
+    assert "ci-hygiene.toml" not in s_checks["vulture"]["input_refs"]
+    assert s_checks["docs"]["applicability"]["status"] == "not_applicable"
+    assert s_checks["tach"]["applicability"]["status"] == "not_applicable"
+    expected_checks.validate_projection(
+        single_plan["expected_checks"],
+        single_plan["git"],
+        single_plan["check_scope"],
+        plan=single_plan,
+        root=path,
+    )
+
+    # Multi-ref push from main: docs-only matches main's config while divergent vulture-only
+    # fails closed on config_source_mismatch, and validate_projection still aligns with per_ref.
+    run(path, "switch", "-q", "main")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    multi = selection.changeset_multi(
+        path,
+        [
+            (
+                "refs/heads/vulture-only",
+                vulture_commit,
+                "refs/heads/vulture-only",
+                base2,
+            ),
+            ("refs/heads/docs-only", docs_commit, "refs/heads/docs-only", base2),
+        ],
+    )
+    sel = selection.select(multi, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+    )
+    per_ref = {entry["remote_ref"]: entry for entry in p["expected_checks"]["per_ref"]}
+    v_checks = {c["name"]: c for c in per_ref["refs/heads/vulture-only"]["checks"]}
+    assert v_checks["vulture"]["applicability"]["status"] == "blocked"
+    assert v_checks["vulture"]["applicability"]["reason"] == "config_source_mismatch"
+
+    d_checks = {c["name"]: c for c in per_ref["refs/heads/docs-only"]["checks"]}
+    assert d_checks["docs"]["applicability"]["status"] == "selected"
+    assert d_checks["vulture"]["applicability"]["status"] == "not_applicable"
+
+    expected_checks.validate_projection(
+        p["expected_checks"], p["git"], p["check_scope"], plan=p, root=path
+    )
