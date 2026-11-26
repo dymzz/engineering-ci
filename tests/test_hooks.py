@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from engineering_ci import hooks
+from engineering_ci import hook_checks, hooks
 
 SECRET_URL = "https://user:token@example.com/org/repo.git?access_token=topsecret"
 
@@ -606,7 +606,7 @@ def test_persist_event_cross_process_lock(repo, tmp_path):
     script = (
         "import json, sys, time\n"
         "from pathlib import Path\n"
-        "from engineering_ci import hooks\n"
+        "from engineering_ci import hook_checks, hooks\n"
         "repo = Path(sys.argv[1])\n"
         "event = json.loads(Path(sys.argv[2]).read_text())\n"
         "start = Path(sys.argv[3])\n"
@@ -1047,3 +1047,142 @@ def test_lefthook_installs_pre_push_and_frames_the_original_git_arguments(
     assert event["hook"] == "pre-push"
     assert [ref["remote_ref"] for ref in event["refs"]] == ["refs/heads/main"]
     assert event["remote"]["location"]["kind"] == "path"
+
+
+def test_hook_stage_timings_recorded_and_pruned_without_altering_receipts(repo, capsys):
+    (repo / "clean.txt").write_text("hello\n", encoding="utf-8")
+    git(repo, "add", "clean.txt")
+    assert hooks.main(["capture", "pre-commit", "--root", str(repo), "--json"]) == 0
+    captured = json.loads(capsys.readouterr().out)
+    inv_ref = captured["invocation_ref"]
+    binding = hooks._load_invocation_ref(repo, inv_ref)
+    inv_path = binding.invocation_path
+
+    assert hook_checks.prepare(repo, binding)["exit_code"] == 0
+    assert hook_checks.run_checks(repo, binding)["exit_code"] == 0
+    assert hook_checks.reconcile(repo, binding)["exit_code"] == 0
+    assert hook_checks.consume_index_result(repo, binding)["exit_code"] == 0
+
+    for suffix, expected_stage, expected_status in (
+        (".timing-capture", "capture", "ok"),
+        (".timing-prepare", "prepare", "passed"),
+        (".timing-run", "run", "passed"),
+        (".timing-reconcile", "reconcile", "passed"),
+        (".timing-consume", "consume", "passed"),
+    ):
+        sidecar = inv_path.with_suffix(suffix)
+        assert sidecar.is_file(), f"missing {sidecar}"
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        assert data["invocation_ref"] == inv_ref
+        assert data["stage"] == expected_stage
+        assert data["status"] == expected_status
+        assert data["timing_clock"] == "monotonic_perf_counter"
+        assert data["time_source_verified"] is False
+        assert data["elapsed_seconds"] >= 0
+
+    # Missing report in reconcile still records failed timing sidecar
+    hooks.main(["capture", "pre-commit", "--root", str(repo), "--json"])
+    failed_inv_ref = json.loads(capsys.readouterr().out)["invocation_ref"]
+    failed_binding = hooks._load_invocation_ref(repo, failed_inv_ref)
+    hook_checks.prepare(repo, failed_binding)
+    with pytest.raises(hooks.HookEventError, match="hook_report_missing"):
+        hook_checks.reconcile(repo, failed_binding)
+    failed_timing = json.loads(
+        failed_binding.invocation_path.with_suffix(".timing-reconcile").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert failed_timing["status"] == "failed"
+    assert failed_timing["error"] == "HookEventError"
+
+    # Pruning expired invocations deletes all .timing-* sidecars too
+    future = time.time() + 100
+    old_mtime = time.time() - 10_000
+    os.utime(inv_path, (old_mtime, old_mtime))
+    os.utime(failed_binding.invocation_path, (old_mtime, old_mtime))
+    hooks.prune_events(repo, now=future, retention_seconds=60)
+    assert not any(inv_path.parent.glob(f"{inv_path.stem}.timing-*"))
+    assert not any(
+        failed_binding.invocation_path.parent.glob(
+            f"{failed_binding.invocation_path.stem}.timing-*"
+        )
+    )
+
+
+def test_push_hook_stage_timings_record_per_ref_durations(repo, monkeypatch):
+    head1 = git(repo, "rev-parse", "HEAD")
+    (repo / "feature.txt").write_text("push change\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-qm", "second")
+    head2 = git(repo, "rev-parse", "HEAD")
+    event = hooks.capture_pre_push(
+        repo,
+        "origin",
+        "origin",
+        f"refs/heads/main {head2} refs/heads/main {head1}\n",
+    )
+    ref = hooks.persist_event(repo, event)
+    binding = hooks._load_invocation_ref(repo, ref.invocation_ref)
+
+    def fake_source_worker(_root, _tree, _head, _op, payload):
+        ref_entry = payload["reference"]
+        return {
+            "schema_version": 2,
+            "git": {
+                "snapshot": "push",
+                "references": [ref_entry],
+                "head_commit": ref_entry["after"],
+                "base_commit": ref_entry["before"],
+                "tree": ref_entry["tree"],
+                "execution_tree": ref_entry["tree"],
+                "ref_action": ref_entry["ref_action"],
+                "changed_paths": list(ref_entry["paths"]),
+                "deleted_paths": list(ref_entry["deleted_paths"]),
+            },
+            "selection": {
+                "checks": [{"name": "lint"}],
+                "tests": [],
+                "prerequisites": [],
+            },
+            "expected_checks": {
+                "status": "complete",
+                "scope_id": "scope-1",
+                "expected_set_ref": "set-1",
+                "checks": [{"applicability": {"status": "applicable"}}],
+            },
+        }
+
+    monkeypatch.setattr(hook_checks, "_source_worker", fake_source_worker)
+    monkeypatch.setattr(
+        hook_checks, "_push_checkout", lambda root, r: ("t" * 40, head2)
+    )
+    monkeypatch.setattr(hook_checks, "_requires_dagger", lambda *a, **kw: False)
+
+    assert (
+        hook_checks.prepare_push(
+            repo, binding, effective_profiles=["ci-effective-profile.json"]
+        )["exit_code"]
+        == 0
+    )
+
+    monkeypatch.setattr(
+        hook_checks,
+        "_run_push_plan",
+        lambda _root, plan, _source, _prep, _suffix, _op: {
+            "exit_code": 0,
+            "execution_identity": {
+                "run_ref": f"hook-run:{binding.invocation_ref}",
+                "attempt_ref": f"hook-attempt:{binding.invocation_ref}",
+            },
+            "plan": {"git": plan["git"]},
+        },
+    )
+    assert hook_checks.run_push_checks(repo, binding)["exit_code"] == 0
+    timing_run = json.loads(
+        binding.invocation_path.with_suffix(".timing-run").read_text(encoding="utf-8")
+    )
+    assert timing_run["stage"] == "run"
+    assert timing_run["status"] == "passed"
+    assert len(timing_run["per_ref"]) == 1
+    assert timing_run["per_ref"][0]["remote_ref"] == "refs/heads/main"
+    assert timing_run["per_ref"][0]["elapsed_seconds"] >= 0

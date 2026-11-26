@@ -44,7 +44,8 @@ Workflow Runtime，从而避免反向依赖和引导循环。
 | Plan 原生结果 | `.dagger/src/engineering_ci_module/plan_execution.py`、`plan_result.py` | 独立原生分支收集、同一 Directory 的 Report/Artifact/Enforce；不授予 Source/Trusted 接纳 |
 | 共享检查实现 | `src/engineering_ci/{selection,execution,hygiene,sources,cicd_telemetry}.py` | CLI 与 Dagger 共同消费的选择、执行、来源和遥测实现 |
 | 本地 Hook 调度 | `lefthook.yml`、`ci-selection.toml`、`ci-hygiene.toml`、`config/hook-profiles/` | Lefthook 2.2.2 生命周期与 Job 调度；本仓已启用 `pre-commit`、`pre-push` 与显式 `verify` |
-| Hook 来源与对账 | `src/engineering_ci/{hooks,hook_checks,git_source,dagger_plan,reconciliation}.py` | Git Event/Index/Push 捕获、blob 隔离物化、Dagger 交接与 #66-C 对账（本地 Receipt 保持 `trusted=false`、`required=false`） |
+| Hook 来源与对账 | `src/engineering_ci/{hooks,hook_checks,git_source,dagger_plan,reconciliation}.py` | Git Event/Index/Push 捕获、blob 隔离物化、Dagger 交接、阶段耗时 sidecar（`.timing-*`）与 #66-C 对账（本地 Receipt 保持 `trusted=false`、`required=false`） |
+| 验证计时与只读报告 | `src/engineering_ci/{cli/verify.py,verify_report.py}` | 显式 `lefthook run verify` 单调/UTC 计时、`verify-status.json` 失败/中断记录、Lefthook 有界分级解析与跨源只读显式键关联报告（`verify report`） |
 | GitHub Run 操作 | `src/engineering_ci/github_cli.py`、`cli/` | 原生 gh 查询、等待、Artifact 与日志下载 |
 | 发布请求及证据 | `src/engineering_ci/release/` | 具体 Dispatch 意图、版本、Manifest、身份核验与发布操作 |
 | 远端编排 | `.github/workflows/` | PR CI、共享 Workflow、手动 Release 的权限和门禁 |

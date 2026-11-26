@@ -127,7 +127,15 @@ def test_verify_rejects_config_without_verify_hook(tmp_path, monkeypatch, capsys
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
     )
     assert main(["verify", "--out", str(tmp_path)]) == 1
-    assert not list(tmp_path.iterdir())
+    assert not list(tmp_path.glob("*/verify-timing.json"))
+    (status_path,) = tmp_path.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "preflight_failed"
+    assert status_data["native_started"] is False
+    assert status_data["native_exit_code"] is None
+    assert status_data["time_source_verified"] is False
+    assert status_data["stages"]["cli_preflight"]["elapsed_seconds"] >= 0
+    assert "no 'verify' hook" in status_data["error"]["message"]
     assert "no 'verify' hook" in capsys.readouterr().err
 
 
@@ -266,8 +274,202 @@ time.sleep(30)
     (stderr_log,) = out.glob("*/lefthook.stderr")
     assert stdout_log.parent == stderr_log.parent
     assert not list(out.glob("*/verify-timing.json"))
+    (status_path,) = out.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "interrupted"
+    assert status_data["native_started"] is True
+    assert status_data["native_exit_code"] is None
+    assert status_data["time_source_verified"] is False
+    assert status_data["elapsed_seconds"] >= 0
     err_text = stderr_bytes.decode("utf-8", "replace")
     assert "verify interrupted; partial outputs in" in err_text
     assert str(stdout_log.parent) in err_text
     assert not stdout_bytes.strip()
     assert marker.is_file()
+
+
+def test_verify_monotonic_stages_boundaries_and_clock_backward_jump(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"parallel":false,"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.CompletedProcess(cmd, 0, b"b" * 40 + b"\n")
+        kwargs["stdout"].write(
+            b"summary: (done in 0.12 seconds)\n\xe2\x9c\x93 lint (0.12 seconds)\n"
+        )
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(verify.subprocess, "run", fake_run)
+    timestamps = iter([500, 100])
+    monkeypatch.setattr(verify, "time_ns", lambda: next(timestamps))
+
+    assert main(["verify", "--out", str(tmp_path)]) == 0
+    (timing_path,) = tmp_path.glob("*/verify-timing.json")
+    data = json.loads(timing_path.read_text(encoding="utf-8"))
+    assert data["schema_version"] == 2
+    assert data["timing_clock"] == "monotonic_perf_counter"
+    assert data["time_source_verified"] is False
+    assert data["started_at_ns"] == 500
+    assert data["completed_at_ns"] is None
+    assert data["clock_diagnostics"]["wall_clock_regression_observed"] is True
+    assert data["clock_diagnostics"]["utc_elapsed_ns"] is None
+    assert data["elapsed_seconds"] >= 0
+    assert set(data["stages"]) == {
+        "cli_preflight",
+        "lefthook_native",
+        "report_preparation",
+    }
+    for stage in data["stages"].values():
+        assert stage["elapsed_seconds"] >= 0
+    assert data["timing_boundaries"]["post_seal_io_excluded"] is True
+    assert data["timing_boundaries"]["outer_launcher_startup_excluded"] is True
+    assert not list(tmp_path.glob("*/verify-status.json"))
+
+
+def test_verify_seal_failure_records_status_without_timing_receipt(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.CompletedProcess(cmd, 0, b"c" * 40 + b"\n")
+        kwargs["stdout"].write(b"summary: (done in 0.05 seconds)\n")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(verify.subprocess, "run", fake_run)
+    orig_write = verify._write_json_atomic
+
+    def fail_on_receipt(path, payload):
+        if path.name == "verify-timing.json":
+            raise OSError("disk full")
+        return orig_write(path, payload)
+
+    monkeypatch.setattr(verify, "_write_json_atomic", fail_on_receipt)
+
+    assert main(["verify", "--out", str(tmp_path)]) == 1
+    assert not list(tmp_path.glob("*/verify-timing.json"))
+    (status_path,) = tmp_path.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "seal_failed"
+    assert status_data["native_started"] is True
+    assert status_data["native_exit_code"] == 0
+    assert status_data["time_source_verified"] is False
+    assert status_data["elapsed_seconds"] >= 0
+    assert "disk full" in status_data["error"]["message"]
+    assert "timing receipt unavailable: disk full" in capsys.readouterr().err
+
+
+def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "verify@example.invalid"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Verify Test"], cwd=repo, check=True)
+    (repo / "lefthook.yml").write_text(
+        """verify:
+  parallel: true
+  jobs:
+    - name: pass-job
+      run: echo pass
+    - name: fail-job
+      run: exit 2
+    - name: skip-job
+      skip: true
+      run: echo never
+    - name: outer-grp
+      group:
+        parallel: false
+        jobs:
+          - name: inner-ok
+            run: echo inner
+          - name: subgrp
+            group:
+              parallel: true
+              jobs:
+                - name: deep-ok
+                  run: echo deep
+                - name: deep-skip
+                  skip: true
+                  run: echo deep-skip
+    - group:
+        parallel: true
+        jobs:
+          - name: unnamed-inner
+            run: echo unnamed
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "lefthook.yml"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+
+    out = tmp_path / "out"
+    monkeypatch.chdir(repo)
+    code = main(["verify", "--out", str(out)])
+    assert code == 1
+    (receipt_path,) = out.glob("*/verify-timing.json")
+    data = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert data["native_exit_code"] == 1
+    summary = data["lefthook_summary"]
+    assert summary["summary_present"] is True
+    assert summary["root_parallel"] is True
+    assert isinstance(summary["total_duration_seconds"], float)
+    assert summary["total_duration_precision_seconds"] == 0.01
+
+    by_name = {node["name"]: node for node in summary["items"]}
+    assert by_name["pass-job"]["status"] == "passed"
+    assert isinstance(by_name["pass-job"]["duration_seconds"], float)
+    assert by_name["fail-job"]["status"] == "failed"
+    assert isinstance(by_name["fail-job"]["duration_seconds"], float)
+    assert by_name["skip-job"]["status"] == "skipped"
+    assert by_name["skip-job"]["duration_seconds"] == "unknown"
+    assert by_name["skip-job"]["skip_reason"] == "by condition"
+
+    outer = by_name["outer-grp"]
+    assert outer["kind"] == "group"
+    assert outer["parallel"] is False
+    outer_children = {c["name"]: c for c in outer["children"]}
+    assert outer_children["inner-ok"]["status"] == "passed"
+    subgrp = outer_children["subgrp"]
+    assert subgrp["kind"] == "group"
+    assert subgrp["parallel"] is True
+    sub_children = {c["name"]: c for c in subgrp["children"]}
+    assert sub_children["deep-ok"]["path"] == ["outer-grp", "subgrp", "deep-ok"]
+    assert sub_children["deep-ok"]["status"] == "passed"
+    assert sub_children["deep-skip"]["status"] == "skipped"
+    assert sub_children["deep-skip"]["duration_seconds"] == "unknown"
+
+    unnamed = by_name["group (4)"]
+    assert unnamed["kind"] == "group"
+    assert unnamed["parallel"] is True
+    assert [c["name"] for c in unnamed["children"]] == ["unnamed-inner"]
+    assert summary["counts"] == {
+        "passed": 4,
+        "failed": 1,
+        "skipped": 2,
+        "unknown": 0,
+    }

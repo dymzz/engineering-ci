@@ -720,6 +720,54 @@ def persist_event(root, event):
         )
 
 
+def _record_stage_timing(
+    invocation_path,
+    *,
+    invocation_ref,
+    event_payload_ref,
+    hook_name,
+    stage,
+    started_ns,
+    completed_ns,
+    elapsed_seconds,
+    status,
+    job_ref=None,
+    suffix=None,
+    extra=None,
+):
+    """Record a bounded monotonic stage timing sidecar inside the invocation dir."""
+    stage_suffix = suffix or f".timing-{stage}"
+    path = invocation_path.with_suffix(stage_suffix)
+    if path.is_symlink() or path.resolve().parent != invocation_path.parent:
+        raise HookEventError("hook_artifact_outside_invocation")
+    wall_clock_monotonic = (
+        started_ns is not None
+        and completed_ns is not None
+        and completed_ns >= started_ns
+    )
+    payload = {
+        "schema_version": 1,
+        "invocation_ref": invocation_ref,
+        "event_payload_ref": event_payload_ref,
+        "hook_name": hook_name,
+        "stage": stage,
+        "timing_clock": "monotonic_perf_counter",
+        "started_at_ns": started_ns,
+        "completed_at_ns": completed_ns if wall_clock_monotonic else None,
+        "time_source_verified": False,
+        "elapsed_seconds": elapsed_seconds,
+        "status": status,
+    }
+    if job_ref is not None:
+        payload["job_ref"] = job_ref
+    if extra:
+        payload.update(extra)
+    git_dir = _invocation_git_dir(invocation_path)
+    with _capture_lock(git_dir):
+        _write_private_file(path, canonical_event_bytes(payload))
+    return path
+
+
 def _invocation_event_path(path, git_dir):
     try:
         invocation = json.loads(path.read_text(encoding="utf-8"))
@@ -780,6 +828,7 @@ def prune_events(root, *, now=None, retention_seconds=EVENT_RETENTION_SECONDS):
                             sidecars.extend(
                                 path.parent.glob(f"{path.stem}.{suffix}-check-*")
                             )
+                        sidecars.extend(path.parent.glob(f"{path.stem}.timing-*"))
                         for sidecar in sidecars:
                             with suppress(OSError):
                                 sidecar.unlink(missing_ok=True)
@@ -1028,6 +1077,8 @@ def main(argv=None):
                 if report["reason"] is not None:
                     print(report["reason"], file=sys.stderr)
             return report["exit_code"]
+        capture_started_mono = time.perf_counter()
+        capture_started_ns = time.time_ns()
         if args.hook == "pre-push":
             if args.framed_stdin:
                 if (
@@ -1057,6 +1108,19 @@ def main(argv=None):
         else:
             event = capture_pre_commit(Path(args.root))
         reference = persist_event(Path(args.root), event)
+        with suppress(OSError, HookEventError):
+            _record_stage_timing(
+                reference.invocation_path,
+                invocation_ref=reference.invocation_ref,
+                event_payload_ref=reference.event_payload_ref,
+                hook_name=event.get("hook"),
+                stage="capture",
+                job_ref="capture",
+                started_ns=capture_started_ns,
+                completed_ns=time.time_ns(),
+                elapsed_seconds=time.perf_counter() - capture_started_mono,
+                status="ok",
+            )
     except (OSError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 2

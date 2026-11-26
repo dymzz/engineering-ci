@@ -132,11 +132,39 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 该入口启动一次原生 `lefthook run verify --no-auto-install`（Lefthook 仍是调度权威），
 运行 `lefthook.yml` 中的 verify Jobs（Dagger lint、format、version/lock、核心测试），
 在独立 Invocation 目录保存 `lefthook.stdout`、`lefthook.stderr` 和引用二者摘要的
-`verify-timing.json`。保存的是当次 Lefthook 调用的宿主时钟读数，
-`time_source_verified=false`；HEAD/config 为启动前观察，不认证工作区 Tree。
-返回原生检查退出状态；被中断时返回 `130`、保留已写入的部分输出并在 `stderr`
-打印目录路径，不写出完成回执。原始输出写文件而非实时透传终端，请从 stderr
-提示的本次目录定位输出。
+`verify-timing.json`。`verify-timing.json` 同时记录过程内 `perf_counter` 单调耗时
+（按 `cli_preflight`、`lefthook_native`、`report_preparation` 拆分，显式标注排除
+`seal` 后写盘与外层 `uv`/Shell 启动耗时）、有界解析得到的 Lefthook Job/嵌套 Group
+分级与跳过/失败耗时明细（缺失 summary 或缺项显式记为 `"unknown"`），以及宿主 UTC
+起止边界（发生时钟回拨时 `completed_at_ns=null` 并保持单调耗时与
+`time_source_verified=false`）；HEAD/config 为启动前观察，不认证工作区 Tree。
+
+若准备工作失败、收到中断信号或最终回执落盘失败，会在同目录写入
+`verify-status.json`（含 `status`、已有观察事实与已知/未知 `native_exit_code`，
+不写虚假完成回执 `verify-timing.json`）。返回原生检查退出状态；被中断时返回
+`130`、保留已写入的部分输出并在 `stderr` 打印目录路径。原始输出写文件而非实时透传终端，
+请从 `stderr` 提示的 Invocation 目录定位输出。
+
+真实 Git Hook（`pre-commit` / `pre-push`）在原有 `.git/eci-hooks/invocations/<id>.*`
+下同步写入各阶段单调耗时 sidecar（`.timing-capture`、`.timing-prepare`、
+`.timing-run` / `.timing-run-<job>`、`.timing-reconcile`、`.timing-consume`），
+不篡改原有 `.plan` / `.execution` / `.receipt` 规范字节，并在过期清理时一并回收。
+
+需要只读汇总结算与跨源关联时，使用 `verify report`（严格只读、不重跑任何工具、
+仅依据显式共享键关联，不使用“最新修改时间/相近时间戳/文件名”猜测，且保持
+`time_source_verified=false` 与 `#75` CI Provider provenance 边界独立）：
+
+```powershell
+uv run --locked --no-sync engineering-ci verify report `
+  --verify-dir .artifacts/verify/<verify-invocation> `
+  --hook-root .git `
+  --invocation-ref <hook-invocation-id> `
+  --execution-report <bundle-dir-or-report.json> `
+  --junit-xml <junit.xml> `
+  --pytest-reportlog <pytest-reportlog.jsonl> `
+  --dagger-telemetry <dagger-trace-receipt.json> `
+  --ci-performance <ci-performance-report.json>
+```
 
 先根据实际义务决定验证范围，再采用对应标准入口并复用仍适用的原生证据；
 不为记录回执而扩大范围或重复执行。定向编辑检查、pre-commit/pre-push、单项
