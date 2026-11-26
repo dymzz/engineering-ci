@@ -1122,7 +1122,10 @@ def test_reconcile_rejects_negative_tampered_captures():
 
 
 def _docker_and_dagger_available() -> bool:
-    if os.environ.get("ECI_SKIP_LIVE_COLLECTOR_TESTS") == "1":
+    if (
+        os.environ.get("ECI_RUN_LIVE_COLLECTOR_TESTS") != "1"
+        or os.environ.get("ECI_SKIP_LIVE_COLLECTOR_TESTS") == "1"
+    ):
         return False
     if not shutil.which("docker") or not shutil.which("dagger"):
         return False
@@ -1243,7 +1246,7 @@ def _run_dagger_weaver(
 
 @pytest.mark.skipif(
     not _docker_and_dagger_available(),
-    reason="Requires Docker with pinned otelcol-contrib image and Dagger CLI",
+    reason="Set ECI_RUN_LIVE_COLLECTOR_TESTS=1 to run Docker + Dagger live collector E2E",
 )
 def test_live_collector_to_otlp_to_weaver_v1_45_0_e2e():
     """Live E2E: official otelcol-contrib:0.165.0 + pinned SemConv v1.45.0 Weaver."""

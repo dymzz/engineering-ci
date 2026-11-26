@@ -591,6 +591,40 @@ output_ref = {{ kind = "file", path = "{gen_py}", sha256 = "{gen_sha}" }}
     assert reconciled["binding_status"] == "matched", reconciled
 
 
+@pytest.fixture(scope="module")
+def _negative_producer_handoff_baselines(tmp_path_factory):
+    base_tmp = tmp_path_factory.mktemp("neg_producer_handoff")
+    baselines = {}
+
+    def get_baseline(shell_findings: bool, include_run_attempt: bool):
+        key = (shell_findings, include_run_attempt)
+        if key not in baselines:
+            case_dir = base_tmp / f"s{int(shell_findings)}_a{int(include_run_attempt)}"
+            setup = _setup_file_and_dir_producer_repo(
+                case_dir,
+                snapshot="commit",
+                shell_findings=shell_findings,
+                include_generated_workflow=False,
+                checks=("actionlint", "shellcheck"),
+            )
+            bundle_dir = case_dir / "retained_bundle"
+            exec_kwargs = (
+                {"run_ref": "run-86", "attempt_ref": "1"} if include_run_attempt else {}
+            )
+            report = execution.execute(
+                setup["plan"],
+                root=setup["root"],
+                produced_artifacts_dir=bundle_dir,
+                **exec_kwargs,
+            )
+            baselines[key] = (setup, bundle_dir, report)
+        setup, base_bundle, base_report = baselines[key]
+        isolated_setup = {**setup, "plan": json.loads(json.dumps(setup["plan"]))}
+        return isolated_setup, base_bundle, json.loads(json.dumps(base_report))
+
+    return get_baseline
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_res_status", "expected_bind_status", "expected_reason"),
     [
@@ -728,28 +762,20 @@ output_ref = {{ kind = "file", path = "{gen_py}", sha256 = "{gen_sha}" }}
 @pytest.mark.parametrize("shell_findings", [False, True])
 def test_negative_producer_handoff_cases_fail_closed_preserving_native_status(
     tmp_path,
+    _negative_producer_handoff_baselines,
     mutation,
     expected_res_status,
     expected_bind_status,
     expected_reason,
     shell_findings,
 ):
-    setup = _setup_file_and_dir_producer_repo(
-        tmp_path,
-        snapshot="commit",
-        shell_findings=shell_findings,
-        include_generated_workflow=False,
-        checks=("actionlint", "shellcheck"),
+    include_run_attempt = mutation != "missing_attempt_when_required"
+    setup, base_bundle, report = _negative_producer_handoff_baselines(
+        shell_findings, include_run_attempt
     )
     root, plan = setup["root"], setup["plan"]
     bundle_dir = tmp_path / "retained_bundle"
-    include_run_attempt = mutation != "missing_attempt_when_required"
-    report = execution.execute(
-        plan,
-        root=root,
-        produced_artifacts_dir=bundle_dir,
-        **({"run_ref": "run-86", "attempt_ref": "1"} if include_run_attempt else {}),
-    )
+    shutil.copytree(base_bundle, bundle_dir)
     native = next(
         row["native_result"] for row in report["checks"] if row["name"] == "shellcheck"
     )

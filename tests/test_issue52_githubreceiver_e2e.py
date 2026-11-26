@@ -1142,7 +1142,11 @@ def test_issue52_reconcile_attempt_witness_handles_zero_job_pagination_and_parti
 
 
 def _docker_and_dagger_available() -> bool:
-    if grpc is None or os.environ.get("ECI_SKIP_LIVE_COLLECTOR_TESTS") == "1":
+    if (
+        grpc is None
+        or os.environ.get("ECI_RUN_LIVE_COLLECTOR_TESTS") != "1"
+        or os.environ.get("ECI_SKIP_LIVE_COLLECTOR_TESTS") == "1"
+    ):
         return False
     if not shutil.which("docker") or not shutil.which("dagger"):
         return False
@@ -1179,7 +1183,7 @@ def _rmtree(path: Path) -> None:
 
 @pytest.mark.skipif(
     not _docker_and_dagger_available(),
-    reason="Requires Docker with pinned otelcol-contrib image and Dagger CLI",
+    reason="Set ECI_RUN_LIVE_COLLECTOR_TESTS=1 to run Docker + Dagger live collector E2E",
 )
 def test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e():
     """Live Webhook -> otelcol-contrib -> Dagger Weaver Terminal -> #66-C -> #63 -> #61."""
