@@ -113,7 +113,7 @@ def read_internal_linked_source(
             suffix = current.relative_to(component)
             current = target_path / suffix
             if any(part.lower() == ".git" for part in current.parts):
-                raise SourcePathError("link_outside_source", component)
+                raise SourcePathError("link_outside_source", component) from None
             links.append((component, raw_target, before))
         else:
             if validate_target is not None:

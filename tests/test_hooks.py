@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -217,10 +218,8 @@ def test_pre_commit_blocks_index_change_even_after_clean_native_result(
 
 def write_remote_file(path, value):
     path.write_text(value, encoding="utf-8")
-    try:
+    with suppress(OSError):
         os.chmod(path, 0o600)
-    except OSError:
-        pass
     return path
 
 

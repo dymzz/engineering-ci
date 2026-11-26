@@ -66,47 +66,47 @@ effective_profiles = [
 # index / pre-commit
 [[effective_profile]]
 profile_ref = { name = "eci/local-commit", version = "1.0.0" }
-profile_revision = "1"
+profile_revision = "2"
 approval_source = "project-governance"
-approval_digest = "sha256:002d08ebdd67e33954569daeecb0353a1cb1eb5c6c6d303698e03f9543d3db67"
-effective_at = "2026-11-26T02:00:00Z"
-declared_checks = ["whitespace"]
+approval_digest = "sha256:7f8e327bc25f7536603b1982427d1568ee42eea290d9e97e9fc83016fe1cf39d"
+effective_at = "2026-11-26T03:15:00Z"
+declared_checks = ["whitespace", "forwarding"]
 
 # create
 [[effective_profile]]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
-profile_revision = "1"
+profile_revision = "2"
 approval_source = "project-governance"
-approval_digest = "sha256:061a3169d81e15fbaa0239d6cf4bc6a5db7fef6b83bc1346b37196799231e631"
-effective_at = "2026-11-22T16:00:00Z"
-declared_checks = ["whitespace"]
+approval_digest = "sha256:311ae5a627a6572725ff700b1bd8316873b6a74ee53837db52e44b395155704c"
+effective_at = "2026-11-26T03:15:00Z"
+declared_checks = ["whitespace", "forwarding"]
 
 # update
 [[effective_profile]]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
-profile_revision = "1"
+profile_revision = "2"
 approval_source = "project-governance"
-approval_digest = "sha256:90cd64342009ad526eda13b8b11aef663ff25853ce5a736c08b9b32bc57877e7"
-effective_at = "2026-11-22T16:00:00Z"
-declared_checks = ["whitespace"]
+approval_digest = "sha256:6258551b8b7eeb5b791b4aec44d2fccfdb475c272d8adac1aa0cf156a6ce602d"
+effective_at = "2026-11-26T03:15:00Z"
+declared_checks = ["whitespace", "forwarding"]
 
 # force_update
 [[effective_profile]]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
-profile_revision = "1"
+profile_revision = "2"
 approval_source = "project-governance"
-approval_digest = "sha256:2b043d767e83a6c93de10afe1bd92dc00bea46c8df39ac418bb213cc2c9e4971"
-effective_at = "2026-11-22T16:00:00Z"
-declared_checks = ["whitespace"]
+approval_digest = "sha256:477c60424d02412d39d790993d8706b74bdf746fbaa6bcf68540ac124f2632fd"
+effective_at = "2026-11-26T03:15:00Z"
+declared_checks = ["whitespace", "forwarding"]
 
 # delete
 [[effective_profile]]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
-profile_revision = "1"
+profile_revision = "2"
 approval_source = "project-governance"
-approval_digest = "sha256:8e6a2f9f979770e3be648bd83cb315b9ca1b565a8a81ed519d107edfd8353f55"
-effective_at = "2026-11-22T16:00:00Z"
-declared_checks = ["whitespace"]
+approval_digest = "sha256:7be8c0be3c0fa03f568c468c3ca57b3c2d0454f09ac611252fe2dd7939f10c0c"
+effective_at = "2026-11-26T03:15:00Z"
+declared_checks = ["whitespace", "forwarding"]
 
 [module_tests]
 "engineering_ci" = ["tests.test_unified_cli"]

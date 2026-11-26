@@ -58,6 +58,9 @@ exclude = ["tests/fixtures/python-app"]
 
 
 [tool.ruff]
+# Package requires-python is >=3.14. target-version stays py311 so root Ruff also
+# covers consumer/fixture trees that declare earlier minors (3.11+); syntax newer
+# than 3.11 remains gated by those projects' own interpreters and CI matrices.
 target-version = "py311"
 extend-exclude = [
     ".dagger/sdk",
@@ -73,3 +76,6 @@ extend-exclude = [
     "dist",
     "build",
 ]
+
+[tool.ruff.lint]
+extend-select = ["B", "SIM", "PIE"]

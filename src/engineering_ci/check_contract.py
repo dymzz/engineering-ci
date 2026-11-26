@@ -1351,22 +1351,50 @@ def _validate_coherent_results(results):
     return observed
 
 
-def _single_result_expected_failure(result, expected):
+# Default Expected/PASS witness eligibility is passed-only (#63 T1-a/T2).
+# Local Hook settlement may opt into non-blocking advisory via
+# LOCAL_SETTLEMENT_WITNESS_STATUSES without rewriting native status.
+PASS_WITNESS_STATUSES = frozenset({"passed"})
+LOCAL_SETTLEMENT_WITNESS_STATUSES = frozenset({"passed", "advisory"})
+
+
+def _normalize_eligible_statuses(eligible_statuses):
+    if eligible_statuses is None:
+        return PASS_WITNESS_STATUSES
+    statuses = frozenset(eligible_statuses)
+    if not statuses or not statuses.issubset(LOCAL_SETTLEMENT_WITNESS_STATUSES):
+        raise CheckContractError("witness_eligibility_invalid")
+    return statuses
+
+
+def _witness_sort_key(result):
+    # Prefer authentic PASS over advisory when both are eligible; result_id
+    # remains the deterministic tie-break within the same status class.
+    return (0 if result["status"] == "passed" else 1, result["result_id"])
+
+
+def _single_result_expected_failure(result, expected, *, eligible_statuses):
     """Pure local Expected check for one Native Result (no ToolRequirement DAG).
 
     Callers evaluating tool-bound Checks must use evaluate_check_satisfaction()
     so declared Tool Observations and coverage_by_requirement are verified.
+
+    ``eligible_statuses`` separates local non-blocking settlement (may include
+    ``advisory``) from the default passed-only PASS contract used by #63/#61.
     """
     if not result_matches_expected(result, expected):
         return "native_result_mismatched"
-    if result["status"] != "passed":
+    status = result["status"]
+    if status not in eligible_statuses:
         return "result_not_passed"
     kind = _execution_kind(result["check"]["check_id"])
-    if kind == "process" and (
-        result["native_exit_code"] != 0 or not result.get("evidence")
-    ):
-        return "result_not_passed"
-    if kind == "internal" and not result.get("evidence"):
+    if kind == "process":
+        if not result.get("evidence"):
+            return "result_not_passed"
+        # Passed process Checks must exit 0; advisory may report non-zero.
+        if status == "passed" and result["native_exit_code"] != 0:
+            return "result_not_passed"
+    elif kind == "internal" and not result.get("evidence"):
         return "result_not_passed"
     if "input_refs" in expected and any(
         ref not in result["input_refs"] for ref in expected["input_refs"]
@@ -1377,7 +1405,7 @@ def _single_result_expected_failure(result, expected):
     return None
 
 
-def result_covers_expected(result, expected):
+def result_covers_expected(result, expected, *, eligible_statuses=None):
     """Single supplied Check's native satisfaction, NOT ExpectedSet completeness.
 
     The result must be valid and match a scoped supplied Expected instance.
@@ -1386,6 +1414,7 @@ def result_covers_expected(result, expected):
     """
     validate_result(result)
     validate_expected_instance(expected)
+    statuses = _normalize_eligible_statuses(eligible_statuses)
     definition = _registered_definition(
         result["check"]["check_id"], result["check"]["definition_version"]
     )
@@ -1395,25 +1424,39 @@ def result_covers_expected(result, expected):
     # evaluate_check_satisfaction() so Tool Observations, prerequisite chains,
     # and coverage_by_requirement have one authoritative enforcement path.
     if definition.tool_requirements:
-        decision = evaluate_check_satisfaction(definition, [result], expected=expected)
+        decision = evaluate_check_satisfaction(
+            definition,
+            [result],
+            expected=expected,
+            eligible_statuses=statuses,
+        )
         return decision["status"] == "satisfied"
-    return _single_result_expected_failure(result, expected) is None
+    return (
+        _single_result_expected_failure(result, expected, eligible_statuses=statuses)
+        is None
+    )
 
 
-def results_cover_expected(results, expected):
+def results_cover_expected(results, expected, *, eligible_statuses=None):
     """Whether selected successful native witnesses cover one resolved Expected.
 
     For selected result identities and structured reasons, consumers should
     use evaluate_expected_satisfaction(). Neither API admits trusted evidence.
     """
-    return evaluate_expected_satisfaction(results, expected)["status"] == "satisfied"
+    return (
+        evaluate_expected_satisfaction(
+            results, expected, eligible_statuses=eligible_statuses
+        )["status"]
+        == "satisfied"
+    )
 
 
-def _evaluate_toolless_expected(definition, observed, expected):
-    """Select one deterministic passing witness for a tool-less Check.
+def _evaluate_toolless_expected(definition, observed, expected, *, eligible_statuses):
+    """Select one deterministic eligible witness for a tool-less Check.
 
-    Ordering by result_id guarantees determinism only; it does not encode
-    chronology or authorize cross-Run reuse (#66-C/#63 remain separate).
+    Prefer passed over advisory when both are eligible; result_id tie-breaks
+    within a status class. Ordering does not encode chronology or authorize
+    cross-Run reuse (#66-C/#63 remain separate).
     """
     decision = _expected_decision_base(
         definition.check_id,
@@ -1435,13 +1478,17 @@ def _evaluate_toolless_expected(definition, observed, expected):
     expected_failures = []
     failure_reasons = []
     passed_failure = None
-    for item in sorted(observed, key=lambda entry: entry["result_id"]):
-        failure = _single_result_expected_failure(item, expected)
+    for item in sorted(observed, key=_witness_sort_key):
+        failure = _single_result_expected_failure(
+            item, expected, eligible_statuses=eligible_statuses
+        )
         if failure is None:
             return {
                 **decision,
                 "status": "satisfied",
-                "reason": "native_pass",
+                "reason": (
+                    "native_advisory" if item["status"] == "advisory" else "native_pass"
+                ),
                 "requirements": [],
                 "selected_result_ids": [item["result_id"]],
                 "expected_failures": expected_failures,
@@ -1471,14 +1518,19 @@ def _evaluate_toolless_expected(definition, observed, expected):
     }
 
 
-def evaluate_expected_satisfaction(results, expected):
+def evaluate_expected_satisfaction(results, expected, *, eligible_statuses=None):
     """Compose native witnesses against one independently bound Expected.
 
     The selected identities are the SAME results that prove input and
     coverage; #66-C may reference them with the immutable expected_check_ref.
     Deterministic result_id tie-breaking does not establish retry chronology
     or cross-Run trusted reuse; #66-C Routing and #63 Admission remain separate.
+
+    ``eligible_statuses`` defaults to passed-only (PASS / #63 T1-a/T2). Local
+    Hook settlement may pass LOCAL_SETTLEMENT_WITNESS_STATUSES so advisory
+    findings remain non-blocking without rewriting native status.
     """
+    statuses = _normalize_eligible_statuses(eligible_statuses)
     validate_expected_instance(expected)
     observed = _validate_coherent_results(results)
     definition = _registered_definition(
@@ -1503,8 +1555,12 @@ def evaluate_expected_satisfaction(results, expected):
             "failure_reasons": ["native_result_mismatched"],
         }
     if not definition.tool_requirements:
-        return _evaluate_toolless_expected(definition, observed, expected)
-    return evaluate_check_satisfaction(definition, observed, expected=expected)
+        return _evaluate_toolless_expected(
+            definition, observed, expected, eligible_statuses=statuses
+        )
+    return evaluate_check_satisfaction(
+        definition, observed, expected=expected, eligible_statuses=statuses
+    )
 
 
 def _expected_witness_failure(requirements, chosen, expected):
@@ -1600,7 +1656,9 @@ def _terminal_correlation_passed(result):
     )
 
 
-def evaluate_check_satisfaction(definition, results, *, expected=None):
+def evaluate_check_satisfaction(
+    definition, results, *, expected=None, eligible_statuses=None
+):
     """Select native witnesses for every ToolRequirement and its prerequisites.
 
     Optional expected further constrains that SAME selection by resolved
@@ -1608,7 +1666,11 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
     For tool-less Checks, expected=None preserves ``not_applicable``, while an
     explicit expected applies the same local single-result validation and
     deterministic candidate selection without cross-Run trust claims.
+
+    ``eligible_statuses`` defaults to passed-only. Local settlement may include
+    advisory; authentic PASS is preferred when both are eligible.
     """
+    statuses = _normalize_eligible_statuses(eligible_statuses)
     definition = validate_definition(definition)
     registered = _registered_definition(
         definition.check_id, definition.definition_version
@@ -1661,7 +1723,9 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
     )
     if not definition.tool_requirements:
         if expected is not None:
-            return _evaluate_toolless_expected(definition, observed, expected)
+            return _evaluate_toolless_expected(
+                definition, observed, expected, eligible_statuses=statuses
+            )
         return {
             **decision,
             "status": "not_applicable",
@@ -1700,10 +1764,10 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
             (
                 item
                 for item in choices
-                if item["status"] == "passed"
+                if item["status"] in statuses
                 and (key != "terminal-live-check" or _terminal_correlation_passed(item))
             ),
-            key=lambda item: item["result_id"],
+            key=_witness_sort_key,
         )
         for key, choices in candidates.items()
     }
@@ -1800,7 +1864,11 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
         if picked is not None:
             entry.update(
                 status="satisfied",
-                reason="native_pass",
+                reason=(
+                    "native_advisory"
+                    if picked["status"] == "advisory"
+                    else "native_pass"
+                ),
                 satisfied_by=picked["result_id"],
             )
         partial[key] = entry

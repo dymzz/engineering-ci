@@ -30,7 +30,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from .github_cli import ApiError, GitHub
@@ -555,10 +555,8 @@ def _write_state(path, state):
         os.replace(temporary, path)
     finally:
         if temporary is not None and temporary.exists():
-            try:
+            with suppress(OSError):
                 temporary.unlink()
-            except OSError:
-                pass
 
 
 def _snapshot(document, publication, publication_sha256, now, initialized, previous):
