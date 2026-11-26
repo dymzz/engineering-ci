@@ -6087,12 +6087,35 @@ def test_docs_offline_execution_retains_link_scope_in_native_result(repo):
 
 
 def test_execution_reuses_selection_tach_validation_and_runs_external_separately(
-    repo,
+    repo, monkeypatch
 ):
+    import shutil
     import subprocess
     from pathlib import Path
 
     from engineering_ci import check_contract, hygiene, selection
+
+    if shutil.which("tach") is None:
+        orig_which = shutil.which
+        orig_run = selection.subprocess.run
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda name: "/usr/bin/tach" if name == "tach" else orig_which(name),
+        )
+
+        def fake_tach_run(argv, **kwargs):
+            if list(argv[:2]) == ["tach", "check"]:
+                cwd = Path(kwargs.get("cwd") or ".")
+                sub_text = (cwd / "src/pkg/sub.py").read_text(encoding="utf-8")
+                if "from pkg.other" in sub_text:
+                    return subprocess.CompletedProcess(
+                        argv, 1, "", "Undeclared dependency\n"
+                    )
+                return subprocess.CompletedProcess(argv, 0, "Modules validated\n", "")
+            return orig_run(argv, **kwargs)
+
+        monkeypatch.setattr(selection.subprocess, "run", fake_tach_run)
 
     path, _base = repo
     (path / "tach.toml").write_text(

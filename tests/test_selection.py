@@ -1931,9 +1931,6 @@ def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixtur
     root = Path(__file__).resolve().parents[1]
     cfg = selection.load_config(root / "ci-selection.toml")
     worktree_mods = selection._test_modules(root / "tests", "tests")
-    tree_id = run(root, "rev-parse", "HEAD^{tree}").strip()
-    tree_mods = selection._tree_test_modules(root, tree_id, "tests", "tests")
-    assert worktree_mods == tree_mods
     assert not any("fixtures" in mod for mod in worktree_mods)
     assert "tests.test_selection" in worktree_mods
 
@@ -1955,11 +1952,41 @@ def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixtur
     )
     assert full_worktree.tests == worktree_mods
 
-    head = run(root, "rev-parse", "HEAD").strip()
+    # Container-safe Git repo with `[tool.pytest.ini_options].norecursedirs` verifies
+    # worktree, immutable tree, and per-ref snapshot parity (`.git` may be excluded in containers).
+    root_like = tmp_path / "root_like"
+    (root_like / "tests/fixtures/nested/tests").mkdir(parents=True)
+    (root_like / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\nnorecursedirs = ["fixtures", ".*"]\n',
+        encoding="utf-8",
+    )
+    (root_like / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n',
+        encoding="utf-8",
+    )
+    (root_like / "tests/test_unit.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (root_like / "tests/fixtures/nested/tests/test_ignored.py").write_text(
+        "def test_fixture():\n    assert False\n", encoding="utf-8"
+    )
+    run(root_like, "init", "-q", "-b", "main")
+    run(root_like, "config", "user.email", "selection@example.invalid")
+    run(root_like, "config", "user.name", "Selection Test")
+    run(root_like, "add", "-A")
+    run(root_like, "commit", "-qm", "root-like baseline")
+
+    rl_cfg = selection.load_config(root_like / "ci-selection.toml")
+    tree_id = run(root_like, "rev-parse", "HEAD^{tree}").strip()
+    head = run(root_like, "rev-parse", "HEAD").strip()
+    assert selection._test_modules(root_like / "tests", "tests") == ("tests.test_unit",)
+    assert selection._tree_test_modules(root_like, tree_id, "tests", "tests") == (
+        "tests.test_unit",
+    )
     snap = selection._ref_source_snapshot(
-        root,
+        root_like,
         {"tree": tree_id, "ref_action": "update"},
-        config=cfg,
+        config=rl_cfg,
         entry={
             "remote_ref": "refs/heads/main",
             "local_ref": "refs/heads/main",
@@ -1970,7 +1997,7 @@ def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixtur
             "tests": [],
         },
     )
-    assert tuple(snap["tests_modules"]) == tree_mods
+    assert snap["tests_modules"] == ["tests.test_unit"]
 
     # Standalone fixture project continues discovering its own tests and running dotted pytest targets.
     fixture_repo, _ = repo
