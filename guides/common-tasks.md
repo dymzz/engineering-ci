@@ -53,15 +53,13 @@ uv run --locked --no-sync lefthook install
 普通 commit 激活 Profile→Plan→Host Job→Receipt，但不选择 pytest / 不因选中测试拉起 Dagger。
 `forwarding` 仅在适用的 Python 变更上执行；`.github/workflows/` 变更唤醒同 Job 内的
 `actionlint` / 离线 `zizmor`，`scripts/` 变更唤醒独立 `shellcheck`（与 Workflow 内联
-ShellCheck 分域）。`workflow_shellcheck` 仍在引擎合同与单测中，但本仓 `ci-selection.toml` 的 `checks`
-与本地 Index/Push Profile **均未启用**：pinned Actionlint 1.7.12 在向 ShellCheck
-喂入较大 `run:` 脚本时存在 stdin 管道死锁风险（rhysd/actionlint#650/#702；官方
-changelog 称 1.8.0 修复，但当前可用的 actionlint-py 包装仍止于 1.7.12.25）。若将来某阶段选中内联扫描，Host `default_run`（仅 `runner is None` 的本地路径）对
-组合 Actionlint+ShellCheck 调用带超时；超时记 `unknown`（已尝试、覆盖未知，
-`actionlint_shellcheck_timeout`），保留部分输出与清理证据，不以合成退出码冒充原生
-退出，也不生成 inline PASS。自定义 Runner 与 Dagger `_run_repository_script` 不继承
-该超时边界。公共 Selection 不按宿主 OS 抹除适用输入。PR/main 上的正式 Workflow 安全 Check 接线仍属 #63，不把本切片的本地
-Profile 或 fixture 测试冒充生产 Source 覆盖。
+ShellCheck 分域）。`workflow_shellcheck` 仍在引擎合同与既有单测中，但本仓 `checks`
+与本地 Index/Push Profile **均未启用**：pinned Actionlint 1.7.12 向 ShellCheck 喂入较大
+`run:` 脚本时存在 stdin 管道死锁风险（rhysd/actionlint#650/#702；actionlint-py 仍止于
+1.7.12.25）。内联死锁的安全采用尚未完成，仍归 #58 / #162 A3；本切片不另建 Host
+timeout / 进程树清理，也不按宿主 OS 抹除适用输入或伪造 inline PASS。PR/main 上的正式
+Workflow 安全 Check 接线仍属 #63，不把本切片的本地 Profile 或 fixture 测试冒充生产
+Source 覆盖。
 `docs` / `vulture` / `tach` 仍未纳入本仓默认 Hygiene，留给后续 A2/B 切片。无 Profile
 的兼容路径仍可只跑本地暂存空白检查。
 准备 Job 从隔离检出读取暂存策略；

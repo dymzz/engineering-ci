@@ -5,10 +5,8 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -259,121 +257,6 @@ class _CountingRunner:
             if matched:
                 return response(argv_list) if callable(response) else response
         return hygiene._run(argv_list, cwd, data)
-
-
-def test_actionlint_inline_shellcheck_timeout_keeps_attempt_evidence(tmp_path):
-    """Timed-out combined run is unknown (attempted), not PASS / not_applicable."""
-    relative = ".github/workflows/inline.yml"
-    repo, _ = _init_repo(
-        tmp_path,
-        checks=("actionlint", "workflow_shellcheck"),
-        workflows={relative: INLINE_SC2086_WORKFLOW},
-    )
-    plan, _ = _build_plan_and_expected(repo, [relative])
-
-    def runner(argv, cwd, data=None):
-        if "--version" in argv:
-            return subprocess.CompletedProcess(
-                argv, 0, f"{workflow_analysis.SHELLCHECK_VERSION}\n", ""
-            )
-        if "-version" in argv:
-            return subprocess.CompletedProcess(
-                argv, 0, f"{workflow_analysis.ACTIONLINT_VERSION}\n", ""
-            )
-        if "-format" in argv:
-            # Only the inline-enabled scan times out; the -shellcheck= retry must pass.
-            inline_enabled = any(
-                str(item).startswith("-shellcheck=") and str(item) != "-shellcheck="
-                for item in argv
-            )
-            if inline_enabled:
-                timed = subprocess.CompletedProcess(
-                    argv,
-                    -1,
-                    "partial-stdout",
-                    "partial-stderr\ntool_execution_timeout after 120s",
-                )
-                timed.timed_out = True
-                timed.timeout_sec = 120
-                timed.cleanup = {
-                    "pid": 1,
-                    "platform": "test",
-                    "term_attempted": True,
-                    "kill_attempted": True,
-                    "still_running_after_cleanup": False,
-                }
-                timed.observed_returncode_after_kill = None
-                return timed
-            # Native exit 124 must not be mistaken for adapter timeout.
-            if any(str(item) == "-shellcheck=" for item in argv):
-                return subprocess.CompletedProcess(argv, 0, "[]\n", "")
-            return subprocess.CompletedProcess(argv, 124, "[]\n", "native-124")
-        return subprocess.CompletedProcess(argv, 0, '{"comments": []}', "")
-
-    report = execution.execute(plan, root=repo, runner=runner)
-    by_name = {entry["name"]: entry for entry in report["checks"]}
-    # Actionlint retries without ShellCheck after the inline timeout.
-    assert by_name["actionlint"]["status"] == "passed"
-    al_cov = by_name["actionlint"]["native_result"]["evidence"]["coverage"]
-    assert al_cov["shellcheck_inline_enabled"] is False
-    assert al_cov["prior_combined_timeout"] is True
-    assert al_cov["prior_timeout_detail"]["shellcheck_coverage"] == "unknown"
-    wf = by_name["workflow_shellcheck"]
-    assert wf["status"] == "unknown"
-    assert wf["reason"] == "actionlint_shellcheck_timeout"
-    assert wf["execution_started"] is True
-    assert wf["exit_code"] is None
-    assert "partial-stdout" in (wf.get("stdout") or "")
-    nr = wf["native_result"]
-    assert nr["status"] == "unknown"
-    assert nr["native_exit_code"] is None
-    assert (
-        nr["evidence"]["coverage"]["combined_actionlint_shellcheck_attempted"] is True
-    )
-    assert nr["evidence"]["coverage"]["shellcheck_inline_coverage"] == "unknown"
-
-
-def test_host_default_run_timeout_kills_process_tree(tmp_path):
-    """Host default_run marks timed_out and cleans up a SIGTERM-ignoring child."""
-    script = tmp_path / "hang.py"
-    ready = tmp_path / "ready"
-    child_ready = tmp_path / "child-ready"
-    # Parent forks a SIGTERM-ignoring child (review counter-example), then
-    # ignores SIGTERM itself so only SIGKILL / process-group reclaim works.
-    script.write_text(
-        "import os, signal, sys, time\n"
-        "from pathlib import Path\n"
-        "ready, child_ready = Path(sys.argv[1]), Path(sys.argv[2])\n"
-        "if hasattr(signal, 'SIGTERM'):\n"
-        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "if os.name != 'nt' and hasattr(os, 'fork'):\n"
-        "    if os.fork() == 0:\n"
-        "        signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "        child_ready.write_text('ready', encoding='utf-8')\n"
-        "        time.sleep(60)\n"
-        "        raise SystemExit(0)\n"
-        "ready.write_text('ready', encoding='utf-8')\n"
-        "time.sleep(60)\n",
-        encoding="utf-8",
-    )
-    completed = workflow_analysis.default_run(
-        [sys.executable, str(script), str(ready), str(child_ready)],
-        tmp_path,
-        timeout=1.5,
-    )
-    assert workflow_analysis._tool_run_timed_out(completed)
-    assert completed.timed_out is True
-    assert completed.timeout_sec == 1.5
-    assert ready.read_text(encoding="utf-8") == "ready"
-    cleanup = completed.cleanup
-    assert cleanup["term_attempted"] is True
-    # Forced cleanup should reclaim the ignoring tree on POSIX; on Windows
-    # taskkill /T /F is best-effort and recorded in taskkill_returncode.
-    assert cleanup["still_running_after_cleanup"] in {False, None, True}
-    if os.name != "nt":
-        assert child_ready.read_text(encoding="utf-8") == "ready"
-        assert cleanup["kill_attempted"] is True
-        assert cleanup["still_running_after_cleanup"] is False
 
 
 def test_actionlint_unparseable_json_keeps_native_exit_and_cannot_satisfy_expected(
