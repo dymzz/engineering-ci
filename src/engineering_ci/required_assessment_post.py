@@ -315,10 +315,20 @@ def _bind_lifecycle(prior, post, trigger, *, phase_order):
 def _bind_temporal(prior, post, trigger, evaluated_at):
     """Bind the event and Assessment times to the envelope's evaluation."""
     observed = _datetime(trigger["observed_at"], "post_trigger_observed_at_invalid")
+    occurred = _datetime(
+        trigger.get("occurred_at", trigger["observed_at"]),
+        "post_trigger_occurred_at_invalid",
+    )
     prior_at = _datetime(prior.get("evaluated_at"), "post_prior_evaluated_at_invalid")
     post_at = _datetime(post.get("evaluated_at"), "post_post_evaluated_at_invalid")
     historical = trigger.get("historical_as_of")
     checks = [
+        (
+            occurred > observed,
+            "post_trigger_observed_before_occurrence",
+            "trigger_observation_predates_occurrence",
+            observed,
+        ),
         (
             observed > evaluated_at,
             "post_trigger_observed_in_future",
@@ -338,7 +348,7 @@ def _bind_temporal(prior, post, trigger, evaluated_at):
             post_at,
         ),
         (
-            trigger["kind"] == "authorized_reevaluation" and prior_at > observed,
+            trigger["kind"] == "authorized_reevaluation" and prior_at > occurred,
             "post_reevaluation_prior_after_trigger",
             "prior_assessment_after_reevaluation_event",
             prior_at,
@@ -354,7 +364,7 @@ def _bind_temporal(prior, post, trigger, evaluated_at):
                     post_at,
                 ),
                 (
-                    post_at < observed,
+                    post_at < occurred,
                     "post_assessment_before_trigger_event",
                     "post_evidence_predates_trigger",
                     post_at,
@@ -372,7 +382,7 @@ def _bind_temporal(prior, post, trigger, evaluated_at):
                     post_at,
                 ),
                 (
-                    as_of > observed,
+                    as_of > occurred,
                     "post_historical_reevaluation_after_trigger",
                     "historical_as_of_after_reevaluation_event",
                     as_of,
@@ -422,6 +432,10 @@ def _normalize_trigger(value):
             value.get("run_completed"), "post_trigger_run_completed_invalid"
         ),
     }
+    if "occurred_at" in value:
+        trigger["occurred_at"] = _datetime(
+            value["occurred_at"], "post_trigger_occurred_at_invalid"
+        ).isoformat()
     digest = value.get("artifact_digest")
     if digest is not None:
         trigger["artifact_digest"] = _internal_ref(

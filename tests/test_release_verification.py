@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import zipfile
+from datetime import datetime
 
 import pytest
 from test_manual_release import FakeGitHub
@@ -279,6 +280,158 @@ def test_published_evidence_keeps_original_attempt_after_run_retry(
     api.jobs[0]["conclusion"] = "failure"
     assert cli.main(verify_args()) == 1
     assert json.loads(capsys.readouterr().out)["result"] == "unavailable"
+    assert not api.writes
+
+
+@pytest.mark.parametrize(
+    "case,expected,reason",
+    [
+        ("approved", "verified", None),
+        ("missing_authority", "unverified", "release_post_stage_authority_missing"),
+        ("authority_timeout", "unverified", "release_post_stage_evidence_unavailable"),
+        ("wrong_event", "unverified", "release_post_stage_trigger_mismatch"),
+        ("wrong_attempt", "unverified", "release_post_stage_trigger_mismatch"),
+        ("wrong_artifact", "unverified", "release_post_stage_trigger_mismatch"),
+        ("wrong_candidate", "unverified", "release_post_stage_candidate_mismatch"),
+        ("wrong_time", "unverified", "release_post_stage_trigger_mismatch"),
+        ("observed_before", "rejected", "post_trigger_observed_before_occurrence"),
+        ("delayed_receipt", "verified", None),
+        ("forged_receipt", "unverified", "post_trigger_authority_rejected"),
+        ("future_evaluation", "rejected", "post_trigger_observed_in_future"),
+        ("unauthorized", "unverified", "post_trigger_authority_rejected"),
+        ("bare_claim", "unverified", "post_trigger_authority_rejected"),
+        ("not_due", "pending", "post_stage_not_yet_due"),
+        ("failed", "rejected", None),
+        ("late_approved", "verified", None),
+        ("late_unapproved", "unverified", "post_overdue_late_evidence_unproven"),
+    ],
+)
+def test_cli_consumes_release_post_stage_without_rewriting_publication(
+    case, expected, reason, monkeypatch, capsys
+):
+    from test_required_assessment_post import (
+        EVALUATED_AT,
+        PHASE_ORDER,
+        accept,
+        accept_disposition,
+        accept_due_with_late,
+        post_assessment,
+        prior_passed,
+        trigger,
+        window,
+    )
+
+    api = API()
+    api.tag = HEAD
+    api.published = {
+        "id": 10,
+        "url": f"https://api.github.com/repos/{REPOSITORY}/releases/10",
+        "tag_name": TAG,
+        "html_url": f"https://github.com/{REPOSITORY}/releases/tag/{TAG}",
+        "draft": False,
+        "prerelease": False,
+        "published_at": EVALUATED_AT,
+    }
+    api.saved = make_manifest(api, mode="publication")
+    api.saved["release"]["release_url"] = api.published["url"]
+    api.calls.clear()
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = {
+                "not_due": "2026-11-17T12:00:00+00:00",
+                "late_approved": "2026-11-17T19:00:00+00:00",
+                "late_unapproved": "2026-11-17T19:00:00+00:00",
+                "future_evaluation": "2026-11-17T11:59:00+00:00",
+                "delayed_receipt": "2026-11-17T12:04:00+00:00",
+                "forged_receipt": "2026-11-17T12:04:00+00:00",
+            }.get(case, "2026-11-17T12:01:00+00:00")
+            return cls.fromisoformat(instant).astimezone(tz)
+
+    def authority(source):
+        if case == "authority_timeout":
+            raise subprocess.TimeoutExpired(["provider"], 15)
+        assert source["repository"] == REPOSITORY
+        assert source["head_sha"] == HEAD
+        assert source["release_id"] == 10
+        assert (source["run_id"], source["run_attempt"]) == (123, 1)
+        event = trigger(kind="publication_completed", run_id="123")
+        row = source["artifacts"][0]
+        event["artifact_digest"] = row["digest"]
+        if case == "wrong_event":
+            event["kind"] = "run_completed"
+        if case == "wrong_attempt":
+            event["run_attempt"] = 2
+        if case == "wrong_time":
+            event["occurred_at"] = "2026-11-17T11:50:00+00:00"
+        if case == "observed_before":
+            event["observed_at"] = "2026-11-17T11:50:00+00:00"
+        if case in {"delayed_receipt", "forged_receipt"}:
+            event["observed_at"] = "2026-11-17T12:03:00+00:00"
+        due = (
+            window(earliest_at="2026-11-17T13:00:00+00:00")
+            if case == "not_due"
+            else window()
+        )
+
+        def verify_event(proof):
+            assert proof["publication_source"] == source
+            assert proof["artifact_id"] == row["id"]
+            if case == "bare_claim":
+                return True
+            assert proof["trigger_event"]["occurred_at"] == EVALUATED_AT
+            return (
+                False if case in {"unauthorized", "forged_receipt"} else accept(proof)
+            )
+
+        return {
+            "prior_assessment": prior_passed(candidate_commit=HEAD),
+            "post_assessment": post_assessment(
+                candidate_commit="e" * 40 if case == "wrong_candidate" else HEAD,
+                passed=case != "failed",
+            ),
+            "artifact_id": row["id"] + 9000 if case == "wrong_artifact" else row["id"],
+            "trigger_event": event,
+            "due_window": due,
+            "phase_order": PHASE_ORDER,
+            "phase_order_authority": accept,
+            "trigger_authority": verify_event,
+            "due_window_authority": accept_due_with_late
+            if case == "late_approved"
+            else accept,
+            "disposition_authority": accept_disposition,
+        }
+
+    monkeypatch.setattr(verification, "datetime", Clock)
+    monkeypatch.setattr(cli, "GitHub", lambda _: api)
+    assert (
+        cli.main(
+            verify_args(),
+            post_stage_authority=None if case == "missing_authority" else authority,
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["result"] == "published"
+    assert result["publication"]["status"] == "published"
+    observation = result["publication"]["post_stage"]
+    assert observation["status"] == expected, observation["reasons"]
+    if reason is not None:
+        assert reason in observation["reasons"]
+    if expected == "verified":
+        assert observation["post_stage_ref"].startswith("sha256:")
+        assert observation["lifecycle_all_phases_passed"] is False
+    if case == "delayed_receipt":
+        assert (
+            observation["trigger_event"]["observed_at"] == "2026-11-17T12:03:00+00:00"
+        )
+        assert observation["trigger_event"]["occurred_at"] == EVALUATED_AT
+    if case == "missing_authority":
+        plain = [argument for argument in verify_args() if argument != "--json"]
+        assert cli.main(plain) == 0
+        assert "Post-stage: unverified" in capsys.readouterr().out
+    assert "executed_disposition" not in observation
     assert not api.writes
 
 

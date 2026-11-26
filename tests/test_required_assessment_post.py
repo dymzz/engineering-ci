@@ -157,7 +157,11 @@ def post_assessment(
         obligation = non_check_obligation("o/sbom", phase=phase)
         evidence = (
             make_evidence(
-                [evidence_entry("o/sbom", phase=phase)],
+                [
+                    evidence_entry(
+                        "o/sbom", phase=phase, subject_ref={"commit": candidate_commit}
+                    )
+                ],
                 contract_sample=contract_sample,
             )
             if passed

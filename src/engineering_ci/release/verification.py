@@ -9,8 +9,12 @@ import json
 import re
 import tomllib
 import zipfile
+from copy import deepcopy
+from datetime import UTC, datetime
+from subprocess import TimeoutExpired
 from urllib.parse import quote
 
+from ..github_cli import ApiError
 from . import manifest
 from .publishing import (
     find_release,
@@ -270,7 +274,143 @@ def validation_state(api, repository, identity, run_id):
     return {**value["workflow"], "status": "passed"}
 
 
-def published(api, repository, tag, *, head=None):
+def _publication_post_stage(api, release, value, authority):
+    from .. import required_assessment_post as r5
+
+    def unavailable(reason):
+        return {"status": "unverified", "reasons": [reason]}
+
+    if authority is None:
+        return unavailable("release_post_stage_authority_missing")
+    if not callable(authority):
+        return unavailable("release_post_stage_authority_invalid")
+
+    workflow = value["workflow"]
+    run_id, attempt = workflow["run_id"], workflow["run_attempt"]
+    head = value["release"]["commit_sha"]
+    try:
+        run = api(f"actions/runs/{run_id}/attempts/{attempt}")
+        published_at = datetime.fromisoformat(release["published_at"])
+        if (
+            published_at.tzinfo is None
+            or type(release["id"]) is not int
+            or release["id"] <= 0
+        ):
+            return unavailable("release_post_stage_publication_identity_invalid")
+        if (
+            run["id"] != run_id
+            or run["run_attempt"] != attempt
+            or run["head_sha"] != head
+            or run["repository"]["full_name"] != value["repository"]
+            or run.get("status") != "completed"
+            or run.get("conclusion") != "success"
+        ):
+            return unavailable("release_post_stage_original_attempt_unverified")
+        source = {
+            "repository": value["repository"],
+            "tag": value["release"]["tag"],
+            "head_sha": head,
+            "release_id": release["id"],
+            "release_url": release["url"],
+            "published_at": published_at.isoformat(),
+            "run_id": run_id,
+            "run_attempt": attempt,
+            "artifacts": [
+                {key: item.get(key) for key in ("id", "name", "digest")}
+                for item in value["artifacts"]
+            ],
+        }
+        inputs = authority(deepcopy(source))
+        if not isinstance(inputs, dict):
+            return unavailable("release_post_stage_inputs_unavailable")
+        prior, post = inputs["prior_assessment"], inputs["post_assessment"]
+        if any(
+            (assessment.get("candidate") or {}).get("commit") != head
+            for assessment in (prior, post)
+        ):
+            return unavailable("release_post_stage_candidate_mismatch")
+        trigger = inputs["trigger_event"]
+        artifact_id, artifact_digest = (
+            inputs.get("artifact_id"),
+            trigger.get("artifact_digest"),
+        )
+        artifact_mismatch = (
+            artifact_id is not None or artifact_digest is not None
+        ) and (
+            type(artifact_id) is not int
+            or artifact_digest is None
+            or not any(
+                row["id"] == artifact_id and row["digest"] == artifact_digest
+                for row in source["artifacts"]
+            )
+        )
+        if (
+            trigger["kind"] != "publication_completed"
+            or trigger["run_id"] != str(run_id)
+            or type(trigger["run_attempt"]) is not int
+            or trigger["run_attempt"] != attempt
+            or trigger.get("run_completed") is not True
+            or (
+                "occurred_at" in trigger
+                and datetime.fromisoformat(trigger["occurred_at"]) != published_at
+            )
+            or artifact_mismatch
+        ):
+            return unavailable("release_post_stage_trigger_mismatch")
+        trigger_authority = inputs.get("trigger_authority")
+        if not callable(trigger_authority):
+            return unavailable("release_post_stage_trigger_authority_missing")
+
+        def verify_trigger(context):
+            proof = trigger_authority(
+                {
+                    **context,
+                    "publication_source": deepcopy(source),
+                    "artifact_id": artifact_id,
+                }
+            )
+            return proof if isinstance(proof, dict) else False
+
+        pair = r5.reconcile_post_stage(
+            prior,
+            post,
+            trigger_event={**trigger, "occurred_at": source["published_at"]},
+            due_window=inputs["due_window"],
+            phase_order=inputs["phase_order"],
+            evaluated_at=datetime.now(UTC).isoformat(),
+            phase_order_authority=inputs.get("phase_order_authority"),
+            trigger_authority=verify_trigger,
+            due_window_authority=inputs.get("due_window_authority"),
+            disposition_authority=inputs.get("disposition_authority"),
+        )
+        r5.validate_post_stage(pair)
+    except r5.RequiredAssessmentPostError as error:
+        return unavailable(error.code)
+    except (
+        ApiError,
+        OSError,
+        TimeoutExpired,
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+    ):
+        return unavailable("release_post_stage_evidence_unavailable")
+    return {
+        "status": pair["status"],
+        "due_state": pair["due_state"],
+        "post_stage_ref": pair["post_stage_ref"],
+        "prior_assessment_ref": pair["prior_assessment_ref"],
+        "post_assessment_ref": pair["post_assessment_ref"],
+        "artifact_id": artifact_id,
+        "trigger_event": pair["trigger_event"],
+        "requested_disposition": pair["disposition"],
+        "reasons": pair["reasons"],
+        "lifecycle_all_phases_passed": pair["lifecycle_all_phases_passed"],
+    }
+
+
+def published(api, repository, tag, *, head=None, post_stage_authority=None):
     release = find_release(api, tag)
     if release is None:
         return None
@@ -301,4 +441,7 @@ def published(api, repository, tag, *, head=None):
         "release_url": release["html_url"],
         "commit_sha": actual,
         "manifest": value,
+        "post_stage": _publication_post_stage(
+            api, release, value, post_stage_authority
+        ),
     }
