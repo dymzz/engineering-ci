@@ -711,7 +711,12 @@ def _resolved_code_prefixes(plan, root):
 
 
 def _reusable_tach_graph_result(plan, config, *, root, execution_context):
-    """Reuse selection._tach_check only when tool, rule, source and host env match."""
+    """Reuse a same-process native ``tach check`` handoff; never Plan JSON alone.
+
+    Digests and host context still must match. A caller-filled
+    ``selection.tach_graph_validation`` without ``lookup_native_tach_handoff``
+    proof forces a fresh native run.
+    """
     if execution_context != "host" or "tach" not in config.checks:
         return None
     tach_path = config.tach.path.replace("\\", "/")
@@ -722,45 +727,47 @@ def _reusable_tach_graph_result(plan, config, *, root, execution_context):
         return None
     chosen = plan.get("selection") or {}
     graph = chosen.get("tach_graph_validation")
-    if not isinstance(graph, dict) or graph.get("status") not in {"passed", "failed"}:
+    native = selection.lookup_native_tach_handoff(graph)
+    if native is None:
         return None
     if (
-        graph.get("executable") != "tach"
-        or type(graph.get("exit_code")) is not int
-        or not isinstance(graph.get("stdout"), str)
-        or not isinstance(graph.get("stderr"), str)
-        or (graph.get("tach_path") or "tach.toml") != "tach.toml"
+        native.get("executable") != "tach"
+        or type(native.get("exit_code")) is not int
+        or not isinstance(native.get("stdout"), str)
+        or not isinstance(native.get("stderr"), str)
+        or (native.get("tach_path") or "tach.toml") != "tach.toml"
+        or native.get("status") not in {"passed", "failed"}
     ):
         return None
-    if selection._digest(tach_file) != graph.get("tach_sha256"):
+    if selection._digest(tach_file) != native.get("tach_sha256"):
         return None
     git = plan.get("git") or {}
     plan_snapshot = str(git.get("snapshot") or "worktree")
-    if graph.get("snapshot") != plan_snapshot:
+    if native.get("snapshot") != plan_snapshot:
         return None
     expected_tree = git.get("execution_tree") or git.get("tree")
-    if not isinstance(expected_tree, str) or graph.get("source_tree") != expected_tree:
+    if not isinstance(expected_tree, str) or native.get("source_tree") != expected_tree:
         return None
     if (
         plan_snapshot == "worktree"
         and selection.worktree_tree_refusal(Path(root), expected_tree) is not None
     ):
         return None
-    passed = graph["exit_code"] == 0
+    passed = native["exit_code"] == 0
     return {
         **hygiene._result(
             "tach",
             "passed" if passed else "failed",
-            exit_code=graph["exit_code"],
+            exit_code=native["exit_code"],
             reason=None if passed else "tach_check_failed",
-            stdout=graph["stdout"],
-            stderr=graph["stderr"],
+            stdout=native["stdout"],
+            stderr=native["stderr"],
             executable="tach",
             observation={
                 "kind": "reused_tach_graph_validation",
-                "reused_from": "selection.tach_graph_validation",
-                "source_tree": graph["source_tree"],
-                "tach_sha256": graph["tach_sha256"],
+                "reused_from": "selection.native_tach_handoff",
+                "source_tree": native["source_tree"],
+                "tach_sha256": native["tach_sha256"],
                 "tach_path": "tach.toml",
                 "snapshot": plan_snapshot,
             },

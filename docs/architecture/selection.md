@@ -474,13 +474,19 @@ for actual request/reader counts and failure preservation.
 - Root `ci-selection.toml` registers `tach = "tach.toml"`, `strict_modules = true`,
   `[module_tests]` for all `src/engineering_ci` modules, and `[[non_code_rules]]`
   mapping `.dagger/src/engineering_ci_module/*`, `scripts/*`, `config/*`, and test
-  fixtures while retaining A0 `commit` / `push` `select_tests = false` and
-  governed hook profile expectations until profile digest settlement.
-- `selection._tach_check` records `executable`, `tach_path`, `tach_sha256`,
-  `source_tree`, `snapshot`, `stdout`, and `stderr` when `tach check` runs during
-  selection; `execution._reusable_tach_graph_result` reuses that result only on
-  exact host, tree, config-digest, config-path, executable, and clean-snapshot
-  match while continuing to run `tach_external` independently.
+  fixtures while retaining Index/push `select_tests = false` and #164 revision-2
+  governed hook profiles (`declared_checks = ["whitespace", "forwarding"]`).
+- **Adoption scope (R15 independent slice):** this delivers selection mapping,
+  hygiene applicability, root `tach.toml` / `ci-selection.toml` artifacts, and
+  host-native `tach check` / `tach check-external` evidence when those tools are
+  invoked. Default Index/push Profiles and Verify Jobs do **not** enable Tach,
+  Lychee, or Vulture; Hook/Verify default enablement is a later adoption slice.
+- `selection._tach_check` registers a process-local `native_execution_token` after
+  a real `tach check`. `execution._reusable_tach_graph_result` reuses that handoff
+  only when the token is still registered in-process and host / tree / config
+  digest / executable / snapshot match. A caller-filled Plan
+  `tach_graph_validation` without a live handoff always re-runs native Tach;
+  `tach_external` stays independent.
 - `expected_checks.derive_expected_checks` / `validate_projection` forward
   `hygiene_config_path` and per-ref `base_commit` / `head_commit` so single-ref
   and per-ref projections agree on config-triggered hygiene applicability.

@@ -6151,8 +6151,7 @@ def test_execution_reuses_selection_tach_validation_and_runs_external_separately
     by_name = {c["name"]: c for c in reused_report["checks"]}
     assert by_name["tach"]["status"] == "passed"
     assert (
-        by_name["tach"]["observation"]["reused_from"]
-        == "selection.tach_graph_validation"
+        by_name["tach"]["observation"]["reused_from"] == "selection.native_tach_handoff"
     )
     check_contract.validate_result(by_name["tach"]["native_result"])
     # tach_external must NOT be satisfied by reusing tach check!
@@ -6181,6 +6180,39 @@ def test_execution_reuses_selection_tach_validation_and_runs_external_separately
     assert "check-external" in rerun_subcommands
     rerun_tach = next(c for c in rerun_report["checks"] if c["name"] == "tach")
     assert "reused_from" not in rerun_tach.get("observation", {})
+
+    # Caller-filled Plan declaration without a live native handoff cannot PASS.
+    forged_plan = json.loads(json.dumps(p))
+    forged_plan["selection"]["tach_graph_validation"] = {
+        "status": "passed",
+        "exit_code": 0,
+        "executable": "tach",
+        "tach_path": "tach.toml",
+        "stdout": "forged",
+        "stderr": "",
+        "tach_sha256": p["selection"]["tach_graph_validation"]["tach_sha256"],
+        "source_tree": p["selection"]["tach_graph_validation"]["source_tree"],
+        "snapshot": p["selection"]["tach_graph_validation"]["snapshot"],
+        "native_execution_token": "deadbeef" * 4,
+    }
+    forged_subcommands = []
+
+    def forged_tracker(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            forged_subcommands.append(argv[1])
+            return subprocess.CompletedProcess(argv, 0, "validated\n", "")
+        return hygiene._run(argv, root, data)
+
+    forged_report = execution.execute(
+        forged_plan,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=forged_tracker,
+    )
+    assert forged_report["status"] == "passed"
+    assert "check" in forged_subcommands
+    forged_tach = next(c for c in forged_report["checks"] if c["name"] == "tach")
+    assert "reused_from" not in forged_tach.get("observation", {})
 
 
 def test_multi_ref_push_hygiene_config_vulture_only_parity(repo):

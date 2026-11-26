@@ -298,11 +298,22 @@ forwarding advisory, report identity and CLI exit propagation.
   config files into `inputs`; `[docs]` / `[lychee]` changes trigger `docs` with
   `recheck_all = true`, while equivalent normalized configs do not false-trigger.
 - `DEFAULT_CODE_PREFIXES` aligns across `hygiene.py` and `selection.py`
-  (`src/`, `scripts/`, `tests/`, `.dagger/src/`).
+  (`src/`, `scripts/`, `tests/`, `.dagger/src/`) for selection / test mapping.
+  Tach and Vulture applicability follow their configured scan roots only
+  (`tach.toml` `source_roots`, default `src/`; Vulture `paths`, default `src`).
+  A `.dagger/src/` edit therefore does not claim a `src`-only Tach/Vulture PASS;
+  Dagger remains a separate project covered by `non_code_rules` tests and native
+  Dagger checks until an explicit multi-root or separate tool config is adopted.
+- Forwarding rule changes derive real Python candidates from the bound tree under
+  the affected `source_prefix` (never TOML-as-AST). A config change with no
+  targets is `not_applicable` (`hygiene_forwarding_config_changed_no_targets`),
+  not an empty-candidate PASS.
 - `docs` preserves `link_scope` (`offline` vs `network`) and `link_scope_note`
   on both the check summary and `NativeResult.evidence` (aligned with
   `link_check.py` via `is_offline_lychee_arguments()`).
 - Repository root `tach.toml` defines `exact = true` boundaries for the
   `src/engineering_ci` modules and `[external]` distribution mappings (`tach check`
   and `tach check-external`), while documenting the three existing internal cyclic
-  groups until follow-up cycle refactors remove them.
+  groups until follow-up cycle refactors remove them. `forbid_circular_dependencies
+  = false` is the current baseline (not a three-cycle-only exemption); executable
+  `vesryn` / `vesryn-workflow` forbid constraints remain #162 B1.

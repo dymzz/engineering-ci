@@ -150,6 +150,7 @@ depends_on = []
 [[modules]]
 path = "engineering_ci.hook_checks"
 depends_on = [
+    "engineering_ci.check_contract",
     "engineering_ci.dagger_plan",
     "engineering_ci.execution",
     "engineering_ci.expected_checks",

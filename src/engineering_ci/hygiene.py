@@ -624,24 +624,32 @@ def _hygiene_config_triggers(paths, root, changes, *, hygiene_config_path=None):
     Unreadable or unprovable snapshots select every rule rather than treating an
     unknown edit as irrelevant; source/doc candidate `inputs` stay unpolluted.
     """
+    triggers, _previous = _hygiene_config_trigger_state(
+        paths, root, changes, hygiene_config_path=hygiene_config_path
+    )
+    return triggers
+
+
+def _hygiene_config_trigger_state(paths, root, changes, *, hygiene_config_path=None):
+    """Return ``(triggers, previous_normalized_or_None)`` for rule-change scope."""
     rel_cfg = _resolved_hygiene_relpath(root, hygiene_config_path)
     if rel_cfg is None or rel_cfg not in paths:
-        return {}
+        return {}, None
     all_triggered = {name: True for name in _HYGIENE_RULES}
     current_raw = _read_hygiene_config_at_snapshot(root, rel_cfg, changes)
     if current_raw is None:
-        return all_triggered
+        return all_triggered, None
     base = getattr(changes, "base_commit", None)
     if not isinstance(base, str) or not base.strip():
-        return all_triggered
+        return all_triggered, None
     shown = _run_bytes(["git", "show", f"{base.strip()}:{rel_cfg}"], root)
     if shown.returncode != 0:
-        return all_triggered
+        return all_triggered, None
     try:
         current_norm = _normalize_config(_parse_config_bytes(current_raw))
         previous_norm = _normalize_config(_parse_config_bytes(shown.stdout))
     except HygieneError:
-        return all_triggered
+        return all_triggered, None
     triggers = {
         name: _normalized_hygiene_rule_slice(current_norm, name)
         != _normalized_hygiene_rule_slice(previous_norm, name)
@@ -652,7 +660,87 @@ def _hygiene_config_triggers(paths, root, changes, *, hygiene_config_path=None):
     for name in current_checks - previous_checks:
         if name in triggers:
             triggers[name] = True
-    return triggers
+    return triggers, previous_norm
+
+
+def _path_under_roots(path, roots):
+    for root in roots:
+        normalized = root.rstrip("/")
+        prefix = normalized + "/"
+        if path == normalized or path.startswith(prefix):
+            return True
+    return False
+
+
+def _tach_configured_roots(root, config, changes):
+    """Bound ``tach.toml`` ``source_roots`` (default ``src/``); not selection prefixes."""
+    rel = config.tach.path.replace("\\", "/")
+    raw = _read_hygiene_config_at_snapshot(root, rel, changes)
+    if raw is None:
+        return ("src/",)
+    text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return ("src/",)
+    roots = data.get("source_roots", ["src"])
+    if not isinstance(roots, list) or not roots:
+        return ("src/",)
+    normalized = []
+    for item in roots:
+        if isinstance(item, str) and item.strip():
+            normalized.append(item.replace("\\", "/").rstrip("/") + "/")
+    return tuple(normalized) or ("src/",)
+
+
+def _forwarding_paths_under_prefix(entries, prefix):
+    return [
+        path
+        for path in entries
+        if path.startswith(prefix)
+        and path.endswith(".py")
+        and not path.endswith("/__init__.py")
+    ]
+
+
+def _forwarding_config_scope_inputs(config, root, changes, *, previous_norm=None):
+    """Real forwarding targets when the rule changes (never inject TOML as AST input).
+
+    Uses the bound target tree when available. Rule changes check modules under
+    the *current* ``source_prefix`` (the rule that now applies). ``previous_norm``
+    is reserved for future migration diagnostics and does not widen the scan.
+    Returns ``None`` when the scope cannot be proven from the bound snapshot.
+    """
+    _ = previous_norm
+    prefix = config.forwarding.source_prefix
+    target_tree = getattr(changes, "execution_tree", None) or getattr(
+        changes, "tree", None
+    )
+    if isinstance(target_tree, str) and _GIT_OID.fullmatch(target_tree):
+        entries, failure = _forwarding_tree_entries(
+            target_tree,
+            lambda *args: _run(["git", *args], root),
+            {},
+            side="current",
+        )
+        if failure is not None or entries is None:
+            return None
+        return sorted(_forwarding_paths_under_prefix(entries, prefix))
+    if getattr(changes, "snapshot", None) != "worktree":
+        return None
+    base = Path(root) / prefix
+    if not base.is_dir():
+        return []
+    found = []
+    for path in base.rglob("*.py"):
+        if path.name == "__init__.py":
+            continue
+        try:
+            rel = path.resolve().relative_to(Path(root).resolve()).as_posix()
+        except (OSError, ValueError):
+            continue
+        found.append(rel)
+    return sorted(set(found))
 
 
 def check_applicability(
@@ -698,24 +786,32 @@ def check_applicability(
     )
     docs_paths = sorted(set(paths) | set(generated_paths))
     deleted = _deleted_paths(changes, paths, root)
-    prefixes = tuple(code_prefixes or DEFAULT_CODE_PREFIXES)
-    vulture_prefixes = tuple(item.rstrip("/") + "/" for item in config.vulture.paths)
+    # Selection code_prefixes (may include .dagger/src/) are not Tach/Vulture
+    # scan roots. Tool applicability follows configured tool coverage only.
+    _ = code_prefixes
     tach_path = config.tach.path.replace("\\", "/")
+    vulture_roots = tuple(
+        item.replace("\\", "/").rstrip("/") + "/" for item in config.vulture.paths
+    )
+    tach_roots = _tach_configured_roots(root, config, changes)
 
-    def is_code_path(path):
-        if path.startswith(prefixes) or path in {tach_path, "pyproject.toml"}:
+    def is_vulture_path(path):
+        if path == "pyproject.toml":
             return True
-        return path.endswith(".py") and any(
-            path == item.rstrip("/") or path.startswith(pfx)
-            for item, pfx in zip(config.vulture.paths, vulture_prefixes, strict=True)
-        )
+        return _path_under_roots(path, vulture_roots)
 
-    code_inputs = [path for path in paths if is_code_path(path)]
-    rule_triggers = _hygiene_config_triggers(
+    def is_tach_path(path):
+        if path in {tach_path, "pyproject.toml"}:
+            return True
+        return _path_under_roots(path, tach_roots)
+
+    vulture_inputs = [path for path in paths if is_vulture_path(path)]
+    tach_inputs = [path for path in paths if is_tach_path(path)]
+    rule_triggers, previous_norm = _hygiene_config_trigger_state(
         paths, root, changes, hygiene_config_path=hygiene_config_path
     )
     dep_inputs = [path for path in paths if _is_dependency_input(path)]
-    ext_inputs = sorted(set(code_inputs) | set(dep_inputs))
+    ext_inputs = sorted(set(tach_inputs) | set(dep_inputs))
     changed_docs = sorted(_changed_documents(set(docs_paths), config))
     removed = bool(deleted)
     forwarding_inputs = [
@@ -738,14 +834,44 @@ def check_applicability(
             }
         elif name == "forwarding":
             cfg_triggered = bool(rule_triggers.get(name))
-            selected = full or bool(forwarding_inputs) or cfg_triggered
+            inputs = list(forwarding_inputs)
+            if (cfg_triggered or full) and not inputs:
+                scope_inputs = _forwarding_config_scope_inputs(
+                    config, root, changes, previous_norm=previous_norm
+                )
+                if scope_inputs is None:
+                    scopes[name] = {
+                        "name": name,
+                        "status": "unknown",
+                        "inputs": [],
+                        "reason": (
+                            "hygiene_forwarding_config_changed_scope_unreadable"
+                            if cfg_triggered
+                            else "forwarding_scope_unreadable"
+                        ),
+                    }
+                    continue
+                if not scope_inputs:
+                    scopes[name] = {
+                        "name": name,
+                        "status": "not_applicable",
+                        "inputs": [],
+                        "reason": (
+                            "hygiene_forwarding_config_changed_no_targets"
+                            if cfg_triggered
+                            else "no_python_changes"
+                        ),
+                    }
+                    continue
+                inputs = scope_inputs
+            selected = full or bool(inputs)
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
-                "inputs": forwarding_inputs,
+                "inputs": inputs if selected else [],
                 "reason": (
                     "hygiene_forwarding_config_changed"
-                    if cfg_triggered and not forwarding_inputs
+                    if cfg_triggered and selected
                     else "python source changed"
                     if selected
                     else "no_python_changes"
@@ -770,16 +896,31 @@ def check_applicability(
                     else "no document changes"
                 ),
             }
-        elif name in {"vulture", "tach"}:
+        elif name == "vulture":
             cfg_triggered = bool(rule_triggers.get(name))
-            selected = full or bool(code_inputs) or cfg_triggered
+            selected = full or bool(vulture_inputs) or cfg_triggered
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
-                "inputs": code_inputs,
+                "inputs": vulture_inputs,
                 "reason": (
-                    f"hygiene_{name}_config_changed"
-                    if cfg_triggered and not code_inputs
+                    "hygiene_vulture_config_changed"
+                    if cfg_triggered and not vulture_inputs
+                    else "code changed"
+                    if selected
+                    else "no code changes"
+                ),
+            }
+        elif name == "tach":
+            cfg_triggered = bool(rule_triggers.get(name))
+            selected = full or bool(tach_inputs) or cfg_triggered
+            scopes[name] = {
+                "name": name,
+                "status": "selected" if selected else "not_applicable",
+                "inputs": tach_inputs,
+                "reason": (
+                    "hygiene_tach_config_changed"
+                    if cfg_triggered and not tach_inputs
                     else "code changed"
                     if selected
                     else "no code changes"
@@ -1448,13 +1589,15 @@ def run(
         if name == "whitespace":
             results.append(_whitespace(changes, root, runner, None if full else paths))
         elif name == "forwarding":
+            # Empty candidates must not PASS via allow_empty: config-triggered
+            # scope either supplies real tree targets or stays not_applicable.
             results.append(
                 _forwarding(
-                    app_entry["inputs"],
+                    app_entry.get("inputs") or [],
                     changes,
                     root,
                     runner,
-                    allow_empty=applicable,
+                    allow_empty=False,
                 )
             )
         elif name == "docs":

@@ -739,7 +739,7 @@ def test_forwarding_config_trigger_keeps_python_inputs_and_normalizes_equivalenc
     assert equiv_app["docs"]["status"] == "not_applicable"
     assert equiv_app["tach"]["status"] == "not_applicable"
 
-    # Real [forwarding] policy change triggers forwarding WITHOUT putting ci-hygiene.toml in inputs.
+    # Real [forwarding] policy change derives tree-scoped Python candidates (not TOML).
     head_base = run(path, "rev-parse", "HEAD").strip()
     hyg.write_text(
         "schema_version = 1\n"
@@ -755,7 +755,11 @@ def test_forwarding_config_trigger_keeps_python_inputs_and_normalizes_equivalenc
     )
     assert changed_app["forwarding"]["status"] == "selected"
     assert "ci-hygiene.toml" not in changed_app["forwarding"]["inputs"]
+    assert changed_app["forwarding"]["inputs"], changed_app["forwarding"]
     assert all(item.endswith(".py") for item in changed_app["forwarding"]["inputs"])
+    assert all(
+        item.startswith("src/pkg/") for item in changed_app["forwarding"]["inputs"]
+    )
 
     res = hygiene.run(
         changed_changes,
@@ -766,6 +770,33 @@ def test_forwarding_config_trigger_keeps_python_inputs_and_normalizes_equivalenc
     )
     assert res["status"] == "passed"
     assert by_name(res)["forwarding"]["status"] == "passed"
+
+    # Prefix with no Python targets stays not_applicable — never empty PASS.
+    empty_base = run(path, "rev-parse", "HEAD").strip()
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["forwarding"]\n'
+        "[forwarding]\n"
+        'source_prefix = "src/missing/"\n',
+        encoding="utf-8",
+    )
+    empty_cfg = hygiene.load_config(hyg)
+    empty_changes = changes(path, empty_base)
+    empty_app = hygiene.check_applicability(
+        empty_changes, empty_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert empty_app["forwarding"]["status"] == "not_applicable"
+    assert empty_app["forwarding"]["reason"] == (
+        "hygiene_forwarding_config_changed_no_targets"
+    )
+    empty_res = hygiene.run(
+        empty_changes,
+        empty_cfg,
+        root=path,
+        runner=FakeRunner(),
+        hygiene_config_path=hyg,
+    )
+    assert by_name(empty_res)["forwarding"]["status"] == "not_applicable"
 
 
 def test_tach_config_trigger_and_snapshot_isolation_and_fail_closed_fallback(repo):
@@ -837,6 +868,59 @@ def test_tach_config_trigger_and_snapshot_isolation_and_fail_closed_fallback(rep
     assert conservative["tach"]["status"] == "selected"
     assert conservative["tach_external"]["status"] == "selected"
     assert conservative["vulture"]["status"] == "selected"
+
+
+def test_dagger_source_change_does_not_claim_src_only_tach_or_vulture(repo):
+    """Selection may map `.dagger/src/` tests; Tach/Vulture follow tool roots only."""
+    path, _base = repo
+    hyg = path / "ci-hygiene.toml"
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["vulture", "tach", "tach_external", "whitespace"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 60\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    dagger_file = path / ".dagger/src/engineering_ci_module/sample.py"
+    dagger_file.parent.mkdir(parents=True, exist_ok=True)
+    dagger_file.write_text("VALUE = 1\n", encoding="utf-8")
+    run(path, "add", "ci-hygiene.toml", ".dagger/src/engineering_ci_module/sample.py")
+    run(path, "commit", "-qm", "add dagger module sample")
+    mid = run(path, "rev-parse", "HEAD").strip()
+
+    dagger_file.write_text("VALUE = 2\n", encoding="utf-8")
+    cfg = hygiene.load_config(hyg)
+    value = changes(path, mid)
+    assert ".dagger/src/engineering_ci_module/sample.py" in value.paths
+    app = hygiene.check_applicability(
+        value,
+        cfg,
+        root=path,
+        code_prefixes=hygiene.DEFAULT_CODE_PREFIXES,
+        hygiene_config_path=hyg,
+    )
+    assert app["whitespace"]["status"] == "selected"
+    assert app["vulture"]["status"] == "not_applicable"
+    assert app["tach"]["status"] == "not_applicable"
+    assert app["tach_external"]["status"] == "not_applicable"
+
+    run(path, "checkout", "--", ".dagger/src/engineering_ci_module/sample.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 9\n", encoding="utf-8")
+    src_value = changes(path, mid)
+    src_app = hygiene.check_applicability(
+        src_value,
+        cfg,
+        root=path,
+        code_prefixes=hygiene.DEFAULT_CODE_PREFIXES,
+        hygiene_config_path=hyg,
+    )
+    assert src_app["vulture"]["status"] == "selected"
+    assert src_app["tach"]["status"] == "selected"
+    assert "src/pkg/sub.py" in src_app["tach"]["inputs"]
 
 
 def test_is_offline_lychee_arguments_respects_overrides_and_separator():

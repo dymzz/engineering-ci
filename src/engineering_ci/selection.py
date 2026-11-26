@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tomllib
@@ -3697,6 +3698,51 @@ def per_ref_selections_and_scopes(
     return per_ref_entries, per_ref_scopes
 
 
+# Same-process native tach handoffs. A serialized Plan field alone is not
+# execution proof; reuse requires a token registered by `_tach_check` here.
+_NATIVE_TACH_HANDOFFS: dict[str, dict] = {}
+_NATIVE_TACH_HANDOFF_KEYS = (
+    "status",
+    "exit_code",
+    "executable",
+    "tach_path",
+    "stdout",
+    "stderr",
+    "tach_sha256",
+    "source_tree",
+    "snapshot",
+)
+
+
+def _register_native_tach_handoff(result):
+    """Attach a process-local proof token after a real `tach check` invocation."""
+    if not isinstance(result, dict) or result.get("status") not in {"passed", "failed"}:
+        return result
+    token = secrets.token_hex(16)
+    payload = dict(result)
+    payload["native_execution_token"] = token
+    _NATIVE_TACH_HANDOFFS[token] = {
+        key: payload.get(key) for key in _NATIVE_TACH_HANDOFF_KEYS
+    }
+    return payload
+
+
+def lookup_native_tach_handoff(graph):
+    """Return the registered native result when ``graph`` carries a live proof."""
+    if not isinstance(graph, dict):
+        return None
+    token = graph.get("native_execution_token")
+    if not isinstance(token, str) or not token:
+        return None
+    registered = _NATIVE_TACH_HANDOFFS.get(token)
+    if registered is None:
+        return None
+    for key in _NATIVE_TACH_HANDOFF_KEYS:
+        if graph.get(key, registered.get(key)) != registered.get(key):
+            return None
+    return registered
+
+
 def _tach_check(root, config, changes):
     if changes.snapshot == "index":
         refusal = index_source_refusal(
@@ -3737,17 +3783,19 @@ def _tach_check(root, config, changes):
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
-    return {
-        "status": "passed" if result.returncode == 0 else "failed",
-        "exit_code": result.returncode,
-        "executable": "tach",
-        "tach_path": _normalized(config.tach),
-        "stdout": result.stdout[-4000:],
-        "stderr": result.stderr[-4000:],
-        "tach_sha256": _digest(root / config.tach),
-        "source_tree": changes.execution_tree or changes.tree,
-        "snapshot": changes.snapshot,
-    }
+    return _register_native_tach_handoff(
+        {
+            "status": "passed" if result.returncode == 0 else "failed",
+            "exit_code": result.returncode,
+            "executable": "tach",
+            "tach_path": _normalized(config.tach),
+            "stdout": result.stdout[-4000:],
+            "stderr": result.stderr[-4000:],
+            "tach_sha256": _digest(root / config.tach),
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
+    )
 
 
 def _graph_validation(selection, config, root, value):
@@ -3768,7 +3816,14 @@ def _graph_validation(selection, config, root, value):
     if value.get("reason") is not None:
         report["reason"] = value.get("reason")
     if report["status"] in {"passed", "failed"}:
-        for key in ("executable", "tach_path", "snapshot", "stdout", "stderr"):
+        for key in (
+            "executable",
+            "tach_path",
+            "snapshot",
+            "stdout",
+            "stderr",
+            "native_execution_token",
+        ):
             if key in value and value[key] is not None:
                 report[key] = value[key]
     return report
