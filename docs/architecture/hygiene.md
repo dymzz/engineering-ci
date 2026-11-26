@@ -304,8 +304,10 @@ forwarding advisory, report identity and CLI exit propagation.
   Tach and Vulture applicability follow their normalized configured scan roots
   only (`tach.toml` `source_roots`, defaulting to `.` per Tach when validly
   omitted; Vulture `paths`, default `src`). Relative roots such as `.` and
-  `./src` normalize cleanly; invalid, escaping, or post-normalization
-  option-like roots (such as `./--help`) are rejected before invocation, and
+  `./src` normalize cleanly; invalid, escaping, post-normalization option-like
+  (`./--help`), and post-normalization Windows drive/UNC/absolute roots
+  (`./C:/outside`, `./C:outside`, `\\server\share`) are rejected before
+  invocation via `_paths` cross-platform boundary semantics, and
   `hygiene._vulture` isolates positional paths behind `--min-confidence N --`.
   Because pinned `tach check` / `tach check-external` (0.35.3) discover only
   root `tach.toml` with no custom `--config` option, any custom `tach` path

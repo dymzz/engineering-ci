@@ -12,6 +12,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import ntpath
 import os
 import stat
 import subprocess
@@ -32,6 +33,7 @@ from engineering_ci import (
 )
 from engineering_ci._paths import (
     SourcePathError,
+    has_windows_or_absolute_root,
     read_internal_linked_source,
     read_source_entry,
     read_source_file,
@@ -4724,10 +4726,40 @@ def _check_bound_pytest_path(root, resolved_root, rel_posix):
 
 
 def _format_pytest_cli_target(rel_posix, sep="", nodeid=""):
-    # Prefix leading "@" with "./" so pytest's ArgumentParser(fromfile_prefix_chars="@")
-    # treats the argument as a repository path rather than an @argsfile even after "--".
-    cli_path = f"./{rel_posix}" if rel_posix.startswith("@") else rel_posix
+    # Prefix leading "@" so pytest's ArgumentParser(fromfile_prefix_chars="@") never opens
+    # an @argsfile after "--", and prefix "./" for single-segment non-.py path targets
+    # (such as "./chosen" or "./sub.pkg") so directory targets stay unambiguous paths.
+    needs_dot_slash = rel_posix.startswith("@") or (
+        "/" not in rel_posix and not rel_posix.endswith(".py")
+    )
+    cli_path = f"./{rel_posix}" if needs_dot_slash else rel_posix
     return f"{cli_path}::{nodeid}" if sep else cli_path
+
+
+def _split_and_check_path_parts(raw_target):
+    raw_posix = raw_target.replace("\\", "/")
+    if has_windows_or_absolute_root(raw_target) or Path(raw_target).is_absolute():
+        return None, "pytest_target_outside_source"
+    raw_parts = raw_posix.split("/")
+    if ".." in raw_parts:
+        return None, "pytest_target_outside_source"
+    parts = [part for part in raw_parts if part and part != "."]
+    if not parts:
+        return None, "pytest_target_invalid"
+    if any(part.lower() == ".git" for part in parts):
+        return None, "pytest_target_outside_source"
+    rel_posix = "/".join(parts)
+    # Reject Windows drives exposed after stripping "." ("./C:/outside", "./C:outside")
+    # as well as option-like normalized targets ("./--version").
+    if has_windows_or_absolute_root(rel_posix) or any(
+        ntpath.splitdrive(part)[0] for part in parts
+    ):
+        return None, "pytest_target_outside_source"
+    if ":" in rel_posix:
+        return None, "pytest_target_invalid"
+    if rel_posix.startswith("-"):
+        return None, "pytest_target_invalid"
+    return rel_posix, None
 
 
 def _resolve_pytest_target(target, root):
@@ -4755,28 +4787,9 @@ def _resolve_pytest_target(target, root):
         or ":" in raw_target
     )
     if is_path:
-        raw_posix = raw_target.replace("\\", "/")
-        if (
-            raw_posix.startswith("/")
-            or (len(raw_posix) >= 2 and raw_posix[1] == ":" and raw_posix[0].isalpha())
-            or Path(raw_target).is_absolute()
-        ):
-            return None, "pytest_target_outside_source"
-        if ":" in raw_posix:
-            return None, "pytest_target_invalid"
-        raw_parts = raw_posix.split("/")
-        if ".." in raw_parts:
-            return None, "pytest_target_outside_source"
-        parts = [part for part in raw_parts if part and part != "."]
-        if not parts:
-            return None, "pytest_target_invalid"
-        if any(part.lower() == ".git" for part in parts):
-            return None, "pytest_target_outside_source"
-        rel_posix = "/".join(parts)
-        # Reject option-like normalized targets (including "./--version", which pytest 9.0.3
-        # evaluates before "--") against the existing relative workspace path contract.
-        if rel_posix.startswith("-"):
-            return None, "pytest_target_invalid"
+        rel_posix, refusal = _split_and_check_path_parts(raw_target)
+        if refusal:
+            return None, refusal
         _, refusal = _check_bound_pytest_path(root, resolved_root, rel_posix)
         if refusal:
             return None, refusal
@@ -4804,6 +4817,26 @@ def _resolve_pytest_target(target, root):
     # Missing target stays bound as a relative repo path so pytest fails natively
     # (exit 4) instead of falling back to an external PYTHONPATH module.
     return _format_pytest_cli_target(file_rel, sep, nodeid), None
+
+
+def _validate_bound_pytest_cli_target(target):
+    """Validate an already-bound CLI target without re-interpreting it as dotted."""
+    if (
+        not isinstance(target, str)
+        or not target.strip()
+        or any(ch in target for ch in "\0\r\n")
+        or target.lstrip().startswith(("-", "@"))
+    ):
+        return False, "pytest_target_invalid"
+    raw_target, sep, nodeid = target.partition("::")
+    if not raw_target or raw_target != raw_target.strip() or (sep and not nodeid):
+        return False, "pytest_target_invalid"
+    rel_posix, refusal = _split_and_check_path_parts(raw_target)
+    if refusal:
+        return False, refusal
+    if _format_pytest_cli_target(rel_posix, sep, nodeid) != target:
+        return False, "pytest_target_invalid"
+    return True, None
 
 
 def _resolve_pytest_targets(targets, root):

@@ -12,6 +12,7 @@ import argparse
 import ast
 import hashlib
 import json
+import ntpath
 import os
 import re
 import subprocess
@@ -23,6 +24,7 @@ from pathlib import Path
 from . import check_contract, git_source
 from ._paths import (
     SourcePathError,
+    has_windows_or_absolute_root,
     read_internal_linked_source,
     read_source_file,
     source_file_present,
@@ -667,13 +669,13 @@ def _normalize_scan_root(value):
     if (
         not isinstance(value, str)
         or not value.strip()
+        or value != value.strip()
         or any(ch in value for ch in "\0\r\n")
         or value.startswith("-")
+        or has_windows_or_absolute_root(value)
     ):
         return None
     raw = value.replace("\\", "/")
-    if raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":" and raw[0].isalpha()):
-        return None
     raw_parts = raw.split("/")
     if ".." in raw_parts:
         return None
@@ -681,8 +683,14 @@ def _normalize_scan_root(value):
     if any(part.lower() == ".git" for part in parts):
         return None
     normalized = "/".join(parts)
-    # Reject option-like normalized targets such as "./--help" or "./--version".
+    # Reject option-like targets ("./--help") and drive/UNC paths exposed by normalization
+    # ("./C:/outside", "./C:outside") against cross-platform repository path semantics.
     if normalized.startswith("-"):
+        return None
+    if normalized and (
+        has_windows_or_absolute_root(normalized)
+        or any(ntpath.splitdrive(part)[0] or ":" in part for part in parts)
+    ):
         return None
     return normalized
 

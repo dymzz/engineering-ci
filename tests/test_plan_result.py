@@ -4598,12 +4598,18 @@ def test_dagger_plan_selected_pytest_stays_bound_without_pyargs_and_resists_at_a
     tooling = importlib.import_module(collector.__package__ + ".tooling")
     dagger_mod = sys.modules["dagger"]
 
+    export_calls = []
+
     class FakeDagDir(MemoryDirectory):
         def with_directory(self, prefix, directory, *, exclude=()):
             if exclude:
                 directory = _filter_source_with_patterns(directory, exclude)
             merged = super().with_directory(prefix, directory)
             return FakeDagDir(merged.files, dirs=merged.dirs)
+
+        async def export(self, directory):
+            export_calls.append(str(directory))
+            return await super().export(directory)
 
     def identity(*args, **kwargs):
         if args and callable(args[0]) and not kwargs:
@@ -4661,6 +4667,10 @@ def test_dagger_plan_selected_pytest_stays_bound_without_pyargs_and_resists_at_a
         ),
         "@args.py": b"def test_at_bound_fails():\n    assert False\n",
         "args.py": (ext_pass + "\n").encode("utf-8"),
+        "chosen/test_dir.py": b"def test_chosen_dir_fails():\n    assert False\n",
+        "chosen.py": b"def test_chosen_file_passes():\n    assert True\n",
+        "sub.pkg/test_dotdir.py": b"def test_dotdir_fails():\n    assert False\n",
+        "sub/pkg.py": b"def test_sub_pkg_passes():\n    assert True\n",
     }
     source = FakeDagDir(repo_files)
 
@@ -4896,6 +4906,100 @@ def test_dagger_plan_selected_pytest_stays_bound_without_pyargs_and_resists_at_a
         asyncio.run(
             engine._run_pytest(source, "3.14", "./--version", _targets=["./--version"])
         )
+
+    # 6. P1-07 & P2-02: Explicit directory targets ("./chosen" vs "chosen.py", "./sub.pkg" vs "sub/pkg.py")
+    # resolve once via plan_execution._tests -> _resolved_targets without re-interpretation or re-export.
+    from engineering_ci import selection as real_selection
+
+    verified_root = tmp_path / "verified_src_root"
+    _write_memdir(source, verified_root)
+    verified_tree_id = real_selection.directory_content_id(verified_root)
+
+    def run_verified_plan(tests_list):
+        plan = _v2_dagger_plan(
+            edges=[],
+            prerequisites=[],
+            actions={},
+            tests=tests_list,
+            checks=(),
+        )
+        plan["selection"]["framework"] = "pytest"
+        plan["git"] = {
+            "snapshot": "index",
+            "execution_tree": "a" * 40,
+            "index_tree": "a" * 40,
+            "head_commit": "b" * 40,
+            "source_tree_id": verified_tree_id,
+        }
+        return asyncio.run(
+            collector.execute(
+                engine,
+                MemoryFile(json.dumps(plan)),
+                source,
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+
+    for dir_target, failure_hint in (
+        ("./chosen", "test_chosen_dir_fails"),
+        ("./sub.pkg", "test_dotdir_fails"),
+    ):
+        recorded_execs.clear()
+        export_calls.clear()
+        dir_exec = run_verified_plan([dir_target])
+        dir_report = json.loads(asyncio.run(dir_exec.report()))
+        assert dir_report["status"] == "failed", dir_report["tests"]
+        assert dir_report["tests"]["exit_code"] == 1
+        assert dir_report["targets"] == [dir_target]
+        assert {
+            "kind": "test_target",
+            "path": dir_target,
+        } in dir_report["tests"]["native_result"]["input_refs"]
+        # Only execute()'s single initial source.export occurred; neither _tests nor _run_pytest re-exported!
+        assert len(export_calls) == 1
+        assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [dir_target]
+        dir_xml = asyncio.run(dir_exec.artifacts.file("tests/junit.xml").contents())
+        assert failure_hint in dir_xml
+        check_contract.validate_result(dir_report["tests"]["native_result"])
+
+    # Direct _run_pytest on "./chosen" also resolves cleanly to "./chosen" (exit 1, not chosen.py).
+    recorded_execs.clear()
+    export_calls.clear()
+    direct_dir_exec = asyncio.run(
+        engine._run_pytest(source, "3.14", "./chosen", _targets=["./chosen"])
+    )
+    assert direct_dir_exec.exit_code == 1
+    assert len(export_calls) == 1
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == ["./chosen"]
+
+    # Contradictory or uncanonical _resolved_targets inputs refuse before spawning pytest.
+    with pytest.raises(ValueError, match="cannot specify both"):
+        asyncio.run(
+            engine._run_pytest(
+                source,
+                "3.14",
+                "./chosen",
+                _targets=["./chosen"],
+                _resolved_targets=["./chosen"],
+            )
+        )
+    for bad_prebound in (
+        "@args.py",
+        "chosen",
+        "./--version",
+        "./C:outside",
+        "../outside.py",
+    ):
+        with pytest.raises(ValueError, match="refused"):
+            asyncio.run(
+                engine._run_pytest(
+                    source,
+                    "3.14",
+                    "tests",
+                    _resolved_targets=[bad_prebound],
+                )
+            )
     # Generic consumer pytest_arguments contract stays untouched.
     assert tooling.SOURCE_NOISE
     pytest_quality = importlib.import_module(collector.__package__ + ".pytest_quality")

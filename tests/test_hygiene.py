@@ -984,6 +984,17 @@ def test_tool_scan_roots_normalization_lazy_tach_and_fail_closed_unknown(repo):
         "../outside",
         "/etc",
         "C:/src",
+        "./C:/outside",
+        "./C:outside",
+        ".\\C:\\outside",
+        ".\\C:outside",
+        "./C:\\outside",
+        ".\\C:/outside",
+        "./c:outside",
+        "//server/share",
+        "\\\\server\\share",
+        " /etc",
+        " ./C:/outside",
         "--min-confidence",
         "./--help",
         "./--version",
@@ -1011,7 +1022,14 @@ def test_tool_scan_roots_normalization_lazy_tach_and_fail_closed_unknown(repo):
         assert v_calls == [("vulture", "--min-confidence", "60", "--", expected_arg)]
 
     # Invalid/escaping/option-like Vulture paths fail closed (unknown -> failed/not_started), never false N/A.
-    for invalid_v_paths in (("../outside",), ("./--help",), ("./--version",)):
+    for invalid_v_paths in (
+        ("../outside",),
+        ("./--help",),
+        ("./--version",),
+        ("./C:/outside",),
+        ("./C:outside",),
+        (".\\C:\\outside",),
+    ):
         bad_v_cfg = dataclasses.replace(
             config(path, ("vulture",)),
             vulture=dataclasses.replace(config(path).vulture, paths=invalid_v_paths),
@@ -1050,13 +1068,19 @@ def test_tool_scan_roots_normalization_lazy_tach_and_fail_closed_unknown(repo):
     assert by_name(bad_tach_res)["tach"]["execution_started"] is False
 
     # Invalid source_roots in tach.toml fails closed as unknown -> failed/not_started.
-    (path / "tach.toml").write_text('source_roots = ["../escape"]\n', encoding="utf-8")
-    bad_roots_app = hygiene.check_applicability(src_changes, tach_cfg, root=path)
-    assert bad_roots_app["tach"]["status"] == "unknown"
-    assert bad_roots_app["tach"]["reason"] == "tach_source_roots_invalid"
-    bad_roots_res = hygiene.run(src_changes, tach_cfg, root=path, runner=FakeRunner())
-    assert bad_roots_res["status"] == "failed"
-    assert by_name(bad_roots_res)["tach"]["reason"] == "tach_source_roots_invalid"
+    for bad_roots_toml in (
+        'source_roots = ["../escape"]\n',
+        'source_roots = ["./C:outside"]\n',
+    ):
+        (path / "tach.toml").write_text(bad_roots_toml, encoding="utf-8")
+        bad_roots_app = hygiene.check_applicability(src_changes, tach_cfg, root=path)
+        assert bad_roots_app["tach"]["status"] == "unknown"
+        assert bad_roots_app["tach"]["reason"] == "tach_source_roots_invalid"
+        bad_roots_res = hygiene.run(
+            src_changes, tach_cfg, root=path, runner=FakeRunner()
+        )
+        assert bad_roots_res["status"] == "failed"
+        assert by_name(bad_roots_res)["tach"]["reason"] == "tach_source_roots_invalid"
 
     # Missing tach.toml with only non-src doc change still fails closed (never false N/A).
     run(path, "checkout", "--", "src/pkg/sub.py")

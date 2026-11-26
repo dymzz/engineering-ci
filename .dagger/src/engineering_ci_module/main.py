@@ -1426,6 +1426,7 @@ class EngineeringCi:
         git_token: dagger.Secret | None = None,
         dependency_packages: dagger.Directory | None = None,
         _targets: list[str] | None = None,
+        _resolved_targets: list[str] | None = None,
         _bound_source: dagger.Directory | None = None,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
@@ -1446,7 +1447,31 @@ class EngineeringCi:
         )
         arguments = pytest_arguments(policy, report_path)
         resolved_targets: list[str] | None = None
-        if _targets is not None:
+        if _targets is not None and _resolved_targets is not None:
+            raise ValueError("cannot specify both _targets and _resolved_targets")
+        if _resolved_targets is not None:
+            from engineering_ci import selection
+
+            if not _resolved_targets:
+                raise ValueError("selected pytest targets must not be empty")
+            selected = []
+            for target in _resolved_targets:
+                ok, refusal = selection._validate_bound_pytest_cli_target(target)
+                if not ok:
+                    raise ValueError(
+                        f"selected pytest target refused ({refusal}): {target}"
+                    )
+                test_policy(target)
+                selected.append(target)
+            resolved_targets = selected
+            # Pre-bound CLI paths from plan_execution._tests avoid re-export and
+            # avoid re-interpreting path directories (e.g. ./chosen) as dotted modules.
+            arguments = (
+                ["uv", "run", "--no-sync", "python", "-m", "pytest"]
+                + arguments[4:-1]
+                + ["--", *selected]
+            )
+        elif _targets is not None:
             from engineering_ci import selection
 
             if not _targets:

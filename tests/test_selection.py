@@ -2133,6 +2133,10 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
             str(external / "tests/test_selected.py"),
             "pytest_target_outside_source",
         ),
+        ("./C:/outside", "pytest_target_outside_source"),
+        ("./C:outside", "pytest_target_outside_source"),
+        (".\\C:\\outside", "pytest_target_outside_source"),
+        ("//server/share", "pytest_target_outside_source"),
         ("--pyargs", "pytest_target_invalid"),
         ("./--collect-only", "pytest_target_invalid"),
         ("./--help", "pytest_target_invalid"),
@@ -2205,7 +2209,37 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
     ]
     assert "not found" in (at_miss_cap["stdout"] + at_miss_cap["stderr"]).lower()
 
-    # Directory target on real bound repo tests still runs pytest natively.
+    # Directory target on real bound repo tests still runs pytest natively, and explicit
+    # directory paths (including "./chosen" and dotted "./sub.pkg") stay idempotent even when
+    # same-stem .py modules exist in the workspace.
+    (repo_root / "chosen").mkdir()
+    (repo_root / "chosen/test_dir.py").write_text(
+        "def test_dir_fail():\n    assert False\n", encoding="utf-8"
+    )
+    (repo_root / "chosen.py").write_text(
+        "def test_file_pass():\n    assert True\n", encoding="utf-8"
+    )
+    (repo_root / "sub.pkg").mkdir()
+    (repo_root / "sub.pkg/test_dotdir.py").write_text(
+        "def test_dotdir_fail():\n    assert False\n", encoding="utf-8"
+    )
+    (repo_root / "sub").mkdir()
+    (repo_root / "sub/pkg.py").write_text(
+        "def test_dotted_pass():\n    assert True\n", encoding="utf-8"
+    )
+    for dir_target in ("./chosen", "./sub.pkg"):
+        once, ref_once = selection.resolve_pytest_targets([dir_target], repo_root)
+        twice, ref_twice = selection.resolve_pytest_targets(once, repo_root)
+        assert ref_once is None and ref_twice is None
+        assert once == [dir_target]
+        assert twice == [dir_target]
+        chosen_cap = {}
+        rc_chosen = selection.run_tests(
+            (dir_target,), root=repo_root, framework="pytest", capture=chosen_cap
+        )
+        assert rc_chosen == 1, (dir_target, chosen_cap)
+        assert chosen_cap["argv"][chosen_cap["argv"].index("--") + 1 :] == [dir_target]
+
     dir_cap = {}
     rc_dir = selection.run_tests(
         ("tests/test_pass.py",), root=repo_root, framework="pytest", capture=dir_cap

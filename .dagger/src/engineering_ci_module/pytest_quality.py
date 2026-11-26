@@ -2,11 +2,12 @@
 
 import json
 import math
+import ntpath
 import re
 import xml.etree.ElementTree as ET
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 MAX_COVERAGE_BYTES = 2 * 1024 * 1024
 
@@ -31,13 +32,24 @@ def test_policy(
         ("coverage_source", coverage_source),
     ):
         if value:
-            normalized = PurePosixPath(value.lstrip().replace("\\", "/")).as_posix()
+            trimmed = value.lstrip()
+            raw_posix = trimmed.replace("\\", "/")
+            parts = [part for part in raw_posix.split("/") if part and part != "."]
+            normalized = "/".join(parts)
             if (
-                value.lstrip().startswith("-")
+                trimmed.startswith("-")
                 or normalized.startswith("-")
-                or PurePosixPath(value).is_absolute()
-                or ".." in PurePosixPath(value.replace("\\", "/")).parts
-                or re.match(r"^[A-Za-z]:", value)
+                or raw_posix.startswith("/")
+                or bool(ntpath.splitdrive(trimmed)[0])
+                or bool(ntpath.splitdrive(raw_posix)[0])
+                or bool(PureWindowsPath(trimmed).drive)
+                or bool(PureWindowsPath(normalized).drive)
+                or PureWindowsPath(trimmed).is_absolute()
+                or PureWindowsPath(normalized).is_absolute()
+                or PurePosixPath(raw_posix).is_absolute()
+                or ".." in raw_posix.split("/")
+                or bool(re.match(r"^[A-Za-z]:", trimmed))
+                or bool(re.match(r"^[A-Za-z]:", normalized))
             ):
                 raise ValueError(
                     f"{name} must be a relative workspace path or module name"

@@ -495,7 +495,27 @@ async def _tests(
                 )
         if target_refusal:
             return await _refused_test_branch(target_refusal)
-        if consumed_source is not None and _accepts_bound_source_kwarg(
+        if _accepts_bound_source_kwarg(module._run_pytest, "_resolved_targets"):
+            call_kwargs = {"_resolved_targets": resolved_targets}
+            if consumed_source is not None and _accepts_bound_source_kwarg(
+                module._run_pytest
+            ):
+                execution = await module._run_pytest(
+                    source,
+                    python_version,
+                    resolved_targets[0],
+                    _bound_source=consumed_source,
+                    **call_kwargs,
+                )
+            else:
+                run_source = consumed_source if consumed_source is not None else source
+                execution = await module._run_pytest(
+                    run_source,
+                    python_version,
+                    resolved_targets[0],
+                    **call_kwargs,
+                )
+        elif consumed_source is not None and _accepts_bound_source_kwarg(
             module._run_pytest
         ):
             execution = await module._run_pytest(
