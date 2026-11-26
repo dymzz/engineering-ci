@@ -277,8 +277,9 @@ def _resolved_rule_and_input(
 
 
 def _hygiene_config_path(plan, root, hygiene_config):
+    path_override = hygiene_config if isinstance(hygiene_config, (str, Path)) else None
     return _config_path(
-        plan, root, hygiene_config, key="hygiene", default_name="ci-hygiene.toml"
+        plan, root, path_override, key="hygiene", default_name="ci-hygiene.toml"
     )
 
 
@@ -3102,8 +3103,12 @@ def _closure_supported(
     if name == "tach":
         if hygiene_config is None or hygiene_config.tach.external:
             return False
-        tach_path = resolved_root / hygiene_config.tach.path
-        return tach_path.is_file()
+        tach_rel, tach_err = hygiene._supported_tach_config_rel(
+            hygiene_config.tach.path
+        )
+        if tach_err is not None:
+            return False
+        return source_file_present(resolved_root, tach_rel)
     return False
 
 
@@ -3183,22 +3188,27 @@ def _closure_paths_for_check(
                 ):
                     paths.add(p)
         elif name == "tach":
-            tach_rel = loaded_hyg.tach.path if loaded_hyg is not None else "tach.toml"
+            raw_tach_rel = (
+                loaded_hyg.tach.path if loaded_hyg is not None else "tach.toml"
+            )
+            tach_rel, tach_err = hygiene._supported_tach_config_rel(raw_tach_rel)
+            if tach_err is not None:
+                return None
             add_rel_file(resolved_root / tach_rel)
             add_rel_file(resolved_root / "pyproject.toml")
             try:
-                import tomllib
-
-                tach_data = tomllib.loads(
-                    (resolved_root / tach_rel).read_text(encoding="utf-8")
-                )
-            except (OSError, ValueError):
+                raw_tach = hygiene.read_source_file(resolved_root, tach_rel)
+            except (hygiene.SourcePathError, OSError, ValueError):
                 return None
-            for sr in tach_data.get("source_roots") or ("src",):
-                sr_path = resolved_root / str(sr)
-                if not sr_path.exists():
+            tach_roots, roots_err = hygiene._parse_tach_source_roots_bytes(raw_tach)
+            if roots_err is not None:
+                return None
+            for sr in tach_roots:
+                rel_sr = sr or "."
+                sr_path = (resolved_root / rel_sr).resolve()
+                if not sr_path.is_relative_to(resolved_root) or not sr_path.exists():
                     return None
-                for p in _relative_existing_files(resolved_root, str(sr)):
+                for p in _relative_existing_files(resolved_root, rel_sr):
                     if p.endswith(".py"):
                         paths.add(p)
     return sorted(paths)

@@ -2078,9 +2078,12 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
     )
     assert rc == 1, fail_cap
     assert "--pyargs" not in fail_cap["argv"]
-    assert "tests/test_selected.py" in fail_cap["argv"]
+    assert "--" in fail_cap["argv"]
+    assert fail_cap["argv"].index("--") < fail_cap["argv"].index(
+        "tests/test_selected.py"
+    )
 
-    # Dotted module with ::nodeid suffix resolves to bound relative path + ::nodeid.
+    # Dotted module with ::nodeid suffix resolves to bound relative path + ::nodeid after "--".
     nodeid_cap = {}
     rc_nodeid = selection.run_tests(
         ("tests.test_selected::test_selected",),
@@ -2089,9 +2092,12 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
         capture=nodeid_cap,
     )
     assert rc_nodeid == 1, nodeid_cap
-    assert "tests/test_selected.py::test_selected" in nodeid_cap["argv"]
+    assert "--" in nodeid_cap["argv"]
+    assert nodeid_cap["argv"].index("--") < nodeid_cap["argv"].index(
+        "tests/test_selected.py::test_selected"
+    )
 
-    # Missing repo target stays bound and fails natively (exit 4) instead of running external module.
+    # Missing repo target stays bound after "--" and fails natively (exit 4) instead of running external module.
     miss_cap = {}
     rc_miss = selection.run_tests(
         ("tests.test_missing",), root=repo_root, framework="pytest", capture=miss_cap
@@ -2099,16 +2105,28 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
     assert rc_miss == 4, miss_cap
     assert "source_refusal" not in miss_cap
     assert "--pyargs" not in miss_cap["argv"]
-    assert "tests/test_missing.py" in miss_cap["argv"]
+    assert "--" in miss_cap["argv"]
+    assert miss_cap["argv"].index("--") < miss_cap["argv"].index(
+        "tests/test_missing.py"
+    )
 
-    # Legitimate PYTHONPATH imports remain available for bound repo tests.
+    # Legitimate PYTHONPATH imports remain available for bound repo tests, with junitxml before "--".
     pass_cap = {}
+    junit_out = tmp_path / "bound-junit.xml"
     rc_pass = selection.run_tests(
-        ("tests.test_pass",), root=repo_root, framework="pytest", capture=pass_cap
+        ("tests.test_pass",),
+        root=repo_root,
+        framework="pytest",
+        junit_path=junit_out,
+        capture=pass_cap,
     )
     assert rc_pass == 0, pass_cap
+    assert junit_out.is_file()
+    sep_idx = pass_cap["argv"].index("--")
+    assert any(arg.startswith("--junitxml=") for arg in pass_cap["argv"][:sep_idx])
+    assert pass_cap["argv"][sep_idx + 1 :] == ["tests/test_pass.py"]
 
-    # Out-of-source traversal, absolute path, and option-injected targets are refused pre-exec.
+    # Out-of-source traversal, absolute path, and pre/post-normalization option-injected targets are refused pre-exec.
     for bad_target, expected_reason in (
         ("../external_site/tests/test_selected.py", "pytest_target_outside_source"),
         (
@@ -2116,10 +2134,18 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
             "pytest_target_outside_source",
         ),
         ("--pyargs", "pytest_target_invalid"),
+        ("./--collect-only", "pytest_target_invalid"),
+        ("./--help", "pytest_target_invalid"),
+        ("./--version", "pytest_target_invalid"),
+        (".\\.\\--version", "pytest_target_invalid"),
+        ("./--collect-only::test_selected", "pytest_target_invalid"),
     ):
         refuse_cap = {}
         rc_bad = selection.run_tests(
-            (bad_target,), root=repo_root, framework="pytest", capture=refuse_cap
+            (bad_target, "tests.test_selected"),
+            root=repo_root,
+            framework="pytest",
+            capture=refuse_cap,
         )
         assert rc_bad == 4
         assert refuse_cap["source_refusal"] == expected_reason
@@ -2139,3 +2165,51 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
         assert rc_link == 4
         assert link_cap["source_refusal"] == "pytest_target_outside_source"
         assert "argv" not in link_cap
+
+
+def test_selection_rejects_unsupported_custom_tach_config_paths(repo, tmp_path):
+    path, base = repo
+    (path / "tach-alt.toml").write_text(
+        (path / "tach.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    run(path, "add", "tach-alt.toml")
+    run(path, "commit", "-qm", "add unused custom tach file alongside tach.toml")
+    (path / "src/pkg/sub.py").write_text("VALUE = 5\n", encoding="utf-8")
+
+    # "./tach.toml" normalizes cleanly to "tach.toml".
+    norm_cfg_path = tmp_path / "norm-selection.toml"
+    norm_cfg_path.write_text(
+        'schema_version = 1\ntach = "./tach.toml"\n', encoding="utf-8"
+    )
+    assert selection.load_config(norm_cfg_path).tach == "tach.toml"
+
+    # Custom filename (e.g. "tach-alt.toml") or subdir ("sub/tach.toml") is rejected cleanly.
+    for custom in ("tach-alt.toml", "sub/tach.toml", "pyproject.toml"):
+        bad_cfg_path = tmp_path / f"bad-{custom.replace('/', '_')}.toml"
+        bad_cfg_path.write_text(
+            f'schema_version = 1\ntach = "{custom}"\n', encoding="utf-8"
+        )
+        with pytest.raises(
+            selection.SelectionError, match="tach_config_path_unsupported"
+        ):
+            selection.load_config(bad_cfg_path)
+
+    # Programmatic Config bypassing load_config still refuses before running native tach or reading tach.toml.
+    custom_cfg = dataclasses.replace(config(path), tach="tach-alt.toml")
+    changes = selection.changeset(path, base=base)
+    with pytest.raises(selection.SelectionError, match="tach_config_path_unsupported"):
+        selection.select(changes, custom_cfg, root=path)
+    tach_res = selection._tach_check(path, custom_cfg, changes)
+    assert tach_res["status"] == "refused"
+    assert tach_res["reason"] == "tach_config_path_unsupported"
+
+    # Missing root tach.toml refuses before invoking tach (prevents parent-directory fallback).
+    nested = tmp_path / "parent_has_tach/nested_missing"
+    (tmp_path / "parent_has_tach/tach.toml").parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "parent_has_tach/tach.toml").write_text(
+        (path / "tach.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    nested.mkdir(parents=True, exist_ok=True)
+    missing_res = selection._tach_check(nested, config(path), changes)
+    assert missing_res["status"] == "refused"
+    assert missing_res["reason"] == "tach_config_missing"

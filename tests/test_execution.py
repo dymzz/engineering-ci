@@ -6269,26 +6269,110 @@ def test_execute_refuses_out_of_source_pytest_target_and_blocks_external_shadowi
     assert shadow_report["status"] == "failed"
     assert shadow_report["tests"]["status"] == "failed"
     assert shadow_report["tests"]["exit_code"] == 1
-    assert "--pyargs" not in shadow_report["tests"]["observation"]["argv"]
+    shadow_argv = shadow_report["tests"]["observation"]["argv"]
+    assert "--pyargs" not in shadow_argv
+    assert "--" in shadow_argv
+    assert shadow_argv.index("--") < shadow_argv.index("tests/test_pkg.py")
 
-    escape_report = execution.execute(
+    for bad_target, expected_reason in (
+        ("../ext_shadow/tests/test_pkg.py", "pytest_target_outside_source"),
+        ("./--collect-only", "pytest_target_invalid"),
+        ("./--help", "pytest_target_invalid"),
+        ("./--version", "pytest_target_invalid"),
+    ):
+        escape_report = execution.execute(
+            plan(
+                [bad_target, "tests.test_pkg"],
+                framework="pytest",
+                git={
+                    "base_ref": base,
+                    "head_ref": "HEAD",
+                    "base_commit": base,
+                    "head_commit": base,
+                    "snapshot": "worktree",
+                    "changed_paths": ["tests/test_pkg.py"],
+                },
+            ),
+            root=path,
+        )
+        assert escape_report["status"] == "not_executed"
+        assert escape_report["exit_code"] == 4
+        assert escape_report["reason"] == expected_reason
+
+
+def test_execute_refuses_custom_tach_config_path_alongside_default_tach_toml(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 5\n", encoding="utf-8")
+    (path / "tach-alt.toml").write_text(
+        'source_roots = [".dagger/src"]\n'
+        "exact = true\n"
+        '[[modules]]\npath = "sample"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["tach", "tach_external"]\n[tach]\npath = "tach-alt.toml"\nexternal = true\n',
+        encoding="utf-8",
+    )
+    runner = FakeRunner()
+    rep = execution.execute(
         plan(
-            ["../ext_shadow/tests/test_pkg.py"],
-            framework="pytest",
+            [],
             git={
                 "base_ref": base,
                 "head_ref": "HEAD",
                 "base_commit": base,
                 "head_commit": base,
                 "snapshot": "worktree",
-                "changed_paths": ["tests/test_pkg.py"],
+                "changed_paths": ["src/pkg/sub.py"],
             },
+            check_scope=[
+                {"name": "tach", "status": "selected"},
+                {"name": "tach_external", "status": "selected"},
+            ],
         ),
         root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=runner,
     )
-    assert escape_report["status"] == "not_executed"
-    assert escape_report["exit_code"] == 4
-    assert escape_report["reason"] == "pytest_target_outside_source"
+    assert rep["status"] == "failed"
+    for item in rep["checks"]:
+        assert item["status"] == "failed"
+        assert item["execution_started"] is False
+        assert item["reason"] == "hygiene_config_tach_config_path_unsupported"
+    assert not any(call[0][0] == "tach" for call in runner.calls)
+
+    # _closure_paths_for_check handles tach.toml omitting source_roots as "." and refuses custom paths.
+    omitted_roots_tach = 'exact = true\n[[modules]]\npath = "pkg"\ndepends_on = []\n'
+    (path / "tach.toml").write_text(omitted_roots_tach, encoding="utf-8")
+    clean_hyg = hygiene.Config(
+        schema_version=1,
+        checks=("tach",),
+        docs=hygiene.DocsConfig((".md",), ()),
+        lychee=hygiene.LycheeConfig("lychee", ()),
+        forwarding=hygiene.ForwardingConfig("src/"),
+        vulture=hygiene.VultureConfig("vulture", ("src",), 60, frozenset({3})),
+        tach=hygiene.TachConfig("tach", "tach.toml", False),
+    )
+    closure = execution._closure_paths_for_check(
+        {"git": {"changed_paths": ["src/pkg/sub.py"]}},
+        path,
+        "tach",
+        {"inputs": []},
+        hygiene_config=clean_hyg,
+    )
+    assert closure is not None
+    assert "src/pkg/sub.py" in closure
+    assert "tach.toml" in closure
+
+    bad_hyg = dataclasses.replace(
+        clean_hyg, tach=hygiene.TachConfig("tach", "tach-alt.toml", False)
+    )
+    assert (
+        execution._closure_supported(
+            "tach", root=path, execution_context="host", hygiene_config=bad_hyg
+        )
+        is False
+    )
 
 
 def test_multi_ref_push_hygiene_config_vulture_only_parity(repo):

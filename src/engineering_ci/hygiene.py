@@ -172,6 +172,10 @@ def _parse_config_bytes(raw):
         type(code) is not int or not 0 <= code <= 255 for code in advisory
     ):
         raise HygieneError("vulture_invalid")
+    tach_path_raw = _text(tach.get("path", "tach.toml"), "tach_path")
+    tach_path, tach_path_err = _supported_tach_config_rel(tach_path_raw)
+    if tach_path_err is not None:
+        raise HygieneError(tach_path_err)
     return Config(
         schema_version=SCHEMA_VERSION,
         checks=checks,
@@ -201,7 +205,7 @@ def _parse_config_bytes(raw):
         ),
         tach=TachConfig(
             executable=_text(tach.get("executable", "tach"), "tach_executable"),
-            path=_text(tach.get("path", "tach.toml"), "tach_path"),
+            path=tach_path,
             external=tach.get("external", False),
         ),
     )
@@ -505,6 +509,9 @@ def config_from_identity(identity):
         forwarding_raw = normalized["forwarding"]
         vulture_raw = normalized["vulture"]
         tach_raw = normalized["tach"]
+        tach_path, tach_path_err = _supported_tach_config_rel(str(tach_raw["path"]))
+        if tach_path_err is not None:
+            raise HygieneError(tach_path_err)
         return Config(
             schema_version=int(normalized["schema_version"]),
             checks=tuple(str(item) for item in normalized["checks"]),
@@ -529,7 +536,7 @@ def config_from_identity(identity):
             ),
             tach=TachConfig(
                 executable=str(tach_raw["executable"]),
-                path=str(tach_raw["path"]),
+                path=tach_path,
                 external=bool(tach_raw["external"]),
             ),
         )
@@ -673,7 +680,25 @@ def _normalize_scan_root(value):
     parts = [part for part in raw_parts if part and part != "."]
     if any(part.lower() == ".git" for part in parts):
         return None
-    return "/".join(parts)
+    normalized = "/".join(parts)
+    # Reject option-like normalized targets such as "./--help" or "./--version".
+    if normalized.startswith("-"):
+        return None
+    return normalized
+
+
+def _supported_tach_config_rel(value):
+    """Return normalized root ``tach.toml`` relpath, or ``(None, reason)`` if unsupported.
+
+    Pinned ``tach check`` and ``tach check-external`` (0.35.3) discover only
+    ``tach.toml`` at the project root and accept no custom config path option.
+    """
+    norm = _normalize_scan_root(value)
+    if not norm:
+        return None, "tach_config_path_invalid"
+    if norm != "tach.toml":
+        return None, "tach_config_path_unsupported"
+    return norm, None
 
 
 def _path_under_roots(path, roots):
@@ -732,9 +757,9 @@ def _resolve_tach_roots_from_tree(root, rel, target_tree):
 
 def _resolve_tach_roots(root, config, changes):
     """Resolve bound ``tach.toml`` ``source_roots``; fail closed on missing/corrupt/invalid config."""
-    rel = _normalize_scan_root(config.tach.path)
-    if not rel:
-        return None, "tach_config_path_invalid"
+    rel, err = _supported_tach_config_rel(config.tach.path)
+    if err is not None:
+        return None, err
     snapshot = getattr(changes, "snapshot", "worktree")
     if snapshot == "worktree" or getattr(changes, "materialized_tree", False):
         try:
@@ -820,7 +845,7 @@ def check_applicability(
     vulture_error = None
     if "vulture" in names:
         vulture_roots, vulture_error = _resolve_vulture_roots(config)
-    tach_path = _normalize_scan_root(config.tach.path)
+    tach_path, _ = _supported_tach_config_rel(config.tach.path)
     tach_roots = None
     tach_error = None
     if "tach" in names or "tach_external" in names:
@@ -1496,9 +1521,10 @@ def _vulture(root, runner, config, code_changed):
         }
     argv = [
         config.vulture.executable,
-        *(item or "." for item in roots),
         "--min-confidence",
         str(config.vulture.min_confidence),
+        "--",
+        *(item or "." for item in roots),
     ]
     return _tool(
         "vulture",
@@ -1511,24 +1537,37 @@ def _vulture(root, runner, config, code_changed):
     )
 
 
+def _prepare_tach_execution(check_name, root, config):
+    tach_rel, err = _supported_tach_config_rel(config.tach.path)
+    if err is not None:
+        return {
+            **_result(check_name, "failed", reason=err),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
+    try:
+        stat_source_file(root, tach_rel)
+    except (FileNotFoundError, NotADirectoryError):
+        return {
+            **_result(check_name, "failed", reason="tach_config_missing"),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
+    except (SourcePathError, OSError):
+        return {
+            **_result(check_name, "failed", reason="tach_config_invalid"),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
+    return None
+
+
 def _tach(paths, root, runner, config, code_changed):
     if not code_changed:
         return _result("tach", "not_applicable", reason="no_code_changes")
-    tach_rel = _normalize_scan_root(config.tach.path)
-    if not tach_rel:
-        return {
-            **_result("tach", "failed", reason="tach_config_path_invalid"),
-            "execution_started": False,
-            "execution_kind": "not_started",
-        }
-    if not (root / tach_rel).is_file():
-        # Tool has not started: preserve the preparation failure separately
-        # from a native Tach execution verdict.
-        return {
-            **_result("tach", "failed", reason="tach_config_missing"),
-            "execution_started": False,
-            "execution_kind": "not_started",
-        }
+    pre_failure = _prepare_tach_execution("tach", root, config)
+    if pre_failure is not None:
+        return pre_failure
     return _tool(
         "tach",
         [config.tach.executable, "check"],
@@ -1541,19 +1580,9 @@ def _tach(paths, root, runner, config, code_changed):
 def _tach_external(root, runner, config, applicable):
     if not applicable:
         return _result("tach_external", "not_applicable", reason="no_code_changes")
-    tach_rel = _normalize_scan_root(config.tach.path)
-    if not tach_rel:
-        return {
-            **_result("tach_external", "failed", reason="tach_config_path_invalid"),
-            "execution_started": False,
-            "execution_kind": "not_started",
-        }
-    if not (root / tach_rel).is_file():
-        return {
-            **_result("tach_external", "failed", reason="tach_config_missing"),
-            "execution_started": False,
-            "execution_kind": "not_started",
-        }
+    pre_failure = _prepare_tach_execution("tach_external", root, config)
+    if pre_failure is not None:
+        return pre_failure
     return _tool(
         "tach_external",
         [config.tach.executable, "check-external"],

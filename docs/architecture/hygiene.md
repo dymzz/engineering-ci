@@ -304,14 +304,20 @@ forwarding advisory, report identity and CLI exit propagation.
   Tach and Vulture applicability follow their normalized configured scan roots
   only (`tach.toml` `source_roots`, defaulting to `.` per Tach when validly
   omitted; Vulture `paths`, default `src`). Relative roots such as `.` and
-  `./src` normalize cleanly, invalid/escaping/option-like roots are rejected,
-  `tach.toml` is read lazily only when `tach` or `tach_external` is enabled,
-  and missing, corrupt, or invalid scan-root configuration settles fail-closed
-  as `unknown` applicability (`failed` / `not_started` in `hygiene.run`), never
-  false `not_applicable`. A `.dagger/src/` edit therefore does not claim a
-  `src`-only Tach/Vulture PASS; Dagger remains a separate project covered by
-  `non_code_rules` tests and native Dagger checks until an explicit multi-root
-  or separate tool config is adopted.
+  `./src` normalize cleanly; invalid, escaping, or post-normalization
+  option-like roots (such as `./--help`) are rejected before invocation, and
+  `hygiene._vulture` isolates positional paths behind `--min-confidence N --`.
+  Because pinned `tach check` / `tach check-external` (0.35.3) discover only
+  root `tach.toml` with no custom `--config` option, any custom `tach` path
+  other than `tach.toml` (after normalizing `./tach.toml`) is refused fail-closed
+  (`tach_config_path_unsupported`) rather than running `tach` against default
+  `tach.toml`. `tach.toml` is read lazily only when `tach` or `tach_external` is
+  enabled, and missing, corrupt, or invalid scan-root configuration settles
+  fail-closed as `unknown` applicability (`failed` / `not_started` in
+  `hygiene.run`), never false `not_applicable`. A `.dagger/src/` edit therefore
+  does not claim a `src`-only Tach/Vulture PASS; Dagger remains a separate project
+  covered by `non_code_rules` tests and native Dagger checks until an explicit
+  multi-root or separate tool config is adopted.
 - Forwarding rule changes check changed Python candidates under the affected
   `source_prefix` (never TOML-as-AST and no whole-repo scan of unchanged files).
   A rule change with no changed Python targets settles as `not_applicable`

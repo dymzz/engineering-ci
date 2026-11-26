@@ -35,6 +35,7 @@ from engineering_ci._paths import (
     read_internal_linked_source,
     read_source_entry,
     read_source_file,
+    stat_source_file,
 )
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
@@ -330,7 +331,10 @@ def _parse_config_bytes(raw):
         raise SelectionError("config_invalid")
     if value.get("schema_version") != SCHEMA_VERSION:
         raise SelectionError("config_schema_unsupported")
-    tach = _text(value.get("tach", "tach.toml"), "tach")
+    raw_tach = _text(value.get("tach", "tach.toml"), "tach")
+    tach, tach_err = hygiene._supported_tach_config_rel(raw_tach)
+    if tach_err is not None:
+        raise SelectionError(tach_err)
     tests_dir = _text(value.get("tests_dir", "tests"), "tests_dir")
     src_root = _text(value.get("src_root", "src"), "src_root")
     framework = value.get("framework", "unittest")
@@ -860,9 +864,14 @@ def config_from_identity(identity):
     select_push_tests = push_raw.get("select_tests", True)
     if type(select_push_tests) is not bool:
         raise SelectionError("config_identity_invalid")
+    tach_val, tach_err = hygiene._supported_tach_config_rel(
+        str(norm.get("tach", "tach.toml"))
+    )
+    if tach_err is not None:
+        raise SelectionError(tach_err)
     return Config(
         schema_version=int(norm.get("schema_version", SCHEMA_VERSION)),
-        tach=str(norm.get("tach", "tach.toml")),
+        tach=tach_val,
         tests_dir=str(norm.get("tests_dir", "tests")),
         src_root=str(norm.get("src_root", "src")),
         framework=str(norm.get("framework", "unittest")),
@@ -2039,15 +2048,21 @@ def _tach_graph_text(text):
 
 
 def _tach_graph(path):
+    target = Path(path)
+    if target.name != "tach.toml":
+        raise SelectionError("tach_config_path_unsupported")
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        text = target.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         raise SelectionError("tach_config_invalid") from None
     return _tach_graph_text(text)
 
 
 def _tree_tach_graph(root, tree, tach_rel_path):
-    cat = _git(root, "cat-file", "-p", f"{tree}:{_normalized(tach_rel_path)}")
+    tach_rel, err = hygiene._supported_tach_config_rel(tach_rel_path)
+    if err is not None:
+        raise SelectionError(err)
+    cat = _git(root, "cat-file", "-p", f"{tree}:{tach_rel}")
     if cat.returncode != 0:
         raise SelectionError("tach_config_invalid")
     return _tach_graph_text(cat.stdout)
@@ -2399,6 +2414,9 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                 f"Global configuration modified: {path}",
                 root=root,
             )
+    _, tach_path_err = hygiene._supported_tach_config_rel(config.tach)
+    if tach_path_err is not None:
+        raise SelectionError(tach_path_err)
     try:
         if tree_in_odb:
             modules, reverse = _tree_tach_graph(root, exec_tree, config.tach)
@@ -3794,6 +3812,18 @@ def per_ref_selections_and_scopes(
 
 
 def _tach_check(root, config, changes):
+    tach_rel, tach_path_err = hygiene._supported_tach_config_rel(config.tach)
+    if tach_path_err is not None:
+        return {
+            "status": "refused",
+            "exit_code": 4,
+            "stdout": "",
+            "stderr": f"execution refused: {tach_path_err}",
+            "reason": tach_path_err,
+            "tach_sha256": _digest(root / config.tach),
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
     if changes.snapshot == "index":
         refusal = index_source_refusal(
             root, changes.execution_tree, index_file=changes.index_file
@@ -3809,7 +3839,31 @@ def _tach_check(root, config, changes):
             "stdout": "",
             "stderr": f"execution refused: {refusal}",
             "reason": refusal,
-            "tach_sha256": _digest(root / config.tach),
+            "tach_sha256": _digest(root / tach_rel),
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
+    try:
+        stat_source_file(root, tach_rel)
+    except (FileNotFoundError, NotADirectoryError):
+        return {
+            "status": "refused",
+            "exit_code": 4,
+            "stdout": "",
+            "stderr": "execution refused: tach_config_missing",
+            "reason": "tach_config_missing",
+            "tach_sha256": "",
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
+    except (SourcePathError, OSError):
+        return {
+            "status": "refused",
+            "exit_code": 4,
+            "stdout": "",
+            "stderr": "execution refused: tach_config_invalid",
+            "reason": "tach_config_invalid",
+            "tach_sha256": "",
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
@@ -3829,7 +3883,7 @@ def _tach_check(root, config, changes):
             "exit_code": 127,
             "stdout": "",
             "stderr": "tach not found",
-            "tach_sha256": _digest(root / config.tach),
+            "tach_sha256": _digest(root / tach_rel),
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
@@ -3837,10 +3891,10 @@ def _tach_check(root, config, changes):
         "status": "passed" if result.returncode == 0 else "failed",
         "exit_code": result.returncode,
         "executable": "tach",
-        "tach_path": _normalized(config.tach),
+        "tach_path": tach_rel,
         "stdout": result.stdout[-4000:],
         "stderr": result.stderr[-4000:],
-        "tach_sha256": _digest(root / config.tach),
+        "tach_sha256": _digest(root / tach_rel),
         "source_tree": changes.execution_tree or changes.tree,
         "snapshot": changes.snapshot,
     }
@@ -3955,7 +4009,10 @@ def plan(
 ):
     """Machine-readable handoff shared by local CLI, Dagger and Actions."""
     root, config_path = Path(root), Path(config_path)
-    tach_path = root / config.tach
+    tach_rel, tach_path_err = hygiene._supported_tach_config_rel(config.tach)
+    if tach_path_err is not None:
+        raise SelectionError(tach_path_err)
+    tach_path = root / tach_rel
     loaded_hygiene, hygiene_identity = _resolve_hygiene_input(
         root,
         config,
@@ -4709,6 +4766,10 @@ def _resolve_pytest_target(target, root):
         if any(part.lower() == ".git" for part in parts):
             return None, "pytest_target_outside_source"
         rel_posix = "/".join(parts)
+        # Reject option-like normalized targets (including "./--version", which pytest 9.0.3
+        # evaluates before "--") against the existing relative workspace path contract.
+        if rel_posix.startswith("-"):
+            return None, "pytest_target_invalid"
         _, refusal = _check_bound_pytest_path(root, resolved_root, rel_posix)
         if refusal:
             return None, refusal
@@ -4790,6 +4851,7 @@ def run_tests(
         command = [executable, "-X", "utf8", "-m", "pytest", "-q"]
         if junit_path is not None:
             command.append(f"--junitxml={Path(junit_path).resolve()}")
+        command.append("--")
         command.extend(resolved_targets)
     elif framework == "unittest":
         command = [executable, "-X", "utf8", "-m", "unittest", *modules, "-v"]

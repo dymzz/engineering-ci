@@ -492,11 +492,16 @@ for actual request/reader counts and failure preservation.
 - `run_tests(..., framework="pytest")` keeps Selection's dotted test module
   identities in Plans and resolves them (plus optional `::nodeid` suffixes) into
   bound repository-relative file or directory paths inside `root` without
-  `--pyargs`. Legitimate `PYTHONPATH` is preserved while external packages
-  cannot shadow or substitute for bound repository test targets; out-of-source,
-  escaping symlink, or option-injected targets are refused before spawning
-  pytest, and missing in-source targets fail natively with pytest exit `4`.
-  `unittest` semantics stay unchanged.
+  `--pyargs`, placing `--` after all pytest options (`-q`, optional
+  `--junitxml`) before resolved targets. Legitimate `PYTHONPATH` is preserved
+  while external packages cannot shadow or substitute for bound repository test
+  targets; out-of-source, escaping symlink, and pre- or post-normalization
+  option-like targets (such as `./--collect-only`, `./--help`, or
+  `./--version`) are refused before spawning pytest (`source_refusal`), while
+  missing non-option in-source targets fail natively with pytest exit `4`.
+  `unittest` semantics stay unchanged. Any non-`tach.toml` `tach` config path
+  (after normalizing `./tach.toml`) is refused fail-closed matching native
+  `tach 0.35.3` discovery.
 - **Adoption scope (R15 independent slice):** this delivers selection mapping,
   hygiene applicability, root `tach.toml` / `ci-selection.toml` artifacts, and
   host-native `tach check` / `tach check-external` evidence when those tools are
