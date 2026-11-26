@@ -14,9 +14,9 @@ git diff
 uv run --locked engineering-ci version show
 # 仅在本轮需要准备该版本时执行。
 uv run --locked engineering-ci version set v0.7.0
-dagger check
 ```
 
+开发中的单项/定向检查使用原生 `dagger check --engineering-ci --check=...`；本仓日常综合验证见下方[显式本地综合验证](#显式本地综合验证)。
 检查当前目录快照。完成修改后用原生 Git 审阅并提交本次内容；
 `git add -p` 逐块选择已跟踪改动，新文件用 `git status` 中的实际路径逐个暂存。
 发布入口不会自行提交或把无关文件加入 PR。
@@ -48,12 +48,11 @@ uv run --locked --no-sync lefthook install
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
-本仓当前仅为 `pre-push` 绑定了根级策略与 [Profile](../config/hook-profiles)，根目录尚无
-`ci-effective-profile.json` 或 `ci-effective-profile.toml`，因此本仓 `pre-commit` 默认仍使用
-本地 Git 规则运行原生暂存空白检查（不产出 `Plan` 与多 Job 拆分）。当受检树声明了
-`ci-selection.toml` 和已绑定的 `ci-effective-profile.json` 或
-`ci-effective-profile.toml` 时，准备 Job 从隔离检出读取暂存策略。该检出
-采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`
+本仓根目录已提供 `ci-effective-profile.json`（Index whitespace 义务）与
+`ci-selection.toml` 中的 `[commit] select_tests = false`：普通 commit 激活
+Profile→Plan→Host Job→Receipt，但不选择 pytest / 不因选中测试拉起 Dagger。
+无 Profile 的兼容路径仍可只跑本地暂存空白检查。准备 Job 从隔离检出读取暂存策略；
+该检出采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`
 和干净的 Git 默认值。
 
 配置版 `pre-commit` 先准备同一份 Plan。Lefthook 按适用性唤醒独立的 Host
@@ -103,23 +102,30 @@ Git 须支持 `--attr-source` 和 `show-ref --exists`。
 读取 `ECI-PRE-PUSH` 参数帧和全部 Git Ref；子任务成功后消费同一次 Invocation 的逐 Ref
 Receipt，缺失最终对账时阻断。
 
-`uv run --locked --no-sync lefthook run verify --no-auto-install` 运行 Dagger 的
-lint、格式、版本与锁文件检查和核心测试。各项保留原生结果，Lefthook 汇总退出。
 用 `uv run --locked --no-sync lefthook uninstall` 卸载本地 Hook。
 
+### 显式本地综合验证
 
-要记录一次显式验证的实际起止，可使用本地计时入口：
+本仓在确实需要一次完整本地综合验证时，默认使用：
 
 ```powershell
 uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 ```
 
-该命令执行一次原生 `verify`，在独立目录保存 `lefthook.stdout`、
-`lefthook.stderr` 和引用二者摘要的 `verify-timing.json`。保存的是当次
-Lefthook 调用的宿主时钟读数，`time_source_verified=false`。返回原生检查
-退出状态；调用过程中被中断时返回 `130`、保留已写入的部分输出目录并在
-`stderr` 打印目录路径，不写出 `verify-timing.json` 完成回执。此命令由
-操作者显式调用，现有 Actions Job 保持原有执行路径。
+该入口启动一次原生 `lefthook run verify --no-auto-install`（Lefthook 仍是调度权威），
+运行 `lefthook.yml` 中的 verify Jobs（Dagger lint、format、version/lock、核心测试），
+在独立 Invocation 目录保存 `lefthook.stdout`、`lefthook.stderr` 和引用二者摘要的
+`verify-timing.json`。保存的是当次 Lefthook 调用的宿主时钟读数，
+`time_source_verified=false`；HEAD/config 为启动前观察，不认证工作区 Tree。
+返回原生检查退出状态；被中断时返回 `130`、保留已写入的部分输出并在 `stderr`
+打印目录路径，不写出完成回执。原始输出写文件而非实时透传终端，请从 stderr
+提示的本次目录定位输出。
+
+先根据实际义务决定验证范围，再采用对应标准入口并复用仍适用的原生证据；
+不为记录回执而扩大范围或重复执行。定向编辑检查、pre-commit/pre-push、单项
+`dagger check`、裸 `lefthook run verify --no-auto-install` 诊断以及 GitHub Actions
+保持各自适用入口。`dagger check` 单项选择不等于已配置的完整 Verify Job 集合。
+现有 Actions Job 保持原有执行路径，不因本入口自动改写。
 
 Windows 终端下若遇到 Dagger 非交互调用无输出挂起（历史观察与诊断见
 [上游观察](../.agent/upstream-observations.md#dagger-beta-windows-非交互版本探测挂起)），

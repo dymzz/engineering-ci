@@ -26,10 +26,11 @@ Linux 使用相同的 uv 命令。Run 等待、日志和 Artifact 下载使用�
 
 Windows 的完整本地 PR 检查默认在 Dagger Linux 容器内执行，需要 Docker Linux
 Engine 和固定版本的 Dagger，安装见[Dagger 配置](../docs/configuration/dagger.md)。
-安装后仍在原 checkout 执行：
+本仓日常综合验证使用[显式本地综合验证](common-tasks.md#显式本地综合验证)的默认入口；
+单项/定向检查仍用原生 `dagger check`：
 
 ```powershell
-dagger check
+dagger check --engineering-ci --check=lint
 ```
 
 需要单项选择或报告导出时，见[本地检查](../docs/architecture/local-checks.md)。

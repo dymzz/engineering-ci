@@ -118,9 +118,12 @@ per-ref receipts in `engineering_ci.hook_checks` (`prepare_push()`,
 `pre-push` job and tracks the local push policy in `ci-selection.toml`.
 Push Profiles bind an action and exact Ref or a Ref prefix ending in `/*`.
 Every captured Ref must match a Profile. `[push].select_tests = false` limits
-test selection for this push policy. Other snapshots and explicit full-suite
-selection still use the configured framework. Generic non-Hook multi-ref
-execution remains a per-ref caller responsibility.
+test selection for this push policy. `[commit].select_tests = false` likewise
+disables Index / pre-commit test selection so activating a root
+`ci-effective-profile` for low-cost hygiene does not escalate ordinary commits
+into full pytest / Dagger. Other snapshots and explicit full-suite selection
+still use the configured framework. Generic non-Hook multi-ref execution
+remains a per-ref caller responsibility.
 
 ## Per-check impact (not a global ignore)
 

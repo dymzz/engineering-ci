@@ -9,7 +9,7 @@ Engineering CI provides reusable Python CI/CD capabilities through Dagger and Gi
 - [Documentation index](docs/README.md): technical documentation and maintenance conventions.
 - [Repository overview](docs/architecture/repository-overview.md): architecture, responsibilities and module boundaries.
 - [Technology inventory](docs/architecture/technology.md): adopted, experimental, planned and removed technologies.
-- [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures.
+- [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures. Before running repository verification, decide the actual obligation scope, then use the matching standard entry in [Explicit local full verification](guides/common-tasks.md#显式本地综合验证); reuse still-valid native evidence instead of expanding scope or re-running for a receipt.
 - [Agent task continuity](docs/architecture/agent-instructions.md#task-continuity-and-evidence-reuse): locate relevant knowledge relations, existing work, evidence and handoff before implementation or review.
 - [Authorization dependency review](docs/verification/authorization-closure/README.md): pinned dependency and evidence coverage snapshots, not current execution or authorization state.
 
