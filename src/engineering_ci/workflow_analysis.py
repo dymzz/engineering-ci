@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path, PurePosixPath
 
 # Single authority for pinned workflow/shell/security tool versions.
@@ -1079,30 +1080,68 @@ def findings_summary(report: dict) -> str:
 
 
 # Pinned actionlint 1.7.12 can deadlock feeding large ``run:`` scripts to
-# ShellCheck via stdin (rhysd/actionlint#650 / #702). Bound inline scans so a
-# host never hangs forever; timed-out runs stay not_executed (never PASS).
+# ShellCheck via stdin (rhysd/actionlint#650 / #702). Bound Host inline scans so
+# a host never hangs forever. Timeout is an adapter fact (``timed_out``), not a
+# synthetic native exit code; coverage of ShellCheck children stays unknown.
+# Consumed only by Host ``default_run`` when ``runner is None``; custom Runners
+# and Dagger ``_run_repository_script`` do not inherit this bound.
 ACTIONLINT_INLINE_SHELLCHECK_TIMEOUT_SEC = 120
-TOOL_TIMEOUT_EXIT = 124
 
 
-def _kill_process_tree(pid: int) -> None:
-    """Best-effort kill of a timed-out tool and any children (Windows-safe)."""
+def _tool_run_timed_out(completed) -> bool:
+    return bool(getattr(completed, "timed_out", False))
+
+
+def _kill_process_tree(pid: int) -> dict:
+    """Terminate a timed-out tool tree; return cleanup evidence (not a framework)."""
+    evidence = {
+        "pid": pid,
+        "platform": os.name,
+        "term_attempted": False,
+        "kill_attempted": False,
+        "taskkill_returncode": None,
+        "still_running_after_cleanup": None,
+    }
     if pid <= 0:
-        return
+        return evidence
     if os.name == "nt":
-        subprocess.run(
+        evidence["term_attempted"] = True
+        evidence["kill_attempted"] = True
+        completed = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output=True,
             check=False,
+            timeout=30,
         )
-        return
-    try:
+        evidence["taskkill_returncode"] = completed.returncode
+        # taskkill 0 = terminated; 128 = PID already gone. Either way the tree
+        # is not an observed live hang after cleanup. Other codes stay unknown.
+        evidence["still_running_after_cleanup"] = (
+            False if completed.returncode in (0, 128) else None
+        )
+        return evidence
+    evidence["term_attempted"] = True
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
         os.killpg(pid, 15)
-    except (ProcessLookupError, PermissionError, OSError):
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
         try:
-            os.kill(pid, 15)
+            os.killpg(pid, 0)
         except (ProcessLookupError, PermissionError, OSError):
-            return
+            evidence["still_running_after_cleanup"] = False
+            return evidence
+        time.sleep(0.05)
+    evidence["kill_attempted"] = True
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(pid, 9)
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.kill(pid, 9)
+    try:
+        os.killpg(pid, 0)
+        evidence["still_running_after_cleanup"] = True
+    except (ProcessLookupError, PermissionError, OSError):
+        evidence["still_running_after_cleanup"] = False
+    return evidence
 
 
 def default_run(
@@ -1135,24 +1174,39 @@ def default_run(
     try:
         stdout, stderr = proc.communicate(input=data, timeout=timeout)
         return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
-    except subprocess.TimeoutExpired:
-        _kill_process_tree(proc.pid)
+    except subprocess.TimeoutExpired as error:
+        # Preserve any bytes already captured before the adapter deadline.
+        partial_out = error.stdout if isinstance(error.stdout, str) else ""
+        partial_err = error.stderr if isinstance(error.stderr, str) else ""
+        cleanup = _kill_process_tree(proc.pid)
         try:
             stdout, stderr = proc.communicate(timeout=5)
         except (subprocess.TimeoutExpired, OSError, ValueError):
-            stdout, stderr = "", ""
+            stdout, stderr = partial_out, partial_err
             with contextlib.suppress(OSError):
                 proc.kill()
         detail = f"tool_execution_timeout after {timeout}s"
-        return subprocess.CompletedProcess(
-            argv,
-            TOOL_TIMEOUT_EXIT,
-            stdout or "",
-            ((stderr or "") + "\n" + detail).strip() if stderr else detail,
+        merged_err = "\n".join(
+            part for part in ((stderr or partial_err), detail) if part
         )
+        # returncode stays None-equivalent via timed_out flag; do not invent 124.
+        # After forced kill, proc.returncode may be set; that is still adapter
+        # termination, not a trustworthy native tool exit for Check verdicts.
+        completed = subprocess.CompletedProcess(
+            argv,
+            proc.returncode if proc.returncode is not None else -1,
+            stdout or partial_out or "",
+            merged_err,
+        )
+        completed.timed_out = True
+        completed.timeout_sec = timeout
+        completed.cleanup = cleanup
+        completed.observed_returncode_after_kill = proc.returncode
+        return completed
 
 
 def _invoke(runner, argv: list[str], root: Path, *, timeout: float | None = None):
+    """Invoke a Host tool. ``timeout`` applies only to built-in ``default_run``."""
     fn = runner or default_run
     if runner is None and timeout is not None:
         return default_run(list(argv), root, None, timeout=timeout)
@@ -2023,21 +2077,42 @@ def run_workflow_script_suite(
             )
             if completed is None:
                 return {**stale, "reason": source_problem}
-            if getattr(completed, "returncode", None) == TOOL_TIMEOUT_EXIT:
+            raw_stdout = getattr(completed, "stdout", "") or ""
+            raw_stderr = getattr(completed, "stderr", "") or ""
+            if _tool_run_timed_out(completed):
+                # Combined Actionlint+ShellCheck was attempted; ShellCheck child
+                # coverage is unknown (may have hung before spawn). Preserve
+                # partial streams and cleanup evidence; never invent a native exit.
                 res = {
-                    "prepared": False,
+                    "prepared": True,
+                    "timed_out": True,
                     "reason": "actionlint_shellcheck_timeout",
-                    "detail": (getattr(completed, "stderr", "") or "").strip(),
+                    "detail": raw_stderr.strip(),
+                    "stdout": raw_stdout,
+                    "stderr": raw_stderr,
                     "shellcheck_prepared": sc_ok if want_inline_shellcheck else None,
                     "shellcheck_version": sc_ver,
                     "shellcheck_detail": sc_detail,
+                    "shellcheck_requested": want_inline_shellcheck,
+                    "shellcheck_enabled": use_shellcheck,
+                    "shellcheck_coverage": "unknown",
                     "executable": exe_label,
                     "tool_version": obs_al,
+                    "timeout_sec": getattr(
+                        completed,
+                        "timeout_sec",
+                        ACTIONLINT_INLINE_SHELLCHECK_TIMEOUT_SEC,
+                    ),
+                    "cleanup": getattr(completed, "cleanup", None),
+                    "observed_returncode_after_kill": getattr(
+                        completed, "observed_returncode_after_kill", None
+                    ),
+                    "target_source_problem": source_problem,
+                    "report": None,
                 }
-                cache[cache_key] = res
+                if source_problem is None:
+                    cache[cache_key] = res
                 return res
-            raw_stdout = getattr(completed, "stdout", "") or ""
-            raw_stderr = getattr(completed, "stderr", "") or ""
             sc_debug = (
                 _parse_actionlint_shellcheck_debug(raw_stderr)
                 if use_shellcheck
@@ -2053,6 +2128,7 @@ def run_workflow_script_suite(
             logical_findings(rep, locations)
             res = {
                 "prepared": True,
+                "timed_out": False,
                 "report": rep,
                 "executable": exe_label,
                 "tool_version": obs_al,
@@ -2148,14 +2224,30 @@ def run_workflow_script_suite(
         else:
             al_target_tuple = tuple(al_workflows)
             al_run = ensure_actionlint_run(al_target_tuple, want_inline_for_al)
-            if (
-                not al_run["prepared"]
+            combined_timeout = (
+                bool(al_run.get("timed_out"))
                 and al_run.get("reason") == "actionlint_shellcheck_timeout"
-                and want_inline_for_al
-            ):
-                # Inline ShellCheck timed out; Actionlint itself can still run
-                # with -shellcheck= so the Workflow syntax Check stays honest.
-                al_run = ensure_actionlint_run(al_target_tuple, False)
+            )
+            if combined_timeout and want_inline_for_al:
+                # First combined attempt timed out (fact retained on the inline
+                # Check). Actionlint may still obtain an independent native PASS
+                # with -shellcheck=; that does not clear the timeout or grant
+                # inline ShellCheck PASS.
+                timeout_detail = {
+                    "reason": "actionlint_shellcheck_timeout",
+                    "stdout": al_run.get("stdout") or "",
+                    "stderr": al_run.get("stderr") or "",
+                    "timeout_sec": al_run.get("timeout_sec"),
+                    "cleanup": al_run.get("cleanup"),
+                    "shellcheck_coverage": "unknown",
+                }
+                indep_run = ensure_actionlint_run(al_target_tuple, False)
+                if indep_run.get("prepared") and not indep_run.get("timed_out"):
+                    al_run = {
+                        **indep_run,
+                        "prior_combined_timeout": True,
+                        "prior_timeout_detail": timeout_detail,
+                    }
             if not al_run["prepared"]:
                 out["actionlint"] = {
                     "name": "actionlint",
@@ -2169,6 +2261,33 @@ def run_workflow_script_suite(
                     "access_id": "actionlint/check",
                     **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                 }
+            elif al_run.get("timed_out"):
+                out["actionlint"] = {
+                    "name": "actionlint",
+                    "selected": sel.get("status"),
+                    "status": "unknown",
+                    "exit_code": None,
+                    "reason": "actionlint_shellcheck_timeout",
+                    "stdout": al_run.get("stdout") or "",
+                    "stderr": al_run.get("stderr") or al_run.get("detail") or "",
+                    "execution_started": True,
+                    "execution_kind": "host",
+                    "executable": al_run.get("executable"),
+                    "tool_version": al_run.get("tool_version"),
+                    "access_id": "actionlint/check",
+                    "input_paths": list(al_workflows),
+                    "target_source_problem": al_run.get("target_source_problem"),
+                    "coverage": {
+                        "workflows_scanned": len(al_workflows),
+                        "workflow_files": list(al_workflows),
+                        "shellcheck_inline_enabled": False,
+                        "shellcheck_inline_coverage": "unknown",
+                        "combined_actionlint_shellcheck_attempted": True,
+                        "timeout_sec": al_run.get("timeout_sec"),
+                        "cleanup": al_run.get("cleanup"),
+                    },
+                    **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+                }
             else:
                 rep = al_run["report"]
                 # If the combined actionlint+shellcheck invocation only failed due to
@@ -2176,23 +2295,32 @@ def run_workflow_script_suite(
                 # actionlint independently with -shellcheck= so actionlint gets its
                 # own genuine native exit code and verdict.
                 if (
-                    al_run["shellcheck_enabled"]
+                    al_run.get("shellcheck_enabled")
+                    and not al_run.get("timed_out")
                     and not al_run["target_source_problem"]
+                    and rep is not None
                     and rep["exit_code"] != 0
                     and not rep["actionlint_findings"]
                     and rep["shellcheck_findings"]
                 ):
                     indep_run = ensure_actionlint_run(al_target_tuple, False)
-                    if not indep_run["prepared"]:
+                    if not indep_run["prepared"] or indep_run.get("timed_out"):
                         out["actionlint"] = {
                             "name": "actionlint",
                             "selected": sel.get("status"),
-                            "status": "not_executed",
+                            "status": "not_executed"
+                            if not indep_run.get("prepared")
+                            else "unknown",
                             "exit_code": None,
-                            "reason": indep_run["reason"],
-                            "stderr": indep_run["detail"],
-                            "execution_started": False,
-                            "execution_kind": "not_started",
+                            "reason": indep_run.get("reason")
+                            or "actionlint_shellcheck_timeout",
+                            "stderr": indep_run.get("detail")
+                            or indep_run.get("stderr")
+                            or "",
+                            "execution_started": bool(indep_run.get("timed_out")),
+                            "execution_kind": "host"
+                            if indep_run.get("timed_out")
+                            else "not_started",
                             "access_id": "actionlint/check",
                             **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                         }
@@ -2237,6 +2365,16 @@ def run_workflow_script_suite(
                             "workflow_files": list(al_workflows),
                             "shellcheck_inline_enabled": bool(
                                 rep["shellcheck_enabled"]
+                            ),
+                            **(
+                                {
+                                    "prior_combined_timeout": True,
+                                    "prior_timeout_detail": al_run[
+                                        "prior_timeout_detail"
+                                    ],
+                                }
+                                if al_run.get("prior_combined_timeout")
+                                else {}
                             ),
                         },
                         **({"rule_ref": rule_ref} if rule_ref is not None else {}),
@@ -2322,6 +2460,36 @@ def run_workflow_script_suite(
                         "execution_started": False,
                         "execution_kind": "not_started",
                         "access_id": "actionlint/shellcheck-inline",
+                        **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+                    }
+                elif al_run.get("timed_out"):
+                    out["workflow_shellcheck"] = {
+                        "name": "workflow_shellcheck",
+                        "selected": sel.get("status"),
+                        "status": "unknown",
+                        "exit_code": None,
+                        "reason": "actionlint_shellcheck_timeout",
+                        "stdout": al_run.get("stdout") or "",
+                        "stderr": al_run.get("stderr") or al_run.get("detail") or "",
+                        "execution_started": True,
+                        "execution_kind": "host",
+                        "executable": al_run.get("executable"),
+                        "tool_version": sc_ver,
+                        "access_id": "actionlint/shellcheck-inline",
+                        "input_paths": list(wf_sc_workflows),
+                        "target_source_problem": al_run.get("target_source_problem"),
+                        "shared_actionlint": bool("actionlint" in out),
+                        "coverage": {
+                            "workflow_inline_shell": False,
+                            "workflow_inline_status": "unknown",
+                            "shellcheck_inline_coverage": "unknown",
+                            "combined_actionlint_shellcheck_attempted": True,
+                            "inline_shell_steps_invoked": 0,
+                            "workflow_files": list(wf_sc_workflows),
+                            "per_script_clean_receipts_available": False,
+                            "timeout_sec": al_run.get("timeout_sec"),
+                            "cleanup": al_run.get("cleanup"),
+                        },
                         **({"rule_ref": rule_ref} if rule_ref is not None else {}),
                     }
                 elif not al_run["shellcheck_enabled"]:

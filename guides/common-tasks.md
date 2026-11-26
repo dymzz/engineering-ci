@@ -56,10 +56,11 @@ uv run --locked --no-sync lefthook install
 ShellCheck 分域）。`workflow_shellcheck` 仍在引擎合同与单测中，但本仓 `ci-selection.toml` 的 `checks`
 与本地 Index/Push Profile **均未启用**：pinned Actionlint 1.7.12 在向 ShellCheck
 喂入较大 `run:` 脚本时存在 stdin 管道死锁风险（rhysd/actionlint#650/#702；官方
-changelog 称 1.8.0 修复，但当前可用的 actionlint-py 包装仍止于 1.7.12.25）。若将来
-某阶段选中内联扫描，执行带超时；超时记 `not_executed`
-（`actionlint_shellcheck_timeout`），不生成 PASS，且公共 Selection 不按宿主 OS 抹除
-适用输入。PR/main 上的正式 Workflow 安全 Check 接线仍属 #63，不把本切片的本地
+changelog 称 1.8.0 修复，但当前可用的 actionlint-py 包装仍止于 1.7.12.25）。若将来某阶段选中内联扫描，Host `default_run`（仅 `runner is None` 的本地路径）对
+组合 Actionlint+ShellCheck 调用带超时；超时记 `unknown`（已尝试、覆盖未知，
+`actionlint_shellcheck_timeout`），保留部分输出与清理证据，不以合成退出码冒充原生
+退出，也不生成 inline PASS。自定义 Runner 与 Dagger `_run_repository_script` 不继承
+该超时边界。公共 Selection 不按宿主 OS 抹除适用输入。PR/main 上的正式 Workflow 安全 Check 接线仍属 #63，不把本切片的本地
 Profile 或 fixture 测试冒充生产 Source 覆盖。
 `docs` / `vulture` / `tach` 仍未纳入本仓默认 Hygiene，留给后续 A2/B 切片。无 Profile
 的兼容路径仍可只跑本地暂存空白检查。
