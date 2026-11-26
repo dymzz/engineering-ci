@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 from . import (
+    check_contract,
     dagger_plan,
     execution,
     expected_checks,
@@ -593,6 +594,7 @@ def _reconcile_plan(
         resolutions=resolve() if observations else [],
         observations=observations,
         invocation_ref=binding.invocation_ref,
+        eligible_statuses=check_contract.LOCAL_SETTLEMENT_WITNESS_STATUSES,
     )
     reconciliation.validate_receipt(receipt)
     return receipt
@@ -879,11 +881,14 @@ def print_result(outcome, invocation_ref):
         sys.stdout.write(check.get("stdout") or "")
         sys.stderr.write(check.get("stderr") or "")
     for check in outcome.get("checks") or ():
-        if check.get("status") in {"failed", "not_executed"}:
+        status = check.get("status")
+        if status in {"failed", "not_executed", "advisory"}:
             print(
-                f"{check['name']}: {check.get('reason') or check['status']}",
+                f"{check['name']}: {check.get('reason') or status}",
                 file=sys.stderr,
             )
+            for finding in check.get("findings") or ():
+                print(finding, file=sys.stderr)
             sys.stdout.write(check.get("stdout") or "")
             sys.stderr.write(check.get("stderr") or "")
     if outcome.get("reason") is not None:

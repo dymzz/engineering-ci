@@ -133,10 +133,12 @@ analysed interpreter version.
 - Hypothesis is not a scanner. Consumers needing property tests run them
   through the existing `python_test` entry point and keep its JUnit and
   coverage behaviour.
-- Ruff continues through `python_lint` and `python_format_check`. B, SIM and PIE
-  were evaluated against the current tree and produce zero findings there; they
-  are not enabled by default, and enabling them is a separate explicit policy
-  decision.
+- Ruff continues through `python_lint` and `python_format_check`. Root
+  `pyproject.toml` enables B, SIM and PIE via `extend-select` for this
+  repository's locked Ruff (editor, Verify/CI Dagger lint). `target-version`
+  remains `py311` while `requires-python` is `>=3.14`, so shared fixture and
+  consumer trees that still declare earlier minors stay within the linted
+  syntax surface; do not treat that as a package runtime floor.
 
 ## Verification
 

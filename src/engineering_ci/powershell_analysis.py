@@ -207,7 +207,7 @@ def _records(raw: str) -> tuple[dict, list[dict]]:
     except ValueError as exc:
         raise AnalysisError(
             f"the analyzer output is not valid JSON ({type(exc).__name__})"
-        )
+        ) from exc
     if not isinstance(envelope, dict):
         raise AnalysisError("the analyzer envelope is not an object")
     return envelope, [item for item in diagnostics if isinstance(item, dict)]

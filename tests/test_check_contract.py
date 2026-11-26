@@ -1493,6 +1493,86 @@ def test_advisory_requires_native_exit_and_evidence():
         )
 
 
+def test_advisory_native_result_satisfies_expected_without_becoming_passed():
+    forwarding = check_contract.definition_for("forwarding")
+    checked = closed_source()
+    rule = check_contract.rule_ref("hygiene", 1, digest="a" * 64)
+    baseline = {"base_commit": "a" * 40}
+    expected = {
+        "check_id": forwarding.check_id,
+        "definition_version": forwarding.definition_version,
+        "rule_ref": rule,
+        "source_ref": checked,
+        "baseline_ref": baseline,
+    }
+    advisory = check_contract.native_result(
+        forwarding,
+        source=checked,
+        status="advisory",
+        result_origin="host",
+        result_instance="fwd-adv-sat",
+        rule_ref=rule,
+        baseline_ref=baseline,
+        evidence={
+            "analysis": "forwarding",
+            "findings": ["src/pkg/sub.py became a pure re-export"],
+        },
+    )
+    # Default PASS contract rejects advisory-only candidates (#63 T1-a/T2).
+    default = check_contract.evaluate_expected_satisfaction([advisory], expected)
+    assert default["status"] == "unsatisfied"
+    assert default["reason"] == "result_not_passed"
+    assert not check_contract.result_covers_expected(advisory, expected)
+
+    # Local Hook settlement may opt into non-blocking advisory.
+    local = check_contract.LOCAL_SETTLEMENT_WITNESS_STATUSES
+    decision = check_contract.evaluate_expected_satisfaction(
+        [advisory], expected, eligible_statuses=local
+    )
+    assert decision["status"] == "satisfied"
+    assert decision["reason"] == "native_advisory"
+    assert decision["selected_result_ids"] == [advisory["result_id"]]
+    assert advisory["status"] == "advisory"
+    assert check_contract.result_covers_expected(
+        advisory, expected, eligible_statuses=local
+    )
+
+    passed = check_contract.native_result(
+        forwarding,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="fwd-pass-sat",
+        rule_ref=rule,
+        baseline_ref=baseline,
+        evidence={"analysis": "forwarding"},
+    )
+    # Mixed candidates prefer authentic PASS even when advisory is eligible.
+    mixed = check_contract.evaluate_expected_satisfaction(
+        [advisory, passed], expected, eligible_statuses=local
+    )
+    assert mixed["status"] == "satisfied"
+    assert mixed["reason"] == "native_pass"
+    assert mixed["selected_result_ids"] == [passed["result_id"]]
+
+    failed = check_contract.native_result(
+        forwarding,
+        source=checked,
+        status="failed",
+        result_origin="host",
+        result_instance="fwd-fail",
+        rule_ref=rule,
+        baseline_ref=baseline,
+        evidence={"analysis": "forwarding"},
+        reason="module_unparsable",
+    )
+    rejected = check_contract.evaluate_expected_satisfaction(
+        [failed], expected, eligible_statuses=local
+    )
+    assert rejected["status"] == "unsatisfied"
+    assert rejected["reason"] == "result_not_passed"
+
+
 def test_internal_check_forbids_native_exit_code():
     for name in ("forwarding", "source"):
         definition = check_contract.definition_for(name)
