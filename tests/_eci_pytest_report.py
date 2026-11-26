@@ -106,7 +106,7 @@ def pytest_configure(config):
         json.dumps(meta, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    config._eci_invocation_report = meta  # noqa: SLF001
+    config._eci_invocation_report = meta
     if not config.pluginmanager.has_plugin(_REPORT_PLUGIN):
         config.pluginmanager.register(_InvocationReportPlugin(meta), _REPORT_PLUGIN)
 
