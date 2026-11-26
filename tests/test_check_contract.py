@@ -1518,12 +1518,42 @@ def test_advisory_native_result_satisfies_expected_without_becoming_passed():
             "findings": ["src/pkg/sub.py became a pure re-export"],
         },
     )
-    decision = check_contract.evaluate_expected_satisfaction([advisory], expected)
+    # Default PASS contract rejects advisory-only candidates (#63 T1-a/T2).
+    default = check_contract.evaluate_expected_satisfaction([advisory], expected)
+    assert default["status"] == "unsatisfied"
+    assert default["reason"] == "result_not_passed"
+    assert not check_contract.result_covers_expected(advisory, expected)
+
+    # Local Hook settlement may opt into non-blocking advisory.
+    local = check_contract.LOCAL_SETTLEMENT_WITNESS_STATUSES
+    decision = check_contract.evaluate_expected_satisfaction(
+        [advisory], expected, eligible_statuses=local
+    )
     assert decision["status"] == "satisfied"
     assert decision["reason"] == "native_advisory"
     assert decision["selected_result_ids"] == [advisory["result_id"]]
     assert advisory["status"] == "advisory"
-    assert check_contract.result_covers_expected(advisory, expected)
+    assert check_contract.result_covers_expected(
+        advisory, expected, eligible_statuses=local
+    )
+
+    passed = check_contract.native_result(
+        forwarding,
+        source=checked,
+        status="passed",
+        result_origin="host",
+        result_instance="fwd-pass-sat",
+        rule_ref=rule,
+        baseline_ref=baseline,
+        evidence={"analysis": "forwarding"},
+    )
+    # Mixed candidates prefer authentic PASS even when advisory is eligible.
+    mixed = check_contract.evaluate_expected_satisfaction(
+        [advisory, passed], expected, eligible_statuses=local
+    )
+    assert mixed["status"] == "satisfied"
+    assert mixed["reason"] == "native_pass"
+    assert mixed["selected_result_ids"] == [passed["result_id"]]
 
     failed = check_contract.native_result(
         forwarding,
@@ -1536,7 +1566,9 @@ def test_advisory_native_result_satisfies_expected_without_becoming_passed():
         evidence={"analysis": "forwarding"},
         reason="module_unparsable",
     )
-    rejected = check_contract.evaluate_expected_satisfaction([failed], expected)
+    rejected = check_contract.evaluate_expected_satisfaction(
+        [failed], expected, eligible_statuses=local
+    )
     assert rejected["status"] == "unsatisfied"
     assert rejected["reason"] == "result_not_passed"
 

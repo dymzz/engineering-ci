@@ -3326,6 +3326,11 @@ def test_issue109_p1a_p1b_satisfaction_sets_authority_and_reasons():
     )
     expect_invalid(fwd_bad_reason, "receipt_satisfaction_reason_invalid")
 
+    # Reason must match the selected witness status (passed ≠ native_advisory).
+    fwd_status_reason = copy.deepcopy(fwd_rec)
+    fwd_status_reason["entries"][0]["native_satisfaction"]["reason"] = "native_advisory"
+    expect_invalid(fwd_status_reason, "receipt_satisfaction_reason_invalid")
+
     fwd_bad_auth = copy.deepcopy(fwd_rec)
     fwd_bad_auth["entries"][0]["native_satisfaction"]["trusted"] = True
     expect_invalid(fwd_bad_auth, "receipt_satisfaction_authority_claimed")

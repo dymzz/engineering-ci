@@ -533,7 +533,9 @@ def test_repository_profiles_keep_forwarding_advisory_nonblocking(tmp_path, hook
     ordinary_binding = _new_invocation(directory, ordinary)
     ordinary_receipt = _artifact(ordinary_binding, ".receipt")
     assert ordinary_receipt["status"] == "matched"
-    assert ordinary_receipt["trusted"] is False and ordinary_receipt["required"] is False
+    assert (
+        ordinary_receipt["trusted"] is False and ordinary_receipt["required"] is False
+    )
     by_name = {entry["name"]: entry for entry in ordinary_receipt["entries"]}
     assert by_name["whitespace"]["binding_status"] == "matched"
     assert by_name["forwarding"]["binding_status"] == "matched"
@@ -544,10 +546,13 @@ def test_repository_profiles_keep_forwarding_advisory_nonblocking(tmp_path, hook
     advisory = _run(
         root, hook_env, "git", "commit", "-m", "Convert module to pure re-export"
     )
-    assert "src/pkg/sub.py" in advisory.stderr
-    assert "pure re-export" in advisory.stderr
-    assert "forwarding: advisory" in advisory.stderr or "forwarding:" in advisory.stderr
-    adv_binding = _new_invocation(directory, advisory, [ordinary_binding.invocation_path])
+    advisory_text = _diagnostic(advisory)
+    assert "src/pkg/sub.py" in advisory_text
+    assert "pure re-export" in advisory_text
+    assert "forwarding: advisory" in advisory_text
+    adv_binding = _new_invocation(
+        directory, advisory, [ordinary_binding.invocation_path]
+    )
     adv_receipt = _artifact(adv_binding, ".receipt")
     assert adv_receipt["status"] == "matched"
     assert adv_receipt["trusted"] is False and adv_receipt["required"] is False
@@ -566,7 +571,9 @@ def test_repository_profiles_keep_forwarding_advisory_nonblocking(tmp_path, hook
     head = git(root, "rev-parse", "HEAD", env=hook_env)
 
     push = _run(root, hook_env, "git", "push", "origin", "main")
-    assert "src/pkg/sub.py" in push.stderr or push.returncode == 0
+    push_text = _diagnostic(push)
+    assert "src/pkg/sub.py" in push_text
+    assert "pure re-export" in push_text
     push_binding = _new_invocation(
         directory, push, [ordinary_binding.invocation_path, adv_binding.invocation_path]
     )
@@ -581,6 +588,7 @@ def test_repository_profiles_keep_forwarding_advisory_nonblocking(tmp_path, hook
     push_by = {entry["name"]: entry for entry in push_receipt["entries"]}
     assert push_by["forwarding"]["binding_status"] == "matched"
     assert push_by["forwarding"]["native_status"] == "advisory"
+    assert push_by["forwarding"]["native_satisfaction"]["reason"] == "native_advisory"
     assert push_by["forwarding"]["selected_results"][0]["status"] == "advisory"
     assert git(remote, "rev-parse", "refs/heads/main", env=hook_env) == head
 
@@ -607,7 +615,7 @@ def test_repository_profiles_keep_forwarding_advisory_nonblocking(tmp_path, hook
     blocked_receipt = _artifact(blocked_binding, ".receipt")
     blocked_by = {entry["name"]: entry for entry in blocked_receipt["entries"]}
     assert blocked_by["whitespace"]["binding_status"] == "insufficient"
-    assert "whitespace" in blocked.stderr or blocked.returncode == 1
+    assert "whitespace" in _diagnostic(blocked)
 
 
 def test_installed_lefthook_uses_pinned_dagger_module(tmp_path, hook_env):

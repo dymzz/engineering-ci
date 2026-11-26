@@ -1402,13 +1402,17 @@ def _object_mismatch(result, strict):
     return None
 
 
-def _evaluate_candidates(strict_expected, candidates):
+def _evaluate_candidates(strict_expected, candidates, *, eligible_statuses=None):
     """Call #52 exactly once for the identity-qualified candidate group."""
     if not candidates:
         return None, "native_result_missing"
     try:
         return (
-            check_contract.evaluate_expected_satisfaction(candidates, strict_expected),
+            check_contract.evaluate_expected_satisfaction(
+                candidates,
+                strict_expected,
+                eligible_statuses=eligible_statuses,
+            ),
             None,
         )
     except check_contract.CheckContractError as error:
@@ -1480,6 +1484,7 @@ def _reconcile_entry(
     scope=None,
     invocation_ref=None,
     terminal_binding=None,
+    eligible_statuses=None,
 ):
     output = {
         "expected_check_ref": entry["expected_check_ref"],
@@ -1824,7 +1829,11 @@ def _reconcile_entry(
         )
         return output
 
-    decision, error = _evaluate_candidates(strict, [result for result, _ in eligible])
+    decision, error = _evaluate_candidates(
+        strict,
+        [result for result, _ in eligible],
+        eligible_statuses=eligible_statuses,
+    )
     if error is not None:
         output.update(
             binding_status="unknown",
@@ -1985,6 +1994,7 @@ def reconcile_expected_results(
     observations=(),
     invocation_ref=None,
     terminal_bindings=(),
+    eligible_statuses=None,
 ):
     """Reconcile one immutable Expected scope with activated Jobs and results.
 
@@ -1995,6 +2005,11 @@ def reconcile_expected_results(
     #52 Native Results under the exact Job/Run/Attempt/Report identity they came
     from, and optional ``terminal_bindings`` carries verified #52-D4 bindings
     for post-completion ``weaver_terminal``.
+
+    ``eligible_statuses`` defaults to passed-only PASS witnesses. Local Hook
+    settlement may pass ``LOCAL_SETTLEMENT_WITNESS_STATUSES`` so advisory
+    findings remain non-blocking without rewriting native status or enlarging
+    #63/#61 trusted PASS.
 
     The returned receipt is additive and versioned. It never rewrites the
     Expected projection and does not claim trusted evidence or Required status.
@@ -2020,6 +2035,7 @@ def reconcile_expected_results(
             scope=scope,
             invocation_ref=invocation_ref,
             terminal_binding=terminal_by_ref.get(entry["expected_check_ref"]),
+            eligible_statuses=eligible_statuses,
         )
         for entry in checks
     ]
@@ -2153,13 +2169,18 @@ def _validate_satisfied_requirements(
     except check_contract.CheckContractError:
         raise ReconciliationError("receipt_satisfaction_invalid") from None
 
-    expected_reasons = (
-        ("all_requirements_satisfied",)
-        if definition.tool_requirements
-        else ("native_pass", "native_advisory")
-    )
-    if satisfaction.get("reason") not in expected_reasons:
-        raise ReconciliationError("receipt_satisfaction_reason_invalid")
+    if definition.tool_requirements:
+        if satisfaction.get("reason") != "all_requirements_satisfied":
+            raise ReconciliationError("receipt_satisfaction_reason_invalid")
+    elif len(selected) != 1:
+        raise ReconciliationError("receipt_witness_mismatch")
+    else:
+        selected_status = selected_by_id[selected[0]].get("status")
+        expected_reason = (
+            "native_advisory" if selected_status == "advisory" else "native_pass"
+        )
+        if satisfaction.get("reason") != expected_reason:
+            raise ReconciliationError("receipt_satisfaction_reason_invalid")
     if satisfaction.get("expected_failures_complete") is not False:
         raise ReconciliationError("receipt_satisfaction_expected_failures_invalid")
 
@@ -2170,8 +2191,6 @@ def _validate_satisfied_requirements(
     if not definition.tool_requirements:
         if reqs:
             raise ReconciliationError("receipt_satisfaction_requirements_mismatch")
-        if len(selected) != 1:
-            raise ReconciliationError("receipt_witness_mismatch")
         return
 
     rule = resolved_expected.get("rule_ref")
@@ -2205,13 +2224,6 @@ def _validate_satisfied_requirements(
         req_entry = req_by_id[req_def.requirement_id]
         if req_entry.get("status") != "satisfied":
             raise ReconciliationError("receipt_requirement_unsatisfied")
-        if req_entry.get("reason") not in {"native_pass", "native_advisory"}:
-            raise ReconciliationError("receipt_requirement_reason_invalid")
-        if req_entry.get("after") != list(req_def.after):
-            raise ReconciliationError("receipt_requirement_structure_mismatch")
-        expected_alts = [alt.access_id for alt in req_def.alternatives]
-        if req_entry.get("alternatives") != expected_alts:
-            raise ReconciliationError("receipt_requirement_structure_mismatch")
         sat_by = req_entry.get("satisfied_by")
         if not isinstance(sat_by, str) or not sat_by:
             raise ReconciliationError("receipt_requirement_witness_missing")
@@ -2219,6 +2231,17 @@ def _validate_satisfied_requirements(
             raise ReconciliationError("receipt_selected_rejected_conflict")
         if sat_by not in selected_set or sat_by not in selected_by_id:
             raise ReconciliationError("receipt_requirement_witness_unselected")
+        sel_item = selected_by_id[sat_by]
+        expected_req_reason = (
+            "native_advisory" if sel_item.get("status") == "advisory" else "native_pass"
+        )
+        if req_entry.get("reason") != expected_req_reason:
+            raise ReconciliationError("receipt_requirement_reason_invalid")
+        if req_entry.get("after") != list(req_def.after):
+            raise ReconciliationError("receipt_requirement_structure_mismatch")
+        expected_alts = [alt.access_id for alt in req_def.alternatives]
+        if req_entry.get("alternatives") != expected_alts:
+            raise ReconciliationError("receipt_requirement_structure_mismatch")
         req_observed = _result_id_list(
             req_entry.get("observed"), "receipt_requirement_observed_invalid"
         )
@@ -2229,7 +2252,6 @@ def _validate_satisfied_requirements(
             raise ReconciliationError("receipt_requirement_observed_mismatch")
         if sat_by not in req_observed_set:
             raise ReconciliationError("receipt_requirement_witness_unobserved")
-        sel_item = selected_by_id[sat_by]
         if not check_contract._result_matches_requirement(req_def, sel_item):
             raise ReconciliationError("receipt_requirement_tool_mismatch")
         expected_req_observed = [

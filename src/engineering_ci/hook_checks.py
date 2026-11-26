@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 from . import (
+    check_contract,
     dagger_plan,
     execution,
     expected_checks,
@@ -593,6 +594,7 @@ def _reconcile_plan(
         resolutions=resolve() if observations else [],
         observations=observations,
         invocation_ref=binding.invocation_ref,
+        eligible_statuses=check_contract.LOCAL_SETTLEMENT_WITNESS_STATUSES,
     )
     reconciliation.validate_receipt(receipt)
     return receipt
