@@ -397,12 +397,22 @@ def _valid_policy_scope(scope):
     )
 
 
-def _policy_still_authorized(snapshot, *, publish_context, authority):
+def _policy_still_authorized(
+    snapshot,
+    *,
+    publish_context,
+    manifest_identity,
+    bindings,
+    require_bindings,
+    authority,
+):
     if authority is None:
         return "policy_snapshot_authority_missing", "unverified", None
     context = {
         "snapshot": copy.deepcopy(snapshot),
         "publish_context": copy.deepcopy(publish_context),
+        "manifest_identity": copy.deepcopy(manifest_identity),
+        "check_bindings": copy.deepcopy(bindings),
         "evaluated_at": publish_context["evaluated_at"],
     }
     result = authority(context)
@@ -422,6 +432,19 @@ def _policy_still_authorized(snapshot, *, publish_context, authority):
         scope = copy.deepcopy(scope)
         if scope != snapshot["assessment_scope"]:
             return "release_assessment_scope_mismatch", "rejected", scope
+        approved = result.get("required_check_bindings")
+        if require_bindings and approved is None:
+            return "release_policy_check_bindings_missing", "unverified", scope
+        if approved is not None:
+            expected = {
+                row["manifest_check_key"]: row["expected_check_ref"]
+                for row in _normalize_bindings(approved)
+            }
+            reported = {
+                row["manifest_check_key"]: row["expected_check_ref"] for row in bindings
+            }
+            if expected != reported:
+                return "release_policy_check_bindings_mismatch", "rejected", scope
         return None, "authorized", scope
     if status in {"revoked", "expired", "superseded", "rejected"}:
         return f"policy_snapshot_{status}", "rejected", None
@@ -774,6 +797,18 @@ def _authorization_consistent(envelope):
                 or scope["candidate"]["commit"].lower() != normalized["head_sha"]
             ):
                 errors.append("release_verified_requires_assessment_scope_alignment")
+            elif authorized is True:
+                try:
+                    assessment_time = _datetime(
+                        snapshot.get("assessment_evaluated_at"),
+                        "release_assessment_evaluated_at_invalid",
+                    )
+                    if assessment_time > _datetime(
+                        normalized["evaluated_at"], "release_evaluated_at_invalid"
+                    ):
+                        errors.append("release_assessment_evaluated_in_future")
+                except RequiredAssessmentReleaseError as error:
+                    errors.append(error.code)
         if authorized is True:
             if mode != "publication":
                 errors.append("release_authorized_requires_publication_mode")
@@ -865,6 +900,7 @@ def reconcile_release_assessment(
     artifact_obligations,
     artifact_obligation_authority=None,
     check_bindings=None,
+    require_policy_check_bindings=False,
     manifest_provider_authority=None,
     handoff_authority=None,
     contract_sample=False,
@@ -889,6 +925,9 @@ def reconcile_release_assessment(
         head=context["head_sha"],
     )
     bindings = _normalize_bindings(check_bindings)
+    require_policy_check_bindings = _flag(
+        require_policy_check_bindings, "release_check_binding_policy_flag_invalid"
+    )
     artifacts = _normalize_artifact_obligations(artifact_obligations)
     contract_sample = _flag(contract_sample, "release_contract_sample_flag_invalid")
     policy_snapshot_authority = _callable_or_none(
@@ -909,6 +948,13 @@ def reconcile_release_assessment(
     if contract_sample or assessment.get("inputs", {}).get("contract_sample"):
         reasons.append("contract_sample_inputs_not_production_release")
         contract_sample = True
+    if (
+        _datetime(
+            assessment.get("evaluated_at"), "release_assessment_evaluated_at_invalid"
+        )
+        > evaluated
+    ):
+        reasons.append("release_assessment_evaluated_in_future")
 
     assessment_commit = _assessment_candidate_commit(assessment)
     if assessment_commit is None:
@@ -971,7 +1017,19 @@ def reconcile_release_assessment(
                 }
             )
             continue
-        manifest_status = normalized_manifest["checks"][key]["status"]
+        manifest_check = normalized_manifest["checks"][key]
+        manifest_status = manifest_check["status"]
+        if manifest_check["required"] is not True or manifest_status != "passed":
+            gaps.append(
+                {
+                    "kind": "check_binding",
+                    "ref": expected,
+                    "reason": "bound_manifest_check_not_required_passed",
+                    "manifest_check_key": key,
+                    "manifest_status": manifest_status,
+                }
+            )
+            reasons.append("release_check_binding_manifest_not_required_passed")
         row = assessment_checks.get(expected)
         if row is None:
             gaps.append(
@@ -985,7 +1043,7 @@ def reconcile_release_assessment(
             )
             reasons.append("release_check_binding_assessment_missing")
             continue
-        if row.get("status") not in {"satisfied", "not_applicable", "not_yet_due"}:
+        if row.get("status") != "satisfied":
             gaps.append(
                 {
                     "kind": "check_binding",
@@ -1061,6 +1119,9 @@ def reconcile_release_assessment(
     policy_reason, policy_status, policy_scope = _policy_still_authorized(
         snapshot,
         publish_context=context,
+        manifest_identity=_manifest_identity(normalized_manifest),
+        bindings=bindings,
+        require_bindings=require_policy_check_bindings,
         authority=policy_snapshot_authority,
     )
     if policy_reason:
@@ -1119,6 +1180,7 @@ def reconcile_release_assessment(
         "profile_snapshot": snapshot,
         "policy_snapshot_status": policy_status,
         "policy_scope": policy_scope,
+        "policy_check_bindings_required": require_policy_check_bindings,
         "provider_evidence": provider_evidence,
         "artifact_obligation_status": artifact_status,
         "artifact_obligations": artifacts,

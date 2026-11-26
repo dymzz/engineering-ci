@@ -8,12 +8,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from test_release_manifest import IDS, ManifestGitHub, make_manifest, publish
+import pytest
+from test_release_manifest import (
+    IDS,
+    ManifestGitHub,
+    make_manifest,
+    publication_inputs,
+    publish,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
+from engineering_ci import workflow_actions
 from engineering_ci.release import publishing as release
 
 HEAD, OTHER = "a" * 40, "b" * 40
@@ -130,6 +139,166 @@ def needs():
     }
     result["candidate"]["outputs"] = {"sha": HEAD}
     return result
+
+
+@pytest.mark.parametrize(
+    "condition,diagnostic",
+    [
+        ("missing_authority", "release_publication_authority_missing"),
+        ("missing_assessment", "release_publication_assessment_missing"),
+        ("future_assessment", "release_assessment_evaluated_in_future"),
+        ("blocked_assessment", "release_assessment_blocked"),
+        ("sample", "contract_sample_inputs_not_production_release"),
+        ("expired", "policy_snapshot_expired"),
+        ("revoked", "policy_snapshot_revoked"),
+        ("wrong_scope", "release_assessment_scope_mismatch"),
+        ("unproven_bindings", "release_policy_check_bindings_missing"),
+        ("wrong_attempt", "release_publication_run_attempt_mismatch"),
+        ("wrong_artifact_id", "release_provider_authority_rejected"),
+        ("wrong_digest", "release_provider_authority_rejected"),
+        ("unavailable_step", "release_provider_evidence_unavailable"),
+        ("validation", "Publication requires complete passed evidence"),
+        ("wrong_handoff", "release_publication_authority_inputs_invalid"),
+    ],
+)
+def test_current_r4_refusals_never_write(condition, diagnostic, monkeypatch):
+    from test_required_assessment_release import blocked_assessment, passed_assessment
+
+    api = FakeGitHub()
+    value = make_manifest(
+        api, mode="validation" if condition == "validation" else "publication"
+    )
+    if condition == "future_assessment":
+
+        class EarlierClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 11, 15, 12, tzinfo=tz)
+
+        monkeypatch.setattr(release, "datetime", EarlierClock)
+    if condition == "wrong_artifact_id":
+        (job_id, step), (name, artifact_id) = next(
+            (key, item)
+            for key, item in api.upload_ids.items()
+            if item[0] == "pytest-report"
+        )
+        api.upload_ids[job_id, step] = (name, artifact_id + 400)
+    if condition == "wrong_digest":
+        value["artifacts"][0]["digest"] = "sha256:" + "e" * 64
+    if condition == "unavailable_step":
+
+        def unavailable(*_):
+            raise release.ApiError(403)
+
+        monkeypatch.setattr(api, "job_step_log", unavailable)
+
+    def authority(context, manifest):
+        inputs = publication_inputs(context, manifest)
+        if condition == "missing_assessment":
+            inputs.pop("assessment")
+        elif condition == "blocked_assessment":
+            inputs["assessment"] = blocked_assessment()
+        elif condition == "sample":
+            inputs["assessment"], _ = passed_assessment(
+                candidate_commit=HEAD, contract_sample=True
+            )
+        elif condition in {"expired", "revoked"}:
+            inputs["policy_snapshot_authority"] = lambda _: {
+                "accepted": False,
+                "status": condition,
+            }
+        elif condition == "wrong_scope":
+            resolve = inputs["policy_snapshot_authority"]
+
+            def wrong(proof):
+                result = resolve(proof)
+                result["assessment_scope"]["refs"] = [
+                    {"target_ref": "refs/heads/other", "ref_action": "update"},
+                ]
+                return result
+
+            inputs["policy_snapshot_authority"] = wrong
+        elif condition == "unproven_bindings":
+            resolve = inputs["policy_snapshot_authority"]
+
+            def incomplete(proof):
+                result = resolve(proof)
+                del result["required_check_bindings"]
+                return result
+
+            inputs["policy_snapshot_authority"] = incomplete
+        elif condition == "wrong_handoff":
+            inputs["publish_context"] = {
+                "manifest_binding": "validation_to_publication"
+            }
+        return inputs
+
+    with pytest.raises(ValueError, match=diagnostic):
+        publish(
+            api,
+            value,
+            authority=None if condition == "missing_authority" else authority,
+            attempt=2 if condition == "wrong_attempt" else 1,
+        )
+    assert api.writes == []
+
+
+@pytest.mark.parametrize("authorized", [False, True])
+def test_workflow_publish_enforces_current_r4(
+    authorized, tmp_path, monkeypatch, capsys
+):
+    api = FakeGitHub()
+    path = tmp_path / "release-manifest.json"
+    path.write_text(json.dumps(make_manifest(api)), encoding="utf-8")
+    state = needs()
+    state["verified"] = {"result": "success"}
+    for key, value in environment(
+        GITHUB_REPOSITORY="example/ci",
+        GITHUB_RUN_ID="123",
+        GITHUB_RUN_ATTEMPT="1",
+        RELEASE_NEEDS=json.dumps(state),
+    ).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(release, "checked_version", lambda: TAG[1:])
+    monkeypatch.setattr(release.subprocess, "check_output", lambda *_, **__: HEAD)
+    monkeypatch.setattr(release, "GitHub", lambda _: api)
+    code = workflow_actions.main(
+        ["release", "publish", "--manifest", str(path)],
+        release_authority=publication_inputs if authorized else None,
+    )
+    output = capsys.readouterr()
+    if authorized:
+        assert code == 0
+        result = json.loads(output.out)
+        assert result["status"] == "published"
+        assert (
+            result["authorization"]["request_reconciliation"]["release_authorized"]
+            is True
+        )
+        assert result["authorization"]["retained_manifest_identity"]["run_attempt"] == 1
+        assert [call[1] for call in api.writes] == ["POST", "POST", "POST", "PATCH"]
+    else:
+        assert code == 1
+        assert "release_publication_authority_missing" in output.err
+        assert api.writes == []
+
+
+def test_draft_starter_recovery_requires_fresh_r4():
+    api = FakeGitHub(tag=HEAD)
+    api.published = {
+        "id": 10,
+        "url": "https://api.github.com/repos/example/ci/releases/10",
+        "tag_name": TAG,
+        "html_url": "https://github.com/example/ci/releases/tag/" + TAG,
+        "draft": True,
+        "prerelease": False,
+    }
+    api.starter = True
+    with pytest.raises(ValueError, match="release_publication_authority_missing"):
+        publish(api, authority=None)
+    assert api.starter is True
+    assert api.writes == []
 
 
 class ManualReleaseTests(unittest.TestCase):
@@ -363,7 +532,7 @@ class ManualReleaseTests(unittest.TestCase):
         api.saved = value
         api.fail_upload = False
         api.calls.clear()
-        with self.assertRaisesRegex(ValueError, "digest mismatch"):
+        with self.assertRaisesRegex(ValueError, "release_provider_authority_rejected"):
             publish(api)
         self.assertFalse(api.writes)
 
@@ -521,8 +690,96 @@ class ManualReleaseTests(unittest.TestCase):
             },
             ids=fresh_ids,
         )
-        publish(api, fresh)
+        from engineering_ci.required_assessment_release import bind_manifest_identity
+
+        original_identity = bind_manifest_identity(
+            saved, repository="example/ci", tag=TAG, head=HEAD
+        )
+        request_identity = bind_manifest_identity(
+            fresh, repository="example/ci", tag=TAG, head=HEAD
+        )
+        proofs = []
+
+        def authority(context, manifest):
+            inputs = publication_inputs(context, manifest)
+            if "recovery" in context:
+
+                def accept(proof):
+                    proofs.append(proof)
+                    if (
+                        proof["retained_manifest_identity"] == original_identity
+                        and proof["request_manifest_identity"] == request_identity
+                        and proof["request_publish_context"]["run_attempt"] == 2
+                        and proof["retained_publish_context"]["run_attempt"] == 1
+                    ):
+                        return {"status": "authorized", "accepted": True}
+                    return None
+
+                inputs["recovery_authority"] = accept
+            return inputs
+
+        for condition, reason in (
+            ("only_current", "release_draft_recovery_authority_missing"),
+            ("wrong_id", "release_provider_authority_rejected"),
+            ("wrong_digest", "release_provider_authority_rejected"),
+            ("wrong_attempt", "release_provider_authority_rejected"),
+            ("missing_required_digest", "release_required_artifact_digest_missing"),
+            (
+                "outdated_artifact_scope",
+                "release_draft_recovery_artifact_obligations_mismatch",
+            ),
+        ):
+            with self.subTest(condition=condition):
+                api.saved = copy.deepcopy(saved)
+                old = api.saved["artifacts"][0]
+                if condition == "wrong_id":
+                    current = next(
+                        row for row in fresh["artifacts"] if row["name"] == old["name"]
+                    )
+                    old.update(id=current["id"], url=current["url"])
+                if condition == "wrong_digest":
+                    old["digest"] = "sha256:" + "e" * 64
+                if condition == "wrong_attempt":
+                    api.saved["workflow"]["run_attempt"] = 2
+                if condition == "missing_required_digest":
+                    pytest_report = next(
+                        row
+                        for row in api.saved["artifacts"]
+                        if row["name"] == "pytest-report"
+                    )
+                    pytest_report["digest"] = None
+
+                def outdated(context, manifest):
+                    inputs = authority(context, manifest)
+                    if "recovery" in context:
+                        inputs["artifact_obligations"] = {
+                            "completeness": "empty",
+                            "items": [],
+                        }
+                    return inputs
+
+                resolver = {
+                    "only_current": publication_inputs,
+                    "outdated_artifact_scope": outdated,
+                }.get(condition, authority)
+                api.calls.clear()
+                with self.assertRaisesRegex(ValueError, reason):
+                    publish(api, fresh, attempt=2, authority=resolver)
+                self.assertFalse(api.writes)
+
+        api.saved = copy.deepcopy(saved)
+        api.calls.clear()
+        receipt = {}
+        publish(api, fresh, attempt=2, authority=authority, receipt=receipt)
         self.assertEqual([c[0] for c in api.writes], ["releases/10"])
+        self.assertEqual(receipt["retained_manifest_identity"], original_identity)
+        self.assertEqual(
+            receipt["recovery_reconciliation"]["manifest_identity"], original_identity
+        )
+        self.assertEqual(
+            proofs[-1]["retained_reconciliation_ref"],
+            receipt["recovery_reconciliation"]["reconciliation_ref"],
+        )
         self.assertEqual(api.saved, saved)
         self.assertEqual(api.saved["workflow"]["run_attempt"], 1)
         self.assertEqual(
