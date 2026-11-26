@@ -6274,11 +6274,38 @@ def test_execute_refuses_out_of_source_pytest_target_and_blocks_external_shadowi
     assert "--" in shadow_argv
     assert shadow_argv.index("--") < shadow_argv.index("tests/test_pkg.py")
 
+    (path / "@args.py").write_text(
+        "def test_bound_at_fails():\n    assert False\n", encoding="utf-8"
+    )
+    (path / "args.py").write_text(
+        str((external / "tests/test_pkg.py").resolve()) + "\n", encoding="utf-8"
+    )
+    at_report = execution.execute(
+        plan(
+            ["./@args.py"],
+            framework="pytest",
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "worktree",
+                "changed_paths": ["@args.py"],
+            },
+        ),
+        root=path,
+    )
+    assert at_report["status"] == "failed"
+    assert at_report["tests"]["exit_code"] == 1
+    at_argv = at_report["tests"]["observation"]["argv"]
+    assert at_argv[at_argv.index("--") + 1 :] == ["./@args.py"]
+
     for bad_target, expected_reason in (
         ("../ext_shadow/tests/test_pkg.py", "pytest_target_outside_source"),
         ("./--collect-only", "pytest_target_invalid"),
         ("./--help", "pytest_target_invalid"),
         ("./--version", "pytest_target_invalid"),
+        (" ./--version", "pytest_target_invalid"),
     ):
         escape_report = execution.execute(
             plan(

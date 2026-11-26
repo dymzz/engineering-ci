@@ -67,6 +67,10 @@ class QualityPolicyTests(unittest.TestCase):
             quality.test_policy("tests/unit", expression), "x.xml"
         )
         self.assertEqual(args[-3:], ["-m", expression, "tests/unit"])
+        at_args = quality.pytest_arguments(
+            quality.test_policy("@args.py"), "/tmp/junit.xml"
+        )
+        self.assertEqual(at_args[-1], "./@args.py")
         for code in (1, 2, 4, 5):
             self.assertFalse(
                 quality.evaluate_quality(quality.test_policy(markers="missing"), code)[
@@ -81,6 +85,9 @@ class QualityPolicyTests(unittest.TestCase):
             {"test_path": "/tests"},
             {"test_path": "D:/tests"},
             {"test_path": "-q"},
+            {"test_path": "./--version"},
+            {"test_path": ".\\--help"},
+            {"test_path": " -q"},
             {"markers": "fast\nslow"},
             {"min_coverage": "80"},
             {"coverage_source": " "},

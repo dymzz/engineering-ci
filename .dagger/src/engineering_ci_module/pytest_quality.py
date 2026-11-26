@@ -30,13 +30,18 @@ def test_policy(
         ("test_path", test_path.split("::", 1)[0]),
         ("coverage_source", coverage_source),
     ):
-        if value and (
-            value.startswith("-")
-            or PurePosixPath(value).is_absolute()
-            or ".." in PurePosixPath(value.replace("\\", "/")).parts
-            or re.match(r"^[A-Za-z]:", value)
-        ):
-            raise ValueError(f"{name} must be a relative workspace path or module name")
+        if value:
+            normalized = PurePosixPath(value.lstrip().replace("\\", "/")).as_posix()
+            if (
+                value.lstrip().startswith("-")
+                or normalized.startswith("-")
+                or PurePosixPath(value).is_absolute()
+                or ".." in PurePosixPath(value.replace("\\", "/")).parts
+                or re.match(r"^[A-Za-z]:", value)
+            ):
+                raise ValueError(
+                    f"{name} must be a relative workspace path or module name"
+                )
     if not test_path.strip():
         raise ValueError("test_path must not be empty")
     threshold = None
@@ -88,7 +93,10 @@ def pytest_arguments(policy: dict, junit_path: str) -> list[str]:
             "--cov-report=xml:/tmp/engineering-ci-coverage.xml",
             "--cov-report=json:/tmp/engineering-ci-coverage.json",
         ]
-    return args + [policy["test_path"]]
+    path_arg = policy["test_path"]
+    if path_arg.startswith("@"):
+        path_arg = f"./{path_arg}"
+    return args + [path_arg]
 
 
 def read_coverage(xml_path: Path, json_path: Path) -> dict:

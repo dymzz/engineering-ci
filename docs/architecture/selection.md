@@ -489,19 +489,28 @@ for actual request/reader counts and failure preservation.
   `norecursedirs` rather than acting as a full `pytest.ini` / `setup.cfg`
   parser; unreadable or malformed `pyproject.toml` falls back safely without
   claiming complete pytest discovery proof.
-- `run_tests(..., framework="pytest")` keeps Selection's dotted test module
-  identities in Plans and resolves them (plus optional `::nodeid` suffixes) into
-  bound repository-relative file or directory paths inside `root` without
-  `--pyargs`, placing `--` after all pytest options (`-q`, optional
-  `--junitxml`) before resolved targets. Legitimate `PYTHONPATH` is preserved
-  while external packages cannot shadow or substitute for bound repository test
-  targets; out-of-source, escaping symlink, and pre- or post-normalization
-  option-like targets (such as `./--collect-only`, `./--help`, or
-  `./--version`) are refused before spawning pytest (`source_refusal`), while
-  missing non-option in-source targets fail natively with pytest exit `4`.
-  `unittest` semantics stay unchanged. Any non-`tach.toml` `tach` config path
-  (after normalizing `./tach.toml`) is refused fail-closed matching native
-  `tach 0.35.3` discovery.
+- Host `run_tests(..., framework="pytest")` and Dagger Plan-selected
+  `plan_execution._tests` / `EngineeringCi._run_pytest(..., _targets=...)` keep
+  Selection's dotted test module identities in Plans and resolve them (plus
+  optional `::nodeid` suffixes) via `selection.resolve_pytest_targets` into
+  bound repository-relative file or directory paths inside the bound Source
+  without `--pyargs`, placing `--` after all pytest options (`-q`, optional
+  `--junitxml`) before resolved targets. Repository targets whose normalized
+  relative path begins with `@` are emitted with an explicit `./` prefix (such
+  as `./@args.py` or `./@dir/test_in_dir.py`) because pinned `pytest 9.0.3`
+  uses `fromfile_prefix_chars="@"` in `argparse` and `--` does not disable
+  `@argsfile` expansion. Legitimate `PYTHONPATH` is preserved while external
+  packages and `@argsfile` expansion cannot shadow or substitute for bound
+  repository test targets; out-of-source, escaping symlink, and pre- or
+  post-normalization option-like targets (such as `./--collect-only`, `./--help`,
+  `./--version`, or whitespace-padded ` -q`) are refused before spawning pytest
+  (`source_refusal` on Host, `not_executed` refusal on Dagger Plan execution, or
+  `ValueError` on direct `_run_pytest`), while missing non-option in-source
+  targets fail natively with pytest exit `4`. Generic consumer `python_test`
+  retains the `pytest_arguments` CLI shape while neutralizing leading `@` and
+  rejecting normalized leading `-` in `test_policy`. `unittest` semantics stay
+  unchanged. Any non-`tach.toml` `tach` config path (after normalizing
+  `./tach.toml`) is refused fail-closed matching native `tach 0.35.3` discovery.
 - **Adoption scope (R15 independent slice):** this delivers selection mapping,
   hygiene applicability, root `tach.toml` / `ci-selection.toml` artifacts, and
   host-native `tach check` / `tach check-external` evidence when those tools are

@@ -4723,6 +4723,13 @@ def _check_bound_pytest_path(root, resolved_root, rel_posix):
     return False, None
 
 
+def _format_pytest_cli_target(rel_posix, sep="", nodeid=""):
+    # Prefix leading "@" with "./" so pytest's ArgumentParser(fromfile_prefix_chars="@")
+    # treats the argument as a repository path rather than an @argsfile even after "--".
+    cli_path = f"./{rel_posix}" if rel_posix.startswith("@") else rel_posix
+    return f"{cli_path}::{nodeid}" if sep else cli_path
+
+
 def _resolve_pytest_target(target, root):
     """Resolve a dotted module or relative path into a bound repository-relative pytest target.
 
@@ -4733,11 +4740,11 @@ def _resolve_pytest_target(target, root):
         not isinstance(target, str)
         or not target.strip()
         or any(ch in target for ch in "\0\r\n")
-        or target.startswith("-")
+        or target.lstrip().startswith("-")
     ):
         return None, "pytest_target_invalid"
     raw_target, sep, nodeid = target.partition("::")
-    if sep and (not raw_target or not nodeid):
+    if not raw_target or raw_target != raw_target.strip() or (sep and not nodeid):
         return None, "pytest_target_invalid"
     resolved_root = Path(root).resolve()
     is_path = (
@@ -4773,10 +4780,12 @@ def _resolve_pytest_target(target, root):
         _, refusal = _check_bound_pytest_path(root, resolved_root, rel_posix)
         if refusal:
             return None, refusal
-        return (f"{rel_posix}::{nodeid}" if sep else rel_posix), None
+        return _format_pytest_cli_target(rel_posix, sep, nodeid), None
 
     parts = raw_target.split(".")
     if any(not part or part in {".", ".."} for part in parts):
+        return None, "pytest_target_invalid"
+    if parts[0].startswith("-"):
         return None, "pytest_target_invalid"
     if any(part.lower() == ".git" for part in parts):
         return None, "pytest_target_outside_source"
@@ -4786,15 +4795,34 @@ def _resolve_pytest_target(target, root):
     if file_refusal:
         return None, file_refusal
     if file_exists:
-        return (f"{file_rel}::{nodeid}" if sep else file_rel), None
+        return _format_pytest_cli_target(file_rel, sep, nodeid), None
     dir_exists, dir_refusal = _check_bound_pytest_path(root, resolved_root, dir_rel)
     if dir_refusal:
         return None, dir_refusal
     if dir_exists:
-        return (f"{dir_rel}::{nodeid}" if sep else dir_rel), None
+        return _format_pytest_cli_target(dir_rel, sep, nodeid), None
     # Missing target stays bound as a relative repo path so pytest fails natively
     # (exit 4) instead of falling back to an external PYTHONPATH module.
-    return (f"{file_rel}::{nodeid}" if sep else file_rel), None
+    return _format_pytest_cli_target(file_rel, sep, nodeid), None
+
+
+def _resolve_pytest_targets(targets, root):
+    """Resolve selection targets into bound pytest CLI arguments or report the first refusal."""
+    resolved_targets = []
+    for target in targets:
+        resolved_target, target_refusal = _resolve_pytest_target(target, root)
+        if target_refusal:
+            return None, target_refusal, target
+        if not resolved_target or resolved_target.startswith(("-", "@")):
+            return None, "pytest_target_invalid", target
+        resolved_targets.append(resolved_target)
+    return resolved_targets, None, None
+
+
+def resolve_pytest_targets(targets, root):
+    """Resolve Plan pytest targets into bound repository-relative CLI paths."""
+    resolved_targets, target_refusal, _ = _resolve_pytest_targets(targets, root)
+    return resolved_targets, target_refusal
 
 
 def run_tests(
@@ -4837,17 +4865,16 @@ def run_tests(
     environment["PYTHONPATH"] = source + (os.pathsep + existing if existing else "")
     executable = python or sys.executable
     if framework == "pytest":
-        resolved_targets = []
-        for target in modules:
-            resolved_target, target_refusal = _resolve_pytest_target(target, root)
-            if target_refusal:
-                message = f"execution refused: {target_refusal}: {target}"
-                if capture is not None:
-                    capture["source_refusal"] = target_refusal
-                    capture["stderr"] = message + "\n"
-                print(message, file=sys.stderr)
-                return 4
-            resolved_targets.append(resolved_target)
+        resolved_targets, target_refusal, bad_target = _resolve_pytest_targets(
+            modules, root
+        )
+        if target_refusal:
+            message = f"execution refused: {target_refusal}: {bad_target}"
+            if capture is not None:
+                capture["source_refusal"] = target_refusal
+                capture["stderr"] = message + "\n"
+            print(message, file=sys.stderr)
+            return 4
         command = [executable, "-X", "utf8", "-m", "pytest", "-q"]
         if junit_path is not None:
             command.append(f"--junitxml={Path(junit_path).resolve()}")

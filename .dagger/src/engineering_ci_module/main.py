@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import re
+import tempfile
 import time
 import tomllib
 from dataclasses import dataclass
@@ -1444,22 +1445,37 @@ class EngineeringCi:
             )
         )
         arguments = pytest_arguments(policy, report_path)
+        resolved_targets: list[str] | None = None
         if _targets is not None:
+            from engineering_ci import selection
+
             if not _targets:
                 raise ValueError("selected pytest targets must not be empty")
+            bound_dir = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            with tempfile.TemporaryDirectory() as resolve_tmp:
+                if hasattr(bound_dir, "export"):
+                    await bound_dir.export(resolve_tmp)
+                resolved_targets, refusal, bad_target = (
+                    selection._resolve_pytest_targets(_targets, Path(resolve_tmp))
+                )
+            if refusal:
+                raise ValueError(
+                    f"selected pytest target refused ({refusal}): {bad_target}"
+                )
             selected = []
-            for target in _targets:
+            for target in resolved_targets:
                 test_policy(target)
-                if target.endswith(".py") or "/" in target or "::" in target:
-                    selected.append(target)
-                else:
-                    selected.extend(["--pyargs", target])
-            # Running pytest as a module keeps the actual workspace on sys.path
-            # for --pyargs targets in projects that do not install their tests.
+                selected.append(target)
+            # Running pytest as a module keeps cwd (/workspace) on sys.path while
+            # "--" and bound repository paths block external PYTHONPATH shadowing.
             arguments = (
                 ["uv", "run", "--no-sync", "python", "-m", "pytest"]
                 + arguments[4:-1]
-                + selected
+                + ["--", *selected]
             )
         if _matrix_runtime:
             prepared = prepared.with_new_file(
@@ -1503,8 +1519,8 @@ class EngineeringCi:
         report = summarize_pytest(
             xml, exit_code, output + "\n" + stderr, max_failures=max_failures
         )
-        if _targets is not None:
-            report["selected_targets"] = list(_targets)
+        if resolved_targets is not None:
+            report["selected_targets"] = list(resolved_targets)
         if evidence["diagnostic"]:
             report["diagnostic"] = evidence["diagnostic"]
         coverage = None

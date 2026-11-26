@@ -2139,6 +2139,8 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
         ("./--version", "pytest_target_invalid"),
         (".\\.\\--version", "pytest_target_invalid"),
         ("./--collect-only::test_selected", "pytest_target_invalid"),
+        (" ./--version", "pytest_target_invalid"),
+        (" -q", "pytest_target_invalid"),
     ):
         refuse_cap = {}
         rc_bad = selection.run_tests(
@@ -2150,6 +2152,65 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
         assert rc_bad == 4
         assert refuse_cap["source_refusal"] == expected_reason
         assert "argv" not in refuse_cap
+
+    # P1-06: pytest 9.0.3 evaluates fromfile_prefix_chars="@" even after "--"; bound "@" targets
+    # MUST be passed with explicit "./" so @argsfile expansion cannot substitute another target.
+    ext_pass = str((external / "tests/test_selected.py").resolve())
+    (repo_root / "@args.py").write_text(
+        "def test_bound_at_fail():\n    assert False\n", encoding="utf-8"
+    )
+    (repo_root / "args.py").write_text(ext_pass + "\n", encoding="utf-8")
+    (repo_root / "@dir").mkdir()
+    (repo_root / "@dir/test_in_dir.py").write_text(
+        "def test_in_dir_fail():\n    assert False\n", encoding="utf-8"
+    )
+    (repo_root / "dir").mkdir()
+    (repo_root / "dir/test_in_dir.py").write_text(ext_pass + "\n", encoding="utf-8")
+    (repo_root / "missing.py").write_text(ext_pass + "\n", encoding="utf-8")
+    (repo_root / "tests/@args.py").write_text(
+        "def test_nested_at_fail():\n    assert False\n", encoding="utf-8"
+    )
+
+    for target, expected_cli in (
+        ("@args.py", "./@args.py"),
+        ("./@args.py", "./@args.py"),
+        ("@args.py::test_bound_at_fail", "./@args.py::test_bound_at_fail"),
+        (".\\.\\@dir\\test_in_dir.py", "./@dir/test_in_dir.py"),
+        ("@dir", "./@dir"),
+        ("tests/@args.py", "tests/@args.py"),
+    ):
+        at_cap = {}
+        at_junit = tmp_path / "at-bound-junit.xml"
+        rc_at = selection.run_tests(
+            (target,),
+            root=repo_root,
+            framework="pytest",
+            junit_path=at_junit,
+            capture=at_cap,
+        )
+        assert rc_at == 1, (target, at_cap)
+        sep_idx = at_cap["argv"].index("--")
+        assert at_cap["argv"][sep_idx + 1 :] == [expected_cli]
+        assert at_junit.is_file()
+
+    # Missing @missing.py MUST exit 4 ("not found"), NEVER expand missing.py as an @argsfile.
+    at_miss_cap = {}
+    rc_at_miss = selection.run_tests(
+        ("@missing.py",), root=repo_root, framework="pytest", capture=at_miss_cap
+    )
+    assert rc_at_miss == 4, at_miss_cap
+    assert "source_refusal" not in at_miss_cap
+    assert at_miss_cap["argv"][at_miss_cap["argv"].index("--") + 1 :] == [
+        "./@missing.py"
+    ]
+    assert "not found" in (at_miss_cap["stdout"] + at_miss_cap["stderr"]).lower()
+
+    # Directory target on real bound repo tests still runs pytest natively.
+    dir_cap = {}
+    rc_dir = selection.run_tests(
+        ("tests/test_pass.py",), root=repo_root, framework="pytest", capture=dir_cap
+    )
+    assert rc_dir == 0, dir_cap
 
     # Escaping symlink inside tests/ is refused before launching pytest.
     escape_link = repo_root / "tests/test_escape.py"

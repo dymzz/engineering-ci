@@ -4582,3 +4582,326 @@ def test_weaver_result_preserves_native_exit_and_report_when_metadata_fails(
         opt_check["metadata_errors"]["input_source_directory"]["status"]
         == "unavailable"
     )
+
+
+def test_dagger_plan_selected_pytest_stays_bound_without_pyargs_and_resists_at_argsfile(
+    modules, monkeypatch, tmp_path
+):
+    """Dagger Plan-selected pytest binds dotted and @ targets to Source with '--', never '--pyargs'."""
+    import importlib
+    import os
+    import shutil
+    import subprocess
+    import xml.etree.ElementTree as ET
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+    dagger_mod = sys.modules["dagger"]
+
+    class FakeDagDir(MemoryDirectory):
+        def with_directory(self, prefix, directory, *, exclude=()):
+            if exclude:
+                directory = _filter_source_with_patterns(directory, exclude)
+            merged = super().with_directory(prefix, directory)
+            return FakeDagDir(merged.files, dirs=merged.dirs)
+
+    def identity(*args, **kwargs):
+        if args and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda fn: fn
+
+    monkeypatch.setattr(dagger_mod, "function", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "check", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        dagger_mod,
+        "dag",
+        types.SimpleNamespace(directory=lambda: FakeDagDir()),
+        raising=False,
+    )
+    for attr in ("Directory", "Container", "Secret"):
+        if not hasattr(dagger_mod, attr):
+            monkeypatch.setattr(dagger_mod, attr, object, raising=False)
+
+    spec = importlib.util.spec_from_file_location(
+        collector.__package__ + ".main", MODULE / "main.py"
+    )
+    main_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, main_mod)
+    spec.loader.exec_module(main_mod)
+
+    external = tmp_path / "ext_dagger_shadow"
+    (external / "tests").mkdir(parents=True)
+    (external / "tests/__init__.py").write_text("", encoding="utf-8")
+    (external / "tests/test_selected.py").write_text(
+        "def test_shadow_passes():\n    assert True\n", encoding="utf-8"
+    )
+    (external / "tests/test_missing.py").write_text(
+        "def test_missing_shadow():\n    assert True\n", encoding="utf-8"
+    )
+    (external / "legit_dagger_ext.py").write_text("VALUE = 7\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(external))
+
+    ext_pass = str((external / "tests/test_selected.py").resolve())
+    repo_files = {
+        "ci-selection.toml": b"# clean\n",
+        "ci-weaver.toml": b"# clean\n",
+        "src/app_mod.py": b"VALUE = 42\n",
+        "tests/test_selected.py": b"def test_bound_fails():\n    assert False\n",
+        "tests/test_ok.py": (
+            b"import sys\n"
+            b"from pathlib import Path\n"
+            b"sys.path.insert(0, str(Path('src').resolve()))\n"
+            b"import app_mod\n"
+            b"import legit_dagger_ext\n\n"
+            b"def test_ok():\n"
+            b"    assert app_mod.VALUE + legit_dagger_ext.VALUE == 49\n"
+        ),
+        "@args.py": b"def test_at_bound_fails():\n    assert False\n",
+        "args.py": (ext_pass + "\n").encode("utf-8"),
+    }
+    source = FakeDagDir(repo_files)
+
+    recorded_execs = []
+    run_counter = 0
+
+    class RealPytestContainer:
+        def __init__(self, ws_root, *, code=0, out="", err=""):
+            self.ws_root = ws_root
+            self._code = code
+            self._out = out
+            self._err = err
+            self._extra_files = {}
+
+        def with_new_file(self, path, contents):
+            copied = RealPytestContainer(
+                self.ws_root, code=self._code, out=self._out, err=self._err
+            )
+            copied._extra_files = {**self._extra_files, path: contents}
+            return copied
+
+        def with_exec(self, command, **kwargs):
+            cmd = list(command)
+            if cmd[:4] == ["uv", "run", "--no-sync", "python"]:
+                argv = [sys.executable, *cmd[4:]]
+            else:
+                argv = cmd
+            if len(argv) >= 3 and argv[1] == "-I" and argv[2] == "-c":
+                proc = subprocess.run(
+                    argv, cwd=self.ws_root, capture_output=True, text=True, check=False
+                )
+                return RealPytestContainer(
+                    self.ws_root,
+                    code=proc.returncode,
+                    out=proc.stdout,
+                    err=proc.stderr,
+                )
+            if len(argv) >= 3 and argv[1] == "-m" and argv[2] == "pytest":
+                recorded_execs.append(cmd)
+                xml_path = self.ws_root / ".dagger-junit.xml"
+                rewritten = [
+                    f"--junitxml={xml_path}"
+                    if item == "--junitxml=/tmp/engineering-ci-pytest.xml"
+                    else item
+                    for item in argv
+                ]
+                env = dict(os.environ)
+                env["PYTHONPATH"] = (
+                    str((self.ws_root / "src").resolve()) + os.pathsep + str(external)
+                )
+                proc = subprocess.run(
+                    rewritten,
+                    cwd=self.ws_root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                return RealPytestContainer(
+                    self.ws_root,
+                    code=proc.returncode,
+                    out=proc.stdout,
+                    err=proc.stderr,
+                )
+            if len(argv) >= 2 and argv[1] == "/tmp/engineering-ci-pytest-ci.py":
+                helper_path = self.ws_root / "_pytest_ci_helper.py"
+                helper_path.write_text(
+                    self._extra_files["/tmp/engineering-ci-pytest-ci.py"],
+                    encoding="utf-8",
+                )
+                rewritten = [
+                    sys.executable,
+                    str(helper_path),
+                    *(
+                        str(self.ws_root / ".dagger-junit.xml")
+                        if arg == "/tmp/engineering-ci-pytest.xml"
+                        else arg
+                        for arg in argv[2:]
+                    ),
+                ]
+                proc = subprocess.run(
+                    rewritten,
+                    cwd=self.ws_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                return RealPytestContainer(
+                    self.ws_root,
+                    code=proc.returncode,
+                    out=proc.stdout,
+                    err=proc.stderr,
+                )
+            raise AssertionError(f"unexpected container command: {cmd!r}")
+
+        async def exit_code(self):
+            return self._code
+
+        async def stdout(self):
+            return self._out
+
+        async def stderr(self):
+            return self._err
+
+    class PlanPytestEngine(main_mod.EngineeringCi):
+        def _uv_container(
+            self,
+            source,
+            python_version,
+            sync_dependencies=True,
+            git_token=None,
+            dependency_packages=None,
+            *,
+            _bound_source=None,
+            system_packages=(),
+        ):
+            nonlocal run_counter
+            run_counter += 1
+            ws = tmp_path / f"dagger_pytest_ws_{run_counter}"
+            if ws.exists():
+                shutil.rmtree(ws)
+            ws.mkdir(parents=True)
+            _write_memdir(_bound_source if _bound_source is not None else source, ws)
+            return RealPytestContainer(ws)
+
+    engine = PlanPytestEngine()
+
+    def run_plan(tests_list):
+        plan = _v2_dagger_plan(
+            edges=[],
+            prerequisites=[],
+            actions={},
+            tests=tests_list,
+            checks=(),
+        )
+        plan["selection"]["framework"] = "pytest"
+        plan["git"] = _plan_git_identity("worktree")
+        return asyncio.run(
+            collector.execute(
+                engine,
+                MemoryFile(json.dumps(plan)),
+                source,
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+
+    # 1. Dotted target: external PYTHONPATH MUST NOT shadow bound failing repo test.
+    recorded_execs.clear()
+    fail_exec = run_plan(["tests.test_selected"])
+    fail_report = json.loads(asyncio.run(fail_exec.report()))
+    assert fail_report["status"] == "failed", fail_report["tests"]
+    assert fail_report["tests"]["exit_code"] == 1
+    assert "--pyargs" not in recorded_execs[0]
+    assert "--" in recorded_execs[0]
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [
+        "tests/test_selected.py"
+    ]
+    fail_xml = asyncio.run(fail_exec.artifacts.file("tests/junit.xml").contents())
+    fail_root = ET.fromstring(fail_xml)
+    assert fail_root.find(".//failure") is not None
+    check_contract.validate_result(fail_report["tests"]["native_result"])
+    with pytest.raises(RuntimeError, match="Plan failed"):
+        asyncio.run(fail_exec.enforce())
+
+    # 2. @args.py target: explicit ./ prefix prevents pytest 9.0.3 @argsfile expansion.
+    recorded_execs.clear()
+    at_exec = run_plan(["@args.py"])
+    at_report = json.loads(asyncio.run(at_exec.report()))
+    assert at_report["status"] == "failed", at_report
+    assert at_report["tests"]["exit_code"] == 1
+    assert "--" in recorded_execs[0]
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == ["./@args.py"]
+    check_contract.validate_result(at_report["tests"]["native_result"])
+
+    # 3. Missing dotted target stays bound and fails natively (exit 4) instead of hitting external package.
+    recorded_execs.clear()
+    miss_exec = run_plan(["tests.test_missing"])
+    miss_report = json.loads(asyncio.run(miss_exec.report()))
+    assert miss_report["status"] == "failed", miss_report
+    assert miss_report["tests"]["exit_code"] == 4
+    assert "--pyargs" not in recorded_execs[0]
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [
+        "tests/test_missing.py"
+    ]
+    check_contract.validate_result(miss_report["tests"]["native_result"])
+
+    # 4. Passing repo target keeps legitimate PYTHONPATH imports and validates NativeResult + JUnit.
+    recorded_execs.clear()
+    ok_exec = run_plan(["tests.test_ok"])
+    ok_report = json.loads(asyncio.run(ok_exec.report()))
+    assert ok_report["status"] == "passed", ok_report
+    assert ok_report["tests"]["exit_code"] == 0
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [
+        "tests/test_ok.py"
+    ]
+    ok_xml = asyncio.run(ok_exec.artifacts.file("tests/junit.xml").contents())
+    assert (
+        ET.fromstring(ok_xml).attrib
+        or ET.fromstring(ok_xml).find(".//testcase") is not None
+    )
+    check_contract.validate_result(ok_report["tests"]["native_result"])
+    asyncio.run(ok_exec.enforce())
+
+    # 5. Traversal and post-normalization flag injection refuse before calling _run_pytest.
+    for bad_target, expected_reason in (
+        ("../ext_dagger_shadow/tests/test_selected.py", "pytest_target_outside_source"),
+        ("./--version", "pytest_target_invalid"),
+    ):
+        recorded_execs.clear()
+        refused_exec = run_plan([bad_target])
+        refused_report = json.loads(asyncio.run(refused_exec.report()))
+        assert not recorded_execs
+        assert refused_report["status"] == "blocked", refused_report
+        assert refused_report["tests"]["status"] == "not_executed"
+        assert refused_report["tests"]["reason"] == expected_reason
+
+    # Direct _run_pytest calls also resolve dotted targets without --pyargs and refuse invalid targets.
+    recorded_execs.clear()
+    direct_exec = asyncio.run(
+        engine._run_pytest(
+            source, "3.14", "tests.test_selected", _targets=["tests.test_selected"]
+        )
+    )
+    assert direct_exec.exit_code == 1
+    assert "--pyargs" not in recorded_execs[0]
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [
+        "tests/test_selected.py"
+    ]
+    assert direct_exec.report["selected_targets"] == ["tests/test_selected.py"]
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            engine._run_pytest(source, "3.14", "./--version", _targets=["./--version"])
+        )
+    # Generic consumer pytest_arguments contract stays untouched.
+    assert tooling.SOURCE_NOISE
+    pytest_quality = importlib.import_module(collector.__package__ + ".pytest_quality")
+
+    generic_args = pytest_quality.pytest_arguments(
+        pytest_quality.test_policy("tests"), "/tmp/junit.xml"
+    )
+    assert generic_args[-1] == "tests"
+    assert "--" not in generic_args

@@ -433,20 +433,23 @@ async def _tests(
         else {}
     )
 
-    if not delivery_ok:
-        reason = (pre_execution_proof or {}).get(
-            "source_equivalence_status"
-        ) or "bound_source_delivery_failed"
+    async def _refused_test_branch(reason):
         refused_item = {
             "status": "not_executed",
             "exit_code": None,
             "reason": reason,
-            "source_delivery": pre_execution_proof,
+            **(
+                {"source_delivery": pre_execution_proof}
+                if pre_execution_proof is not None
+                else {}
+            ),
         }
-        files = dag.directory().with_new_file(
-            "source-delivery.json",
-            json.dumps(pre_execution_proof, sort_keys=True) + "\n",
-        )
+        files = dag.directory()
+        if pre_execution_proof is not None:
+            files = files.with_new_file(
+                "source-delivery.json",
+                json.dumps(pre_execution_proof, sort_keys=True) + "\n",
+            )
         tests_result = await native_results.test_result(
             refused_item,
             None,
@@ -465,21 +468,50 @@ async def _tests(
         )
         return {"tests": tests_result, "stdout": "", "stderr": ""}, files
 
+    if not delivery_ok:
+        reason = (pre_execution_proof or {}).get(
+            "source_equivalence_status"
+        ) or "bound_source_delivery_failed"
+        return await _refused_test_branch(reason)
+
     if framework == "pytest":
+        from engineering_ci import selection
+
+        if binding_root is not None and not generated_inputs:
+            resolved_targets, target_refusal = selection.resolve_pytest_targets(
+                targets, Path(binding_root)
+            )
+        else:
+            resolve_source = (
+                consumed_source
+                if (consumed_source is not None and hasattr(consumed_source, "export"))
+                else (source if hasattr(source, "export") else None)
+            )
+            with tempfile.TemporaryDirectory() as resolve_tmp:
+                if resolve_source is not None:
+                    await resolve_source.export(resolve_tmp)
+                resolved_targets, target_refusal = selection.resolve_pytest_targets(
+                    targets, Path(resolve_tmp)
+                )
+        if target_refusal:
+            return await _refused_test_branch(target_refusal)
         if consumed_source is not None and _accepts_bound_source_kwarg(
             module._run_pytest
         ):
             execution = await module._run_pytest(
                 source,
                 python_version,
-                targets[0],
-                _targets=targets,
+                resolved_targets[0],
+                _targets=resolved_targets,
                 _bound_source=consumed_source,
             )
         else:
             run_source = consumed_source if consumed_source is not None else source
             execution = await module._run_pytest(
-                run_source, python_version, targets[0], _targets=targets
+                run_source,
+                python_version,
+                resolved_targets[0],
+                _targets=resolved_targets,
             )
         code = execution.exit_code
         container = execution.container
