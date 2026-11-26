@@ -3,26 +3,54 @@
     "name": "eci/local-push",
     "version": "1.0.0"
   },
-  "profile_revision": "2",
+  "profile_revision": "3",
   "approval_source": "project-governance",
   "authority_verified": true,
-  "effective_at": "2026-11-26T03:15:00Z",
-  "evaluated_at": "2026-11-26T03:15:00Z",
+  "effective_at": "2026-11-26T05:00:00Z",
+  "evaluated_at": "2026-11-26T05:00:00Z",
   "context": "push",
   "action": "force_update",
   "target": "refs/*",
   "required_obligations": [
     {
-      "obligation_ref": "local-push-force_update-whitespace",
+      "obligation_ref": "local-push-force-update-whitespace",
       "check_names": [
         "whitespace"
       ],
       "allow_inapplicable": true
     },
     {
-      "obligation_ref": "local-push-force_update-forwarding",
+      "obligation_ref": "local-push-force-update-forwarding",
       "check_names": [
         "forwarding"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-force-update-actionlint",
+      "check_names": [
+        "actionlint"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-force-update-workflow_shellcheck",
+      "check_names": [
+        "workflow_shellcheck"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-force-update-shellcheck",
+      "check_names": [
+        "shellcheck"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-force-update-zizmor",
+      "check_names": [
+        "zizmor"
       ],
       "allow_inapplicable": true
     }
@@ -32,27 +60,35 @@
   "domain_complete": true,
   "declared_checks": [
     "whitespace",
-    "forwarding"
+    "forwarding",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor"
   ],
   "approval_binding": {
     "approval_source": "project-governance",
-    "profile_revision": "2",
+    "profile_revision": "3",
     "target_scope": {
       "context": "push",
       "action": "force_update",
       "target": "refs/*"
     },
     "effective_window": {
-      "effective_at": "2026-11-26T03:15:00Z"
+      "effective_at": "2026-11-26T05:00:00Z"
     },
     "declared_domain": {
       "domain_complete": true,
       "declared_checks": [
         "whitespace",
-        "forwarding"
+        "forwarding",
+        "actionlint",
+        "workflow_shellcheck",
+        "shellcheck",
+        "zizmor"
       ]
     },
-    "approval_digest": "sha256:477c60424d02412d39d790993d8706b74bdf746fbaa6bcf68540ac124f2632fd"
+    "approval_digest": "sha256:10636a7869ac9a0951b73cf8a7230e32b26fdef209ad42d47028895adcbd88d4"
   },
-  "profile_sha256": "sha256:9eadd9ac02359989de754e66e275354d11d0804afb535940063311cf22ed4fc6"
+  "profile_sha256": "sha256:83e725fbdadf8426ecd0dd2a72afcfb6c066b4ad0c6d8ea5f77fe83427c9a298"
 }

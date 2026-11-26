@@ -48,11 +48,18 @@ uv run --locked --no-sync lefthook install
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
-本仓根目录已提供 `ci-effective-profile.json`（Index `whitespace` / `forwarding` 义务）与
-`ci-selection.toml` 中的 `[commit] select_tests = false`：普通 commit 激活
-Profile→Plan→Host Job→Receipt，但不选择 pytest / 不因选中测试拉起 Dagger。
-`forwarding` 仅在适用的 Python 变更上执行；`docs` / `vulture` / `tach` 仍未纳入本仓
-默认 Hygiene，留给后续 A2/B 切片。无 Profile 的兼容路径仍可只跑本地暂存空白检查。
+本仓根目录已提供 `ci-effective-profile.json`（Index `whitespace` / `forwarding`
+及 Workflow/脚本安全义务）与 `ci-selection.toml` 中的 `[commit] select_tests = false`：
+普通 commit 激活 Profile→Plan→Host Job→Receipt，但不选择 pytest / 不因选中测试拉起 Dagger。
+`forwarding` 仅在适用的 Python 变更上执行；`.github/workflows/` 变更唤醒同 Job 内的
+`actionlint` / `workflow_shellcheck` / `zizmor`（离线、共享 Actionlint 内联 ShellCheck，
+不与 `scripts/` 独立 `shellcheck` 重复扫描）。Pinned Actionlint 1.7.12 在 Windows 上对
+较大 `run:` 脚本存在 ShellCheck stdin 死锁（上游 1.8.0 已修，尚无 actionlint-py 包装）：
+本机 Windows Index/Push 保留 Actionlint 与 `scripts/` 独立 ShellCheck，将
+`workflow_shellcheck` 记为 `not_applicable`
+（`actionlint_shellcheck_stdin_deadlock_on_windows`）；Linux CI / Dagger 仍执行完整内联。
+`docs` / `vulture` / `tach` 仍未纳入本仓默认 Hygiene，留给后续 A2/B 切片。无 Profile
+的兼容路径仍可只跑本地暂存空白检查。
 准备 Job 从隔离检出读取暂存策略；
 该检出采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`
 和干净的 Git 默认值。
@@ -88,10 +95,12 @@ Git 须支持 `--attr-source` 和 `show-ref --exists`。
 [Profile](../config/hook-profiles)。`refs/*` 下指向提交的新建、更新和强制更新
 执行原生 Git 空白检查，并在适用的 `src/` Python 变更上执行 `forwarding`
 （纯转发提醒为 Advisory：保留 findings、展示路径、Git exit 0；空白失败、
-缺失/不可验证 Source 与基线仍阻断）。新建以本机记录的 `refs/remotes/origin/main`
-为比较基线，更新和强推使用 Git 交付的旧对象。删除读取待删 Ref 的本地旧树，保留
-`ref_deletion` 及逐 Ref 回执（不引入无执行目标的检查义务）。`select_tests = false`
-仅用于本地推送的测试选择，完整工程检查走 `verify`。
+缺失/不可验证 Source 与基线仍阻断）。Workflow / `scripts/` 变更按适用性执行
+actionlint、共享内联 ShellCheck、独立 ShellCheck 与离线 zizmor（项目策略见
+[.github/zizmor.yml](../.github/zizmor.yml)）。新建以本机记录的
+`refs/remotes/origin/main` 为比较基线，更新和强推使用 Git 交付的旧对象。删除读取
+待删 Ref 的本地旧树，保留 `ref_deletion` 及逐 Ref 回执（不引入无执行目标的检查义务）。
+`select_tests = false` 仅用于本地推送的测试选择，完整工程检查走 `verify`。
 
 启用前将本仓策略带入要推送的分支。首次推送新 Ref 前，若本机还没有主线跟踪引用，
 先获取 `origin/main`。缺少已声明基线、目标树策略、删除旧对象或最终回执时，Git 拒绝推送。

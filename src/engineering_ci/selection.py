@@ -2929,6 +2929,7 @@ def workflow_script_check_scopes(
                     }
                 )
         elif name == "workflow_shellcheck":
+            host_block = workflow_analysis.actionlint_inline_shellcheck_host_block()
             if not wf_cfg.shellcheck_inline:
                 scopes.append(
                     {
@@ -2936,6 +2937,15 @@ def workflow_script_check_scopes(
                         "status": "not_applicable",
                         "inputs": [],
                         "reason": "shellcheck_inline_disabled",
+                    }
+                )
+            elif host_block is not None:
+                scopes.append(
+                    {
+                        "name": name,
+                        "status": "not_applicable",
+                        "inputs": [],
+                        "reason": host_block,
                     }
                 )
             else:

@@ -1160,6 +1160,48 @@ def _resolve_tool_prefix(tool: str) -> tuple[list[str], str]:
     raise ValueError(f"Unsupported tool: {tool}")
 
 
+def _locate_shellcheck_executable(root: Path, runner=None) -> str | None:
+    """Resolve a concrete ShellCheck binary for Actionlint ``-shellcheck=``.
+
+    Actionlint on Windows can hang when inline ShellCheck is enabled but no
+    executable path is passed (implicit PATH discovery). Always supply an
+    absolute path from the same pinned runner environment used for ShellCheck.
+    """
+    prefix, _ = _resolve_tool_prefix("shellcheck")
+    if len(prefix) == 1:
+        found = shutil.which(prefix[0])
+        if found:
+            return found
+        return prefix[0] if Path(prefix[0]).exists() else None
+    locate_argv = [
+        *prefix[:-1],
+        "python",
+        "-c",
+        "import shutil; print(shutil.which('shellcheck') or '')",
+    ]
+    completed = _invoke(runner, locate_argv, root)
+    lines = (getattr(completed, "stdout", "") or "").strip().splitlines()
+    candidate = lines[-1].strip() if lines else ""
+    if candidate:
+        return candidate
+    return shutil.which("shellcheck")
+
+
+def actionlint_inline_shellcheck_host_block() -> str | None:
+    """Refuse Actionlint inline ShellCheck on hosts where pinned Actionlint deadlocks.
+
+    actionlint 1.7.12 writes each ``run:`` script into ShellCheck's stdin pipe
+    before starting the child. Scripts larger than the kernel pipe buffer
+    deadlock with no ShellCheck process (rhysd/actionlint#650 / #702). The fix
+    shipped in actionlint 1.8.0; actionlint-py has no 1.8 wrapper yet, so
+    Windows hosts keep Actionlint itself and standalone ShellCheck, and skip
+    only the inline integration.
+    """
+    if os.name == "nt":
+        return "actionlint_shellcheck_stdin_deadlock_on_windows"
+    return None
+
+
 def _report_to_status(report: dict, failure_reason: str) -> str:
     outcome = report["outcome"]
     if outcome == "clean":
@@ -1883,7 +1925,7 @@ def run_workflow_script_suite(
             (("zizmor", "zizmor/check", ZIZMOR_VERSION),),
         )
 
-    def check_shellcheck_ready() -> tuple[bool, str | None, str]:
+    def check_shellcheck_ready() -> tuple[bool, str | None, str, str]:
         with cache.setdefault("_lock", threading.Lock()):
             if "sc_ready" in cache:
                 return cache["sc_ready"]
@@ -1891,7 +1933,15 @@ def run_workflow_script_suite(
             ok, obs_ver, detail = verify_tool_version(
                 sc_prefix, ["--version"], SHELLCHECK_VERSION, root=root, runner=runner
             )
-            cache["sc_ready"] = (ok, obs_ver, detail)
+            executable = ""
+            if ok:
+                located = _locate_shellcheck_executable(root, runner=runner)
+                if located:
+                    executable = located
+                else:
+                    ok = False
+                    detail = detail or "shellcheck_executable_unresolved"
+            cache["sc_ready"] = (ok, obs_ver, detail, executable)
             return cache["sc_ready"]
 
     def ensure_actionlint_run(
@@ -1917,10 +1967,19 @@ def run_workflow_script_suite(
         sc_ok = False
         sc_ver = None
         sc_detail = ""
+        sc_executable = ""
         use_shellcheck = False
-        if want_inline_shellcheck:
-            sc_ok, sc_ver, sc_detail = check_shellcheck_ready()
-            use_shellcheck = sc_ok
+        host_block = (
+            actionlint_inline_shellcheck_host_block()
+            if want_inline_shellcheck
+            else None
+        )
+        if want_inline_shellcheck and host_block is None:
+            sc_ok, sc_ver, sc_detail, sc_executable = check_shellcheck_ready()
+            use_shellcheck = sc_ok and bool(sc_executable)
+        elif want_inline_shellcheck and host_block is not None:
+            sc_ok = False
+            sc_detail = host_block
         with lock:
             if cache_key in cache:
                 return cache[cache_key] if unchanged(sources) else stale
@@ -1949,6 +2008,7 @@ def run_workflow_script_suite(
                 list(target_workflows),
                 config=actionlint_config,
                 shellcheck=use_shellcheck,
+                shellcheck_executable=sc_executable if use_shellcheck else "",
                 json_format=True,
                 debug=use_shellcheck,
             )
@@ -2032,6 +2092,7 @@ def run_workflow_script_suite(
         and inline_blocked is None
         and inline_adm_key not in target_problems
         and (inline_target_tuple is None or inline_target_tuple == tuple(al_workflows))
+        and actionlint_inline_shellcheck_host_block() is None
     )
 
     if "actionlint" in selected_by_name:
@@ -2190,6 +2251,15 @@ def run_workflow_script_suite(
                 "access_id": "actionlint/shellcheck-inline",
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
+        elif (host_block := actionlint_inline_shellcheck_host_block()) is not None:
+            out["workflow_shellcheck"] = {
+                "name": "workflow_shellcheck",
+                "selected": sel.get("status"),
+                "status": "not_applicable",
+                "reason": host_block,
+                "access_id": "actionlint/shellcheck-inline",
+                **({"rule_ref": rule_ref} if rule_ref is not None else {}),
+            }
         elif "workflow_shellcheck" in target_problems:
             out["workflow_shellcheck"] = target_refusal(
                 "workflow_shellcheck",
@@ -2206,7 +2276,7 @@ def run_workflow_script_suite(
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
         else:
-            sc_ok, sc_ver, sc_detail = check_shellcheck_ready()
+            sc_ok, sc_ver, sc_detail, _sc_exe = check_shellcheck_ready()
             if not sc_ok:
                 out["workflow_shellcheck"] = {
                     "name": "workflow_shellcheck",
@@ -2370,7 +2440,7 @@ def run_workflow_script_suite(
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
         else:
-            sc_ok, sc_ver, sc_detail = check_shellcheck_ready()
+            sc_ok, sc_ver, sc_detail, _sc_exe = check_shellcheck_ready()
             if not sc_ok:
                 out["shellcheck"] = {
                     "name": "shellcheck",

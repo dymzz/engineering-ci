@@ -1,11 +1,28 @@
 schema_version = 1
 framework = "pytest"
-checks = ["hygiene"]
+# Hygiene plus Workflow/script security (#162 A3). docs/vulture/tach remain later.
+checks = [
+    "hygiene",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor",
+]
+
+[check_scope]
+# Independent ShellCheck covers repository scripts only. Workflow inline shell
+# stays with Actionlint via workflow_shellcheck (no duplicate scan scope).
+shell_prefixes = ["scripts/"]
+
+[workflow_checks]
+zizmor_config = ".github/zizmor.yml"
+zizmor_offline = true
+# Share Actionlint's inline ShellCheck observation with workflow_shellcheck.
+shellcheck_inline = true
 
 [commit]
-# Index / pre-commit stays low-cost: hygiene obligations only. Full pytest / Dagger
-# remain on explicit verify / PR / Actions. Enabling tests here requires Tach baselines
-# and an intentional cost review (#162 A2 / #66).
+# Index / pre-commit stays low-cost: hygiene + applicable workflow/script checks.
+# Full pytest / Dagger remain on explicit verify / PR / Actions.
 select_tests = false
 
 [push]
@@ -23,44 +40,79 @@ effective_profiles = [
 # index / pre-commit
 [[effective_profile]]
 profile_ref = { name = "eci/local-commit", version = "1.0.0" }
-profile_revision = "2"
+profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:7f8e327bc25f7536603b1982427d1568ee42eea290d9e97e9fc83016fe1cf39d"
-effective_at = "2026-11-26T03:15:00Z"
-declared_checks = ["whitespace", "forwarding"]
+approval_digest = "sha256:0af331bc1dc4311c98d733143a40c83a36c036b122174031ea66545442ccf4ec"
+effective_at = "2026-11-26T05:00:00Z"
+declared_checks = [
+    "whitespace",
+    "forwarding",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor",
+]
 
 # create
 [[effective_profile]]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
-profile_revision = "2"
+profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:311ae5a627a6572725ff700b1bd8316873b6a74ee53837db52e44b395155704c"
-effective_at = "2026-11-26T03:15:00Z"
-declared_checks = ["whitespace", "forwarding"]
+approval_digest = "sha256:b00cf9c67cf30c8fd98660792150403ca65899eae735d44eb24a95042d5ebe3c"
+effective_at = "2026-11-26T05:00:00Z"
+declared_checks = [
+    "whitespace",
+    "forwarding",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor",
+]
 
 # update
 [[effective_profile]]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
-profile_revision = "2"
+profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:6258551b8b7eeb5b791b4aec44d2fccfdb475c272d8adac1aa0cf156a6ce602d"
-effective_at = "2026-11-26T03:15:00Z"
-declared_checks = ["whitespace", "forwarding"]
+approval_digest = "sha256:d8751ed1f4f6d229b801f052a1d6572c96bbe0bcef3392b1bae4a3886732361e"
+effective_at = "2026-11-26T05:00:00Z"
+declared_checks = [
+    "whitespace",
+    "forwarding",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor",
+]
 
 # force_update
 [[effective_profile]]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
-profile_revision = "2"
+profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:477c60424d02412d39d790993d8706b74bdf746fbaa6bcf68540ac124f2632fd"
-effective_at = "2026-11-26T03:15:00Z"
-declared_checks = ["whitespace", "forwarding"]
+approval_digest = "sha256:10636a7869ac9a0951b73cf8a7230e32b26fdef209ad42d47028895adcbd88d4"
+effective_at = "2026-11-26T05:00:00Z"
+declared_checks = [
+    "whitespace",
+    "forwarding",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor",
+]
 
 # delete
 [[effective_profile]]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
-profile_revision = "2"
+profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:7be8c0be3c0fa03f568c468c3ca57b3c2d0454f09ac611252fe2dd7939f10c0c"
-effective_at = "2026-11-26T03:15:00Z"
-declared_checks = ["whitespace", "forwarding"]
+approval_digest = "sha256:7e0eb206d95b5c745a4763ea63a88ba6bd45cf8ea4686d189e913b8ceae5a38a"
+effective_at = "2026-11-26T05:00:00Z"
+declared_checks = [
+    "whitespace",
+    "forwarding",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor",
+]

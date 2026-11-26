@@ -3,11 +3,11 @@
     "name": "eci/local-commit",
     "version": "1.0.0"
   },
-  "profile_revision": "2",
+  "profile_revision": "3",
   "approval_source": "project-governance",
   "authority_verified": true,
-  "effective_at": "2026-11-26T03:15:00Z",
-  "evaluated_at": "2026-11-26T03:15:00Z",
+  "effective_at": "2026-11-26T05:00:00Z",
+  "evaluated_at": "2026-11-26T05:00:00Z",
   "context": "index",
   "action": "index",
   "target": "HEAD",
@@ -25,6 +25,34 @@
         "forwarding"
       ],
       "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-commit-actionlint",
+      "check_names": [
+        "actionlint"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-commit-workflow_shellcheck",
+      "check_names": [
+        "workflow_shellcheck"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-commit-shellcheck",
+      "check_names": [
+        "shellcheck"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-commit-zizmor",
+      "check_names": [
+        "zizmor"
+      ],
+      "allow_inapplicable": true
     }
   ],
   "advisory_checks": [],
@@ -32,27 +60,35 @@
   "domain_complete": true,
   "declared_checks": [
     "whitespace",
-    "forwarding"
+    "forwarding",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor"
   ],
   "approval_binding": {
     "approval_source": "project-governance",
-    "profile_revision": "2",
+    "profile_revision": "3",
     "target_scope": {
       "context": "index",
       "action": "index",
       "target": "HEAD"
     },
     "effective_window": {
-      "effective_at": "2026-11-26T03:15:00Z"
+      "effective_at": "2026-11-26T05:00:00Z"
     },
     "declared_domain": {
       "domain_complete": true,
       "declared_checks": [
         "whitespace",
-        "forwarding"
+        "forwarding",
+        "actionlint",
+        "workflow_shellcheck",
+        "shellcheck",
+        "zizmor"
       ]
     },
-    "approval_digest": "sha256:7f8e327bc25f7536603b1982427d1568ee42eea290d9e97e9fc83016fe1cf39d"
+    "approval_digest": "sha256:0af331bc1dc4311c98d733143a40c83a36c036b122174031ea66545442ccf4ec"
   },
-  "profile_sha256": "sha256:878b694d46530984795db0e33c5bff30967792f72c209f3dc4e5308bd19ff15e"
+  "profile_sha256": "sha256:f3a1467d38bb19402dce75b528cf38da317b743f0d86d17322e7df15644273e8"
 }

@@ -3,11 +3,11 @@
     "name": "eci/local-push",
     "version": "1.0.0"
   },
-  "profile_revision": "2",
+  "profile_revision": "3",
   "approval_source": "project-governance",
   "authority_verified": true,
-  "effective_at": "2026-11-26T03:15:00Z",
-  "evaluated_at": "2026-11-26T03:15:00Z",
+  "effective_at": "2026-11-26T05:00:00Z",
+  "evaluated_at": "2026-11-26T05:00:00Z",
   "context": "push",
   "action": "update",
   "target": "refs/*",
@@ -25,6 +25,34 @@
         "forwarding"
       ],
       "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-update-actionlint",
+      "check_names": [
+        "actionlint"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-update-workflow_shellcheck",
+      "check_names": [
+        "workflow_shellcheck"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-update-shellcheck",
+      "check_names": [
+        "shellcheck"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-update-zizmor",
+      "check_names": [
+        "zizmor"
+      ],
+      "allow_inapplicable": true
     }
   ],
   "advisory_checks": [],
@@ -32,27 +60,35 @@
   "domain_complete": true,
   "declared_checks": [
     "whitespace",
-    "forwarding"
+    "forwarding",
+    "actionlint",
+    "workflow_shellcheck",
+    "shellcheck",
+    "zizmor"
   ],
   "approval_binding": {
     "approval_source": "project-governance",
-    "profile_revision": "2",
+    "profile_revision": "3",
     "target_scope": {
       "context": "push",
       "action": "update",
       "target": "refs/*"
     },
     "effective_window": {
-      "effective_at": "2026-11-26T03:15:00Z"
+      "effective_at": "2026-11-26T05:00:00Z"
     },
     "declared_domain": {
       "domain_complete": true,
       "declared_checks": [
         "whitespace",
-        "forwarding"
+        "forwarding",
+        "actionlint",
+        "workflow_shellcheck",
+        "shellcheck",
+        "zizmor"
       ]
     },
-    "approval_digest": "sha256:6258551b8b7eeb5b791b4aec44d2fccfdb475c272d8adac1aa0cf156a6ce602d"
+    "approval_digest": "sha256:d8751ed1f4f6d229b801f052a1d6572c96bbe0bcef3392b1bae4a3886732361e"
   },
-  "profile_sha256": "sha256:491ca6b3f58a02476e0f5c765930e16c1c9675100e12bd03ea8f86dac68aa189"
+  "profile_sha256": "sha256:64a18bb006a4f2d468f68397ed6490d47da94478220e924d20077bd8daab1447"
 }

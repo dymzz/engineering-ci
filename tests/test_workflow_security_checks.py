@@ -24,6 +24,22 @@ from engineering_ci import (
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_FIXTURE = ROOT / "tests/fixtures/workflow-app"
+
+
+@pytest.fixture(autouse=True)
+def _allow_actionlint_inline_shellcheck_in_tests(monkeypatch):
+    """Exercise the real inline path; production Windows hosts still refuse it.
+
+    Pinned actionlint 1.7.12 deadlocks on large ``run:`` scripts on Windows
+    (rhysd/actionlint#650). Host Checks skip inline ShellCheck there; these
+    suite fixtures use small workflows and must keep proving the shared
+    Actionlint + workflow_shellcheck contract.
+    """
+    monkeypatch.setattr(
+        workflow_analysis,
+        "actionlint_inline_shellcheck_host_block",
+        lambda: None,
+    )
 CLEAN_ZIZMOR_WORKFLOW = """\
 name: clean-ci
 on:
