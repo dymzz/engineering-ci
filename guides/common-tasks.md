@@ -121,6 +121,24 @@ Receipt，缺失最终对账时阻断。
 
 用 `uv run --locked --no-sync lefthook uninstall` 卸载本地 Hook。
 
+### Live Collector E2E（opt-in）
+
+默认全量 / 定向 pytest **不**启动 Docker Collector 或 Dagger Engine。两条 Live
+Collector E2E（`tests/test_github_receiver.py`、
+`tests/test_issue52_githubreceiver_e2e.py`）仅在显式 opt-in 时运行：
+
+```powershell
+$env:ECI_RUN_LIVE_COLLECTOR_TESTS = "1"
+uv run --locked --no-sync pytest -q tests/test_github_receiver.py::test_live_collector_to_otlp_to_weaver_v1_45_0_e2e
+uv run --locked --no-sync pytest -q tests/test_issue52_githubreceiver_e2e.py::test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e
+```
+
+需要：本机 `docker` / `dagger` 在 PATH、已拉取
+`otelcol-contrib` 固定镜像，以及 Issue #52 路径可用的 `grpcio`。已设置
+`ECI_RUN_LIVE_COLLECTOR_TESTS=1` 但缺少依赖时用例 **fail-closed**（`pytest.fail`），
+不会静默 skip。临时压制可设 `ECI_SKIP_LIVE_COLLECTOR_TESTS=1`（即使已 opt-in）。
+正式 #52/#74/#75 live 验收仍须在具备依赖的环境下显式开启并保留原有义务。
+
 ### 显式本地综合验证
 
 本仓在确实需要一次完整本地综合验证时，默认使用：
