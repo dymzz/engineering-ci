@@ -14,7 +14,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from engineering_ci import execution, hooks, reconciliation
+from engineering_ci import execution, hook_checks, hooks, reconciliation
 
 MAX_OUTPUT_PARSE_BYTES = 8 * 1024 * 1024
 MAX_JSON_REPORT_BYTES = 16 * 1024 * 1024
@@ -24,6 +24,7 @@ MAX_REPORTLOG_LINES = 500_000
 MAX_REPORTLOG_LINE_BYTES = 1024 * 1024
 MAX_GITDIR_POINTER_BYTES = 4096
 MAX_SLOW_ITEMS = 25
+MAX_TESTCASE_PROPERTY_RECORDS = 500
 
 _ANSI_ESCAPE_RE = re.compile(
     r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
@@ -862,11 +863,13 @@ def _load_hook_entry(
         return payload
 
     plan_ref: str | None = None
+    plan_data_obj: dict[str, Any] | None = None
     plan_payload_obj = None
     has_plan_key = False
     plan_path = invocations_dir / f"{stem}.plan"
     if plan_path.exists():
         plan_data = _load_sidecar(plan_path)
+        plan_data_obj = plan_data
         if plan_data is not None:
             plan_ref = _norm_optional_str(plan_data.get("plan_ref"))
             plan_payload_obj = plan_data.get("plan")
@@ -898,6 +901,7 @@ def _load_hook_entry(
 
     # Load one-to-many execution artifacts with digest, activation, and report verification.
     executions: list[dict[str, Any]] = []
+    raw_reports_by_artifact: dict[str, dict[str, Any]] = {}
     seen_exec_paths: set[Path] = set()
     activation_cache: dict[str, bool] = {}
 
@@ -979,6 +983,7 @@ def _load_hook_entry(
             source_tree_id: str | None = None
             remote_ref: str | None = None
             if isinstance(report, dict):
+                raw_reports_by_artifact[exec_path.name] = report
                 actual_digest = hooks._digest_bytes(hooks.canonical_event_bytes(report))
                 declared_digest = _norm_optional_str(exec_data.get("report_digest"))
                 if declared_digest == actual_digest:
@@ -1236,7 +1241,7 @@ def _load_hook_entry(
                 if ex.get("report_ref") and ex.get("report_digest_verified")
             }
             missing_exec_for_receipt = False
-            # Always check receipt report references, including when executions == [].
+            # Always verify receipt report_refs against verified loaded executions.
             for rr in receipt_report_refs:
                 if rr not in valid_exec_report_refs:
                     missing_exec_for_receipt = True
@@ -1246,15 +1251,107 @@ def _load_hook_entry(
                             "observed": rr,
                         }
                     )
-            if (
-                native_receipt_status == "matched"
-                and not executions
-                and (binding.hook != "pre-push" or bool(push_refs))
-            ):
-                missing_exec_for_receipt = True
-                entry["internal_conflicts"].append(
-                    {"reason": "hook_receipt_executions_missing"}
-                )
+
+            if not is_fallback_exit_only and validation_status == "valid":
+                if plan_data_obj is None or not has_plan_key:
+                    entry["internal_conflicts"].append(
+                        {"reason": "hook_receipt_plan_missing"}
+                    )
+                elif "receipts" in receipt_data:
+                    sub_receipts = receipt_data.get("receipts") or []
+                    reports_by_index: dict[int, dict[str, Any]] = {}
+                    exec_prefix = f"{stem}.execution-"
+                    for ex in executions:
+                        art = ex["artifact"]
+                        if art.startswith(exec_prefix):
+                            suffix_idx = art[len(exec_prefix) :]
+                            if suffix_idx.isdigit():
+                                rep_obj = raw_reports_by_artifact.get(art)
+                                if rep_obj is not None:
+                                    reports_by_index[int(suffix_idx)] = rep_obj
+                            else:
+                                entry["internal_conflicts"].append(
+                                    {
+                                        "reason": "hook_execution_unexpected_for_plan",
+                                        "artifact": art,
+                                    }
+                                )
+                        else:
+                            entry["internal_conflicts"].append(
+                                {
+                                    "reason": "hook_execution_unexpected_for_plan",
+                                    "artifact": art,
+                                }
+                            )
+                    try:
+                        hook_checks.verify_push_receipt_binding(
+                            binding,
+                            plan_payload_obj,
+                            sub_receipts,
+                            reports_by_index,
+                            refs=push_refs or None,
+                        )
+                    except hooks.HookEventError as exc:
+                        if exc.code == "hook_report_missing":
+                            missing_exec_for_receipt = True
+                            entry["internal_conflicts"].append(
+                                {
+                                    "reason": "hook_receipt_executions_missing",
+                                    "error": exc.code,
+                                }
+                            )
+                        else:
+                            entry["internal_conflicts"].append(
+                                {
+                                    "reason": "hook_receipt_scope_or_report_mismatch",
+                                    "error": exc.code,
+                                }
+                            )
+                else:
+                    expected_jobs = set(hook_checks._index_jobs(plan_data_obj))
+                    reports_by_job: dict[str, dict[str, Any] | None] = {
+                        job: None for job in expected_jobs
+                    }
+                    for ex in executions:
+                        job_key = (
+                            hook_checks._JOB_REF
+                            if ex["scope"] == "execution"
+                            else ex["scope"].removeprefix("execution-")
+                        )
+                        if job_key not in expected_jobs:
+                            entry["internal_conflicts"].append(
+                                {
+                                    "reason": "hook_execution_unexpected_for_plan",
+                                    "artifact": ex["artifact"],
+                                    "job_ref": job_key,
+                                }
+                            )
+                        reports_by_job[job_key] = raw_reports_by_artifact.get(
+                            ex["artifact"]
+                        )
+                    try:
+                        hook_checks.verify_index_receipt_binding(
+                            binding,
+                            plan_payload_obj,
+                            receipt_data,
+                            reports_by_job,
+                        )
+                    except hooks.HookEventError as exc:
+                        if exc.code == "hook_report_missing":
+                            missing_exec_for_receipt = True
+                            entry["internal_conflicts"].append(
+                                {
+                                    "reason": "hook_receipt_executions_missing",
+                                    "error": exc.code,
+                                }
+                            )
+                        else:
+                            entry["internal_conflicts"].append(
+                                {
+                                    "reason": "hook_receipt_scope_or_report_mismatch",
+                                    "error": exc.code,
+                                }
+                            )
 
             has_integrity_conflict = any(
                 c.get("reason", "").startswith(
@@ -1419,15 +1516,44 @@ def _extract_xml_properties(root: ET.Element) -> dict[str, Any]:
 
     testcase_prop_names: set[str] = set()
     testcases_with_props = 0
+    testcase_properties: list[dict[str, Any]] = []
+    testcase_verifies: list[dict[str, Any]] = []
+    testcase_props_truncated = False
     for case in root.findall(".//testcase"):
         case_props = case.findall("./properties/property")
         if case_props:
             testcases_with_props += 1
+        per_case_map: dict[str, list[str]] = {}
         for prop in case_props:
             name = (prop.attrib.get("name") or "").strip()
             val = (prop.attrib.get("value") or "").strip()
             if name and val:
                 testcase_prop_names.add(name)
+                per_case_map.setdefault(name, []).append(val)
+        if per_case_map:
+            if len(testcase_properties) < MAX_TESTCASE_PROPERTY_RECORDS:
+                unique_map = {
+                    k: list(dict.fromkeys(v)) for k, v in per_case_map.items()
+                }
+                cls_name = (case.attrib.get("classname") or "").strip()
+                tc_name = (case.attrib.get("name") or "").strip()
+                testcase_properties.append(
+                    {
+                        "classname": cls_name,
+                        "name": tc_name,
+                        "properties": unique_map,
+                    }
+                )
+                if "verifies" in unique_map:
+                    testcase_verifies.append(
+                        {
+                            "classname": cls_name,
+                            "name": tc_name,
+                            "values": unique_map["verifies"],
+                        }
+                    )
+            else:
+                testcase_props_truncated = True
 
     single_props: dict[str, str] = {}
     conflicts: list[dict[str, Any]] = []
@@ -1443,7 +1569,11 @@ def _extract_xml_properties(root: ET.Element) -> dict[str, Any]:
         "testcase_properties_summary": {
             "testcases_with_properties": testcases_with_props,
             "property_names": sorted(testcase_prop_names),
+            "truncated": testcase_props_truncated,
+            "verifies_authority": "raw_junit_diagnostic_only_not_c2_delivery",
         },
+        "testcase_properties": testcase_properties,
+        "testcase_verifies": testcase_verifies,
     }
 
 
@@ -1579,6 +1709,8 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
         "slowest_tests": slowest,
         "properties": prop_info["values"],
         "testcase_properties_summary": prop_info["testcase_properties_summary"],
+        "testcase_properties": prop_info["testcase_properties"],
+        "testcase_verifies": prop_info["testcase_verifies"],
         "internal_conflicts": internal_conflicts,
         "consumed_files": [str(path)],
     }
@@ -1904,11 +2036,27 @@ def _parse_pytest_reportlog(
             )
     user_prop_names: set[str] = set()
     user_corr_vals: dict[str, list[str]] = {}
-    for props_map in node_user_props.values():
+    testcase_user_properties: list[dict[str, Any]] = []
+    testcase_verifies: list[dict[str, Any]] = []
+    testcase_props_truncated = False
+    for nid, props_map in node_user_props.items():
+        unique_map: dict[str, list[str]] = {}
         for pname, vals in props_map.items():
             user_prop_names.add(pname)
+            unique_map[pname] = list(dict.fromkeys(vals))
             if pname in _CORRELATION_PROP_KEYS:
                 user_corr_vals.setdefault(pname, []).extend(vals)
+        if unique_map:
+            if len(testcase_user_properties) < MAX_TESTCASE_PROPERTY_RECORDS:
+                testcase_user_properties.append(
+                    {"nodeid": nid, "properties": unique_map}
+                )
+                if "verifies" in unique_map:
+                    testcase_verifies.append(
+                        {"nodeid": nid, "values": unique_map["verifies"]}
+                    )
+            else:
+                testcase_props_truncated = True
     for key, vals in user_corr_vals.items():
         unique = list(dict.fromkeys(vals))
         if key in prop_values and any(v != prop_values[key] for v in unique):
@@ -1986,7 +2134,11 @@ def _parse_pytest_reportlog(
         "testcase_properties_summary": {
             "nodes_with_user_properties": len(node_user_props),
             "property_names": sorted(user_prop_names),
+            "truncated": testcase_props_truncated,
+            "verifies_authority": "raw_reportlog_diagnostic_only_not_c2_delivery",
         },
+        "testcase_user_properties": testcase_user_properties,
+        "testcase_verifies": testcase_verifies,
         "internal_conflicts": internal_conflicts,
         "consumed_files": [str(path)],
     }
@@ -2006,126 +2158,66 @@ def _build_bundle_manifest_index(
     *,
     bundle_dir: Path,
     meta: dict[str, Any],
+    plan_payload: dict[str, Any] | None,
     internal_conflicts: list[dict[str, Any]],
     consumed_files: list[str],
-) -> tuple[dict[str, dict[str, str]], str | None]:
-    """Extract verified relative-path -> sha256 bindings from #86 Producer Artifact Handoff / native Report."""
+) -> tuple[dict[str, dict[str, str]], dict[str, Any] | None]:
+    """Verify #86 Producer Artifact Handoff via execution.py and index declared report artifacts."""
     index: dict[str, dict[str, str]] = {}
-    handoff_status: str | None = None
+    handoff_summary: dict[str, Any] | None = None
 
     handoff = report_payload.get("producer_artifact_handoff")
     if handoff is not None:
-        if (
-            not isinstance(handoff, dict)
-            or handoff.get("kind") != execution.PRODUCER_HANDOFF_KIND
-        ):
-            handoff_status = "invalid"
-            internal_conflicts.append({"reason": "bundle_producer_handoff_invalid"})
-        else:
-            handoff_digest = _norm_optional_str(handoff.get("handoff_digest"))
-            payload_without_digest = {
-                k: v for k, v in handoff.items() if k != "handoff_digest"
+        try:
+            verified = execution.verify_producer_handoff_bundle(
+                bundle_dir,
+                handoff,
+                plan=plan_payload,
+                expected_run_ref=meta.get("run_ref"),
+                expected_attempt_ref=meta.get("attempt_ref"),
+            )
+            handoff_status = (
+                "verified"
+                if verified["plan_envelope_verified"]
+                else "unverified_missing_plan"
+            )
+            if not verified["plan_envelope_verified"]:
+                internal_conflicts.append(
+                    {"reason": "bundle_producer_handoff_plan_missing"}
+                )
+            for art in verified["verified_artifacts"]:
+                bpath = art["bundle_path"]
+                p_obj = _safe_child_path(bundle_dir, bpath)
+                if p_obj is not None and p_obj.is_file():
+                    consumed_files.append(str(p_obj))
+                p_root_rel = execution.retained_producer_root(
+                    Path("."), art["producer_ref"]
+                ).as_posix()
+                for f_rel, f_sha in art["file_digests"].items():
+                    rel_posix = f"{p_root_rel}/{f_rel}"
+                    norm_sha = _norm_sha256_value(f_sha)
+                    if norm_sha:
+                        index[rel_posix] = {"sha256": norm_sha}
+                    f_path = _safe_child_path(bundle_dir, rel_posix)
+                    if f_path is not None:
+                        consumed_files.append(str(f_path))
+            handoff_summary = {
+                "status": handoff_status,
+                "handoff_id": verified["handoff_id"],
+                "plan_envelope_verified": verified["plan_envelope_verified"],
+                "admission_authority_63": verified["admission_authority_63"],
+                "artifacts": verified["verified_artifacts"],
             }
-            expected_digest = execution._canonical_sha256(payload_without_digest)
-            if handoff_digest != expected_digest:
-                handoff_status = "digest_mismatch"
-                internal_conflicts.append(
-                    {
-                        "reason": "bundle_producer_handoff_digest_mismatch",
-                        "expected": expected_digest,
-                        "observed": handoff_digest,
-                    }
-                )
-            else:
-                handoff_status = "verified"
-            h_plan_ref = _norm_optional_str(handoff.get("plan_ref"))
-            if h_plan_ref and meta.get("plan_ref") and h_plan_ref != meta["plan_ref"]:
-                handoff_status = "identity_mismatch"
-                internal_conflicts.append(
-                    {
-                        "reason": "bundle_producer_handoff_plan_mismatch",
-                        "expected": meta["plan_ref"],
-                        "observed": h_plan_ref,
-                    }
-                )
-            h_ident = handoff.get("execution_identity")
-            if isinstance(h_ident, dict):
-                for key in ("run_ref", "attempt_ref", "execution_ref"):
-                    hv = _norm_optional_str(h_ident.get(key))
-                    mv = meta.get(key)
-                    if hv and mv and hv != mv:
-                        handoff_status = "identity_mismatch"
-                        internal_conflicts.append(
-                            {
-                                "reason": f"bundle_producer_handoff_{key}_mismatch",
-                                "expected": mv,
-                                "observed": hv,
-                            }
-                        )
-            for rec in handoff.get("artifacts") or ():
-                if not isinstance(rec, dict):
-                    continue
-                bpath = rec.get("bundle_path")
-                if not isinstance(bpath, str) or not bpath:
-                    continue
-                file_digests = rec.get("file_digests")
-                if isinstance(file_digests, dict) and file_digests:
-                    for rel, d_val in file_digests.items():
-                        sha = _norm_sha256_value(d_val)
-                        if isinstance(rel, str) and sha:
-                            rel_posix = (Path(bpath) / Path(rel)).as_posix()
-                            index[rel_posix] = {"sha256": sha}
-                            child = _safe_child_path(bundle_dir, rel_posix)
-                            if child is None or not child.is_file():
-                                handoff_status = "artifact_missing"
-                                internal_conflicts.append(
-                                    {
-                                        "reason": "bundle_produced_artifact_missing",
-                                        "path": rel_posix,
-                                    }
-                                )
-                            else:
-                                consumed_files.append(str(child))
-                                obs_sha = _stream_sha256(child)
-                                if obs_sha != sha:
-                                    handoff_status = "artifact_digest_mismatch"
-                                    internal_conflicts.append(
-                                        {
-                                            "reason": "bundle_artifact_sha256_mismatch",
-                                            "path": rel_posix,
-                                            "expected": sha,
-                                            "observed": obs_sha,
-                                        }
-                                    )
-                else:
-                    sha = _norm_sha256_value(rec.get("sha256"))
-                    rel_posix = Path(bpath).as_posix()
-                    if sha and (
-                        rec.get("kind") == "file" or not rec.get("materialized_files")
-                    ):
-                        index[rel_posix] = {"sha256": sha}
-                        child = _safe_child_path(bundle_dir, rel_posix)
-                        if child is None or not child.is_file():
-                            handoff_status = "artifact_missing"
-                            internal_conflicts.append(
-                                {
-                                    "reason": "bundle_produced_artifact_missing",
-                                    "path": rel_posix,
-                                }
-                            )
-                        else:
-                            consumed_files.append(str(child))
-                            obs_sha = _stream_sha256(child)
-                            if obs_sha != sha:
-                                handoff_status = "artifact_digest_mismatch"
-                                internal_conflicts.append(
-                                    {
-                                        "reason": "bundle_artifact_sha256_mismatch",
-                                        "path": rel_posix,
-                                        "expected": sha,
-                                        "observed": obs_sha,
-                                    }
-                                )
+        except execution.ExecutionError as exc:
+            err_code = str(exc)
+            handoff_summary = {
+                "status": "failed",
+                "error": err_code,
+                "admission_authority_63": "not_evaluated",
+            }
+            internal_conflicts.append(
+                {"reason": "bundle_producer_handoff_failed", "error": err_code}
+            )
 
     manifest = report_payload.get("artifacts_manifest")
     if isinstance(manifest, list):
@@ -2143,7 +2235,7 @@ def _build_bundle_manifest_index(
         for rel_junit in ("tests/junit.xml", "junit.xml"):
             index.setdefault(rel_junit, {"sha256": junit_sha})
 
-    return index, handoff_status
+    return index, handoff_summary
 
 
 def _extract_execution_metadata(
@@ -2261,7 +2353,6 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
         report_payload: dict[str, Any] | None = None
         meta: dict[str, Any] = {}
         manifest_index: dict[str, dict[str, str]] = {}
-        handoff_status: str | None = None
         sub_reports: dict[str, Any] = {}
         if report_candidate.exists():
             consumed_files.append(str(report_candidate))
@@ -2342,10 +2433,11 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                         }
                     )
 
-            manifest_index, handoff_status = _build_bundle_manifest_index(
+            manifest_index, handoff_summary = _build_bundle_manifest_index(
                 report_payload,
                 bundle_dir=bundle_dir,
                 meta=meta,
+                plan_payload=plan_payload,
                 internal_conflicts=internal_conflicts,
                 consumed_files=consumed_files,
             )
@@ -2391,7 +2483,12 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                     "elapsed_seconds": report_payload.get("duration_seconds")
                     or report_payload.get("elapsed_seconds"),
                     **meta,
-                    "producer_artifact_handoff_status": handoff_status,
+                    "producer_artifact_handoff_status": (
+                        handoff_summary["status"]
+                        if handoff_summary is not None
+                        else None
+                    ),
+                    "producer_artifact_handoff": handoff_summary,
                     "sub_reports": sub_reports,
                     "internal_conflicts": internal_conflicts,
                     "consumed_files": list(dict.fromkeys(consumed_files)),
@@ -2648,7 +2745,6 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         "execution_ref": set(),
         "report_ref": set(),
         "bundle_directory": set(),
-        "artifact_digest": set(),
         "ci_attempt_pair": set(),
     }
     context_keys: dict[str, set[str]] = {
@@ -2664,6 +2760,7 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         "plan_ref": set(),
         "source_tree_id": set(),
         "declared_target_source_ref": set(),
+        "artifact_sha256": set(),
     }
     revisions: set[str] = set()
 
@@ -2715,11 +2812,13 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
             revisions.add(src["git_commit"])
     elif stype in ("junit_xml", "pytest_reportlog"):
         props = src.get("properties") or {}
-        if src.get("bundle_binding") == "verified_manifest_digest":
-            if src.get("bound_bundle_directory"):
-                concrete_keys["bundle_directory"].add(src["bound_bundle_directory"])
-            if src.get("bound_artifact_digest"):
-                concrete_keys["artifact_digest"].add(src["bound_artifact_digest"])
+        if src.get("bundle_binding") == "verified_manifest_digest" and src.get(
+            "bound_bundle_directory"
+        ):
+            concrete_keys["bundle_directory"].add(src["bound_bundle_directory"])
+        if src.get("sha256"):
+            # Identical JUnit/reportlog bytes across distinct bundles are content equivalence only.
+            content_keys["artifact_sha256"].add(src["sha256"])
         rref = _norm_optional_str(props.get("run_ref"))
         aref = _norm_optional_str(props.get("attempt_ref"))
         if rref and aref:
@@ -2913,22 +3012,79 @@ def _connected_components(
     return components
 
 
+def _concrete_execution_units(
+    src_idx: int, src: dict[str, Any], ids: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Build per-concrete-execution nodes so multi-execution hooks never bridge siblings."""
+    if src.get("source_type") != "hook_invocation":
+        return [
+            {
+                "unit_index": -1,
+                "src_idx": src_idx,
+                "execution_index": None,
+                "keys": ids["execution"],
+            }
+        ]
+    execs = src.get("executions") or ()
+    units: list[dict[str, Any]] = []
+    for exec_idx, ex in enumerate(execs):
+        keys: dict[str, set[str]] = {
+            "execution_ref": set(),
+            "report_ref": set(),
+            "bundle_directory": set(),
+            "ci_attempt_pair": set(),
+        }
+        if ex.get("execution_ref"):
+            keys["execution_ref"].add(ex["execution_ref"])
+        if ex.get("report_ref"):
+            keys["report_ref"].add(ex["report_ref"])
+        if ex.get("bundle_directory"):
+            keys["bundle_directory"].add(ex["bundle_directory"])
+        units.append(
+            {
+                "unit_index": -1,
+                "src_idx": src_idx,
+                "execution_index": exec_idx,
+                "artifact": ex.get("artifact"),
+                "scope": ex.get("scope"),
+                "keys": keys,
+            }
+        )
+    return units
+
+
 def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
     """Classify per-source relationships across concrete-execution/context/content/revision tiers."""
     identities = [_source_identities(src) for src in sources]
     scoped_conflicts = _check_scoped_cross_conflicts(sources)
 
-    exec_edges: dict[tuple[int, int], dict[str, list[str]]] = {}
-    ctx_edges: dict[tuple[int, int], dict[str, list[str]]] = {}
-    for i in range(len(sources)):
-        for j in range(i + 1, len(sources)):
+    units: list[dict[str, Any]] = []
+    src_unit_indices: dict[int, list[int]] = {}
+    for idx, (src, ids) in enumerate(zip(sources, identities, strict=True)):
+        built = _concrete_execution_units(idx, src, ids)
+        for u in built:
+            u["unit_index"] = len(units)
+            src_unit_indices.setdefault(idx, []).append(u["unit_index"])
+            units.append(u)
+
+    unit_edges: dict[tuple[int, int], dict[str, list[str]]] = {}
+    for u_idx in range(len(units)):
+        unit_u = units[u_idx]
+        for v_idx in range(u_idx + 1, len(units)):
+            unit_v = units[v_idx]
+            if unit_u["src_idx"] == unit_v["src_idx"]:
+                continue
             eshared: dict[str, list[str]] = {}
-            for key, vals in identities[i]["execution"].items():
-                inter = sorted(vals & identities[j]["execution"][key])
+            for key, vals in unit_u["keys"].items():
+                inter = sorted(vals & unit_v["keys"][key])
                 if inter:
                     eshared[key] = inter
             if eshared:
-                exec_edges[(i, j)] = eshared
+                unit_edges[(u_idx, v_idx)] = eshared
+
+    ctx_edges: dict[tuple[int, int], dict[str, list[str]]] = {}
+    for i in range(len(sources)):
+        for j in range(i + 1, len(sources)):
             cshared: dict[str, list[str]] = {}
             for key, vals in identities[i]["context"].items():
                 inter = sorted(vals & identities[j]["context"][key])
@@ -2937,27 +3093,54 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             if cshared:
                 ctx_edges[(i, j)] = cshared
 
-    raw_exec_components = _connected_components(len(sources), exec_edges)
+    raw_unit_components = _connected_components(len(units), unit_edges)
     execution_groups: list[dict[str, Any]] = []
-    idx_to_exec_group: dict[int, int] = {}
-    for comp in raw_exec_components:
+    unit_to_exec_group: dict[int, int] = {}
+    src_to_exec_groups: dict[int, list[int]] = {}
+    for comp in raw_unit_components:
         if len(comp) < 2:
             continue
         gidx = len(execution_groups)
         group_keys: dict[str, set[str]] = {}
-        for i in comp:
-            idx_to_exec_group[i] = gidx
-            for j in comp:
-                if i < j and (i, j) in exec_edges:
-                    for k, vals in exec_edges[(i, j)].items():
+        group_sources: set[int] = set()
+        group_units: list[dict[str, Any]] = []
+        for u in comp:
+            unit_to_exec_group[u] = gidx
+            sidx = units[u]["src_idx"]
+            group_sources.add(sidx)
+            src_to_exec_groups.setdefault(sidx, [])
+            if gidx not in src_to_exec_groups[sidx]:
+                src_to_exec_groups[sidx].append(gidx)
+            u_desc: dict[str, Any] = {"source_index": sidx}
+            if units[u]["execution_index"] is not None:
+                u_desc["execution_index"] = units[u]["execution_index"]
+                if units[u].get("artifact") is not None:
+                    u_desc["artifact"] = units[u]["artifact"]
+                if units[u].get("scope") is not None:
+                    u_desc["scope"] = units[u]["scope"]
+            group_units.append(u_desc)
+            for v in comp:
+                if u < v and (u, v) in unit_edges:
+                    for k, vals in unit_edges[(u, v)].items():
                         group_keys.setdefault(k, set()).update(vals)
         execution_groups.append(
             {
                 "group_index": gidx,
-                "source_indices": comp,
+                "source_indices": sorted(group_sources),
+                "execution_units": group_units,
                 "matched_keys": {k: sorted(v) for k, v in sorted(group_keys.items())},
             }
         )
+
+    unit_matches: dict[int, dict[str, list[str]]] = {}
+    for u_idx in range(len(units)):
+        matched_u: dict[str, set[str]] = {}
+        for (a, b), eshared in unit_edges.items():
+            if a == u_idx or b == u_idx:
+                for k, vals in eshared.items():
+                    matched_u.setdefault(k, set()).update(vals)
+        if matched_u:
+            unit_matches[u_idx] = {k: sorted(v) for k, v in sorted(matched_u.items())}
 
     raw_ctx_components = _connected_components(len(sources), ctx_edges)
     context_groups: list[dict[str, Any]] = []
@@ -2985,7 +3168,13 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             *[c for c in scoped_conflicts if _anchor_matches_source(c["anchor"], mine)],
         ]
 
-        exec_matches: dict[str, list[str]] = {}
+        exec_agg: dict[str, set[str]] = {}
+        for u_idx in src_unit_indices.get(idx, ()):
+            for key, vals in unit_matches.get(u_idx, {}).items():
+                exec_agg.setdefault(key, set()).update(vals)
+        exec_matches: dict[str, list[str]] = {
+            k: sorted(v) for k, v in sorted(exec_agg.items())
+        }
         ctx_matches: dict[str, list[str]] = {}
         content_matches: dict[str, list[str]] = {}
         rev_matches: set[str] = set()
@@ -2993,10 +3182,6 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
         for jdx, other_ids in enumerate(identities):
             if jdx == idx:
                 continue
-            for key, vals in mine["execution"].items():
-                shared = vals & other_ids["execution"][key]
-                if shared:
-                    exec_matches.setdefault(key, []).extend(sorted(shared))
             for key, vals in mine["context"].items():
                 shared = vals & other_ids["context"][key]
                 if shared:
@@ -3007,10 +3192,25 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
                     content_matches.setdefault(key, []).extend(sorted(shared))
             rev_matches.update(mine["revision"] & other_ids["revision"])
 
-        exec_matches = {k: sorted(set(v)) for k, v in exec_matches.items()}
         ctx_matches = {k: sorted(set(v)) for k, v in ctx_matches.items()}
         content_matches = {k: sorted(set(v)) for k, v in content_matches.items()}
         rev_list = sorted(rev_matches)
+
+        hook_u_idxs = (
+            src_unit_indices.get(idx, [])
+            if src.get("source_type") == "hook_invocation"
+            else []
+        )
+        hook_unit_summaries = [
+            {
+                "execution_index": units[u_idx]["execution_index"],
+                "artifact": units[u_idx].get("artifact"),
+                "scope": units[u_idx].get("scope"),
+                "execution_group_index": unit_to_exec_group.get(u_idx),
+                "execution_keys": unit_matches.get(u_idx, {}),
+            }
+            for u_idx in hook_u_idxs
+        ]
 
         if src_conflicts:
             verdict = {
@@ -3034,15 +3234,33 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
                 "revision_keys": rev_list,
             }
         elif exec_matches:
-            verdict = {
-                "strength": "execution_matched",
-                "same_execution_proven": True,
-                "execution_group_index": idx_to_exec_group.get(idx),
-                "execution_keys": exec_matches,
-                "context_keys": ctx_matches,
-                "content_keys": content_matches,
-                "revision_keys": rev_list,
-            }
+            group_indices = src_to_exec_groups.get(idx, [])
+            if src.get("source_type") == "hook_invocation" and len(group_indices) > 1:
+                verdict = {
+                    "strength": "multi_execution_container",
+                    "same_execution_proven": False,
+                    "reason": "hook_invocation_contains_multiple_independent_executions",
+                    "execution_group_indices": group_indices,
+                    "execution_units": hook_unit_summaries,
+                    "execution_keys": exec_matches,
+                    "context_keys": ctx_matches,
+                    "content_keys": content_matches,
+                    "revision_keys": rev_list,
+                }
+            else:
+                verdict = {
+                    "strength": "execution_matched",
+                    "same_execution_proven": True,
+                    "execution_group_index": group_indices[0]
+                    if group_indices
+                    else None,
+                    "execution_keys": exec_matches,
+                    "context_keys": ctx_matches,
+                    "content_keys": content_matches,
+                    "revision_keys": rev_list,
+                }
+                if hook_unit_summaries:
+                    verdict["execution_units"] = hook_unit_summaries
         elif ctx_matches:
             verdict = {
                 "strength": "shared_context_only",
@@ -3101,10 +3319,14 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
         and all(s == "execution_matched" for s in strengths)
     ):
         overall = "execution_matched"
-    elif execution_groups or any(s == "execution_matched" for s in strengths):
+    elif execution_groups or any(
+        s in ("execution_matched", "multi_execution_container") for s in strengths
+    ):
         overall = "partial_execution_matched"
         if len(execution_groups) > 1:
             overall_reason = "multiple_disconnected_execution_groups"
+        elif "multi_execution_container" in strengths:
+            overall_reason = "hook_invocation_contains_multiple_independent_executions"
     elif any(s == "shared_context_only" for s in strengths):
         overall = "shared_context_only"
     elif any(s == "content_shared_distinct_execution" for s in strengths):

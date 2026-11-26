@@ -730,6 +730,47 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     )
     assert pure_match["correlation"]["overall_status"] == "execution_matched"
 
+    # P1-01: same split-check Hook H({whitespace, forwarding}) + BOTH native Reports MUST NOT bridge A and B.
+    fwd_exec_data = json.loads(
+        inv_file.with_suffix(".execution-check-forwarding").read_text(encoding="utf-8")
+    )
+    fwd_bundle = tmp_path / "bundle-fwd-exact"
+    fwd_bundle.mkdir()
+    (fwd_bundle / "report.json").write_bytes(
+        hooks.canonical_event_bytes(fwd_exec_data["report"])
+    )
+    split_both = verify_report.build_verify_report(
+        hook_root=repo,
+        invocation_ref=binding.invocation_ref,
+        execution_reports=[exact_bundle, fwd_bundle],
+    )
+    assert split_both["correlation"]["overall_status"] == "partial_execution_matched"
+    assert (
+        split_both["correlation"]["reason"] == "multiple_disconnected_execution_groups"
+    )
+    assert len(split_both["correlation"]["execution_groups"]) == 2
+    for grp in split_both["correlation"]["execution_groups"]:
+        assert len(grp["source_indices"]) == 2
+        assert 0 in grp["source_indices"]
+    hook_both = next(
+        s for s in split_both["sources"] if s["source_type"] == "hook_invocation"
+    )
+    ws_both, fwd_both = [
+        s for s in split_both["sources"] if s["source_type"] == "execution_bundle"
+    ]
+    assert hook_both["query_correlation"]["strength"] == "multi_execution_container"
+    assert hook_both["query_correlation"]["same_execution_proven"] is False
+    assert hook_both["query_correlation"]["execution_group_indices"] == [0, 1]
+    assert ws_both["query_correlation"]["strength"] == "execution_matched"
+    assert fwd_both["query_correlation"]["strength"] == "execution_matched"
+    assert {
+        ws_both["query_correlation"]["execution_group_index"],
+        fwd_both["query_correlation"]["execution_group_index"],
+    } == {0, 1}
+    assert fwd_exec_data["report"]["execution_identity"][
+        "execution_ref"
+    ] not in ws_both["query_correlation"]["execution_keys"].get("execution_ref", [])
+
     # Disconnected pairs (A<->B and C<->D) must NEVER yield overall execution_matched.
     rep_c = {
         "kind": "engineering-ci-execution-report",
@@ -827,13 +868,76 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     # 2. Real #86 PlanExecution bundle: tests/ + checks/ + producer_artifact_handoff + host/report.json.
     from engineering_ci import execution as eci_execution
 
+    # P1-02: two distinct bundles producing identical JUnit XML bytes MUST stay two separate execution groups.
+    shared_junit = (
+        b'<testsuite tests="1" time="0.1"><testcase name="t_same" time="0.1">'
+        b'<properties><property name="verifies" value="AC-202"/></properties>'
+        b"</testcase></testsuite>"
+    )
+    shared_junit_sha = hashlib.sha256(shared_junit).hexdigest()
+    b_sha1 = tmp_path / "bundle-same-junit-1"
+    b_sha2 = tmp_path / "bundle-same-junit-2"
+    for b_idx, b_dir in enumerate((b_sha1, b_sha2), start=1):
+        (b_dir / "tests").mkdir(parents=True)
+        (b_dir / "tests" / "junit.xml").write_bytes(shared_junit)
+        (b_dir / "report.json").write_bytes(
+            hooks.canonical_event_bytes(
+                {
+                    "kind": "engineering-ci-execution-report",
+                    "schema_version": 1,
+                    "status": "passed",
+                    "exit_code": 0,
+                    "execution_identity": {
+                        "run_ref": f"run:sha-{b_idx}",
+                        "attempt_ref": "att:1",
+                        "execution_ref": f"exec:sha-{b_idx}",
+                    },
+                    "junit": shared_junit.decode("utf-8"),
+                }
+            )
+        )
+    same_junit_bundles = verify_report.build_verify_report(
+        execution_reports=[b_sha1, b_sha2]
+    )
+    assert (
+        same_junit_bundles["correlation"]["overall_status"]
+        == "partial_execution_matched"
+    )
+    assert (
+        same_junit_bundles["correlation"]["reason"]
+        == "multiple_disconnected_execution_groups"
+    )
+    assert len(same_junit_bundles["correlation"]["execution_groups"]) == 2
+    j_sha_sources = [
+        s for s in same_junit_bundles["sources"] if s["source_type"] == "junit_xml"
+    ]
+    assert len(j_sha_sources) == 2
+    assert {j["query_correlation"]["execution_group_index"] for j in j_sha_sources} == {
+        0,
+        1,
+    }
+    for j in j_sha_sources:
+        assert j["bundle_binding"] == "verified_manifest_digest"
+        assert "artifact_digest" not in j["query_correlation"]["execution_keys"]
+        assert j["query_correlation"]["content_keys"]["artifact_sha256"] == [
+            shared_junit_sha
+        ]
+    standalone_same_junit = verify_report.build_verify_report(
+        junit_xmls=[b_sha1 / "tests" / "junit.xml", b_sha2 / "tests" / "junit.xml"]
+    )
+    assert (
+        standalone_same_junit["correlation"]["overall_status"]
+        == "content_shared_distinct_execution"
+    )
+    assert all(
+        s["query_correlation"]["same_execution_proven"] is False
+        for s in standalone_same_junit["sources"]
+    )
+
     real_86 = tmp_path / "bundle-86-real"
     (real_86 / "tests").mkdir(parents=True)
     (real_86 / "checks" / "weaver_registry").mkdir(parents=True)
     (real_86 / "host").mkdir()
-    produced_file = real_86 / "produced" / "prerequisite_action" / "codegen" / "out.py"
-    produced_file.parent.mkdir(parents=True)
-    produced_file.write_text("GENERATED = 1\n", encoding="utf-8")
     host_raw86 = json.dumps({"status": "passed", "exit_code": 0}).encode("utf-8")
     (real_86 / "host" / "report.json").write_bytes(host_raw86)
     junit_bytes = (
@@ -848,48 +952,109 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     (real_86 / "checks" / "weaver_registry" / "check-result.json").write_text(
         json.dumps({"status": "passed", "exit_code": 0}), encoding="utf-8"
     )
+
+    scratch_86 = tmp_path / "scratch-86-art"
+    gen_dir = scratch_86 / "prerequisite_action" / "codegen" / "generated"
+    gen_dir.mkdir(parents=True)
+    (gen_dir / "out.py").write_text("GENERATED = 1\n", encoding="utf-8")
+    (gen_dir / "helper.py").write_text("HELPER = 2\n", encoding="utf-8")
+    stamp_file = scratch_86 / "prerequisite_action" / "stamp" / "meta" / "stamp.txt"
+    stamp_file.parent.mkdir(parents=True)
+    stamp_file.write_text("STAMP = 1\n", encoding="utf-8")
+
+    dir_out_ref = {
+        "kind": "directory",
+        "path": "generated",
+        "sha256": eci_execution.artifact_directory_id(gen_dir),
+    }
+    file_out_ref = {
+        "kind": "file",
+        "path": "meta/stamp.txt",
+        "sha256": hashlib.sha256(stamp_file.read_bytes()).hexdigest(),
+    }
+    closure_records = [
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "codegen"},
+            "consumer_ref": {"kind": "check", "name": "whitespace"},
+            "dependency_kind": "data",
+            "output_ref": dir_out_ref,
+            "sha256": dir_out_ref["sha256"],
+            "verified": True,
+        },
+        {
+            "producer_ref": {"kind": "prerequisite_action", "name": "stamp"},
+            "consumer_ref": {"kind": "check", "name": "whitespace"},
+            "dependency_kind": "data",
+            "output_ref": file_out_ref,
+            "sha256": file_out_ref["sha256"],
+            "verified": True,
+        },
+    ]
+    retention_meta = eci_execution.retain_closure_artifacts(
+        scratch_86, real_86, closure_records
+    )
     plan86 = {
         "schema_version": 2,
-        "git": {"head_commit": head, "source_tree_id": "sha256:" + "c" * 64},
-        "selection": {"checks": ["whitespace"], "tests": []},
-    }
-    plan86_ref = hashlib.sha256(hooks.canonical_event_bytes(plan86)).hexdigest()
-    prod_sha = hashlib.sha256(produced_file.read_bytes()).hexdigest()
-    handoff_payload = {
-        "schema_version": eci_execution.PRODUCER_HANDOFF_VERSION,
-        "kind": eci_execution.PRODUCER_HANDOFF_KIND,
-        "plan_ref": f"sha256:{plan86_ref}",
-        "event": {"hook": "pre-commit"},
-        "candidate": {"tree": "t" * 40},
-        "execution_context": "dagger_export",
-        "execution_identity": {
-            "run_ref": "run:real-86",
-            "attempt_ref": "att:1",
-            "execution_ref": "exec:real-86",
+        "git": {
+            "mode": "index",
+            "head_commit": head,
+            "source_tree_id": "sha256:" + "c" * 64,
+            "index_tree": "1" * 40,
+            "execution_tree": "1" * 40,
         },
-        "layout": "produced/<kind>/<name>/<rel>",
-        "producer_executions": [],
-        "artifacts": [
-            {
-                "producer_ref": {"kind": "prerequisite_action", "name": "codegen"},
-                "consumer_ref": {"kind": "check", "name": "whitespace"},
-                "output_ref": {"kind": "directory", "path": "generated"},
-                "kind": "directory",
-                "bundle_path": "produced/prerequisite_action/codegen",
-                "sha256": f"sha256:{prod_sha}",
-                "file_digests": {"out.py": f"sha256:{prod_sha}"},
-                "materialized_files": ["out.py"],
-                "retention": {"status": "retained", "valid": True},
-            }
-        ],
+        "selection": {"checks": ["whitespace"], "tests": []},
+        "prerequisite_actions": {
+            "codegen": {"type": "command"},
+            "stamp": {"type": "command"},
+        },
+        "dependency_contract": {
+            "edges": [
+                {
+                    "producer_ref": rec["producer_ref"],
+                    "consumer_ref": rec["consumer_ref"],
+                    "dependency_kind": "data",
+                    "output_ref": rec["output_ref"],
+                }
+                for rec in closure_records
+            ]
+        },
     }
-    handoff_payload["handoff_digest"] = eci_execution._canonical_sha256(handoff_payload)
+    plan86_bytes = hooks.canonical_event_bytes(plan86)
+    (real_86 / "plan.json").write_bytes(plan86_bytes)
+    exec86_ident = {
+        "run_ref": "run:real-86",
+        "attempt_ref": "att:1",
+        "execution_ref": "exec:real-86",
+    }
+    handoff_payload = eci_execution.build_producer_artifact_handoff(
+        plan86,
+        closure_records=closure_records,
+        prerequisite_results=[
+            {
+                "name": "codegen",
+                "type": "command",
+                "status": "passed",
+                "exit_code": 0,
+                "reason": None,
+            },
+            {
+                "name": "stamp",
+                "type": "command",
+                "status": "passed",
+                "exit_code": 0,
+                "reason": None,
+            },
+        ],
+        execution_identity=exec86_ident,
+        execution_context="dagger_export",
+        retention_metadata=retention_meta,
+    )
     real_86_rep = {
         "kind": "engineering-ci-execution-report",
         "schema_version": 1,
         "status": "passed",
         "exit_code": 0,
-        "execution_identity": handoff_payload["execution_identity"],
+        "execution_identity": exec86_ident,
         "plan": {"git": plan86["git"]},
         "source_handoff": {
             "host_report_sha256": hashlib.sha256(host_raw86).hexdigest()
@@ -905,11 +1070,47 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
         s for s in real_86_res["sources"] if s["source_type"] == "execution_bundle"
     )
     assert b86_src["producer_artifact_handoff_status"] == "verified"
+    assert (
+        b86_src["producer_artifact_handoff"]["admission_authority_63"]
+        == "not_evaluated"
+    )
+    verified_paths = {
+        a["bundle_path"]: set(a["file_digests"])
+        for a in b86_src["producer_artifact_handoff"]["artifacts"]
+    }
+    assert verified_paths == {
+        "produced/prerequisite_action/codegen/generated": {
+            "generated/helper.py",
+            "generated/out.py",
+        },
+        "produced/prerequisite_action/stamp/meta/stamp.txt": {"meta/stamp.txt"},
+    }
     assert "tests/report.json" in b86_src["sub_reports"]
     assert "checks/weaver_registry/check-result.json" in b86_src["sub_reports"]
     j86_src = next(s for s in real_86_res["sources"] if s["source_type"] == "junit_xml")
     assert j86_src["bundle_binding"] == "verified_manifest_digest"
     assert j86_src["bundle_relative_path"] == "tests/junit.xml"
+    assert j86_src["testcase_verifies"] == [
+        {"classname": "", "name": "t1", "values": ["AC-101"]}
+    ]
+    assert (
+        j86_src["testcase_properties_summary"]["verifies_authority"]
+        == "raw_junit_diagnostic_only_not_c2_delivery"
+    )
+
+    # P1-03 negative: missing plan.json MUST NOT report handoff as verified.
+    (real_86 / "plan.json").unlink()
+    missing_plan_86 = verify_report.build_verify_report(execution_reports=[real_86])
+    assert missing_plan_86["correlation"]["overall_status"] == "mismatch_detected"
+    miss_b86 = next(
+        s for s in missing_plan_86["sources"] if s["source_type"] == "execution_bundle"
+    )
+    assert miss_b86["producer_artifact_handoff_status"] == "unverified_missing_plan"
+    assert any(
+        c["reason"] == "bundle_producer_handoff_plan_missing"
+        for c in miss_b86["internal_conflicts"]
+    )
+    (real_86 / "plan.json").write_bytes(plan86_bytes)
 
     # Artificial source_handoff.artifacts & XML run/attempt props MUST remain colocated_unverified.
     fake_bundle = tmp_path / "bundle-fake"
@@ -949,8 +1150,37 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     assert fake_j["bundle_binding"] == "colocated_unverified"
     assert fake_j["query_correlation"]["same_execution_proven"] is False
 
-    # Tampered produced artifact triggers mismatch conflict.
-    produced_file.write_text("TAMPERED\n", encoding="utf-8")
+    # P1-03 negative: truncated directory, extra unexpected file, and tampered file bytes fail closed.
+    retained_helper = (
+        real_86
+        / "produced"
+        / "prerequisite_action"
+        / "codegen"
+        / "generated"
+        / "helper.py"
+    )
+    saved_helper = retained_helper.read_bytes()
+    retained_helper.unlink()
+    trunc_86 = verify_report.build_verify_report(execution_reports=[real_86])
+    assert trunc_86["correlation"]["overall_status"] == "mismatch_detected"
+    assert (
+        next(s for s in trunc_86["sources"] if s["source_type"] == "execution_bundle")[
+            "producer_artifact_handoff"
+        ]["error"]
+        == "producer_directory_truncated"
+    )
+    retained_helper.write_bytes(saved_helper)
+
+    extra_file = retained_helper.with_name("extra.py")
+    extra_file.write_text("EXTRA = 1\n", encoding="utf-8")
+    extra_86 = verify_report.build_verify_report(execution_reports=[real_86])
+    assert extra_86["correlation"]["overall_status"] == "mismatch_detected"
+    extra_file.unlink()
+
+    retained_stamp = (
+        real_86 / "produced" / "prerequisite_action" / "stamp" / "meta" / "stamp.txt"
+    )
+    retained_stamp.write_text("TAMPERED\n", encoding="utf-8")
     tampered_86 = verify_report.build_verify_report(execution_reports=[real_86])
     assert tampered_86["correlation"]["overall_status"] == "mismatch_detected"
 
@@ -1227,6 +1457,15 @@ def test_verify_report_p1_hook_integrity_multiref_push_and_p2_fixes(tmp_path):
     assert p105_res["testcase_counts"]["passed"] == 1
     assert p105_res["report_completeness"] == "partial"
     assert p105_res["testcase_properties_summary"]["property_names"] == ["verifies"]
+    assert (
+        p105_res["testcase_properties_summary"]["verifies_authority"]
+        == "raw_reportlog_diagnostic_only_not_c2_delivery"
+    )
+    assert p105_res["testcase_verifies"] == [
+        {"nodeid": "t.py::t_retry", "values": ["AC-1"]},
+        {"nodeid": "t.py::t_prop2", "values": ["AC-2"]},
+    ]
+    assert p105_res["testcase_user_properties"][0]["nodeid"] == "t.py::t_retry"
 
     # P2-1: file between max_bytes // 4 and max_bytes must NOT truncate!
     med_stdout = tmp_path / "medium.stdout"
@@ -1343,8 +1582,10 @@ def test_verify_report_p1_hook_integrity_multiref_push_and_p2_fixes(tmp_path):
 
     # P1-04 tampered #66-C .receipt fails reconciliation.validate_receipt cleanly.
     exec_0.write_bytes(saved_0)
+    exec_1.write_bytes(saved_1)
     rec_path = b_push.invocation_path.with_suffix(".receipt")
-    bad_rec = json.loads(rec_path.read_text(encoding="utf-8"))
+    good_rec_bytes = rec_path.read_bytes()
+    bad_rec = json.loads(good_rec_bytes.decode("utf-8"))
     bad_rec["receipts"][0]["receipt_ref"] = {"sha256": "0" * 64}
     rec_path.write_bytes(hooks.canonical_event_bytes(bad_rec))
     bad_rec_rep = verify_report.build_verify_report(
@@ -1355,6 +1596,195 @@ def test_verify_report_p1_hook_integrity_multiref_push_and_p2_fixes(tmp_path):
     assert any(
         c["reason"] == "hook_receipt_validation_failed"
         for c in bad_rec_rep["sources"][0]["internal_conflicts"]
+    )
+
+    # P1-04 negative: swapping Receipt[0] <-> Receipt[1] keeps digests & global refs intact,
+    # yet violates Plan[i] -> Ref[i] -> Receipt[i] -> Execution[i].
+    swapped_rec = json.loads(good_rec_bytes.decode("utf-8"))
+    swapped_rec["receipts"] = [swapped_rec["receipts"][1], swapped_rec["receipts"][0]]
+    rec_path.write_bytes(hooks.canonical_event_bytes(swapped_rec))
+    swapped_rep = verify_report.build_verify_report(
+        hook_root=repo, invocation_ref=b_push.invocation_ref
+    )
+    assert swapped_rep["correlation"]["overall_status"] == "mismatch_detected"
+    assert swapped_rep["sources"][0]["receipt"]["native_status"] == "matched"
+    assert swapped_rep["sources"][0]["receipt"]["validation_status"] == "valid"
+    assert (
+        swapped_rep["sources"][0]["receipt"]["verifiable_evidence_status"]
+        == "mismatch_or_invalid"
+    )
+    assert any(
+        c["reason"] == "hook_receipt_scope_or_report_mismatch"
+        for c in swapped_rep["sources"][0]["internal_conflicts"]
+    )
+
+    # P1-04 negative: wrong job_ref with valid receipt_ref MUST fail Scope/Job correspondence.
+    from engineering_ci import reconciliation
+
+    def _replace_job_ref(node, new_job):
+        if isinstance(node, list):
+            return [_replace_job_ref(item, new_job) for item in node]
+        if isinstance(node, dict):
+            return {
+                k: (
+                    new_job
+                    if k == "job_ref"
+                    else (
+                        [new_job for _ in v]
+                        if k == "job_refs" and isinstance(v, list)
+                        else _replace_job_ref(v, new_job)
+                    )
+                )
+                for k, v in node.items()
+            }
+        return node
+
+    wrong_job_rec = json.loads(good_rec_bytes.decode("utf-8"))
+    r0_wrong = _replace_job_ref(wrong_job_rec["receipts"][0], "wrong-job")
+    r0_wrong["receipt_ref"] = reconciliation._digest(
+        {k: v for k, v in r0_wrong.items() if k != "receipt_ref"}
+    )
+    wrong_job_rec["receipts"][0] = r0_wrong
+    rec_path.write_bytes(hooks.canonical_event_bytes(wrong_job_rec))
+    wrong_job_rep = verify_report.build_verify_report(
+        hook_root=repo, invocation_ref=b_push.invocation_ref
+    )
+    assert wrong_job_rep["correlation"]["overall_status"] == "mismatch_detected"
+    assert wrong_job_rep["sources"][0]["receipt"]["validation_status"] == "valid"
+    assert (
+        wrong_job_rep["sources"][0]["receipt"]["verifiable_evidence_status"]
+        == "mismatch_or_invalid"
+    )
+    assert any(
+        c["reason"] == "hook_receipt_scope_or_report_mismatch"
+        for c in wrong_job_rep["sources"][0]["internal_conflicts"]
+    )
+
+    # Restore valid .receipt, then remove only execution-1 to confirm single missing push execution is caught.
+    rec_path.write_bytes(good_rec_bytes)
+    exec_1.unlink()
+    partial_miss_rep = verify_report.build_verify_report(
+        hook_root=repo, invocation_ref=b_push.invocation_ref
+    )
+    assert partial_miss_rep["correlation"]["overall_status"] == "mismatch_detected"
+    assert (
+        partial_miss_rep["sources"][0]["receipt"]["verifiable_evidence_status"]
+        == "missing_executions"
+    )
+    exec_1.write_bytes(saved_1)
+
+    # P1-05: real zero-execution pre-push (delete ref + all-inapplicable ref) verifies cleanly.
+    zero_repo = tmp_path / "zero-push-repo"
+    zero_repo.mkdir()
+    _init_git_repo(zero_repo)
+    subprocess.run(
+        ["git", "config", "core.autocrlf", "false"], cwd=zero_repo, check=True
+    )
+    _source(zero_repo, "mod", ("forwarding",))
+    _approve_profiles(
+        zero_repo,
+        INDEX_SELECTION
+        + '\n[push]\nselect_tests = false\nnew_ref_baseline = "refs/remotes/origin/main"\n'
+        'effective_profiles = ["push-del.json", "push-doc.json"]\n',
+        [
+            ("ci-effective-profile.json", "index", "index", "HEAD", ("forwarding",)),
+            (
+                "push-del.json",
+                "push",
+                "delete",
+                "refs/heads/del-branch",
+                ("forwarding",),
+            ),
+            (
+                "push-doc.json",
+                "push",
+                "update",
+                "refs/heads/doc-branch",
+                ("forwarding",),
+            ),
+        ],
+    )
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "ci-effective-profile.json",
+            "push-del.json",
+            "push-doc.json",
+            "ci-hygiene.toml",
+            "ci-selection.toml",
+            "src",
+            "tach.toml",
+        ],
+        cwd=zero_repo,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-qm", "zero-base"], cwd=zero_repo, check=True)
+    base_z = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=zero_repo, text=True
+    ).strip()
+    subprocess.run(
+        ["git", "checkout", "-qb", "doc-branch", base_z], cwd=zero_repo, check=True
+    )
+    (zero_repo / "README.md").write_text("docs only\n", encoding="utf-8", newline="\n")
+    subprocess.run(["git", "add", "README.md"], cwd=zero_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "docs-only"], cwd=zero_repo, check=True)
+    doc_head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=zero_repo, text=True
+    ).strip()
+    zero_ev = hooks.capture_pre_push(
+        zero_repo,
+        "origin",
+        "https://example.invalid/repo.git",
+        (
+            f"refs/heads/del-branch {zero} refs/heads/del-branch {base_z}\n"
+            f"refs/heads/doc-branch {doc_head} refs/heads/doc-branch {base_z}\n"
+        ),
+    )
+    b_zero = hooks.persist_event(zero_repo, zero_ev)
+    b_zero_bind = hooks.load_invocation_binding(b_zero.invocation_path)
+    assert (
+        hook_checks.prepare_push(
+            zero_repo,
+            b_zero_bind,
+            effective_profiles=["push-del.json", "push-doc.json"],
+        )["exit_code"]
+        == 0
+    )
+    assert hook_checks.run_push_checks(zero_repo, b_zero_bind)["exit_code"] == 0
+    assert hook_checks.reconcile_push(zero_repo, b_zero_bind)["exit_code"] == 0
+    assert hook_checks.consume_push_result(zero_repo, b_zero_bind)["exit_code"] == 0
+
+    zero_rep = verify_report.build_verify_report(
+        hook_root=zero_repo, invocation_ref=b_zero.invocation_ref
+    )
+    assert zero_rep["correlation"]["overall_status"] != "mismatch_detected"
+    zero_src = zero_rep["sources"][0]
+    assert zero_src["executions"] == []
+    assert zero_src["internal_conflicts"] == []
+    assert zero_src["receipt"]["native_status"] == "matched"
+    assert zero_src["receipt"]["validation_status"] == "valid"
+    assert zero_src["receipt"]["verifiable_evidence_status"] == "verified"
+
+    # P1-05 negative: zero-execution delete push claiming a phantom report_ref in receipt MUST fail.
+    zero_rec_path = b_zero.invocation_path.with_suffix(".receipt")
+    phantom_rec = json.loads(zero_rec_path.read_text(encoding="utf-8"))
+    phantom_rec["receipts"][0]["entries"][0]["observed_results"] = [
+        {
+            "job_ref": "pre-push",
+            "report_ref": {"algorithm": "sha256", "sha256": "f" * 64},
+            "status": "passed",
+            "exit_code": 0,
+        }
+    ]
+    zero_rec_path.write_bytes(hooks.canonical_event_bytes(phantom_rec))
+    phantom_rep = verify_report.build_verify_report(
+        hook_root=zero_repo, invocation_ref=b_zero.invocation_ref
+    )
+    assert phantom_rep["correlation"]["overall_status"] == "mismatch_detected"
+    assert (
+        phantom_rep["sources"][0]["receipt"]["verifiable_evidence_status"]
+        == "mismatch_or_invalid"
     )
 
     # P2-2 single-ceiling oversized check inside hooks.load_invocation_binding(..., max_bytes=...).

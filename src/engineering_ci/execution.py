@@ -2476,7 +2476,11 @@ def _validate_producer_execution_claim(plan, edge, record, handoff):
         raise ExecutionError("producer_execution_not_verified")
 
     p_type = p_exec.get("type")
-    declared = _prerequisite_actions(plan, None).get(edge["producer_ref"].get("name"))
+    declared = (
+        _prerequisite_actions(plan, None).get(edge["producer_ref"].get("name"))
+        if isinstance(plan, dict)
+        else None
+    )
     if isinstance(declared, dict) and declared.get("type"):
         if p_type != declared.get("type"):
             raise ExecutionError("producer_execution_inconsistent")
@@ -2521,6 +2525,169 @@ def _validate_producer_execution_claim(plan, edge, record, handoff):
         ):
             raise ExecutionError("producer_execution_inconsistent")
     return p_exec, prereq_sha, closure_sha
+
+
+def verify_retained_artifact_record(
+    record, *, bundle_root, output_ref=None, producer_ref=None
+):
+    """Verify one #86 retained artifact record against files under ``produced/``."""
+    if not isinstance(record, dict):
+        raise ExecutionError("producer_handoff_invalid")
+    p_ref = producer_ref if producer_ref is not None else record.get("producer_ref")
+    o_ref = output_ref if output_ref is not None else record.get("output_ref")
+    if not isinstance(p_ref, dict) or not isinstance(o_ref, dict):
+        raise ExecutionError("producer_handoff_invalid")
+
+    retention = record.get("retention")
+    if not isinstance(retention, dict):
+        raise ExecutionError("producer_artifact_retention_invalid")
+    r_status = retention.get("status")
+    if r_status == "expired":
+        raise ExecutionError("producer_artifact_expired")
+    if r_status != "retained" or retention.get("valid") is False:
+        raise ExecutionError("producer_artifact_retention_invalid")
+
+    kind = o_ref.get("kind")
+    rel = o_ref.get("path")
+    if record.get("kind") != kind:
+        raise ExecutionError("producer_artifact_type_mismatch")
+    if record.get("path") != rel:
+        raise ExecutionError("producer_handoff_output_ref_mismatch")
+
+    expected_sha = record.get("sha256")
+    edge_sha = o_ref.get("sha256")
+    if not isinstance(expected_sha, str) or not _is_hex64(expected_sha):
+        raise ExecutionError("producer_handoff_invalid")
+    if edge_sha is not None and expected_sha != edge_sha:
+        raise ExecutionError("producer_handoff_output_ref_mismatch")
+
+    norm_rel = _normalize_rel_artifact_path(rel)
+    expected_bundle_path = (
+        f"produced/{p_ref.get('kind')}/{p_ref.get('name')}/{norm_rel}"
+    )
+    if record.get("bundle_path") != expected_bundle_path:
+        raise ExecutionError("producer_artifact_path_invalid")
+
+    bundle_path = Path(bundle_root)
+    if not bundle_path.exists():
+        raise ExecutionError("producer_artifact_missing")
+    bundle_producer_root = retained_producer_root(bundle_path, p_ref)
+    actual = _inspect_artifact_entries(bundle_producer_root, rel, kind)
+    exp_files = list(record.get("materialized_files") or ())
+    exp_dirs = list(record.get("materialized_dirs") or ())
+    exp_digests = record.get("file_digests")
+    if kind == "directory" and (
+        set(exp_files) - set(actual["materialized_files"])
+        or set(exp_dirs) - set(actual["materialized_dirs"])
+    ):
+        raise ExecutionError("producer_directory_truncated")
+    if isinstance(exp_digests, dict):
+        for f_rel, f_sha in exp_digests.items():
+            if f_rel not in actual["file_digests"]:
+                raise ExecutionError(
+                    "producer_directory_truncated"
+                    if kind == "directory"
+                    else "producer_artifact_missing"
+                )
+            if actual["file_digests"][f_rel] != f_sha:
+                raise ExecutionError("producer_artifact_digest_mismatch")
+        if set(actual["file_digests"]) != set(exp_digests):
+            raise ExecutionError("producer_artifact_digest_mismatch")
+    elif set(actual["materialized_files"]) != set(exp_files):
+        raise ExecutionError("producer_artifact_digest_mismatch")
+
+    checked = verify_artifact_output(bundle_producer_root, o_ref)
+    if not checked.get("ok"):
+        code_map = {
+            "data_artifact_missing": "producer_artifact_missing",
+            "data_artifact_type_mismatch": "producer_artifact_type_mismatch",
+            "data_artifact_symlink": "producer_artifact_symlink",
+            "data_artifact_digest_mismatch": "producer_artifact_digest_mismatch",
+            "data_artifact_path_invalid": "producer_artifact_path_invalid",
+        }
+        raise ExecutionError(
+            code_map.get(checked.get("reason"), "producer_artifact_digest_mismatch")
+        )
+    if actual["sha256"] != expected_sha or checked.get("sha256") != expected_sha:
+        raise ExecutionError("producer_artifact_digest_mismatch")
+    return {
+        "producer_root": bundle_producer_root,
+        "bundle_path": expected_bundle_path,
+        "rel": norm_rel,
+        "kind": kind,
+        "expected_sha": expected_sha,
+        "actual": actual,
+    }
+
+
+def verify_producer_handoff_bundle(
+    bundle_root,
+    handoff,
+    *,
+    plan=None,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
+):
+    """Read-only verification of a #86 Producer Artifact Handoff bundle (non-#63 admission)."""
+    if not isinstance(handoff, dict):
+        raise ExecutionError("producer_handoff_invalid")
+    if handoff.get("kind") != PRODUCER_HANDOFF_KIND:
+        raise ExecutionError("producer_handoff_invalid")
+    if handoff.get("schema_version") != PRODUCER_HANDOFF_VERSION:
+        raise ExecutionError("producer_handoff_version_unsupported")
+    recorded_digest = handoff.get("handoff_digest")
+    if not isinstance(recorded_digest, str) or not recorded_digest:
+        raise ExecutionError("producer_handoff_invalid")
+    body = {k: v for k, v in handoff.items() if k != "handoff_digest"}
+    if _canonical_sha256(body) != recorded_digest:
+        raise ExecutionError("producer_handoff_digest_mismatch")
+    if isinstance(plan, dict):
+        _validate_handoff_envelope(
+            plan,
+            handoff,
+            expected_run_ref=expected_run_ref,
+            expected_attempt_ref=expected_attempt_ref,
+        )
+        for edge in (plan.get("dependency_contract") or {}).get("edges") or ():
+            if isinstance(edge, dict) and edge.get("dependency_kind") == "data":
+                _match_handoff_record(edge, handoff)
+    elif not isinstance(handoff.get("artifacts"), list):
+        raise ExecutionError("producer_handoff_invalid")
+
+    verified = []
+    for rec in handoff.get("artifacts") or ():
+        if not isinstance(rec, dict):
+            raise ExecutionError("producer_handoff_invalid")
+        p_ref = rec.get("producer_ref")
+        c_ref = rec.get("consumer_ref")
+        o_ref = rec.get("output_ref")
+        if (
+            not isinstance(p_ref, dict)
+            or not isinstance(c_ref, dict)
+            or not isinstance(o_ref, dict)
+        ):
+            raise ExecutionError("producer_handoff_invalid")
+        edge = {"producer_ref": p_ref, "consumer_ref": c_ref, "output_ref": o_ref}
+        _validate_producer_execution_claim(plan, edge, rec, handoff)
+        retained = verify_retained_artifact_record(
+            rec, bundle_root=bundle_root, output_ref=o_ref, producer_ref=p_ref
+        )
+        verified.append(
+            {
+                "producer_ref": dict(p_ref),
+                "output_ref": dict(o_ref),
+                "bundle_path": retained["bundle_path"],
+                "kind": retained["kind"],
+                "sha256": retained["expected_sha"],
+                "file_digests": dict(retained["actual"]["file_digests"]),
+            }
+        )
+    return {
+        "handoff_id": recorded_digest,
+        "plan_envelope_verified": isinstance(plan, dict),
+        "admission_authority_63": "not_evaluated",
+        "verified_artifacts": verified,
+    }
 
 
 def _verify_retained_bundle_artifact(
@@ -2597,44 +2764,15 @@ def _verify_retained_bundle_artifact(
     if not authority("producer_artifact", check_name, claim):
         raise ExecutionError("producer_artifact_authority_unverified")
 
-    actual = _inspect_artifact_entries(bundle_producer_root, rel, kind)
-    exp_files = list(record.get("materialized_files") or ())
-    exp_dirs = list(record.get("materialized_dirs") or ())
-    exp_digests = record.get("file_digests")
-    if kind == "directory" and (
-        set(exp_files) - set(actual["materialized_files"])
-        or set(exp_dirs) - set(actual["materialized_dirs"])
-    ):
-        raise ExecutionError("producer_directory_truncated")
-    if isinstance(exp_digests, dict):
-        for f_rel, f_sha in exp_digests.items():
-            if f_rel not in actual["file_digests"]:
-                raise ExecutionError(
-                    "producer_directory_truncated"
-                    if kind == "directory"
-                    else "producer_artifact_missing"
-                )
-            if actual["file_digests"][f_rel] != f_sha:
-                raise ExecutionError("producer_artifact_digest_mismatch")
-        if set(actual["file_digests"]) != set(exp_digests):
-            raise ExecutionError("producer_artifact_digest_mismatch")
-    elif set(actual["materialized_files"]) != set(exp_files):
-        raise ExecutionError("producer_artifact_digest_mismatch")
-
-    checked = verify_artifact_output(bundle_producer_root, o_ref)
-    if not checked.get("ok"):
-        code_map = {
-            "data_artifact_missing": "producer_artifact_missing",
-            "data_artifact_type_mismatch": "producer_artifact_type_mismatch",
-            "data_artifact_symlink": "producer_artifact_symlink",
-            "data_artifact_digest_mismatch": "producer_artifact_digest_mismatch",
-            "data_artifact_path_invalid": "producer_artifact_path_invalid",
-        }
-        raise ExecutionError(
-            code_map.get(checked.get("reason"), "producer_artifact_digest_mismatch")
-        )
-    if actual["sha256"] != expected_sha or checked.get("sha256") != expected_sha:
-        raise ExecutionError("producer_artifact_digest_mismatch")
+    retained = verify_retained_artifact_record(
+        record,
+        bundle_root=bundle_root,
+        output_ref=o_ref,
+        producer_ref=edge["producer_ref"],
+    )
+    actual = retained["actual"]
+    bundle_producer_root = retained["producer_root"]
+    norm_rel = retained["rel"]
 
     return {
         "producer_root": bundle_producer_root,

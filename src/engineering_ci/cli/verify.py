@@ -16,8 +16,6 @@ from uuid import uuid4
 
 from engineering_ci.verify_report import parse_lefthook_output, run_report_cli
 
-_DEFAULT_SUBPROCESS_RUN = subprocess.run
-
 _TIMING_BOUNDARIES = {
     "post_seal_io_excluded": True,
     "outer_launcher_startup_excluded": True,
@@ -262,6 +260,8 @@ def _verify(out):
     native_started_mono = perf_counter()
     started_at_ns = None
     opened_streams = False
+    spawn_attempted = False
+    proc = None
     try:
         try:
             stdout_cm = stdout_path.open("xb")
@@ -299,41 +299,13 @@ def _verify(out):
             raise
 
         opened_streams = True
-        spawn_attempted = False
-        native_spawn_confirmed = False
         with stdout_cm as stdout, stderr_cm as stderr:
             native_started_mono = perf_counter()
             started_at_ns = time_ns()
+            spawn_attempted = True
+            cmd = (lefthook, "run", "verify", "--no-auto-install")
             try:
-                spawn_attempted = True
-                cmd = (lefthook, "run", "verify", "--no-auto-install")
-                if subprocess.run is _DEFAULT_SUBPROCESS_RUN:
-                    proc = None
-                    try:
-                        proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
-                        native_spawn_confirmed = True
-                        returncode = proc.wait()
-                    except KeyboardInterrupt:
-                        if proc is not None:
-                            native_spawn_confirmed = True
-                            if proc.poll() is None:
-                                with suppress(OSError, subprocess.TimeoutExpired):
-                                    proc.terminate()
-                                    proc.wait(timeout=2)
-                                if proc.poll() is None:
-                                    with suppress(OSError):
-                                        proc.kill()
-                                        proc.wait(timeout=2)
-                        raise
-                    result = subprocess.CompletedProcess(cmd, returncode)
-                else:
-                    result = subprocess.run(
-                        cmd,
-                        stdout=stdout,
-                        stderr=stderr,
-                        check=False,
-                    )
-                    native_spawn_confirmed = True
+                proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
             except (OSError, subprocess.SubprocessError) as exc:
                 _write_status_best_effort(
                     invocation,
@@ -362,6 +334,66 @@ def _verify(out):
                     ),
                 )
                 raise
+
+            def _reap_child() -> int | None:
+                observed = None
+                with suppress(OSError, subprocess.SubprocessError):
+                    observed = proc.poll()
+                if observed is None:
+                    with suppress(OSError, subprocess.SubprocessError):
+                        proc.terminate()
+                        proc.wait(timeout=2)
+                    with suppress(OSError, subprocess.SubprocessError):
+                        if proc.poll() is None:
+                            proc.kill()
+                            proc.wait(timeout=2)
+                    with suppress(OSError, subprocess.SubprocessError):
+                        observed = proc.poll()
+                return observed
+
+            try:
+                returncode = proc.wait()
+            except (OSError, subprocess.SubprocessError) as exc:
+                observed_exit = _reap_child()
+                _write_status_best_effort(
+                    invocation,
+                    _status_payload(
+                        invocation_id=invocation.name,
+                        status="wait_failed",
+                        total_started_mono=total_started_mono,
+                        stages={
+                            "cli_preflight": {
+                                "elapsed_seconds": cli_preflight_seconds,
+                                "status": "ok",
+                            },
+                            "lefthook_native": {
+                                "elapsed_seconds": perf_counter() - native_started_mono,
+                                "status": "wait_failed",
+                            },
+                        },
+                        observed_git_head=observed_git_head,
+                        observed_config_sha256=observed_config_sha256,
+                        lefthook_version=lefthook_version,
+                        native_started=True,
+                        native_exit_code=observed_exit,
+                        started_at_ns=started_at_ns,
+                        completed_at_ns=None,
+                        native_outputs=_safe_native_outputs(stdout_path, stderr_path),
+                        lefthook_summary=parse_lefthook_output(
+                            stdout_path,
+                            stderr_path,
+                            verify_config=parsed_verify_config,
+                            native_exit_code=observed_exit,
+                        ),
+                        error={"type": type(exc).__name__, "message": str(exc)},
+                    ),
+                )
+                raise
+            except KeyboardInterrupt:
+                _reap_child()
+                raise
+
+            result = subprocess.CompletedProcess(cmd, returncode)
             ended_at_ns = time_ns()
             native_elapsed_seconds = perf_counter() - native_started_mono
     except KeyboardInterrupt:
@@ -381,12 +413,12 @@ def _verify(out):
             native_started: bool | str = False
             effective_started_ns = None
             native_stage_status = "not_started"
-        elif native_spawn_confirmed or observed_output:
+        elif proc is not None or observed_output:
             native_started = True
             effective_started_ns = started_at_ns
             native_stage_status = "interrupted"
         else:
-            # Around unconfirmed spawn without child bytes we cannot prove start.
+            # Interrupted during Popen before process handle or child output exists.
             native_started = "unknown"
             effective_started_ns = None
             native_stage_status = "unknown"

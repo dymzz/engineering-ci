@@ -765,15 +765,17 @@ def consume_index_result(root, binding):
                 plan_ref=prepared["plan_ref"], exit_code=receipt["exit_code"]
             )
             return receipt
-        _check_receipt_scope(binding, plan, receipt)
         if native_dagger:
             _, report = reports[_JOB_REF]
             if report is None or not dagger_plan.source_bound(plan, report):
                 raise hooks.HookEventError("hook_dagger_source_unverified")
         if any(report is None for _, report in reports.values()):
             raise hooks.HookEventError("hook_report_missing")
-        _check_receipt_reports(
-            receipt, {job: report for job, (_, report) in reports.items()}
+        verify_index_receipt_binding(
+            binding,
+            plan,
+            receipt,
+            {job: report for job, (_, report) in reports.items()},
         )
         exit_code = _original_exit(
             report for _, report in reports.values()
@@ -805,6 +807,78 @@ def _check_receipt_reports(receipt, reports):
         for result in entry["observed_results"]
     ):
         raise hooks.HookEventError("hook_final_report_mismatch")
+
+
+def verify_index_receipt_binding(binding, plan, receipt, reports_by_job):
+    """Pure read-only verification of pre-commit Receipt against Plan and Job Reports."""
+    if not isinstance(plan, dict):
+        raise hooks.HookEventError("hook_plan_invalid")
+    _check_receipt_scope(binding, plan, receipt)
+    if any(report is None for report in reports_by_job.values()):
+        raise hooks.HookEventError("hook_report_missing")
+    _check_receipt_reports(receipt, reports_by_job)
+    references = {
+        job: reconciliation.execution_report_ref(report)
+        for job, report in reports_by_job.items()
+        if report is not None
+    }
+    for entry in receipt.get("entries") or ():
+        for seq_key in ("job_instances", "rejected_observations"):
+            for item in entry.get(seq_key) or ():
+                if (
+                    isinstance(item, dict)
+                    and "report_ref" in item
+                    and item["report_ref"] != references.get(item.get("job_ref"))
+                ):
+                    raise hooks.HookEventError("hook_final_report_mismatch")
+
+
+def verify_push_receipt_binding(
+    binding, plans, receipts, reports_by_index, *, refs=None
+):
+    """Pure read-only verification of Plan[i] -> Ref[i] -> Receipt[i] -> Execution[i]."""
+    if not isinstance(plans, list) or not isinstance(receipts, list):
+        raise hooks.HookEventError("hook_final_result_mismatch")
+    if len(receipts) != len(plans):
+        raise hooks.HookEventError("hook_final_result_mismatch")
+    if refs is not None and len(refs) != len(plans):
+        raise hooks.HookEventError("hook_final_result_mismatch")
+    for index, (plan, receipt) in enumerate(zip(plans, receipts, strict=True)):
+        if not isinstance(plan, dict):
+            raise hooks.HookEventError("hook_plan_invalid")
+        _check_receipt_scope(binding, plan, receipt)
+        report = reports_by_index.get(index)
+        ref_action = (
+            refs[index].get("ref_action")
+            if refs is not None and index < len(refs) and isinstance(refs[index], dict)
+            else (plan.get("git") or {}).get("ref_action")
+        )
+        needs_exec = ref_action != "delete" and _push_needs_execution(plan)
+        if not needs_exec:
+            if report is not None:
+                raise hooks.HookEventError("hook_final_report_mismatch")
+        elif report is None:
+            raise hooks.HookEventError("hook_report_missing")
+        _check_receipt_reports(receipt, {_PUSH_JOB_REF: report})
+        expected_ref = (
+            reconciliation.execution_report_ref(report) if report is not None else None
+        )
+        for entry in receipt.get("entries") or ():
+            for seq_key in ("job_instances", "rejected_observations"):
+                for item in entry.get(seq_key) or ():
+                    if (
+                        isinstance(item, dict)
+                        and "report_ref" in item
+                        and (
+                            item.get("job_ref") != _PUSH_JOB_REF
+                            or expected_ref is None
+                            or item["report_ref"] != expected_ref
+                        )
+                    ):
+                        raise hooks.HookEventError("hook_final_report_mismatch")
+    for extra_index in reports_by_index:
+        if extra_index < 0 or extra_index >= len(plans):
+            raise hooks.HookEventError("hook_final_report_mismatch")
 
 
 def _run_push_plan(root, plan, source, prepared, job_ref, operation):
@@ -986,10 +1060,10 @@ def consume_push_result(root, binding):
         ):
             raise hooks.HookEventError("hook_final_result_mismatch")
         native_exit = 0
-        for index, (plan, source, receipt) in enumerate(
-            zip(prepared["plan"], refs, receipts, strict=True)
+        reports_by_index = {}
+        for index, (plan, source) in enumerate(
+            zip(prepared["plan"], refs, strict=True)
         ):
-            _check_receipt_scope(binding, plan, receipt)
             native_plan = (
                 plan
                 if source["ref_action"] != "delete"
@@ -1000,12 +1074,19 @@ def consume_push_result(root, binding):
             _, report = _load_execution(
                 binding, prepared, suffix=f".execution-{index}", native_plan=native_plan
             )
-            _check_receipt_reports(receipt, {_PUSH_JOB_REF: report})
+            reports_by_index[index] = report
             if native_plan is not None and (
                 report is None or not dagger_plan.source_bound(plan, report)
             ):
                 raise hooks.HookEventError("hook_dagger_source_unverified")
             native_exit = native_exit or (report or {}).get("exit_code", 0)
+        verify_push_receipt_binding(
+            binding,
+            prepared["plan"],
+            receipts,
+            reports_by_index,
+            refs=refs,
+        )
         exit_code = native_exit or (
             reconciliation.hook_exit_code(receipts) if refs else 0
         )

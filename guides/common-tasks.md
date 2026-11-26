@@ -44,7 +44,9 @@ uv run --locked --no-sync lefthook install
 
 已有 `core.hooksPath` 时，默认安装会返回 Lefthook 的冲突诊断，已有 Hook
 文件保持原字节。普通仓和它的 linked worktree 共享安装的 Git Hook，各次
-调用各自保留 Invocation。
+调用各自保留 Invocation（若 linked worktree 共享主仓的 editable `.venv`，
+默认 `python` 仍解析主仓源码而非候选 worktree 源码；该候选环境绑定归口
+`#66` / `#152` / `#162 A0` 入口维护）。
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
@@ -140,7 +142,7 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 `time_source_verified=false`）；HEAD/config 为启动前观察，不认证工作区 Tree。
 
 若准备工作失败（含输出文件打开或进程拉起失败 `output_open_failed` / `spawn_failed`）、
-收到中断信号（含原生返回后报告准备阶段中断 `report_preparation_interrupted`；在 `subprocess.run` 前后尚未观察到任何子进程输出即中断时记 `native_started="unknown"` 与 `started_at_ns=null`）或最终回执落盘失败（`seal_failed`），
+收到中断信号（含统一 `subprocess.Popen` 启动后等待异常 `wait_failed`、原生返回后报告准备阶段中断 `report_preparation_interrupted`，以及 `Popen` 前后尚未观察到任何子进程输出即中断时记 `native_started="unknown"` 与 `started_at_ns=null`）或最终回执落盘失败（`seal_failed`），
 会在同目录写入 `verify-status.json`（按实际进展区分 `native_started`、已有观察事实与
 已知或 `null` 的 `native_exit_code`，不写虚假完成回执 `verify-timing.json`）。其中
 `seal_failed` 会保留真实的 `native_exit_code`，而 `verify` CLI 以 `native_exit_code or 1`
@@ -160,15 +162,12 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 
 需要只读汇总结算与跨源关联时，使用 `verify report`（严格只读、不启动任何检查/Git 子进程，
 使用与 `hooks.load_invocation_binding(..., max_bytes=...)` 同源的严格字节上限且拒绝 `--out` 覆盖任何已消费输入或产物目录）：
-关联判定按连通分量区分具体执行匹配 `execution_matched`（多组互不相连或仅子集匹配记
+关联判定按具体执行单元（Concrete Execution Unit）连通分量区分 `execution_matched`（多执行 Hook 容器作为外层容器按子执行分别参与所属执行组而不对兄弟子执行求传递等价闭合；多组互不相连或仅子集匹配记
 `partial_execution_matched` 并列出 `execution_groups`）、上层 Run/Invocation/`#87` Trace 共享上下文
-`shared_context_only`、内容等价 `content_shared_distinct_execution`、版本重合 `revision_only`、
+`shared_context_only`、跨 Bundle 同 SHA-256 等内容等价 `content_shared_distinct_execution`（`artifact_sha256` 仅作内容一致而不视为具体执行身份）、版本重合 `revision_only`、
 未认证共存 `colocated_unverified`、`standalone_uncorrelated` 与 `conflict`（同一次多 Ref `pre-push`
-共享 `run_ref`/`attempt_ref` 且推送不同 Ref Commit/Tree 时不误判冲突），并独立核验 `.execution*`
-`report_digest`、`.activation*` 与 `#66-C` `validate_receipt` / 缺失 Execution 诊断（保留原生
-`native_status` 与 `verifiable_evidence_status`）、消费真实 `#86` `PlanExecution` `tests/` / `checks/` /
-`producer_artifact_handoff` 产物与声明摘要、按 `<testsuite>`/`<testcase>` 与 `nodeid` 作用域隔离 pytest
-`verifies` 属性（不将 `call passed` 缺 `teardown` 计为通过，保留重复阶段记录与局限声明）、完整保留 `#87`
+共享 `run_ref`/`attempt_ref` 且推送不同 Ref Commit/Tree 时不误判冲突），并复用 `#66-C` `hook_checks.verify_index_receipt_binding` / `verify_push_receipt_binding` 核验 `Plan[i] -> Ref[i] -> Receipt[i] -> Execution[i]`、Scope/Expected/Job 对应及合法零执行 `pre-push`（`delete` 或全不适用计划且无报告，保留原生
+`native_status` 与 `verifiable_evidence_status`）、复用 `execution.verify_producer_handoff_bundle` 按实际 `output_ref` 与 Producer Root 相对路径基准核验 `#86` File/Directory 保留闭包（缺 `plan.json` 记 `unverified_missing_plan` 且不标 `verified`）、消费 `#86` `tests/` / `checks/` 产物并导出有界原始 `testcase_verifies` 诊断映射（`*_diagnostic_only_not_c2_delivery`，`#162 C2` 消费合同独立；不将 `call passed` 缺 `teardown` 计为通过，保留重复阶段记录）、完整保留 `#87`
 Trace/Session/Engine/Anchor/DagQL/Core/Lineage 与 `source_binding` 语义，以及 `#75`/`#131`/`#63`/`#61`
 独立边界；冲突或非法 `--out` 返回退出码 `2`，且全程保持 `time_source_verified=false`：
 
