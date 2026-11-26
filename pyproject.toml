@@ -23,6 +23,18 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = [
+    "fixtures",
+    "*.egg",
+    ".*",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "_darcs",
+    "CVS",
+    "{arch}",
+]
 pythonpath = ["src"]
 
 [project.scripts]
