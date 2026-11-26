@@ -17,6 +17,11 @@ uv run --locked engineering-ci version set v0.7.0
 ```
 
 开发中的单项/定向检查使用原生 `dagger check --engineering-ci --check=...`；本仓日常综合验证见下方[显式本地综合验证](#显式本地综合验证)。
+本仓根 `pytest` / `python -m pytest` 每次正常调用会在
+`.artifacts/pytest/<invocation-id>/` 自动保留原生 `report.jsonl`（pytest-reportlog）、
+`junit.xml`、以及墙钟/`selected` 摘要（#167 R3）；终端打印报告目录。已显式传入的
+`--report-log` / `--junitxml` 路径不被覆盖。可用 `ECI_PYTEST_NO_AUTO_REPORT=1` 或
+`--eci-no-auto-report` 关闭。不另起报告服务，也不改变消费者通用 Dagger `_run_pytest`。
 检查当前目录快照。完成修改后用原生 Git 审阅并提交本次内容；
 `git add -p` 逐块选择已跟踪改动，新文件用 `git status` 中的实际路径逐个暂存。
 发布入口不会自行提交或把无关文件加入 PR。
