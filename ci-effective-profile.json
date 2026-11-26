@@ -34,13 +34,6 @@
       "allow_inapplicable": true
     },
     {
-      "obligation_ref": "local-commit-workflow_shellcheck",
-      "check_names": [
-        "workflow_shellcheck"
-      ],
-      "allow_inapplicable": true
-    },
-    {
       "obligation_ref": "local-commit-shellcheck",
       "check_names": [
         "shellcheck"
@@ -62,7 +55,6 @@
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor"
   ],
@@ -83,12 +75,11 @@
         "whitespace",
         "forwarding",
         "actionlint",
-        "workflow_shellcheck",
         "shellcheck",
         "zizmor"
       ]
     },
-    "approval_digest": "sha256:0af331bc1dc4311c98d733143a40c83a36c036b122174031ea66545442ccf4ec"
+    "approval_digest": "sha256:15711d699460cdba82221e7c62ff5154de66de64d2679ae4d53f75f3f6a6de06"
   },
-  "profile_sha256": "sha256:f3a1467d38bb19402dce75b528cf38da317b743f0d86d17322e7df15644273e8"
+  "profile_sha256": "sha256:5e5226fc2e534231df99941add1b366a52936cb030f5b85b80442a33bf28bdb4"
 }

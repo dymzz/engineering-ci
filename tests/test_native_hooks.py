@@ -408,7 +408,12 @@ def test_default_pre_push_uses_the_repository_profiles(tmp_path, hook_env):
     git(root, "push", "-q", "origin", "main", env=hook_env)
 
     cfg = selection.load_config(ROOT / "ci-selection.toml")
-    for name in ("ci-selection.toml", "ci-hygiene.toml", *cfg.push.effective_profiles):
+    for name in (
+        "ci-selection.toml",
+        "ci-hygiene.toml",
+        ".github/zizmor.yml",
+        *cfg.push.effective_profiles,
+    ):
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / name).read_bytes().replace(b"\r\n", b"\n"))
@@ -504,6 +509,7 @@ def test_repository_profiles_keep_forwarding_advisory_nonblocking(tmp_path, hook
         "ci-selection.toml",
         "ci-hygiene.toml",
         "ci-effective-profile.json",
+        ".github/zizmor.yml",
         *cfg.push.effective_profiles,
     ):
         target = root / name

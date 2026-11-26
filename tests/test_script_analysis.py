@@ -184,13 +184,6 @@ class ArgumentTests(unittest.TestCase):
         self.assertIn("-pyflakes=", arguments)
         self.assertIn("-format", arguments)
 
-    def test_actionlint_inline_shellcheck_host_block_matches_os(self):
-        blocked = script.actionlint_inline_shellcheck_host_block()
-        if os.name == "nt":
-            self.assertEqual(blocked, "actionlint_shellcheck_stdin_deadlock_on_windows")
-        else:
-            self.assertIsNone(blocked)
-
     def test_actionlint_runs_through_its_own_isolated_environment(self):
         prefix = script.runner_prefix("actionlint")
         self.assertEqual(

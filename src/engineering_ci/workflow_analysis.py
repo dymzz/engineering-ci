@@ -8,6 +8,7 @@ receipts or bypassing Check identities.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1077,28 +1078,84 @@ def findings_summary(report: dict) -> str:
     return "\n".join(lines)
 
 
-def default_run(argv: list[str], root: Path, data: str | None = None):
-    clean_env = {k: v for k, v in os.environ.items() if k != "SHELLCHECK_OPTS"}
-    try:
-        return subprocess.run(
-            [str(item) for item in argv],
-            cwd=root,
-            env=clean_env,
-            input=data,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+# Pinned actionlint 1.7.12 can deadlock feeding large ``run:`` scripts to
+# ShellCheck via stdin (rhysd/actionlint#650 / #702). Bound inline scans so a
+# host never hangs forever; timed-out runs stay not_executed (never PASS).
+ACTIONLINT_INLINE_SHELLCHECK_TIMEOUT_SEC = 120
+TOOL_TIMEOUT_EXIT = 124
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Best-effort kill of a timed-out tool and any children (Windows-safe)."""
+    if pid <= 0:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output=True,
             check=False,
         )
+        return
+    try:
+        os.killpg(pid, 15)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(pid, 15)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+
+
+def default_run(
+    argv: list[str],
+    root: Path,
+    data: str | None = None,
+    *,
+    timeout: float | None = None,
+):
+    clean_env = {k: v for k, v in os.environ.items() if k != "SHELLCHECK_OPTS"}
+    popen_kwargs: dict = {
+        "cwd": root,
+        "env": clean_env,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+    if data is not None:
+        popen_kwargs["stdin"] = subprocess.PIPE
+    if timeout is not None and os.name != "nt":
+        popen_kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen([str(item) for item in argv], **popen_kwargs)
     except FileNotFoundError:
         return subprocess.CompletedProcess(
             argv, 127, "", f"Command not found: {argv[0]}"
         )
+    try:
+        stdout, stderr = proc.communicate(input=data, timeout=timeout)
+        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc.pid)
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            stdout, stderr = "", ""
+            with contextlib.suppress(OSError):
+                proc.kill()
+        detail = f"tool_execution_timeout after {timeout}s"
+        return subprocess.CompletedProcess(
+            argv,
+            TOOL_TIMEOUT_EXIT,
+            stdout or "",
+            ((stderr or "") + "\n" + detail).strip() if stderr else detail,
+        )
 
 
-def _invoke(runner, argv: list[str], root: Path):
+def _invoke(runner, argv: list[str], root: Path, *, timeout: float | None = None):
     fn = runner or default_run
+    if runner is None and timeout is not None:
+        return default_run(list(argv), root, None, timeout=timeout)
     try:
         return fn(list(argv), root)
     except TypeError:
@@ -1158,48 +1215,6 @@ def _resolve_tool_prefix(tool: str) -> tuple[list[str], str]:
             return ["zizmor"], "zizmor"
         return runner_prefix("zizmor"), "uvx:zizmor"
     raise ValueError(f"Unsupported tool: {tool}")
-
-
-def _locate_shellcheck_executable(root: Path, runner=None) -> str | None:
-    """Resolve a concrete ShellCheck binary for Actionlint ``-shellcheck=``.
-
-    Actionlint on Windows can hang when inline ShellCheck is enabled but no
-    executable path is passed (implicit PATH discovery). Always supply an
-    absolute path from the same pinned runner environment used for ShellCheck.
-    """
-    prefix, _ = _resolve_tool_prefix("shellcheck")
-    if len(prefix) == 1:
-        found = shutil.which(prefix[0])
-        if found:
-            return found
-        return prefix[0] if Path(prefix[0]).exists() else None
-    locate_argv = [
-        *prefix[:-1],
-        "python",
-        "-c",
-        "import shutil; print(shutil.which('shellcheck') or '')",
-    ]
-    completed = _invoke(runner, locate_argv, root)
-    lines = (getattr(completed, "stdout", "") or "").strip().splitlines()
-    candidate = lines[-1].strip() if lines else ""
-    if candidate:
-        return candidate
-    return shutil.which("shellcheck")
-
-
-def actionlint_inline_shellcheck_host_block() -> str | None:
-    """Refuse Actionlint inline ShellCheck on hosts where pinned Actionlint deadlocks.
-
-    actionlint 1.7.12 writes each ``run:`` script into ShellCheck's stdin pipe
-    before starting the child. Scripts larger than the kernel pipe buffer
-    deadlock with no ShellCheck process (rhysd/actionlint#650 / #702). The fix
-    shipped in actionlint 1.8.0; actionlint-py has no 1.8 wrapper yet, so
-    Windows hosts keep Actionlint itself and standalone ShellCheck, and skip
-    only the inline integration.
-    """
-    if os.name == "nt":
-        return "actionlint_shellcheck_stdin_deadlock_on_windows"
-    return None
 
 
 def _report_to_status(report: dict, failure_reason: str) -> str:
@@ -1783,7 +1798,7 @@ def run_workflow_script_suite(
             for source in sources
         )
 
-    def scan_targets(policy, arguments, prefix, paths):
+    def scan_targets(policy, arguments, prefix, paths, *, timeout: float | None = None):
         sources = target_sources[tuple(paths)]
         if not unchanged(sources):
             return None, "workflow_target_changed_before_execution", {}
@@ -1808,7 +1823,7 @@ def run_workflow_script_suite(
                     locations[relative] = source["path"]
                     locations[staged.as_posix()] = source["path"]
                     argv.append(relative)
-                completed = _invoke(runner, [*prefix, *argv], root)
+                completed = _invoke(runner, [*prefix, *argv], root, timeout=timeout)
                 staged_current = all(
                     _file_sha256(staged_root / source["path"]) == source["sha256"]
                     for source in sources
@@ -1925,7 +1940,7 @@ def run_workflow_script_suite(
             (("zizmor", "zizmor/check", ZIZMOR_VERSION),),
         )
 
-    def check_shellcheck_ready() -> tuple[bool, str | None, str, str]:
+    def check_shellcheck_ready() -> tuple[bool, str | None, str]:
         with cache.setdefault("_lock", threading.Lock()):
             if "sc_ready" in cache:
                 return cache["sc_ready"]
@@ -1933,15 +1948,7 @@ def run_workflow_script_suite(
             ok, obs_ver, detail = verify_tool_version(
                 sc_prefix, ["--version"], SHELLCHECK_VERSION, root=root, runner=runner
             )
-            executable = ""
-            if ok:
-                located = _locate_shellcheck_executable(root, runner=runner)
-                if located:
-                    executable = located
-                else:
-                    ok = False
-                    detail = detail or "shellcheck_executable_unresolved"
-            cache["sc_ready"] = (ok, obs_ver, detail, executable)
+            cache["sc_ready"] = (ok, obs_ver, detail)
             return cache["sc_ready"]
 
     def ensure_actionlint_run(
@@ -1967,19 +1974,10 @@ def run_workflow_script_suite(
         sc_ok = False
         sc_ver = None
         sc_detail = ""
-        sc_executable = ""
         use_shellcheck = False
-        host_block = (
-            actionlint_inline_shellcheck_host_block()
-            if want_inline_shellcheck
-            else None
-        )
-        if want_inline_shellcheck and host_block is None:
-            sc_ok, sc_ver, sc_detail, sc_executable = check_shellcheck_ready()
-            use_shellcheck = sc_ok and bool(sc_executable)
-        elif want_inline_shellcheck and host_block is not None:
-            sc_ok = False
-            sc_detail = host_block
+        if want_inline_shellcheck:
+            sc_ok, sc_ver, sc_detail = check_shellcheck_ready()
+            use_shellcheck = sc_ok
         with lock:
             if cache_key in cache:
                 return cache[cache_key] if unchanged(sources) else stale
@@ -2004,19 +2002,40 @@ def run_workflow_script_suite(
                 }
                 cache[cache_key] = res
                 return res
+            # Paired uvx env already puts pinned ShellCheck on PATH; do not
+            # locate a separate executable or fall back to an unverified PATH.
             policy = actionlint_policy(
                 list(target_workflows),
                 config=actionlint_config,
                 shellcheck=use_shellcheck,
-                shellcheck_executable=sc_executable if use_shellcheck else "",
+                shellcheck_executable="shellcheck" if use_shellcheck else "",
                 json_format=True,
                 debug=use_shellcheck,
             )
             completed, source_problem, locations = scan_targets(
-                policy, actionlint_arguments, prefix, target_workflows
+                policy,
+                actionlint_arguments,
+                prefix,
+                target_workflows,
+                timeout=(
+                    ACTIONLINT_INLINE_SHELLCHECK_TIMEOUT_SEC if use_shellcheck else None
+                ),
             )
             if completed is None:
                 return {**stale, "reason": source_problem}
+            if getattr(completed, "returncode", None) == TOOL_TIMEOUT_EXIT:
+                res = {
+                    "prepared": False,
+                    "reason": "actionlint_shellcheck_timeout",
+                    "detail": (getattr(completed, "stderr", "") or "").strip(),
+                    "shellcheck_prepared": sc_ok if want_inline_shellcheck else None,
+                    "shellcheck_version": sc_ver,
+                    "shellcheck_detail": sc_detail,
+                    "executable": exe_label,
+                    "tool_version": obs_al,
+                }
+                cache[cache_key] = res
+                return res
             raw_stdout = getattr(completed, "stdout", "") or ""
             raw_stderr = getattr(completed, "stderr", "") or ""
             sc_debug = (
@@ -2092,7 +2111,6 @@ def run_workflow_script_suite(
         and inline_blocked is None
         and inline_adm_key not in target_problems
         and (inline_target_tuple is None or inline_target_tuple == tuple(al_workflows))
-        and actionlint_inline_shellcheck_host_block() is None
     )
 
     if "actionlint" in selected_by_name:
@@ -2130,6 +2148,14 @@ def run_workflow_script_suite(
         else:
             al_target_tuple = tuple(al_workflows)
             al_run = ensure_actionlint_run(al_target_tuple, want_inline_for_al)
+            if (
+                not al_run["prepared"]
+                and al_run.get("reason") == "actionlint_shellcheck_timeout"
+                and want_inline_for_al
+            ):
+                # Inline ShellCheck timed out; Actionlint itself can still run
+                # with -shellcheck= so the Workflow syntax Check stays honest.
+                al_run = ensure_actionlint_run(al_target_tuple, False)
             if not al_run["prepared"]:
                 out["actionlint"] = {
                     "name": "actionlint",
@@ -2251,15 +2277,6 @@ def run_workflow_script_suite(
                 "access_id": "actionlint/shellcheck-inline",
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
-        elif (host_block := actionlint_inline_shellcheck_host_block()) is not None:
-            out["workflow_shellcheck"] = {
-                "name": "workflow_shellcheck",
-                "selected": sel.get("status"),
-                "status": "not_applicable",
-                "reason": host_block,
-                "access_id": "actionlint/shellcheck-inline",
-                **({"rule_ref": rule_ref} if rule_ref is not None else {}),
-            }
         elif "workflow_shellcheck" in target_problems:
             out["workflow_shellcheck"] = target_refusal(
                 "workflow_shellcheck",
@@ -2276,7 +2293,7 @@ def run_workflow_script_suite(
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
         else:
-            sc_ok, sc_ver, sc_detail, _sc_exe = check_shellcheck_ready()
+            sc_ok, sc_ver, sc_detail = check_shellcheck_ready()
             if not sc_ok:
                 out["workflow_shellcheck"] = {
                     "name": "workflow_shellcheck",
@@ -2440,7 +2457,7 @@ def run_workflow_script_suite(
                 **({"rule_ref": rule_ref} if rule_ref is not None else {}),
             }
         else:
-            sc_ok, sc_ver, sc_detail, _sc_exe = check_shellcheck_ready()
+            sc_ok, sc_ver, sc_detail = check_shellcheck_ready()
             if not sc_ok:
                 out["shellcheck"] = {
                     "name": "shellcheck",

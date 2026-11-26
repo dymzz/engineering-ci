@@ -26,20 +26,6 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_FIXTURE = ROOT / "tests/fixtures/workflow-app"
 
 
-@pytest.fixture(autouse=True)
-def _allow_actionlint_inline_shellcheck_in_tests(monkeypatch):
-    """Exercise the real inline path; production Windows hosts still refuse it.
-
-    Pinned actionlint 1.7.12 deadlocks on large ``run:`` scripts on Windows
-    (rhysd/actionlint#650). Host Checks skip inline ShellCheck there; these
-    suite fixtures use small workflows and must keep proving the shared
-    Actionlint + workflow_shellcheck contract.
-    """
-    monkeypatch.setattr(
-        workflow_analysis,
-        "actionlint_inline_shellcheck_host_block",
-        lambda: None,
-    )
 CLEAN_ZIZMOR_WORKFLOW = """\
 name: clean-ci
 on:
@@ -271,6 +257,55 @@ class _CountingRunner:
             if matched:
                 return response(argv_list) if callable(response) else response
         return hygiene._run(argv_list, cwd, data)
+
+
+def test_actionlint_inline_shellcheck_timeout_stays_not_executed(tmp_path):
+    """Timed-out inline ShellCheck must not become PASS or not_applicable."""
+    relative = ".github/workflows/inline.yml"
+    repo, _ = _init_repo(
+        tmp_path,
+        checks=("actionlint", "workflow_shellcheck"),
+        workflows={relative: INLINE_SC2086_WORKFLOW},
+    )
+    plan, _ = _build_plan_and_expected(repo, [relative])
+
+    def runner(argv, cwd, data=None):
+        if "--version" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, f"{workflow_analysis.SHELLCHECK_VERSION}\n", ""
+            )
+        if "-version" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, f"{workflow_analysis.ACTIONLINT_VERSION}\n", ""
+            )
+        if "-format" in argv:
+            # Only the inline-enabled scan times out; the -shellcheck= retry must pass.
+            inline_enabled = any(
+                str(item).startswith("-shellcheck=") and str(item) != "-shellcheck="
+                for item in argv
+            )
+            if inline_enabled:
+                return subprocess.CompletedProcess(
+                    argv,
+                    workflow_analysis.TOOL_TIMEOUT_EXIT,
+                    "",
+                    "tool_execution_timeout after 120s",
+                )
+            return subprocess.CompletedProcess(argv, 0, "[]\n", "")
+        return subprocess.CompletedProcess(argv, 0, '{"comments": []}', "")
+
+    report = execution.execute(plan, root=repo, runner=runner)
+    by_name = {entry["name"]: entry for entry in report["checks"]}
+    # Actionlint retries without ShellCheck after the inline timeout.
+    assert by_name["actionlint"]["status"] == "passed"
+    assert (
+        by_name["actionlint"]["native_result"]["evidence"]["coverage"][
+            "shellcheck_inline_enabled"
+        ]
+        is False
+    )
+    assert by_name["workflow_shellcheck"]["status"] == "not_executed"
+    assert by_name["workflow_shellcheck"]["reason"] == "actionlint_shellcheck_timeout"
 
 
 def test_actionlint_unparseable_json_keeps_native_exit_and_cannot_satisfy_expected(

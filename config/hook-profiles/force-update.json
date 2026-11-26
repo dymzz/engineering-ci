@@ -13,42 +13,35 @@
   "target": "refs/*",
   "required_obligations": [
     {
-      "obligation_ref": "local-push-force-update-whitespace",
+      "obligation_ref": "local-push-force_update-whitespace",
       "check_names": [
         "whitespace"
       ],
       "allow_inapplicable": true
     },
     {
-      "obligation_ref": "local-push-force-update-forwarding",
+      "obligation_ref": "local-push-force_update-forwarding",
       "check_names": [
         "forwarding"
       ],
       "allow_inapplicable": true
     },
     {
-      "obligation_ref": "local-push-force-update-actionlint",
+      "obligation_ref": "local-push-force_update-actionlint",
       "check_names": [
         "actionlint"
       ],
       "allow_inapplicable": true
     },
     {
-      "obligation_ref": "local-push-force-update-workflow_shellcheck",
-      "check_names": [
-        "workflow_shellcheck"
-      ],
-      "allow_inapplicable": true
-    },
-    {
-      "obligation_ref": "local-push-force-update-shellcheck",
+      "obligation_ref": "local-push-force_update-shellcheck",
       "check_names": [
         "shellcheck"
       ],
       "allow_inapplicable": true
     },
     {
-      "obligation_ref": "local-push-force-update-zizmor",
+      "obligation_ref": "local-push-force_update-zizmor",
       "check_names": [
         "zizmor"
       ],
@@ -62,7 +55,6 @@
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor"
   ],
@@ -83,12 +75,11 @@
         "whitespace",
         "forwarding",
         "actionlint",
-        "workflow_shellcheck",
         "shellcheck",
         "zizmor"
       ]
     },
-    "approval_digest": "sha256:10636a7869ac9a0951b73cf8a7230e32b26fdef209ad42d47028895adcbd88d4"
+    "approval_digest": "sha256:3e0bd43053a67eaeb548bc43733acda16d8377de195b37c6824ec479746c448b"
   },
-  "profile_sha256": "sha256:83e725fbdadf8426ecd0dd2a72afcfb6c066b4ad0c6d8ea5f77fe83427c9a298"
+  "profile_sha256": "sha256:d29d1f5d4003e4152b9f0e7345c228be397dbf4d1cad753e4341b3feb66d41c3"
 }

@@ -1,10 +1,12 @@
 schema_version = 1
 framework = "pytest"
 # Hygiene plus Workflow/script security (#162 A3). docs/vulture/tach remain later.
+# workflow_shellcheck remains in the engine contract/tests but is not enabled in
+# this repo's checks/Profiles until Actionlint inline ShellCheck is safe on the
+# pinned 1.7.12 wrapper (or #63 wires a PR Source stage that selects it).
 checks = [
     "hygiene",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor",
 ]
@@ -17,7 +19,8 @@ shell_prefixes = ["scripts/"]
 [workflow_checks]
 zizmor_config = ".github/zizmor.yml"
 zizmor_offline = true
-# Share Actionlint's inline ShellCheck observation with workflow_shellcheck.
+# Share Actionlint's inline ShellCheck observation with workflow_shellcheck when
+# a Profile/stage actually selects that check.
 shellcheck_inline = true
 
 [commit]
@@ -42,13 +45,12 @@ effective_profiles = [
 profile_ref = { name = "eci/local-commit", version = "1.0.0" }
 profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:0af331bc1dc4311c98d733143a40c83a36c036b122174031ea66545442ccf4ec"
+approval_digest = "sha256:15711d699460cdba82221e7c62ff5154de66de64d2679ae4d53f75f3f6a6de06"
 effective_at = "2026-11-26T05:00:00Z"
 declared_checks = [
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor",
 ]
@@ -58,13 +60,12 @@ declared_checks = [
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
 profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:b00cf9c67cf30c8fd98660792150403ca65899eae735d44eb24a95042d5ebe3c"
+approval_digest = "sha256:41b87791972ffd0347fe015b8842bb4391fb4e7f81362d160918f00ac1ed5fe6"
 effective_at = "2026-11-26T05:00:00Z"
 declared_checks = [
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor",
 ]
@@ -74,13 +75,12 @@ declared_checks = [
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
 profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:d8751ed1f4f6d229b801f052a1d6572c96bbe0bcef3392b1bae4a3886732361e"
+approval_digest = "sha256:c2ba8f55ba46ea45074c8c5720cbce9ecec0c4436556b1a110e55203d367e8b9"
 effective_at = "2026-11-26T05:00:00Z"
 declared_checks = [
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor",
 ]
@@ -90,13 +90,12 @@ declared_checks = [
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
 profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:10636a7869ac9a0951b73cf8a7230e32b26fdef209ad42d47028895adcbd88d4"
+approval_digest = "sha256:3e0bd43053a67eaeb548bc43733acda16d8377de195b37c6824ec479746c448b"
 effective_at = "2026-11-26T05:00:00Z"
 declared_checks = [
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor",
 ]
@@ -106,13 +105,12 @@ declared_checks = [
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
 profile_revision = "3"
 approval_source = "project-governance"
-approval_digest = "sha256:7e0eb206d95b5c745a4763ea63a88ba6bd45cf8ea4686d189e913b8ceae5a38a"
+approval_digest = "sha256:572b5a80312fde75e9bfb4f220d0d28b036a959601d14db139f0f79ed5b3d74a"
 effective_at = "2026-11-26T05:00:00Z"
 declared_checks = [
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor",
 ]

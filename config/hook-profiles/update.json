@@ -34,13 +34,6 @@
       "allow_inapplicable": true
     },
     {
-      "obligation_ref": "local-push-update-workflow_shellcheck",
-      "check_names": [
-        "workflow_shellcheck"
-      ],
-      "allow_inapplicable": true
-    },
-    {
       "obligation_ref": "local-push-update-shellcheck",
       "check_names": [
         "shellcheck"
@@ -62,7 +55,6 @@
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor"
   ],
@@ -83,12 +75,11 @@
         "whitespace",
         "forwarding",
         "actionlint",
-        "workflow_shellcheck",
         "shellcheck",
         "zizmor"
       ]
     },
-    "approval_digest": "sha256:d8751ed1f4f6d229b801f052a1d6572c96bbe0bcef3392b1bae4a3886732361e"
+    "approval_digest": "sha256:c2ba8f55ba46ea45074c8c5720cbce9ecec0c4436556b1a110e55203d367e8b9"
   },
-  "profile_sha256": "sha256:64a18bb006a4f2d468f68397ed6490d47da94478220e924d20077bd8daab1447"
+  "profile_sha256": "sha256:e1fc4d2cb7f58ba8c677f538a326891b4c97e270262aa51e9af5ac7b41e485de"
 }

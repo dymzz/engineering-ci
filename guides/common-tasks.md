@@ -52,12 +52,15 @@ uv run --locked --no-sync lefthook install
 及 Workflow/脚本安全义务）与 `ci-selection.toml` 中的 `[commit] select_tests = false`：
 普通 commit 激活 Profile→Plan→Host Job→Receipt，但不选择 pytest / 不因选中测试拉起 Dagger。
 `forwarding` 仅在适用的 Python 变更上执行；`.github/workflows/` 变更唤醒同 Job 内的
-`actionlint` / `workflow_shellcheck` / `zizmor`（离线、共享 Actionlint 内联 ShellCheck，
-不与 `scripts/` 独立 `shellcheck` 重复扫描）。Pinned Actionlint 1.7.12 在 Windows 上对
-较大 `run:` 脚本存在 ShellCheck stdin 死锁（上游 1.8.0 已修，尚无 actionlint-py 包装）：
-本机 Windows Index/Push 保留 Actionlint 与 `scripts/` 独立 ShellCheck，将
-`workflow_shellcheck` 记为 `not_applicable`
-（`actionlint_shellcheck_stdin_deadlock_on_windows`）；Linux CI / Dagger 仍执行完整内联。
+`actionlint` / 离线 `zizmor`，`scripts/` 变更唤醒独立 `shellcheck`（与 Workflow 内联
+ShellCheck 分域）。`workflow_shellcheck` 仍在引擎合同与单测中，但本仓 `ci-selection.toml` 的 `checks`
+与本地 Index/Push Profile **均未启用**：pinned Actionlint 1.7.12 在向 ShellCheck
+喂入较大 `run:` 脚本时存在 stdin 管道死锁风险（rhysd/actionlint#650/#702；官方
+changelog 称 1.8.0 修复，但当前可用的 actionlint-py 包装仍止于 1.7.12.25）。若将来
+某阶段选中内联扫描，执行带超时；超时记 `not_executed`
+（`actionlint_shellcheck_timeout`），不生成 PASS，且公共 Selection 不按宿主 OS 抹除
+适用输入。PR/main 上的正式 Workflow 安全 Check 接线仍属 #63，不把本切片的本地
+Profile 或 fixture 测试冒充生产 Source 覆盖。
 `docs` / `vulture` / `tach` 仍未纳入本仓默认 Hygiene，留给后续 A2/B 切片。无 Profile
 的兼容路径仍可只跑本地暂存空白检查。
 准备 Job 从隔离检出读取暂存策略；
@@ -96,8 +99,9 @@ Git 须支持 `--attr-source` 和 `show-ref --exists`。
 执行原生 Git 空白检查，并在适用的 `src/` Python 变更上执行 `forwarding`
 （纯转发提醒为 Advisory：保留 findings、展示路径、Git exit 0；空白失败、
 缺失/不可验证 Source 与基线仍阻断）。Workflow / `scripts/` 变更按适用性执行
-actionlint、共享内联 ShellCheck、独立 ShellCheck 与离线 zizmor（项目策略见
-[.github/zizmor.yml](../.github/zizmor.yml)）。新建以本机记录的
+actionlint、独立 ShellCheck 与离线 zizmor（项目策略见
+[.github/zizmor.yml](../.github/zizmor.yml)；本地 Profile 暂不承担
+`workflow_shellcheck` 内联义务，见上文）。新建以本机记录的
 `refs/remotes/origin/main` 为比较基线，更新和强推使用 Git 交付的旧对象。删除读取
 待删 Ref 的本地旧树，保留 `ref_deletion` 及逐 Ref 回执（不引入无执行目标的检查义务）。
 `select_tests = false` 仅用于本地推送的测试选择，完整工程检查走 `verify`。

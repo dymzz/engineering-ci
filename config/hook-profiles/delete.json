@@ -19,7 +19,6 @@
     "whitespace",
     "forwarding",
     "actionlint",
-    "workflow_shellcheck",
     "shellcheck",
     "zizmor"
   ],
@@ -40,12 +39,11 @@
         "whitespace",
         "forwarding",
         "actionlint",
-        "workflow_shellcheck",
         "shellcheck",
         "zizmor"
       ]
     },
-    "approval_digest": "sha256:7e0eb206d95b5c745a4763ea63a88ba6bd45cf8ea4686d189e913b8ceae5a38a"
+    "approval_digest": "sha256:572b5a80312fde75e9bfb4f220d0d28b036a959601d14db139f0f79ed5b3d74a"
   },
-  "profile_sha256": "sha256:f01dcd1b611f63e9a5653a7475b9cc3e50c9afea41b20ceb55e84fc04f54fd84"
+  "profile_sha256": "sha256:a270c2da46654027530aead357eb9f40938e12e3357edff4b4def22e2c6bf629"
 }
