@@ -61,6 +61,6 @@ declared_checks = ["whitespace", "forwarding"]
 profile_ref = { name = "eci/local-push", version = "1.0.0" }
 profile_revision = "2"
 approval_source = "project-governance"
-approval_digest = "sha256:26d52acf3eff468842931c7b91a94e98a1dd1d6f284a6655df107daf7b015497"
+approval_digest = "sha256:7be8c0be3c0fa03f568c468c3ca57b3c2d0454f09ac611252fe2dd7939f10c0c"
 effective_at = "2026-11-26T03:15:00Z"
 declared_checks = ["whitespace", "forwarding"]

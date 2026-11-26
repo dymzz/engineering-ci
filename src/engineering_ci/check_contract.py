@@ -1356,17 +1356,24 @@ def _single_result_expected_failure(result, expected):
 
     Callers evaluating tool-bound Checks must use evaluate_check_satisfaction()
     so declared Tool Observations and coverage_by_requirement are verified.
+
+    ``advisory`` is a successful native execution with non-blocking findings: it
+    satisfies Expected evidence matching without being rewritten to ``passed``.
+    Trusted/#61 Required PASS remain separate (#63/#61).
     """
     if not result_matches_expected(result, expected):
         return "native_result_mismatched"
-    if result["status"] != "passed":
+    status = result["status"]
+    if status not in {"passed", "advisory"}:
         return "result_not_passed"
     kind = _execution_kind(result["check"]["check_id"])
-    if kind == "process" and (
-        result["native_exit_code"] != 0 or not result.get("evidence")
-    ):
-        return "result_not_passed"
-    if kind == "internal" and not result.get("evidence"):
+    if kind == "process":
+        if not result.get("evidence"):
+            return "result_not_passed"
+        # Passed process Checks must exit 0; advisory may report non-zero.
+        if status == "passed" and result["native_exit_code"] != 0:
+            return "result_not_passed"
+    elif kind == "internal" and not result.get("evidence"):
         return "result_not_passed"
     if "input_refs" in expected and any(
         ref not in result["input_refs"] for ref in expected["input_refs"]
@@ -1441,7 +1448,11 @@ def _evaluate_toolless_expected(definition, observed, expected):
             return {
                 **decision,
                 "status": "satisfied",
-                "reason": "native_pass",
+                "reason": (
+                    "native_advisory"
+                    if item["status"] == "advisory"
+                    else "native_pass"
+                ),
                 "requirements": [],
                 "selected_result_ids": [item["result_id"]],
                 "expected_failures": expected_failures,
@@ -1700,7 +1711,7 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
             (
                 item
                 for item in choices
-                if item["status"] == "passed"
+                if item["status"] in {"passed", "advisory"}
                 and (key != "terminal-live-check" or _terminal_correlation_passed(item))
             ),
             key=lambda item: item["result_id"],
@@ -1800,7 +1811,11 @@ def evaluate_check_satisfaction(definition, results, *, expected=None):
         if picked is not None:
             entry.update(
                 status="satisfied",
-                reason="native_pass",
+                reason=(
+                    "native_advisory"
+                    if picked["status"] == "advisory"
+                    else "native_pass"
+                ),
                 satisfied_by=picked["result_id"],
             )
         partial[key] = entry

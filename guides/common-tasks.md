@@ -86,9 +86,12 @@ Git 须支持 `--attr-source` 和 `show-ref --exists`。
 本仓的 `lefthook install` 安装 `pre-commit` 和 `pre-push`。同次推送的每个 Ref
 在自己的目标树内读取 `ci-selection.toml`、`ci-hygiene.toml` 和对应动作的
 [Profile](../config/hook-profiles)。`refs/*` 下指向提交的新建、更新和强制更新
-执行原生 Git 空白检查。新建以本机记录的 `refs/remotes/origin/main` 为比较基线，
-更新和强推使用 Git 交付的旧对象。删除读取待删 Ref 的本地旧树，保留 `ref_deletion`
-及逐 Ref 回执。`select_tests = false` 仅用于本地推送的测试选择，完整工程检查走 `verify`。
+执行原生 Git 空白检查，并在适用的 `src/` Python 变更上执行 `forwarding`
+（纯转发提醒为 Advisory：保留 findings、展示路径、Git exit 0；空白失败、
+缺失/不可验证 Source 与基线仍阻断）。新建以本机记录的 `refs/remotes/origin/main`
+为比较基线，更新和强推使用 Git 交付的旧对象。删除读取待删 Ref 的本地旧树，保留
+`ref_deletion` 及逐 Ref 回执（不引入无执行目标的检查义务）。`select_tests = false`
+仅用于本地推送的测试选择，完整工程检查走 `verify`。
 
 启用前将本仓策略带入要推送的分支。首次推送新 Ref 前，若本机还没有主线跟踪引用，
 先获取 `origin/main`。缺少已声明基线、目标树策略、删除旧对象或最终回执时，Git 拒绝推送。

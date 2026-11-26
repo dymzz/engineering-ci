@@ -1417,7 +1417,7 @@ def _evaluate_candidates(strict_expected, candidates):
 
 def _native_status(results):
     statuses = {item["status"] for item in results}
-    for value in ("passed", "failed", "not_executed", "not_applicable"):
+    for value in ("passed", "failed", "advisory", "not_executed", "not_applicable"):
         if value in statuses:
             return value
     return "unknown" if statuses else None
@@ -2153,10 +2153,12 @@ def _validate_satisfied_requirements(
     except check_contract.CheckContractError:
         raise ReconciliationError("receipt_satisfaction_invalid") from None
 
-    expected_reason = (
-        "all_requirements_satisfied" if definition.tool_requirements else "native_pass"
+    expected_reasons = (
+        ("all_requirements_satisfied",)
+        if definition.tool_requirements
+        else ("native_pass", "native_advisory")
     )
-    if satisfaction.get("reason") != expected_reason:
+    if satisfaction.get("reason") not in expected_reasons:
         raise ReconciliationError("receipt_satisfaction_reason_invalid")
     if satisfaction.get("expected_failures_complete") is not False:
         raise ReconciliationError("receipt_satisfaction_expected_failures_invalid")
@@ -2203,7 +2205,7 @@ def _validate_satisfied_requirements(
         req_entry = req_by_id[req_def.requirement_id]
         if req_entry.get("status") != "satisfied":
             raise ReconciliationError("receipt_requirement_unsatisfied")
-        if req_entry.get("reason") != "native_pass":
+        if req_entry.get("reason") not in {"native_pass", "native_advisory"}:
             raise ReconciliationError("receipt_requirement_reason_invalid")
         if req_entry.get("after") != list(req_def.after):
             raise ReconciliationError("receipt_requirement_structure_mismatch")
@@ -2396,7 +2398,9 @@ def validate_receipt(receipt):
                 if item.get("attempt_eligibility") == "eligible"
             }
             for item in selected_results:
-                if item.get("status") != "passed":
+                # Advisory witnesses satisfy Expected with non-blocking findings;
+                # trusted/#61 Required PASS remain separate.
+                if item.get("status") not in {"passed", "advisory"}:
                     raise ReconciliationError("receipt_selected_status_invalid")
                 attempt_key = (
                     item.get("job_ref"),

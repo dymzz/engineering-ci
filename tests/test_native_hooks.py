@@ -494,6 +494,122 @@ def test_default_pre_push_uses_the_repository_profiles(tmp_path, hook_env):
     assert not git(remote, "branch", "--list", "next", env=hook_env)
 
 
+def test_repository_profiles_keep_forwarding_advisory_nonblocking(tmp_path, hook_env):
+    """Index/Push: substantive→re-export stays advisory, displays findings, exits 0."""
+    root = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init(root, hook_env)
+    cfg = selection.load_config(ROOT / "ci-selection.toml")
+    for name in (
+        "ci-selection.toml",
+        "ci-hygiene.toml",
+        "ci-effective-profile.json",
+        *cfg.push.effective_profiles,
+    ):
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / name).read_bytes().replace(b"\r\n", b"\n"))
+    pkg = root / "src/pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_bytes(b"")
+    (pkg / "other.py").write_bytes(b"VALUE = 1\n")
+    (pkg / "sub.py").write_bytes(b"VALUE = 1\n")
+    (root / "tests").mkdir()
+    (root / "tests/test_example.py").write_bytes(
+        b"def test_example():\n    assert True\n"
+    )
+    git(root, "add", "--all", env=hook_env)
+    git(root, "commit", "-qm", "Baseline with substantive module", env=hook_env)
+    baseline = git(root, "rev-parse", "HEAD", env=hook_env)
+    git(root, "init", "--bare", "-q", "--template=", str(remote), env=hook_env)
+    git(root, "remote", "add", "origin", str(remote), env=hook_env)
+    git(root, "push", "-q", "origin", "main", env=hook_env)
+    _run(root, hook_env, *LEFTHOOK, "install")
+    directory = _invocations(root, hook_env)
+
+    (pkg / "sub.py").write_bytes(b"VALUE = 2\n")
+    git(root, "add", "src/pkg/sub.py", env=hook_env)
+    ordinary = _run(root, hook_env, "git", "commit", "-m", "Ordinary substantive edit")
+    ordinary_binding = _new_invocation(directory, ordinary)
+    ordinary_receipt = _artifact(ordinary_binding, ".receipt")
+    assert ordinary_receipt["status"] == "matched"
+    assert ordinary_receipt["trusted"] is False and ordinary_receipt["required"] is False
+    by_name = {entry["name"]: entry for entry in ordinary_receipt["entries"]}
+    assert by_name["whitespace"]["binding_status"] == "matched"
+    assert by_name["forwarding"]["binding_status"] == "matched"
+    assert by_name["forwarding"]["native_status"] == "passed"
+
+    (pkg / "sub.py").write_bytes(b"from .other import VALUE\n")
+    git(root, "add", "src/pkg/sub.py", env=hook_env)
+    advisory = _run(
+        root, hook_env, "git", "commit", "-m", "Convert module to pure re-export"
+    )
+    assert "src/pkg/sub.py" in advisory.stderr
+    assert "pure re-export" in advisory.stderr
+    assert "forwarding: advisory" in advisory.stderr or "forwarding:" in advisory.stderr
+    adv_binding = _new_invocation(directory, advisory, [ordinary_binding.invocation_path])
+    adv_receipt = _artifact(adv_binding, ".receipt")
+    assert adv_receipt["status"] == "matched"
+    assert adv_receipt["trusted"] is False and adv_receipt["required"] is False
+    adv_by = {entry["name"]: entry for entry in adv_receipt["entries"]}
+    assert adv_by["forwarding"]["binding_status"] == "matched"
+    assert adv_by["forwarding"]["native_status"] == "advisory"
+    assert adv_by["forwarding"]["native_satisfaction"]["status"] == "satisfied"
+    assert adv_by["forwarding"]["native_satisfaction"]["reason"] == "native_advisory"
+    assert adv_by["forwarding"]["selected_results"][0]["status"] == "advisory"
+    fwd_exec = _artifact(adv_binding, ".execution-check-forwarding")
+    fwd_check = next(
+        item for item in fwd_exec["report"]["checks"] if item["name"] == "forwarding"
+    )
+    assert fwd_check["status"] == "advisory"
+    assert any("src/pkg/sub.py" in item for item in fwd_check["findings"])
+    head = git(root, "rev-parse", "HEAD", env=hook_env)
+
+    push = _run(root, hook_env, "git", "push", "origin", "main")
+    assert "src/pkg/sub.py" in push.stderr or push.returncode == 0
+    push_binding = _new_invocation(
+        directory, push, [ordinary_binding.invocation_path, adv_binding.invocation_path]
+    )
+    push_plan = _artifact(push_binding, ".plan")
+    push_outcome = _artifact(push_binding, ".receipt")
+    assert len(push_outcome["receipts"]) == 1
+    push_receipt = push_outcome["receipts"][0]
+    assert push_receipt["status"] == "matched"
+    assert push_receipt["trusted"] is False and push_receipt["required"] is False
+    assert push_plan["plan"][0]["git"]["base_commit"] == baseline
+    assert push_plan["plan"][0]["git"]["head_commit"] == head
+    push_by = {entry["name"]: entry for entry in push_receipt["entries"]}
+    assert push_by["forwarding"]["binding_status"] == "matched"
+    assert push_by["forwarding"]["native_status"] == "advisory"
+    assert push_by["forwarding"]["selected_results"][0]["status"] == "advisory"
+    assert git(remote, "rev-parse", "refs/heads/main", env=hook_env) == head
+
+    (pkg / "sub.py").write_bytes(b"VALUE = 3 \n")
+    git(root, "add", "src/pkg/sub.py", env=hook_env)
+    blocked = _run(
+        root,
+        hook_env,
+        "git",
+        "commit",
+        "-m",
+        "Trailing whitespace must still fail",
+        exit_code=1,
+    )
+    blocked_binding = _new_invocation(
+        directory,
+        blocked,
+        [
+            ordinary_binding.invocation_path,
+            adv_binding.invocation_path,
+            push_binding.invocation_path,
+        ],
+    )
+    blocked_receipt = _artifact(blocked_binding, ".receipt")
+    blocked_by = {entry["name"]: entry for entry in blocked_receipt["entries"]}
+    assert blocked_by["whitespace"]["binding_status"] == "insufficient"
+    assert "whitespace" in blocked.stderr or blocked.returncode == 1
+
+
 def test_installed_lefthook_uses_pinned_dagger_module(tmp_path, hook_env):
     pin = os.environ.get("ECI_TEST_DAGGER_MODULE")
     if not pin:

@@ -11,22 +11,7 @@
   "context": "push",
   "action": "delete",
   "target": "refs/*",
-  "required_obligations": [
-    {
-      "obligation_ref": "local-push-delete-whitespace",
-      "check_names": [
-        "whitespace"
-      ],
-      "allow_inapplicable": true
-    },
-    {
-      "obligation_ref": "local-push-delete-forwarding",
-      "check_names": [
-        "forwarding"
-      ],
-      "allow_inapplicable": true
-    }
-  ],
+  "required_obligations": [],
   "advisory_checks": [],
   "allowed_inapplicability": [],
   "domain_complete": true,
@@ -52,7 +37,7 @@
         "forwarding"
       ]
     },
-    "approval_digest": "sha256:26d52acf3eff468842931c7b91a94e98a1dd1d6f284a6655df107daf7b015497"
+    "approval_digest": "sha256:7be8c0be3c0fa03f568c468c3ca57b3c2d0454f09ac611252fe2dd7939f10c0c"
   },
-  "profile_sha256": "sha256:9aca557603c521a70a73c85c21678fb466e301b9150c55787b2782c2dface545"
+  "profile_sha256": "sha256:c8621fe47aee247ccecba450f3882dcf3e40c186e67f95f0c8b8d2f31e1ae7ae"
 }

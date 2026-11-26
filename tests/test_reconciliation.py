@@ -2656,10 +2656,10 @@ def test_b2_validate_receipt_entry_semantic_invariants():
     ):
         reconciliation.validate_receipt(rehash(bad_sel_attempt))
 
-    # Consistently rewritten non-passed witness is refused on status:
+    # Consistently rewritten failed witness is refused on selected status:
     both_status = copy.deepcopy(matched)
     for key in ("selected_results", "observed_results"):
-        both_status["entries"][0][key][0]["status"] = "advisory"
+        both_status["entries"][0][key][0]["status"] = "failed"
     with pytest.raises(
         reconciliation.ReconciliationError, match="receipt_selected_status_invalid"
     ):
