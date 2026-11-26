@@ -1,0 +1,21 @@
+# Project offline Workflow security policy (#162 A3).
+# actions/* and astral-sh/* may use symbolic refs (limited exceptions).
+# All other Action uses must be hash-pinned. Broader hash-pin hardening of
+# the allowed namespaces remains a follow-up.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "actions/*": ref-pin
+        "astral-sh/*": ref-pin
+        "*": hash-pin
+  # Intentional #75/#87 A.1 post-run producer; Run identity comes from the
+  # completed workflow_run event, not from untrusted PR code in this file.
+  dangerous-triggers:
+    ignore:
+      - cicd-telemetry-post-run.yml
+  # Local reusable Workflow calls keep the GitHub-supported ./ path form;
+  # actionlint rejects the newer $/ syntax. Track as a limited exception.
+  self-repository:
+    ignore:
+      - release.yml

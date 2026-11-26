@@ -24,6 +24,8 @@ from engineering_ci import (
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_FIXTURE = ROOT / "tests/fixtures/workflow-app"
+
+
 CLEAN_ZIZMOR_WORKFLOW = """\
 name: clean-ci
 on:

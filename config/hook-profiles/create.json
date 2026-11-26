@@ -3,11 +3,11 @@
     "name": "eci/local-push",
     "version": "1.0.0"
   },
-  "profile_revision": "2",
+  "profile_revision": "3",
   "approval_source": "project-governance",
   "authority_verified": true,
-  "effective_at": "2026-11-26T03:15:00Z",
-  "evaluated_at": "2026-11-26T03:15:00Z",
+  "effective_at": "2026-11-26T05:00:00Z",
+  "evaluated_at": "2026-11-26T05:00:00Z",
   "context": "push",
   "action": "create",
   "target": "refs/*",
@@ -25,6 +25,27 @@
         "forwarding"
       ],
       "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-create-actionlint",
+      "check_names": [
+        "actionlint"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-create-shellcheck",
+      "check_names": [
+        "shellcheck"
+      ],
+      "allow_inapplicable": true
+    },
+    {
+      "obligation_ref": "local-push-create-zizmor",
+      "check_names": [
+        "zizmor"
+      ],
+      "allow_inapplicable": true
     }
   ],
   "advisory_checks": [],
@@ -32,27 +53,33 @@
   "domain_complete": true,
   "declared_checks": [
     "whitespace",
-    "forwarding"
+    "forwarding",
+    "actionlint",
+    "shellcheck",
+    "zizmor"
   ],
   "approval_binding": {
     "approval_source": "project-governance",
-    "profile_revision": "2",
+    "profile_revision": "3",
     "target_scope": {
       "context": "push",
       "action": "create",
       "target": "refs/*"
     },
     "effective_window": {
-      "effective_at": "2026-11-26T03:15:00Z"
+      "effective_at": "2026-11-26T05:00:00Z"
     },
     "declared_domain": {
       "domain_complete": true,
       "declared_checks": [
         "whitespace",
-        "forwarding"
+        "forwarding",
+        "actionlint",
+        "shellcheck",
+        "zizmor"
       ]
     },
-    "approval_digest": "sha256:311ae5a627a6572725ff700b1bd8316873b6a74ee53837db52e44b395155704c"
+    "approval_digest": "sha256:41b87791972ffd0347fe015b8842bb4391fb4e7f81362d160918f00ac1ed5fe6"
   },
-  "profile_sha256": "sha256:45f78e44b7d7b825ce780f4ced07002ded8a98fac489247316bb76bc1039411b"
+  "profile_sha256": "sha256:631c4144ceba4e38f1f919715eeae5986b1272a8470fe4299f160aee928b4171"
 }
