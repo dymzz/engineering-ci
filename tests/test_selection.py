@@ -1885,6 +1885,24 @@ def test_repository_root_selection_and_tach_configs_target_src_and_dagger():
     assert dagger_sel.escalated is False
     assert "tests.test_link_check" in dagger_sel.tests
 
+    repo_helper_sel = selection.select(
+        _worktree_changes(".dagger/src/engineering_ci_module/repository.py"),
+        cfg,
+        root=root,
+    )
+    assert "tests.test_dagger_native_telemetry" in repo_helper_sel.tests
+    assert "tests.test_script_analysis" in repo_helper_sel.tests
+    assert "tests.test_weaver" in repo_helper_sel.tests
+
+    tooling_sel = selection.select(
+        _worktree_changes(".dagger/src/engineering_ci_module/tooling.py"),
+        cfg,
+        root=root,
+    )
+    assert "tests.test_dagger_native_telemetry" in tooling_sel.tests
+    assert "tests.test_execution" in tooling_sel.tests
+    assert "tests.test_script_analysis" in tooling_sel.tests
+
     docs_sel = selection.select(
         _worktree_changes("docs/architecture/hygiene.md"), cfg, root=root
     )
@@ -2011,5 +2029,113 @@ def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixtur
         selection.run_tests(
             ("tests.missing_target",), root=fixture_repo, framework="pytest"
         )
-        != 0
+        == 4
     )
+
+    # Corrupt UTF-8 pyproject.toml falls back safely instead of crashing.
+    bad_root = tmp_path / "bad_pyproject"
+    bad_root.mkdir()
+    (bad_root / "pyproject.toml").write_bytes(b"\xff\xfe\x00broken")
+    assert selection._pytest_norecursedirs(bad_root) == ()
+
+
+def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
+    tmp_path, monkeypatch
+):
+    import os
+
+    external = tmp_path / "external_site"
+    (external / "tests").mkdir(parents=True)
+    (external / "tests/__init__.py").write_text("", encoding="utf-8")
+    (external / "tests/test_selected.py").write_text(
+        "def test_selected():\n    assert True\n", encoding="utf-8"
+    )
+    (external / "tests/test_missing.py").write_text(
+        "def test_missing():\n    assert True\n", encoding="utf-8"
+    )
+    (external / "legit_ext.py").write_text("EXTRA = 7\n", encoding="utf-8")
+
+    repo_root = tmp_path / "bound_repo"
+    (repo_root / "src").mkdir(parents=True)
+    (repo_root / "tests").mkdir(parents=True)
+    # Root tests/ intentionally has no __init__.py (matching engineering-ci layout).
+    (repo_root / "src/app_mod.py").write_text("VALUE = 42\n", encoding="utf-8")
+    (repo_root / "tests/test_selected.py").write_text(
+        "import app_mod\n\ndef test_selected():\n    assert app_mod.VALUE == 0\n",
+        encoding="utf-8",
+    )
+    (repo_root / "tests/test_pass.py").write_text(
+        "import app_mod\nimport legit_ext\n\ndef test_ok():\n    assert app_mod.VALUE + legit_ext.EXTRA == 49\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("PYTHONPATH", str(external))
+
+    # Exact reviewer counterexample: external PYTHONPATH package MUST NOT shadow repo failing test.
+    fail_cap = {}
+    rc = selection.run_tests(
+        ("tests.test_selected",), root=repo_root, framework="pytest", capture=fail_cap
+    )
+    assert rc == 1, fail_cap
+    assert "--pyargs" not in fail_cap["argv"]
+    assert "tests/test_selected.py" in fail_cap["argv"]
+
+    # Dotted module with ::nodeid suffix resolves to bound relative path + ::nodeid.
+    nodeid_cap = {}
+    rc_nodeid = selection.run_tests(
+        ("tests.test_selected::test_selected",),
+        root=repo_root,
+        framework="pytest",
+        capture=nodeid_cap,
+    )
+    assert rc_nodeid == 1, nodeid_cap
+    assert "tests/test_selected.py::test_selected" in nodeid_cap["argv"]
+
+    # Missing repo target stays bound and fails natively (exit 4) instead of running external module.
+    miss_cap = {}
+    rc_miss = selection.run_tests(
+        ("tests.test_missing",), root=repo_root, framework="pytest", capture=miss_cap
+    )
+    assert rc_miss == 4, miss_cap
+    assert "source_refusal" not in miss_cap
+    assert "--pyargs" not in miss_cap["argv"]
+    assert "tests/test_missing.py" in miss_cap["argv"]
+
+    # Legitimate PYTHONPATH imports remain available for bound repo tests.
+    pass_cap = {}
+    rc_pass = selection.run_tests(
+        ("tests.test_pass",), root=repo_root, framework="pytest", capture=pass_cap
+    )
+    assert rc_pass == 0, pass_cap
+
+    # Out-of-source traversal, absolute path, and option-injected targets are refused pre-exec.
+    for bad_target, expected_reason in (
+        ("../external_site/tests/test_selected.py", "pytest_target_outside_source"),
+        (
+            str(external / "tests/test_selected.py"),
+            "pytest_target_outside_source",
+        ),
+        ("--pyargs", "pytest_target_invalid"),
+    ):
+        refuse_cap = {}
+        rc_bad = selection.run_tests(
+            (bad_target,), root=repo_root, framework="pytest", capture=refuse_cap
+        )
+        assert rc_bad == 4
+        assert refuse_cap["source_refusal"] == expected_reason
+        assert "argv" not in refuse_cap
+
+    # Escaping symlink inside tests/ is refused before launching pytest.
+    escape_link = repo_root / "tests/test_escape.py"
+    try:
+        os.symlink(external / "tests/test_selected.py", escape_link)
+    except OSError:
+        pass
+    else:
+        link_cap = {}
+        rc_link = selection.run_tests(
+            ("tests.test_escape",), root=repo_root, framework="pytest", capture=link_cap
+        )
+        assert rc_link == 4
+        assert link_cap["source_refusal"] == "pytest_target_outside_source"
+        assert "argv" not in link_cap

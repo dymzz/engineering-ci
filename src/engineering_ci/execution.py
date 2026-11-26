@@ -710,75 +710,6 @@ def _resolved_code_prefixes(plan, root):
     return (tuple(code_prefixes) if code_prefixes is not None else None), None
 
 
-def _reusable_tach_graph_result(plan, config, *, root, execution_context):
-    """Reuse a same-process native ``tach check`` handoff; never Plan JSON alone.
-
-    Digests and host context still must match. A caller-filled
-    ``selection.tach_graph_validation`` without ``lookup_native_tach_handoff``
-    proof forces a fresh native run.
-    """
-    if execution_context != "host" or "tach" not in config.checks:
-        return None
-    tach_path = config.tach.path.replace("\\", "/")
-    if config.tach.executable != "tach" or tach_path != "tach.toml":
-        return None
-    tach_file = Path(root) / config.tach.path
-    if not tach_file.is_file():
-        return None
-    chosen = plan.get("selection") or {}
-    graph = chosen.get("tach_graph_validation")
-    native = selection.lookup_native_tach_handoff(
-        graph,
-        root=root,
-        expected_executable=shutil.which(config.tach.executable),
-    )
-    if native is None:
-        return None
-    if (
-        native.get("executable") != "tach"
-        or type(native.get("exit_code")) is not int
-        or not isinstance(native.get("stdout"), str)
-        or not isinstance(native.get("stderr"), str)
-        or (native.get("tach_path") or "tach.toml") != "tach.toml"
-        or native.get("status") not in {"passed", "failed"}
-    ):
-        return None
-    if selection._digest(tach_file) != native.get("tach_sha256"):
-        return None
-    git = plan.get("git") or {}
-    plan_snapshot = str(git.get("snapshot") or "worktree")
-    if native.get("snapshot") != plan_snapshot:
-        return None
-    expected_tree = git.get("execution_tree") or git.get("tree")
-    if not isinstance(expected_tree, str) or native.get("source_tree") != expected_tree:
-        return None
-    if (
-        plan_snapshot == "worktree"
-        and selection.worktree_tree_refusal(Path(root), expected_tree) is not None
-    ):
-        return None
-    passed = native["exit_code"] == 0
-    return {
-        **hygiene._result(
-            "tach",
-            "passed" if passed else "failed",
-            exit_code=native["exit_code"],
-            reason=None if passed else "tach_check_failed",
-            stdout=native["stdout"],
-            stderr=native["stderr"],
-            executable="tach",
-            observation={
-                "kind": "reused_tach_graph_validation",
-                "reused_from": "selection.native_tach_handoff",
-                "source_tree": native["source_tree"],
-                "tach_sha256": native["tach_sha256"],
-                "tach_path": "tach.toml",
-                "snapshot": plan_snapshot,
-            },
-        )
-    }
-
-
 def _find_omitted_hygiene_entries(
     plan,
     selected_names,
@@ -810,7 +741,7 @@ def _find_omitted_hygiene_entries(
     omitted = []
     for name in hygiene.effective_checks(config):
         if (
-            expected_app.get(name, {}).get("status") == "selected"
+            expected_app.get(name, {}).get("status") in {"selected", "unknown"}
             and name not in selected_names
         ):
             entry = {
@@ -966,15 +897,11 @@ def _run_hygiene_checks(
         plan, execution_context, extra_paths=extra_paths
     )
     base_config = dataclasses.replace(config, checks=checks, tach=effective_tach)
-    reused_tach = _reusable_tach_graph_result(
-        plan, base_config, root=root, execution_context=execution_context
+    remaining = (
+        tuple(name for name in checks if name != "whitespace")
+        if isolated_whitespace
+        else checks
     )
-    skipped_in_run = set()
-    if isolated_whitespace:
-        skipped_in_run.add("whitespace")
-    if reused_tach is not None:
-        skipped_in_run.add("tach")
-    remaining = tuple(name for name in checks if name not in skipped_in_run)
     run_config = dataclasses.replace(base_config, checks=remaining)
     run_kwargs = {
         "root": root,
@@ -994,19 +921,13 @@ def _run_hygiene_checks(
     report = (
         hygiene.run(changes, run_config, **run_kwargs) if remaining else {"checks": []}
     )
-    for check_name, precomputed in (
-        (
-            "whitespace",
+    if isolated_whitespace:
+        report["checks"].insert(
+            checks.index("whitespace"),
             _run_exported_index_whitespace(
                 root, plan["git"], changes.paths, whitespace_runner
-            )
-            if isolated_whitespace
-            else None,
-        ),
-        ("tach", reused_tach),
-    ):
-        if precomputed is not None:
-            report["checks"].insert(checks.index(check_name), precomputed)
+            ),
+        )
     ws_after = None
     ws_err_after = None
     if "whitespace" in remaining:

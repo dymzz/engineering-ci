@@ -301,11 +301,17 @@ forwarding advisory, report identity and CLI exit propagation.
   existing `ci-selection.toml` consumers without explicit `[check_scope]` keep
   unchanged Plan identities; repositories opt in to `.dagger/src/` selection /
   test mapping via explicit `[check_scope].code_prefixes` in `ci-selection.toml`.
-  Tach and Vulture applicability follow their configured scan roots only
-  (`tach.toml` `source_roots`, default `src/`; Vulture `paths`, default `src`).
-  A `.dagger/src/` edit therefore does not claim a `src`-only Tach/Vulture PASS;
-  Dagger remains a separate project covered by `non_code_rules` tests and native
-  Dagger checks until an explicit multi-root or separate tool config is adopted.
+  Tach and Vulture applicability follow their normalized configured scan roots
+  only (`tach.toml` `source_roots`, defaulting to `.` per Tach when validly
+  omitted; Vulture `paths`, default `src`). Relative roots such as `.` and
+  `./src` normalize cleanly, invalid/escaping/option-like roots are rejected,
+  `tach.toml` is read lazily only when `tach` or `tach_external` is enabled,
+  and missing, corrupt, or invalid scan-root configuration settles fail-closed
+  as `unknown` applicability (`failed` / `not_started` in `hygiene.run`), never
+  false `not_applicable`. A `.dagger/src/` edit therefore does not claim a
+  `src`-only Tach/Vulture PASS; Dagger remains a separate project covered by
+  `non_code_rules` tests and native Dagger checks until an explicit multi-root
+  or separate tool config is adopted.
 - Forwarding rule changes check changed Python candidates under the affected
   `source_prefix` (never TOML-as-AST and no whole-repo scan of unchanged files).
   A rule change with no changed Python targets settles as `not_applicable`

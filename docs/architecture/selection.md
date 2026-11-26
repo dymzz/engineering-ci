@@ -469,7 +469,7 @@ module-local and execute for every new Plan; only declared source-only
 See the [mixed-Plan observations](../verification/dagger-input-cache/mixed-plan/README.md)
 for actual request/reader counts and failure preservation.
 
-### Repository boundary mapping & Tach validation reuse (#162 A2)
+### Repository boundary mapping & pytest target binding (#162 A2)
 
 - Root `ci-selection.toml` registers `tach = "tach.toml"`, `strict_modules = true`,
   `[module_tests]` for all `src/engineering_ci` modules, explicit `[check_scope]`
@@ -482,20 +482,32 @@ for actual request/reader counts and failure preservation.
   `("src/", "scripts/", "tests/")` across config parsing and identity
   reconstruction; explicit `.dagger/src/` inclusion lives in `[check_scope]`.
 - When `framework = "pytest"`, `_test_modules`, `_tree_test_modules`, direct
-  test matching, and per-ref source snapshots honor `[tool.pytest.ini_options]`
-  `norecursedirs` (excluding `tests/fixtures/` from root collection while
-  preserving standalone fixture project test discovery).
+  test matching, and per-ref source snapshots honor explicit list
+  `[tool.pytest.ini_options].norecursedirs` entries in `pyproject.toml`
+  (excluding `tests/fixtures/` from root collection while preserving standalone
+  fixture project test discovery). This helper is scoped to `pyproject.toml`
+  `norecursedirs` rather than acting as a full `pytest.ini` / `setup.cfg`
+  parser; unreadable or malformed `pyproject.toml` falls back safely without
+  claiming complete pytest discovery proof.
+- `run_tests(..., framework="pytest")` keeps Selection's dotted test module
+  identities in Plans and resolves them (plus optional `::nodeid` suffixes) into
+  bound repository-relative file or directory paths inside `root` without
+  `--pyargs`. Legitimate `PYTHONPATH` is preserved while external packages
+  cannot shadow or substitute for bound repository test targets; out-of-source,
+  escaping symlink, or option-injected targets are refused before spawning
+  pytest, and missing in-source targets fail natively with pytest exit `4`.
+  `unittest` semantics stay unchanged.
 - **Adoption scope (R15 independent slice):** this delivers selection mapping,
   hygiene applicability, root `tach.toml` / `ci-selection.toml` artifacts, and
   host-native `tach check` / `tach check-external` evidence when those tools are
   invoked. Default Index/push Profiles and Verify Jobs do **not** enable Tach,
-  Lychee, or Vulture; Hook/Verify default enablement is a later adoption slice.
-- `selection._tach_check` registers a process-local `native_execution_token` after
-  a real `tach check`. `execution._reusable_tach_graph_result` reuses that handoff
-  only when the token is still registered in-process and host / tree / config
-  digest / executable / snapshot match. A caller-filled Plan
-  `tach_graph_validation` without a live handoff always re-runs native Tach;
-  `tach_external` stays independent.
+  Lychee, Vulture, or incremental `select_tests = true`; Hook/Verify default
+  enablement is a later adoption slice.
+- `selection._tach_check` and `hygiene._tach` remain independent native runs
+  (and `tach_external` stays independent). Plan `selection.tach_graph_validation`
+  does not skip native `tach check` in execution; `AC-06` equivalent
+  deduplication remains open for a future production consumer under
+  `#52` / `#66` / `#63` / `#162 B2/D`.
 - `expected_checks.derive_expected_checks` / `validate_projection` forward
   `hygiene_config_path` and per-ref `base_commit` / `head_commit` so single-ref
   and per-ref projections agree on config-triggered hygiene applicability.

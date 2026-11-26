@@ -655,34 +655,92 @@ def _hygiene_config_triggers(paths, root, changes, *, hygiene_config_path=None):
     return triggers
 
 
+def _normalize_scan_root(value):
+    """Normalize a repo-relative scan root; return ``""`` for ``.`` or ``None`` if invalid."""
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or any(ch in value for ch in "\0\r\n")
+        or value.startswith("-")
+    ):
+        return None
+    raw = value.replace("\\", "/")
+    if raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":" and raw[0].isalpha()):
+        return None
+    raw_parts = raw.split("/")
+    if ".." in raw_parts:
+        return None
+    parts = [part for part in raw_parts if part and part != "."]
+    if any(part.lower() == ".git" for part in parts):
+        return None
+    return "/".join(parts)
+
+
 def _path_under_roots(path, roots):
+    norm = _normalize_scan_root(path)
+    if norm is None:
+        return False
     for root in roots:
-        normalized = root.rstrip("/")
-        prefix = normalized + "/"
-        if path == normalized or path.startswith(prefix):
+        if root == "":
+            return True
+        if norm == root or norm.startswith(root + "/"):
             return True
     return False
 
 
-def _tach_configured_roots(root, config, changes):
-    """Bound ``tach.toml`` ``source_roots`` (default ``src/``); not selection prefixes."""
-    rel = config.tach.path.replace("\\", "/")
-    raw = _read_hygiene_config_at_snapshot(root, rel, changes)
-    if raw is None:
-        return ("src/",)
-    text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+def _resolve_vulture_roots(config):
+    if not config.vulture.paths:
+        return None, "vulture_paths_invalid"
+    normalized = []
+    for item in config.vulture.paths:
+        root_norm = _normalize_scan_root(item)
+        if root_norm is None:
+            return None, "vulture_paths_invalid"
+        normalized.append(root_norm)
+    return tuple(normalized), None
+
+
+def _resolve_tach_roots(root, config, changes):
+    """Resolve bound ``tach.toml`` ``source_roots``; fail closed on missing/corrupt/invalid config."""
+    rel = _normalize_scan_root(config.tach.path)
+    if not rel:
+        return None, "tach_config_path_invalid"
+    snapshot = getattr(changes, "snapshot", "worktree")
+    if snapshot == "worktree":
+        try:
+            raw = read_source_file(root, rel)
+        except (FileNotFoundError, NotADirectoryError):
+            return None, "tach_config_missing"
+        except (SourcePathError, OSError):
+            return None, "tach_config_invalid"
+    else:
+        target_tree = getattr(changes, "execution_tree", None) or getattr(
+            changes, "tree", None
+        )
+        if not isinstance(target_tree, str) or not _GIT_OID.fullmatch(target_tree):
+            return None, "tach_config_unreadable"
+        shown = _run_bytes(["git", "cat-file", "-p", f"{target_tree}:{rel}"], root)
+        if shown.returncode != 0:
+            return None, "tach_config_missing"
+        raw = shown.stdout
     try:
+        text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
         data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        return ("src/",)
-    roots = data.get("source_roots", ["src"])
+    except (UnicodeError, tomllib.TOMLDecodeError, ValueError):
+        return None, "tach_config_invalid"
+    if "source_roots" not in data:
+        # Tach defaults omitted source_roots to ["."] (repository root).
+        return ("",), None
+    roots = data["source_roots"]
     if not isinstance(roots, list) or not roots:
-        return ("src/",)
+        return None, "tach_source_roots_invalid"
     normalized = []
     for item in roots:
-        if isinstance(item, str) and item.strip():
-            normalized.append(item.replace("\\", "/").rstrip("/") + "/")
-    return tuple(normalized) or ("src/",)
+        root_norm = _normalize_scan_root(item)
+        if root_norm is None:
+            return None, "tach_source_roots_invalid"
+        normalized.append(root_norm)
+    return tuple(normalized), None
 
 
 def check_applicability(
@@ -731,24 +789,35 @@ def check_applicability(
     # Selection code_prefixes (may include .dagger/src/) are not Tach/Vulture
     # scan roots. Tool applicability follows configured tool coverage only.
     _ = code_prefixes
-    tach_path = config.tach.path.replace("\\", "/")
-    vulture_roots = tuple(
-        item.replace("\\", "/").rstrip("/") + "/" for item in config.vulture.paths
+    vulture_roots = None
+    vulture_error = None
+    if "vulture" in names:
+        vulture_roots, vulture_error = _resolve_vulture_roots(config)
+    tach_path = _normalize_scan_root(config.tach.path)
+    tach_roots = None
+    tach_error = None
+    if "tach" in names or "tach_external" in names:
+        tach_roots, tach_error = _resolve_tach_roots(root, config, changes)
+
+    vulture_inputs = (
+        [
+            path
+            for path in paths
+            if path == "pyproject.toml" or _path_under_roots(path, vulture_roots)
+        ]
+        if vulture_roots is not None
+        else []
     )
-    tach_roots = _tach_configured_roots(root, config, changes)
-
-    def is_vulture_path(path):
-        if path == "pyproject.toml":
-            return True
-        return _path_under_roots(path, vulture_roots)
-
-    def is_tach_path(path):
-        if path in {tach_path, "pyproject.toml"}:
-            return True
-        return _path_under_roots(path, tach_roots)
-
-    vulture_inputs = [path for path in paths if is_vulture_path(path)]
-    tach_inputs = [path for path in paths if is_tach_path(path)]
+    tach_inputs = (
+        [
+            path
+            for path in paths
+            if path in {tach_path, "pyproject.toml"}
+            or _path_under_roots(path, tach_roots)
+        ]
+        if tach_roots is not None
+        else []
+    )
     rule_triggers = _hygiene_config_triggers(
         paths, root, changes, hygiene_config_path=hygiene_config_path
     )
@@ -813,6 +882,14 @@ def check_applicability(
                 ),
             }
         elif name == "vulture":
+            if vulture_error is not None:
+                scopes[name] = {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": vulture_error,
+                }
+                continue
             cfg_triggered = bool(rule_triggers.get(name))
             selected = full or bool(vulture_inputs) or cfg_triggered
             scopes[name] = {
@@ -828,6 +905,14 @@ def check_applicability(
                 ),
             }
         elif name == "tach":
+            if tach_error is not None:
+                scopes[name] = {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": tach_error,
+                }
+                continue
             cfg_triggered = bool(rule_triggers.get(name))
             selected = full or bool(tach_inputs) or cfg_triggered
             scopes[name] = {
@@ -843,6 +928,14 @@ def check_applicability(
                 ),
             }
         elif name == "tach_external":
+            if tach_error is not None:
+                scopes[name] = {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": tach_error,
+                }
+                continue
             cfg_triggered = bool(rule_triggers.get("tach_external"))
             selected = full or bool(ext_inputs) or cfg_triggered
             scopes[name] = {
@@ -1367,9 +1460,16 @@ def _docs(
 def _vulture(root, runner, config, code_changed):
     if not code_changed:
         return _result("vulture", "not_applicable", reason="no_code_changes")
+    roots, error = _resolve_vulture_roots(config)
+    if error is not None:
+        return {
+            **_result("vulture", "failed", reason=error),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
     argv = [
         config.vulture.executable,
-        *config.vulture.paths,
+        *(item or "." for item in roots),
         "--min-confidence",
         str(config.vulture.min_confidence),
     ]
@@ -1385,11 +1485,16 @@ def _vulture(root, runner, config, code_changed):
 
 
 def _tach(paths, root, runner, config, code_changed):
-    # Pre-execution reuse is handled in execution._reusable_tach_graph_result
-    # only when source tree, tach.toml digest, executable and host context match.
     if not code_changed:
         return _result("tach", "not_applicable", reason="no_code_changes")
-    if not (root / config.tach.path).is_file():
+    tach_rel = _normalize_scan_root(config.tach.path)
+    if not tach_rel:
+        return {
+            **_result("tach", "failed", reason="tach_config_path_invalid"),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
+    if not (root / tach_rel).is_file():
         # Tool has not started: preserve the preparation failure separately
         # from a native Tach execution verdict.
         return {
@@ -1409,7 +1514,14 @@ def _tach(paths, root, runner, config, code_changed):
 def _tach_external(root, runner, config, applicable):
     if not applicable:
         return _result("tach_external", "not_applicable", reason="no_code_changes")
-    if not (root / config.tach.path).is_file():
+    tach_rel = _normalize_scan_root(config.tach.path)
+    if not tach_rel:
+        return {
+            **_result("tach_external", "failed", reason="tach_config_path_invalid"),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
+    if not (root / tach_rel).is_file():
         return {
             **_result("tach_external", "failed", reason="tach_config_missing"),
             "execution_started": False,
@@ -1528,11 +1640,50 @@ def run(
                 )
             )
         elif name == "vulture":
-            results.append(_vulture(root, runner, config, applicable))
+            if app_entry.get("status") == "unknown":
+                results.append(
+                    {
+                        **_result(
+                            "vulture",
+                            "failed",
+                            reason=app_entry.get("reason") or "vulture_paths_invalid",
+                        ),
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                    }
+                )
+            else:
+                results.append(_vulture(root, runner, config, applicable))
         elif name == "tach":
-            results.append(_tach(paths, root, runner, config, applicable))
+            if app_entry.get("status") == "unknown":
+                results.append(
+                    {
+                        **_result(
+                            "tach",
+                            "failed",
+                            reason=app_entry.get("reason") or "tach_config_invalid",
+                        ),
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                    }
+                )
+            else:
+                results.append(_tach(paths, root, runner, config, applicable))
         elif name == "tach_external":
-            results.append(_tach_external(root, runner, config, applicable))
+            if app_entry.get("status") == "unknown":
+                results.append(
+                    {
+                        **_result(
+                            "tach_external",
+                            "failed",
+                            reason=app_entry.get("reason") or "tach_config_invalid",
+                        ),
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                    }
+                )
+            else:
+                results.append(_tach_external(root, runner, config, applicable))
     report["checks"] = results
     statuses = {item["status"] for item in results}
     if "failed" in statuses:

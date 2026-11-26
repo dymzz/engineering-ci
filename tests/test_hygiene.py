@@ -849,6 +849,9 @@ def test_tach_config_trigger_and_snapshot_isolation_and_fail_closed_fallback(rep
     cfg_base = run(path, "rev-parse", "HEAD").strip()
 
     # Commit a [tach] rule change, then dirty worktree differently and evaluate commit snapshot.
+    (path / "tach-alt.toml").write_text(
+        (path / "tach.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     hyg.write_text(
         "schema_version = 1\n"
         'checks = ["vulture", "tach", "tach_external"]\n'
@@ -860,7 +863,7 @@ def test_tach_config_trigger_and_snapshot_isolation_and_fail_closed_fallback(rep
         "external = true\n",
         encoding="utf-8",
     )
-    run(path, "add", "ci-hygiene.toml")
+    run(path, "add", "ci-hygiene.toml", "tach-alt.toml")
     run(path, "commit", "-qm", "change tach path")
     commit_cfg = hygiene.load_config(hyg)
 
@@ -964,3 +967,135 @@ def test_is_offline_lychee_arguments_respects_overrides_and_separator():
     )
     assert hygiene.is_offline_lychee_arguments(["--", "--offline"]) is False
     assert hygiene.is_offline_lychee_arguments(["--no-progress"]) is False
+
+
+def test_tool_scan_roots_normalization_lazy_tach_and_fail_closed_unknown(repo):
+    path, base = repo
+
+    # 1. Normalization of ".", "./src", and Windows separators; rejection of invalid/escaping roots.
+    assert hygiene._normalize_scan_root(".") == ""
+    assert hygiene._normalize_scan_root("./") == ""
+    assert hygiene._normalize_scan_root("./src") == "src"
+    assert hygiene._normalize_scan_root(".\\src\\") == "src"
+    assert hygiene._path_under_roots("src/pkg.py", ("",)) is True
+    assert hygiene._path_under_roots("src/pkg.py", ("src",)) is True
+    assert hygiene._path_under_roots("src/pkg/sub.py", ("src",)) is True
+    for bad in ("", "   ", "../outside", "/etc", "C:/src", "--min-confidence", ".git"):
+        assert hygiene._normalize_scan_root(bad) is None
+
+    # 2. Vulture with "." and "./src" selects src/pkg/sub.py and passes normalized roots to argv.
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    src_changes = changes(path, base)
+    for configured_paths, expected_arg in (((".",), "."), (("./src",), "src")):
+        v_cfg = dataclasses.replace(
+            config(path, ("vulture",)),
+            vulture=dataclasses.replace(config(path).vulture, paths=configured_paths),
+        )
+        app = hygiene.check_applicability(src_changes, v_cfg, root=path)
+        assert app["vulture"]["status"] == "selected"
+        assert "src/pkg/sub.py" in app["vulture"]["inputs"]
+        fake = FakeRunner()
+        res = hygiene.run(src_changes, v_cfg, root=path, runner=fake)
+        assert res["status"] == "passed"
+        v_calls = [call[0] for call in fake.calls if call[0][0] == "vulture"]
+        assert v_calls == [("vulture", expected_arg, "--min-confidence", "60")]
+
+    # Invalid/escaping Vulture paths fail closed (unknown -> failed/not_started), never false N/A.
+    bad_v_cfg = dataclasses.replace(
+        config(path, ("vulture",)),
+        vulture=dataclasses.replace(config(path).vulture, paths=("../outside",)),
+    )
+    bad_v_app = hygiene.check_applicability(src_changes, bad_v_cfg, root=path)
+    assert bad_v_app["vulture"]["status"] == "unknown"
+    assert bad_v_app["vulture"]["reason"] == "vulture_paths_invalid"
+    bad_v_runner = FakeRunner()
+    bad_v_res = hygiene.run(src_changes, bad_v_cfg, root=path, runner=bad_v_runner)
+    assert bad_v_res["status"] == "failed"
+    assert by_name(bad_v_res)["vulture"]["reason"] == "vulture_paths_invalid"
+    assert by_name(bad_v_res)["vulture"]["execution_started"] is False
+    assert not any(call[0][0] == "vulture" for call in bad_v_runner.calls)
+
+    # 3. Lazy Tach config reading: corrupt UTF-8 tach.toml does not affect runs with Tach disabled.
+    original_tach = (path / "tach.toml").read_text(encoding="utf-8")
+    (path / "tach.toml").write_bytes(b"\xff\xfe\x00not-utf8")
+    no_tach_app = hygiene.check_applicability(
+        src_changes, config(path, ("whitespace", "forwarding")), root=path
+    )
+    assert no_tach_app["whitespace"]["status"] == "selected"
+    assert no_tach_app["forwarding"]["status"] == "selected"
+
+    # When Tach is enabled, corrupt UTF-8 fails closed as unknown -> failed/not_started (no crash, no N/A).
+    tach_cfg = dataclasses.replace(
+        config(path, ("tach", "tach_external")),
+        tach=dataclasses.replace(config(path).tach, external=True),
+    )
+    bad_tach_app = hygiene.check_applicability(src_changes, tach_cfg, root=path)
+    assert bad_tach_app["tach"]["status"] == "unknown"
+    assert bad_tach_app["tach"]["reason"] == "tach_config_invalid"
+    assert bad_tach_app["tach_external"]["status"] == "unknown"
+    bad_tach_res = hygiene.run(src_changes, tach_cfg, root=path, runner=FakeRunner())
+    assert bad_tach_res["status"] == "failed"
+    assert by_name(bad_tach_res)["tach"]["reason"] == "tach_config_invalid"
+    assert by_name(bad_tach_res)["tach"]["execution_started"] is False
+
+    # Invalid source_roots in tach.toml fails closed as unknown -> failed/not_started.
+    (path / "tach.toml").write_text('source_roots = ["../escape"]\n', encoding="utf-8")
+    bad_roots_app = hygiene.check_applicability(src_changes, tach_cfg, root=path)
+    assert bad_roots_app["tach"]["status"] == "unknown"
+    assert bad_roots_app["tach"]["reason"] == "tach_source_roots_invalid"
+    bad_roots_res = hygiene.run(src_changes, tach_cfg, root=path, runner=FakeRunner())
+    assert bad_roots_res["status"] == "failed"
+    assert by_name(bad_roots_res)["tach"]["reason"] == "tach_source_roots_invalid"
+
+    # Missing tach.toml with only non-src doc change still fails closed (never false N/A).
+    run(path, "checkout", "--", "src/pkg/sub.py")
+    (path / "docs/guide.md").write_text("# changed doc\n", encoding="utf-8")
+    (path / "tach.toml").unlink()
+    doc_only_changes = changes(path, base)
+    missing_app = hygiene.check_applicability(doc_only_changes, tach_cfg, root=path)
+    assert missing_app["tach"]["status"] == "unknown"
+    assert missing_app["tach"]["reason"] == "tach_config_missing"
+    missing_res = hygiene.run(
+        doc_only_changes, tach_cfg, root=path, runner=FakeRunner()
+    )
+    assert missing_res["status"] == "failed"
+    assert by_name(missing_res)["tach"]["reason"] == "tach_config_missing"
+
+    # 4. Explicit multi-root vs single-root Dagger positive/negative applicability + omitted default (".").
+    run(path, "checkout", "--", "docs/guide.md")
+    dagger_file = path / ".dagger/src/engineering_ci_module/sample.py"
+    dagger_file.parent.mkdir(parents=True, exist_ok=True)
+    dagger_file.write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "tach.toml").write_text(original_tach, encoding="utf-8")
+    run(path, "add", ".dagger/src/engineering_ci_module/sample.py", "tach.toml")
+    run(path, "commit", "-qm", "add dagger sample")
+    dagger_base = run(path, "rev-parse", "HEAD").strip()
+
+    dagger_file.write_text("VALUE = 2\n", encoding="utf-8")
+    dagger_changes = changes(path, dagger_base)
+    single_app = hygiene.check_applicability(
+        dagger_changes, config(path, ("tach",)), root=path
+    )
+    assert single_app["tach"]["status"] == "not_applicable"
+
+    # Multi-root config explicitly covering ./src and .dagger/src selects tach on Dagger edit.
+    (path / "tach.toml").write_text(
+        original_tach.replace(
+            'source_roots = ["src"]', 'source_roots = ["./src", ".dagger/src"]'
+        ),
+        encoding="utf-8",
+    )
+    multi_app = hygiene.check_applicability(
+        dagger_changes, config(path, ("tach",)), root=path
+    )
+    assert multi_app["tach"]["status"] == "selected"
+    assert ".dagger/src/engineering_ci_module/sample.py" in multi_app["tach"]["inputs"]
+
+    # Valid tach.toml omitting source_roots uses Tach's native repo-root default (".").
+    (path / "tach.toml").write_text(
+        original_tach.replace('source_roots = ["src"]\n', ""), encoding="utf-8"
+    )
+    omitted_app = hygiene.check_applicability(
+        dagger_changes, config(path, ("tach",)), root=path
+    )
+    assert omitted_app["tach"]["status"] == "selected"

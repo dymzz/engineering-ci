@@ -60,7 +60,7 @@ ShellCheck 分域）。`workflow_shellcheck` 仍在引擎合同与既有单测�
 timeout / 进程树清理，也不按宿主 OS 抹除适用输入或伪造 inline PASS。PR/main 上的正式
 Workflow 安全 Check 接线仍属 #63，不把本切片的本地 Profile 或 fixture 测试冒充生产
 Source 覆盖。
-`docs` / `vulture` / `tach` 仍未纳入本仓默认 Hygiene，留给后续 A2/B 切片。无 Profile
+根目录已交付 `tach.toml` 与 `ci-selection.toml`（全模块 `[module_tests]`、`[[non_code_rules]]` 与显式 `.dagger/src/` 选择范围），可用于影响选择及独立执行 `tach check` / `tach check-external`；但 `docs`（Lychee）/ `vulture` / `tach` / `tach_external` 以及默认增量测试 `select_tests = true` **均尚未纳入本仓默认 Index/Push Profile 与 Verify Jobs**，`AC-06` Tach 等价去重仍留待后续消费切片。无 Profile
 的兼容路径仍可只跑本地暂存空白检查。
 准备 Job 从隔离检出读取暂存策略；
 该检出采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`

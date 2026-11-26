@@ -13,8 +13,7 @@ import fnmatch
 import hashlib
 import json
 import os
-import secrets
-import shutil
+import stat
 import subprocess
 import sys
 import tomllib
@@ -1952,7 +1951,7 @@ def _pytest_norecursedirs(root, *, tree=None):
         return ()
     try:
         return _pytest_norecursedirs_from_text(pyproject.read_text(encoding="utf-8"))
-    except OSError:
+    except (OSError, UnicodeError):
         return ()
 
 
@@ -3793,60 +3792,6 @@ def per_ref_selections_and_scopes(
     return per_ref_entries, per_ref_scopes
 
 
-# Same-process native tach handoffs. A serialized Plan field alone is not
-# execution proof; reuse requires a token registered by `_tach_check` here.
-_NATIVE_TACH_HANDOFFS: dict[str, dict] = {}
-_NATIVE_TACH_HANDOFF_KEYS = (
-    "status",
-    "exit_code",
-    "executable",
-    "tach_path",
-    "stdout",
-    "stderr",
-    "tach_sha256",
-    "source_tree",
-    "snapshot",
-)
-
-
-def _register_native_tach_handoff(result, *, root=None, resolved_executable=None):
-    """Attach a process-local proof token after a real `tach check` invocation."""
-    if not isinstance(result, dict) or result.get("status") not in {"passed", "failed"}:
-        return result
-    token = secrets.token_hex(16)
-    payload = dict(result)
-    payload["native_execution_token"] = token
-    entry = {key: payload.get(key) for key in _NATIVE_TACH_HANDOFF_KEYS}
-    if root is not None:
-        entry["root"] = str(Path(root).resolve())
-    if resolved_executable is not None:
-        entry["resolved_executable"] = resolved_executable
-    _NATIVE_TACH_HANDOFFS[token] = entry
-    return payload
-
-
-def lookup_native_tach_handoff(graph, *, root=None, expected_executable=None):
-    """Return the registered native result when ``graph`` carries a live proof."""
-    if not isinstance(graph, dict):
-        return None
-    token = graph.get("native_execution_token")
-    if not isinstance(token, str) or not token:
-        return None
-    registered = _NATIVE_TACH_HANDOFFS.get(token)
-    if registered is None:
-        return None
-    for key in _NATIVE_TACH_HANDOFF_KEYS:
-        if graph.get(key, registered.get(key)) != registered.get(key):
-            return None
-    if root is not None and registered.get("root") != str(Path(root).resolve()):
-        return None
-    if expected_executable is not None and (
-        registered.get("resolved_executable") != expected_executable
-    ):
-        return None
-    return registered
-
-
 def _tach_check(root, config, changes):
     if changes.snapshot == "index":
         refusal = index_source_refusal(
@@ -3867,7 +3812,6 @@ def _tach_check(root, config, changes):
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
-    resolved_tach = shutil.which("tach")
     try:
         result = subprocess.run(
             ["tach", "check"],
@@ -3888,21 +3832,17 @@ def _tach_check(root, config, changes):
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
-    return _register_native_tach_handoff(
-        {
-            "status": "passed" if result.returncode == 0 else "failed",
-            "exit_code": result.returncode,
-            "executable": "tach",
-            "tach_path": _normalized(config.tach),
-            "stdout": result.stdout[-4000:],
-            "stderr": result.stderr[-4000:],
-            "tach_sha256": _digest(root / config.tach),
-            "source_tree": changes.execution_tree or changes.tree,
-            "snapshot": changes.snapshot,
-        },
-        root=root,
-        resolved_executable=resolved_tach,
-    )
+    return {
+        "status": "passed" if result.returncode == 0 else "failed",
+        "exit_code": result.returncode,
+        "executable": "tach",
+        "tach_path": _normalized(config.tach),
+        "stdout": result.stdout[-4000:],
+        "stderr": result.stderr[-4000:],
+        "tach_sha256": _digest(root / config.tach),
+        "source_tree": changes.execution_tree or changes.tree,
+        "snapshot": changes.snapshot,
+    }
 
 
 def _graph_validation(selection, config, root, value):
@@ -3929,7 +3869,6 @@ def _graph_validation(selection, config, root, value):
             "snapshot",
             "stdout",
             "stderr",
-            "native_execution_token",
         ):
             if key in value and value[key] is not None:
                 report[key] = value[key]
@@ -4687,6 +4626,115 @@ def validate_post_completion_binding(plan, root):
     return result
 
 
+def _is_link_stat(info):
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _check_bound_pytest_path(root, resolved_root, rel_posix):
+    """Verify every existing component along ``rel_posix`` stays inside ``root``."""
+    current = Path(root)
+    parts = rel_posix.split("/")
+    for index, part in enumerate(parts, start=1):
+        current /= part
+        try:
+            info = current.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            return False, None
+        except OSError:
+            return False, "pytest_target_unreadable"
+        if _is_link_stat(info):
+            try:
+                resolved = current.resolve(strict=False)
+                rel_target = resolved.relative_to(resolved_root)
+            except (OSError, ValueError):
+                return False, "pytest_target_outside_source"
+            if any(segment.lower() == ".git" for segment in rel_target.parts):
+                return False, "pytest_target_outside_source"
+        if index == len(parts):
+            try:
+                resolved = current.resolve(strict=False)
+                rel_target = resolved.relative_to(resolved_root)
+            except (OSError, ValueError):
+                return False, "pytest_target_outside_source"
+            if any(segment.lower() == ".git" for segment in rel_target.parts):
+                return False, "pytest_target_outside_source"
+            return current.exists(), None
+    return False, None
+
+
+def _resolve_pytest_target(target, root):
+    """Resolve a dotted module or relative path into a bound repository-relative pytest target.
+
+    Never emits ``--pyargs`` so an external ``PYTHONPATH`` package cannot shadow
+    or substitute for a target inside the bound Source root.
+    """
+    if (
+        not isinstance(target, str)
+        or not target.strip()
+        or any(ch in target for ch in "\0\r\n")
+        or target.startswith("-")
+    ):
+        return None, "pytest_target_invalid"
+    raw_target, sep, nodeid = target.partition("::")
+    if sep and (not raw_target or not nodeid):
+        return None, "pytest_target_invalid"
+    resolved_root = Path(root).resolve()
+    is_path = (
+        "/" in raw_target
+        or "\\" in raw_target
+        or raw_target.endswith(".py")
+        or raw_target.startswith(".")
+        or ":" in raw_target
+    )
+    if is_path:
+        raw_posix = raw_target.replace("\\", "/")
+        if (
+            raw_posix.startswith("/")
+            or (len(raw_posix) >= 2 and raw_posix[1] == ":" and raw_posix[0].isalpha())
+            or Path(raw_target).is_absolute()
+        ):
+            return None, "pytest_target_outside_source"
+        if ":" in raw_posix:
+            return None, "pytest_target_invalid"
+        raw_parts = raw_posix.split("/")
+        if ".." in raw_parts:
+            return None, "pytest_target_outside_source"
+        parts = [part for part in raw_parts if part and part != "."]
+        if not parts:
+            return None, "pytest_target_invalid"
+        if any(part.lower() == ".git" for part in parts):
+            return None, "pytest_target_outside_source"
+        rel_posix = "/".join(parts)
+        _, refusal = _check_bound_pytest_path(root, resolved_root, rel_posix)
+        if refusal:
+            return None, refusal
+        return (f"{rel_posix}::{nodeid}" if sep else rel_posix), None
+
+    parts = raw_target.split(".")
+    if any(not part or part in {".", ".."} for part in parts):
+        return None, "pytest_target_invalid"
+    if any(part.lower() == ".git" for part in parts):
+        return None, "pytest_target_outside_source"
+    file_rel = "/".join(parts) + ".py"
+    dir_rel = "/".join(parts)
+    file_exists, file_refusal = _check_bound_pytest_path(root, resolved_root, file_rel)
+    if file_refusal:
+        return None, file_refusal
+    if file_exists:
+        return (f"{file_rel}::{nodeid}" if sep else file_rel), None
+    dir_exists, dir_refusal = _check_bound_pytest_path(root, resolved_root, dir_rel)
+    if dir_refusal:
+        return None, dir_refusal
+    if dir_exists:
+        return (f"{dir_rel}::{nodeid}" if sep else dir_rel), None
+    # Missing target stays bound as a relative repo path so pytest fails natively
+    # (exit 4) instead of falling back to an external PYTHONPATH module.
+    return (f"{file_rel}::{nodeid}" if sep else file_rel), None
+
+
 def run_tests(
     modules,
     *,
@@ -4727,20 +4775,21 @@ def run_tests(
     environment["PYTHONPATH"] = source + (os.pathsep + existing if existing else "")
     executable = python or sys.executable
     if framework == "pytest":
+        resolved_targets = []
+        for target in modules:
+            resolved_target, target_refusal = _resolve_pytest_target(target, root)
+            if target_refusal:
+                message = f"execution refused: {target_refusal}: {target}"
+                if capture is not None:
+                    capture["source_refusal"] = target_refusal
+                    capture["stderr"] = message + "\n"
+                print(message, file=sys.stderr)
+                return 4
+            resolved_targets.append(resolved_target)
         command = [executable, "-X", "utf8", "-m", "pytest", "-q"]
         if junit_path is not None:
             command.append(f"--junitxml={Path(junit_path).resolve()}")
-        for target in modules:
-            if (
-                target.endswith(".py")
-                or "/" in target
-                or "\\" in target
-                or "::" in target
-                or target.startswith("-")
-            ):
-                command.append(target)
-            else:
-                command.extend(["--pyargs", target])
+        command.extend(resolved_targets)
     elif framework == "unittest":
         command = [executable, "-X", "utf8", "-m", "unittest", *modules, "-v"]
     else:

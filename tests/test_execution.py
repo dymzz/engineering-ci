@@ -6086,36 +6086,11 @@ def test_docs_offline_execution_retains_link_scope_in_native_result(repo):
     check_contract.validate_result(online_check["native_result"])
 
 
-def test_execution_reuses_selection_tach_validation_and_runs_external_separately(
-    repo, monkeypatch
-):
-    import shutil
+def test_execution_always_runs_native_tach_independently_of_plan_validation(repo):
     import subprocess
     from pathlib import Path
 
     from engineering_ci import check_contract, hygiene, selection
-
-    if shutil.which("tach") is None:
-        orig_which = shutil.which
-        orig_run = selection.subprocess.run
-        monkeypatch.setattr(
-            shutil,
-            "which",
-            lambda name: "/usr/bin/tach" if name == "tach" else orig_which(name),
-        )
-
-        def fake_tach_run(argv, **kwargs):
-            if list(argv[:2]) == ["tach", "check"]:
-                cwd = Path(kwargs.get("cwd") or ".")
-                sub_text = (cwd / "src/pkg/sub.py").read_text(encoding="utf-8")
-                if "from pkg.other" in sub_text:
-                    return subprocess.CompletedProcess(
-                        argv, 1, "", "Undeclared dependency\n"
-                    )
-                return subprocess.CompletedProcess(argv, 0, "Modules validated\n", "")
-            return orig_run(argv, **kwargs)
-
-        monkeypatch.setattr(selection.subprocess, "run", fake_tach_run)
 
     path, _base = repo
     (path / "tach.toml").write_text(
@@ -6171,9 +6146,17 @@ def test_execution_reuses_selection_tach_validation_and_runs_external_separately
     hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
     changes = selection.changeset(path, base=prereq_base, mode="commit")
     sel = selection.select(changes, cfg, root=path)
-    tach_val = selection._tach_check(path, cfg, changes)
-    assert tach_val["status"] == "passed"
-    assert tach_val["executable"] == "tach"
+    plan_tach = {
+        "status": "passed",
+        "exit_code": 0,
+        "executable": "tach",
+        "tach_path": "tach.toml",
+        "stdout": "Modules validated\n",
+        "stderr": "",
+        "tach_sha256": selection._digest(path / "tach.toml"),
+        "source_tree": changes.execution_tree or changes.tree,
+        "snapshot": changes.snapshot,
+    }
     p = selection.plan(
         sel,
         config=cfg,
@@ -6181,200 +6164,131 @@ def test_execution_reuses_selection_tach_validation_and_runs_external_separately
         hygiene_config=hyg_cfg,
         hygiene_config_path=path / "ci-hygiene.toml",
         root=path,
-        tach_validation=tach_val,
+        tach_validation=plan_tach,
     )
+    assert "native_execution_token" not in p["selection"]["tach_graph_validation"]
 
-    tach_subcommands = []
+    # Even when Plan carries matching passed tach_graph_validation, execution runs native tach check & check-external.
+    observed = []
 
-    def tracking_runner(argv, root, data=None):
+    def pass_runner(argv, root, data=None):
         if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
-            tach_subcommands.append(argv[1])
-            if argv[1] == "check":
-                raise AssertionError("tach check must be reused, not re-executed")
-            if argv[1] == "check-external":
-                return subprocess.CompletedProcess(
-                    argv, 0, "External dependencies validated\n", ""
-                )
+            observed.append(argv[1])
+            return subprocess.CompletedProcess(argv, 0, f"{argv[1]} ok\n", "")
         return hygiene._run(argv, root, data)
 
-    reused_report = execution.execute(
+    passed_report = execution.execute(
         p,
         root=path,
         hygiene_config=path / "ci-hygiene.toml",
-        runner=tracking_runner,
+        runner=pass_runner,
     )
-    assert reused_report["status"] == "passed", reused_report
-    by_name = {c["name"]: c for c in reused_report["checks"]}
-    assert by_name["tach"]["status"] == "passed"
-    assert (
-        by_name["tach"]["observation"]["reused_from"] == "selection.native_tach_handoff"
-    )
+    assert passed_report["status"] == "passed", passed_report
+    assert observed == ["check", "check-external"]
+    by_name = {c["name"]: c for c in passed_report["checks"]}
+    assert "reused_from" not in by_name["tach"].get("observation", {})
     check_contract.validate_result(by_name["tach"]["native_result"])
-    # tach_external must NOT be satisfied by reusing tach check!
-    assert "check-external" in tach_subcommands
-    assert by_name["tach_external"]["status"] == "passed"
+    check_contract.validate_result(by_name["tach_external"]["native_result"])
 
-    # Mismatch / fallback: altering recorded tach_sha256 invalidates reuse and reruns tach check.
-    stale_plan = json.loads(json.dumps(p))
-    stale_plan["selection"]["tach_graph_validation"]["tach_sha256"] = "0" * 64
-    rerun_subcommands = []
+    # Real native tach check failure cannot be masked by a Plan-declared passed tach_graph_validation.
+    fail_observed = []
 
-    def rerun_tracker(argv, root, data=None):
+    def fail_check_runner(argv, root, data=None):
         if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
-            rerun_subcommands.append(argv[1])
-            return subprocess.CompletedProcess(argv, 0, "validated\n", "")
-        return hygiene._run(argv, root, data)
-
-    rerun_report = execution.execute(
-        stale_plan,
-        root=path,
-        hygiene_config=path / "ci-hygiene.toml",
-        runner=rerun_tracker,
-    )
-    assert rerun_report["status"] == "passed"
-    assert "check" in rerun_subcommands
-    assert "check-external" in rerun_subcommands
-    rerun_tach = next(c for c in rerun_report["checks"] if c["name"] == "tach")
-    assert "reused_from" not in rerun_tach.get("observation", {})
-
-    # Caller-filled Plan declaration without a live native handoff cannot PASS.
-    forged_plan = json.loads(json.dumps(p))
-    forged_plan["selection"]["tach_graph_validation"] = {
-        "status": "passed",
-        "exit_code": 0,
-        "executable": "tach",
-        "tach_path": "tach.toml",
-        "stdout": "forged",
-        "stderr": "",
-        "tach_sha256": p["selection"]["tach_graph_validation"]["tach_sha256"],
-        "source_tree": p["selection"]["tach_graph_validation"]["source_tree"],
-        "snapshot": p["selection"]["tach_graph_validation"]["snapshot"],
-        "native_execution_token": "deadbeef" * 4,
-    }
-    forged_subcommands = []
-
-    def forged_tracker(argv, root, data=None):
-        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
-            forged_subcommands.append(argv[1])
-            return subprocess.CompletedProcess(argv, 0, "validated\n", "")
-        return hygiene._run(argv, root, data)
-
-    forged_report = execution.execute(
-        forged_plan,
-        root=path,
-        hygiene_config=path / "ci-hygiene.toml",
-        runner=forged_tracker,
-    )
-    assert forged_report["status"] == "passed"
-    assert "check" in forged_subcommands
-    forged_tach = next(c for c in forged_report["checks"] if c["name"] == "tach")
-    assert "reused_from" not in forged_tach.get("observation", {})
-
-    # Same-tree/token handoff is bound to its origin repo root; another root re-runs native tach.
-    other_root = path.parent / "cloned_repo"
-    shutil.copytree(path, other_root)
-    run(other_root, "update-index", "-q", "--refresh")
-    other_plan = json.loads(json.dumps(p))
-    other_plan["inputs"]["config"]["path"] = "ci-selection.toml"
-    other_plan["inputs"]["hygiene"]["path"] = "ci-hygiene.toml"
-    other_subcommands = []
-
-    def other_tracker(argv, root, data=None):
-        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
-            other_subcommands.append(argv[1])
-            return subprocess.CompletedProcess(argv, 0, "validated\n", "")
-        return hygiene._run(argv, root, data)
-
-    other_report = execution.execute(
-        other_plan,
-        root=other_root,
-        hygiene_config=other_root / "ci-hygiene.toml",
-        runner=other_tracker,
-    )
-    assert other_report["status"] == "passed"
-    assert "check" in other_subcommands
-
-    # Real failing native handoff propagates failure once without re-running tach check.
-    (path / "src/pkg/sub.py").write_text("from pkg.other import X\n", encoding="utf-8")
-    (path / "src/pkg/other.py").write_text("X = 1\n", encoding="utf-8")
-    run(path, "add", "src/pkg/sub.py", "src/pkg/other.py")
-    run(path, "commit", "-qm", "introduce undeclared dependency")
-    fail_changes = selection.changeset(path, base=prereq_base, mode="commit")
-    fail_sel = selection.select(fail_changes, cfg, root=path)
-    fail_tach = selection._tach_check(path, cfg, fail_changes)
-    assert fail_tach["status"] == "failed"
-    fail_plan = selection.plan(
-        fail_sel,
-        config=cfg,
-        config_path=path / "ci-selection.toml",
-        hygiene_config=hyg_cfg,
-        hygiene_config_path=path / "ci-hygiene.toml",
-        root=path,
-        tach_validation=fail_tach,
-    )
-    fail_subcommands = []
-
-    def fail_tracker(argv, root, data=None):
-        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
-            fail_subcommands.append(argv[1])
+            fail_observed.append(argv[1])
             if argv[1] == "check":
-                raise AssertionError("failed native handoff must be reused, not re-run")
+                return subprocess.CompletedProcess(argv, 1, "", "undeclared import\n")
             return subprocess.CompletedProcess(argv, 0, "external ok\n", "")
         return hygiene._run(argv, root, data)
 
-    blocked_report = execution.execute(
-        fail_plan,
+    failed_report = execution.execute(
+        p,
         root=path,
         hygiene_config=path / "ci-hygiene.toml",
-        runner=fail_tracker,
+        runner=fail_check_runner,
     )
-    assert blocked_report["status"] == "blocked"
-    assert blocked_report["reason"] == "tach_graph_unvalidated"
+    assert failed_report["status"] == "failed"
+    assert fail_observed == ["check", "check-external"]
+    fail_by_name = {c["name"]: c for c in failed_report["checks"]}
+    assert fail_by_name["tach"]["status"] == "failed"
+    assert fail_by_name["tach"]["reason"] == "tach_check_failed"
+    assert fail_by_name["tach_external"]["status"] == "passed"
 
-    # When tests are not selected (e.g. push policy with select_tests=false), execute propagates failed native tach once.
-    (path / "ci-selection.toml").write_text(
-        (path / "ci-selection.toml").read_text(encoding="utf-8")
-        + "\n[push]\nselect_tests = false\n",
-        encoding="utf-8",
-    )
-    run(path, "add", "ci-selection.toml")
-    run(path, "commit", "-qm", "disable push tests")
-    push_cfg = selection.load_config(path / "ci-selection.toml")
-    push_changes = selection.changeset(
-        path,
-        base=prereq_base,
-        head="HEAD",
-        mode="push",
-        before=prereq_base,
-        after=run(path, "rev-parse", "HEAD").strip(),
-    )
-    push_sel = selection.select(push_changes, push_cfg, root=path)
-    push_tach = selection._tach_check(path, push_cfg, push_changes)
-    assert push_tach["status"] == "failed"
-    push_fail_plan = selection.plan(
-        push_sel,
-        config=push_cfg,
-        config_path=path / "ci-selection.toml",
-        hygiene_config=hyg_cfg,
-        hygiene_config_path=path / "ci-hygiene.toml",
-        root=path,
-        tach_validation=push_tach,
-    )
+    # tach_external failure stays independent of passing tach check.
+    def fail_external_runner(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            if argv[1] == "check-external":
+                return subprocess.CompletedProcess(argv, 1, "", "undeclared external\n")
+            return subprocess.CompletedProcess(argv, 0, "check ok\n", "")
+        return hygiene._run(argv, root, data)
 
-    fail_report = execution.execute(
-        push_fail_plan,
+    ext_failed = execution.execute(
+        p,
         root=path,
         hygiene_config=path / "ci-hygiene.toml",
-        runner=fail_tracker,
+        runner=fail_external_runner,
     )
-    assert fail_report["status"] == "failed"
-    fail_tach_check = next(c for c in fail_report["checks"] if c["name"] == "tach")
-    assert fail_tach_check["status"] == "failed"
-    assert fail_tach_check["reason"] == "tach_check_failed"
-    assert (
-        fail_tach_check["observation"]["reused_from"] == "selection.native_tach_handoff"
+    assert ext_failed["status"] == "failed"
+    ext_by_name = {c["name"]: c for c in ext_failed["checks"]}
+    assert ext_by_name["tach"]["status"] == "passed"
+    assert ext_by_name["tach_external"]["status"] == "failed"
+    assert ext_by_name["tach_external"]["reason"] == "tach_external_failed"
+
+
+def test_execute_refuses_out_of_source_pytest_target_and_blocks_external_shadowing(
+    repo, tmp_path, monkeypatch
+):
+    path, base = repo
+    external = tmp_path / "ext_shadow"
+    (external / "tests").mkdir(parents=True)
+    (external / "tests/__init__.py").write_text("", encoding="utf-8")
+    (external / "tests/test_pkg.py").write_text(
+        "def test_shadow():\n    assert True\n", encoding="utf-8"
     )
-    assert "check-external" in fail_subcommands
+    # Break repo's tests/test_pkg.py so external shadowing would falsely pass if --pyargs were used.
+    (path / "tests/test_pkg.py").write_text(
+        "def test_repo_fails():\n    assert False\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(external))
+
+    shadow_report = execution.execute(
+        plan(
+            ["tests.test_pkg"],
+            framework="pytest",
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "worktree",
+                "changed_paths": ["tests/test_pkg.py"],
+            },
+        ),
+        root=path,
+    )
+    assert shadow_report["status"] == "failed"
+    assert shadow_report["tests"]["status"] == "failed"
+    assert shadow_report["tests"]["exit_code"] == 1
+    assert "--pyargs" not in shadow_report["tests"]["observation"]["argv"]
+
+    escape_report = execution.execute(
+        plan(
+            ["../ext_shadow/tests/test_pkg.py"],
+            framework="pytest",
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "worktree",
+                "changed_paths": ["tests/test_pkg.py"],
+            },
+        ),
+        root=path,
+    )
+    assert escape_report["status"] == "not_executed"
+    assert escape_report["exit_code"] == 4
+    assert escape_report["reason"] == "pytest_target_outside_source"
 
 
 def test_multi_ref_push_hygiene_config_vulture_only_parity(repo):

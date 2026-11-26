@@ -489,12 +489,21 @@ reason = "Dagger native result builder"
 
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/plan_execution.py"
-tests = ["tests.test_execution", "tests.test_plan_result", "tests.test_python_static"]
+tests = [
+    "tests.test_dagger_native_telemetry",
+    "tests.test_execution",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+]
 reason = "Dagger plan execution helper"
 
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/plan_result.py"
-tests = ["tests.test_plan_result", "tests.test_python_static"]
+tests = [
+    "tests.test_execution",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+]
 reason = "Dagger plan result helper"
 
 [[non_code_rules]]
@@ -549,7 +558,18 @@ reason = "Dagger python static helper"
 
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/repository.py"
-tests = ["tests.test_execution", "tests.test_plan_result", "tests.test_python_static"]
+tests = [
+    "tests.test_dagger_native_telemetry",
+    "tests.test_execution",
+    "tests.test_link_check",
+    "tests.test_plan_result",
+    "tests.test_pytest_ci",
+    "tests.test_pytest_matrix",
+    "tests.test_pytest_quality",
+    "tests.test_python_static",
+    "tests.test_script_analysis",
+    "tests.test_weaver",
+]
 reason = "Dagger repository helper"
 
 [[non_code_rules]]
@@ -560,9 +580,12 @@ reason = "Dagger script analysis helper"
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/tooling.py"
 tests = [
+    "tests.test_dagger_native_telemetry",
+    "tests.test_execution",
     "tests.test_link_check",
     "tests.test_plan_result",
     "tests.test_python_static",
+    "tests.test_script_analysis",
     "tests.test_weaver",
 ]
 reason = "Dagger container tooling helper"
