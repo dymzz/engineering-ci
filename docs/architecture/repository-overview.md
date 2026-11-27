@@ -44,7 +44,7 @@ Workflow Runtime，从而避免反向依赖和引导循环。
 | Plan 原生结果 | `.dagger/src/engineering_ci_module/plan_execution.py`、`plan_result.py` | 独立原生分支收集、同一 Directory 的 Report/Artifact/Enforce；不授予 Source/Trusted 接纳 |
 | 共享检查实现 | `src/engineering_ci/{selection,execution,hygiene,sources,cicd_telemetry}.py` | CLI 与 Dagger 共同消费的选择、执行、来源和遥测实现 |
 | 本地 Hook 调度 | `lefthook.yml`、`ci-selection.toml`、`ci-hygiene.toml`、`config/hook-profiles/` | Lefthook 2.2.2 生命周期与 Job 调度；本仓已启用 `pre-commit`、`pre-push` 与显式 `verify` |
-| Hook 来源与对账 | `src/engineering_ci/{hooks,hook_checks,git_source,dagger_plan,reconciliation}.py` | Git Event/Index/Push 捕获（含采集与消费复核共享的 `index.lock` 安全快照回退）、blob 隔离物化、Dagger 交接、排他激活与非排他首次成功保留的阶段耗时 sidecar（`.timing-*`；在 stage `finally:` 出口写入并由 `run_push_checks` 写入完整 `per_ref`，`run_checks` 在后验 Source 拒绝前保留 `.execution` 与 `.source-rejection`）、`inspect_invocation_offline` 纯只读离线核验与 #66-C 对账（本地 Receipt 保持 `trusted=false`、`required=false`） |
+| Hook 来源与对账 | `src/engineering_ci/{hooks,hook_checks,git_source,dagger_plan,reconciliation}.py` | Git Event/Index/Push 捕获、隔离物化、Dagger 交接与阶段耗时 sidecar。后验 Source 校验通过后封存 `.execution*`，拒绝或封存失败时尽力保留 `.observation*` 与原始退出。离线检查复用生产校验和 #66-C 对账。本地 Receipt 保持 `trusted=false`、`required=false`。 |
 | 验证计时与只读报告 | `cli/verify.py`、`verify_report.py`、`hook_checks.py`、`reconciliation.py`、`pytest_contracts.py` | 核验 Verify 同次 Dagger pytest 产物及报告交付，共用原生结果发生判定，并保留 #168 生产者生命周期及归属状态。已保存的测试记录支持节点和阶段查询、聚合与兼容样本比较。 |
 | GitHub Run 操作 | `src/engineering_ci/github_cli.py`、`cli/` | 原生 gh 查询、等待、Artifact 与日志下载 |
 | 发布请求及证据 | `src/engineering_ci/release/` | 具体 Dispatch 意图、版本、Manifest、身份核验与发布操作 |

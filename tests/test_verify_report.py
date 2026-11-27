@@ -4065,13 +4065,15 @@ def test_report_query_filters_outside_top25_and_compares_only_supported_history(
     for directory in (baseline, later, different, wrong, repeated, failed):
         args += ["--pytest-invocation", str(directory)]
     args += ["--test-node", nodes[0], "--test-phase", "call", "--compare-tests"]
-    assert main(args) == 0
+    assert main(args) == 2
     report = json.loads(capsys.readouterr().out)
     logs = [s for s in report["sources"] if s["source_type"] == "pytest_reportlog"]
     assert nodes[0] not in {r["nodeid"] for r in logs[0]["slowest_phases"]}
     assert logs[0]["node_binding"]["status"] == "matched"
     assert logs[0]["report_completeness"] == "unverified_collection"
     assert logs[3]["node_binding"]["status"] == "mismatch"
+    assert report["correlation"]["overall_status"] == "mismatch_detected"
+    assert logs[3]["query_correlation"]["strength"] == "conflict"
     samples = report["test_query"]["samples"]
     assert len(samples[0]["records"]) == 1
     assert samples[4]["aggregates"][0]["observed_records"] == 2
@@ -4141,3 +4143,293 @@ def test_malformed_phase_and_lineage_do_not_hide_other_sources(tmp_path, capsys)
     assert report["sources"][0]["counts"]["passed"] == 1
     assert report["sources"][1]["malformed_line_count"] == 1
     assert report["sources"][2]["lineage_status"] == "invalid"
+
+
+@pytest.mark.parametrize(
+    ("jobs", "record", "obligation", "verification", "complete"),
+    [
+        (["core-tests"], None, "required", "missing_required_record", False),
+        (
+            ["core-tests"],
+            {"producer": "different"},
+            "required",
+            "unexpected_producer",
+            False,
+        ),
+        (["core-tests"], [], "required", "invalid_record", False),
+        (
+            ["core-tests"],
+            {"producer": "dagger:repository-test-artifacts", "references": []},
+            "required",
+            "not_emitted",
+            False,
+        ),
+        (["lint"], None, "not_required", None, True),
+        (None, None, "undeclared", None, True),
+    ],
+)
+def test_verify_child_obligation_survives_absent_or_wrong_record(
+    tmp_path, jobs, record, obligation, verification, complete
+):
+    from engineering_ci.cli import verify
+
+    raw = {}
+    for name in ("stdout", "stderr"):
+        file = tmp_path / f"lefthook.{name}"
+        file.write_bytes(b"")
+        raw[name] = verify._native_output(file)
+    receipt = {"native_outputs": raw, "native_exit_code": 0}
+    if jobs is not None:
+        receipt["declared_verify_jobs"] = jobs
+    if record is not None:
+        receipt["child_references"] = record
+    (tmp_path / "verify-timing.json").write_text(json.dumps(receipt), encoding="utf-8")
+    source = verify_report.build_verify_report(verify_dir=tmp_path)["sources"][0]
+    assert source["native_exit_code"] == 0
+    assert source["core_test_delivery_obligation"] == obligation
+    assert source["child_references"].get("verification") == verification
+    assert source["evidence_complete"] is complete
+
+
+def test_malformed_declaration_and_overflow_duration_preserve_valid_sources(
+    tmp_path, capsys
+):
+    verify_dir = tmp_path / "verify"
+    verify_dir.mkdir()
+    streams = {}
+    for name in ("stdout", "stderr"):
+        raw = verify_dir / f"lefthook.{name}"
+        raw.write_bytes(b"")
+        streams[name] = {"path": raw.name, "sha256": hashlib.sha256(b"").hexdigest()}
+    (verify_dir / "verify-timing.json").write_text(
+        json.dumps(
+            {
+                "declared_verify_jobs": 1,
+                "native_outputs": streams,
+                "native_exit_code": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    log = tmp_path / "reportlog.jsonl"
+    records = [
+        {"$report_type": "SessionStart", "created_at": 10**400},
+        {
+            "$report_type": "TestReport",
+            "nodeid": "test.py::test_one",
+            "when": "call",
+            "outcome": "passed",
+            "duration": 10**400,
+        },
+        {"$report_type": "SessionFinish", "exitstatus": 0},
+    ]
+    log.write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuite tests="1" errors="0" failures="0" skipped="0"/>', encoding="utf-8"
+    )
+    assert (
+        main(
+            [
+                "verify",
+                "report",
+                "--verify-dir",
+                str(verify_dir),
+                "--pytest-reportlog",
+                str(log),
+                "--junit-xml",
+                str(junit),
+                "--test-records",
+            ]
+        )
+        == 2
+    )
+    result = json.loads(capsys.readouterr().out)
+    verify_source, j_source, log_source = result["sources"]
+    assert verify_source["core_test_delivery_obligation"] == "invalid_declaration"
+    assert (
+        verify_source["native_exit_code"] == 0
+        and not verify_source["evidence_complete"]
+    )
+    assert log_source["invalid_duration_count"] == 1
+    assert log_source["session_wall_seconds"] == "unknown"
+    assert j_source["counts"]["passed"] == 1
+    sample = next(
+        x
+        for x in result["test_query"]["samples"]
+        if x["source_type"] == "pytest_reportlog"
+    )
+    assert sample["records"][0]["duration_seconds"] == "invalid"
+
+
+@pytest.mark.parametrize(
+    "defect", ["property", "scope", "two_sessions", "tail", "reversed"]
+)
+def test_history_isolates_conflicts_between_independent_samples(
+    tmp_path, monkeypatch, defect
+):
+    nodes = ["tests/test_probe.py::test_one", "tests/test_probe.py::test_two"]
+    baseline, suspect, later = (
+        tmp_path / name for name in ("baseline", "suspect", "later")
+    )
+    _write_node_history_sample(baseline, nodes=nodes)
+    _write_node_history_sample(suspect, nodes=nodes, phase_duration=2.0)
+    _write_node_history_sample(later, nodes=nodes, phase_duration=1.25)
+    raw = suspect / "pytest-reportlog.jsonl"
+    records = [json.loads(line) for line in raw.read_bytes().splitlines()]
+    if defect == "property":
+        records[1]["execution_ref"] = "execution:a"
+        records[2]["execution_ref"] = "execution:b"
+    elif defect == "scope":
+        records[0].update(run_ref="run:suspect", attempt_ref="attempt:1")
+        anchor = {
+            "run_attempt_binding": verify_report._scope_key("run:suspect", "attempt:1")
+        }
+        monkeypatch.setattr(
+            verify_report,
+            "_check_scoped_cross_conflicts",
+            lambda sources: [
+                {"anchor": anchor, "field": "invocation_ref", "values": ["a", "b"]},
+            ],
+        )
+    elif defect == "two_sessions":
+        records = [
+            *records[:4],
+            records[-1],
+            records[0],
+            *records[4:],
+        ]
+    elif defect == "tail":
+        records.append({"$report_type": "WarningMessage"})
+    else:
+        records = [records[-1], *records[:-1]]
+    raw.write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+    result = verify_report.build_verify_report(
+        pytest_invocations=[baseline, suspect, later],
+        test_phases=["call"],
+        compare_tests=True,
+    )
+    suspect_log = next(row for row in result["sources"] if row.get("path") == str(raw))
+    assert suspect_log["query_correlation"]["strength"] == "conflict"
+    assert "history_scope" not in suspect_log
+    query = result["test_query"]
+    assert len(query["samples"][1]["records"]) == 2
+    blocked, good = query["comparisons"]
+    assert blocked["status"] == "incomparable"
+    assert blocked["reason"] == (
+        "reportlog_scoped_conflict" if defect == "scope" else "reportlog_conflict"
+    )
+    assert good["status"] == "comparable"
+    assert good["records"][0]["delta_seconds"] == 0.25
+    if defect in ("property", "scope"):
+        assert suspect_log["session_status"] == "single_session"
+        assert suspect_log["node_binding"]["status"] == "matched"
+    else:
+        assert suspect_log["session_status"] == "invalid"
+        assert suspect_log["session_wall_seconds"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("case", "outer_exit", "delivery_status"),
+    [
+        ("normal", 0, "limited"),
+        ("non_writer", 1, "limited"),
+        ("writer", 1, "incomplete"),
+        ("seal", 0, "failed"),
+        ("external", 0, "unknown"),
+    ],
+)
+def test_final_local_pytest_producer_and_report_consumer(
+    tmp_path, capsys, case, outer_exit, delivery_status
+):
+    import test_eci_pytest_report as producer
+
+    root = producer._probe_root(tmp_path)
+    injections = {
+        "non_writer": producer.BODY_NON_WRITER_SESSIONFINISH_CONFTEST,
+        "writer": producer.BODY_WRITER_FAILURE_CONFTEST,
+        "seal": (
+            "import _eci_pytest_report as producer\n"
+            "from pathlib import Path\n"
+            "original = producer._write_json_atomic\n"
+            "def fail_summary(path, payload):\n"
+            "    if path.name == 'summary.json':\n"
+            "        Path('failed-summary-directory').write_text(str(path.parent), encoding='utf-8')\n"
+            "        raise OSError('probe sealing failure')\n"
+            "    return original(path, payload)\n"
+            "producer._write_json_atomic = fail_summary\n"
+        ),
+    }
+    if case in injections:
+        (root / "conftest.py").write_text(injections[case], encoding="utf-8")
+    extra = (
+        (
+            "--report-log",
+            str(tmp_path / "external.jsonl"),
+            "--junitxml",
+            str(tmp_path / "external.xml"),
+        )
+        if case == "external"
+        else ()
+    )
+    result = producer._run_probe(root, producer.BODY_OK, *extra)
+    assert result.returncode == outer_exit, result.stdout + result.stderr
+    invocation = (
+        Path((root / "failed-summary-directory").read_text(encoding="utf-8"))
+        if case == "seal"
+        else producer._report_dir(result)
+    )
+    query = verify_report.build_verify_report(pytest_invocations=[invocation])
+    source, *artifacts = query["sources"]
+    assert source["exitstatus"] == source["session_exitstatus"] == 0
+    assert source["exitstatus_scope"] == "pytest_sessionfinish_hook_stage"
+    assert source["native_exit_observation"]["outer_process_exit"] is None
+    assert source["report_delivery"]["status"] == delivery_status
+    assert source["report_sealed"] is (case != "seal")
+    exception = source["sessionfinish_hook_exception"]
+    assert (
+        exception == source["native_exit_observation"]["sessionfinish_hook_exception"]
+    )
+    assert exception == source["report_delivery"]["sessionfinish_hook_exception"]
+    assert (exception is not None) is (case in ("non_writer", "writer"))
+    if case == "external":
+        assert not artifacts
+        assert set(source["declared_artifact_status"].values()) == {
+            "external_path_requires_explicit_input"
+        }
+        return
+    log = next(
+        artifact
+        for artifact in artifacts
+        if artifact["source_type"] == "pytest_reportlog"
+    )
+    if case != "writer":
+        assert log["node_binding"]["status"] == "matched"
+    assert ("history_scope" in log) is (case == "normal")
+    if case == "non_writer":
+        assert log["history_ineligibility_reason"] == "producer_sessionfinish_exception"
+    if case == "seal":
+        assert source["producer_record"] == "metadata.json"
+        assert (
+            log["history_ineligibility_reason"] == "producer_report_delivery_incomplete"
+        )
+    if case == "normal":
+        reportlog = Path(log["path"])
+        old = reportlog.read_bytes()
+        changed = old.replace(
+            b"test_probe.py::test_ok", b"test_probe.py::different_test"
+        )
+        assert old != changed
+        reportlog.write_bytes(changed)
+        assert main(["verify", "report", "--pytest-invocation", str(invocation)]) == 2
+        unmatched = json.loads(capsys.readouterr().out)
+        new_log = next(
+            s for s in unmatched["sources"] if s["source_type"] == "pytest_reportlog"
+        )
+        assert new_log["observed_node_count"] == log["observed_node_count"]
+        assert new_log["node_binding"]["status"] == "mismatch"
+        assert new_log["query_correlation"]["strength"] == "conflict"

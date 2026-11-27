@@ -130,6 +130,9 @@ reportlog/JUnit 选项不会提交，显式路径仍由原生 writer 使用。`-
 
 当前交付边界：本地 pytest 自动生产已接入；综合 Verify、Dagger 及 Actions 使用各自实际导出和引用，不能将容器内报告生成当作宿主交付。新增原生报告的同次导出、CI 出口与外层关联分别沿 [#167 R3/#86 原交接](https://github.com/dymzz/engineering-ci/issues/167#issuecomment-7226828756)和 [#169 消费交接](https://github.com/dymzz/engineering-ci/pull/169#issuecomment-7226830766)维护，按实际已采用版本消费，不以本地报告宣称所有入口已贯通。Live Collector 专项仍按其 opt-in 入口选择，不扩大默认验证范围。
 
+已保存的本地 pytest Invocation 可用 `engineering-ci verify report --pytest-invocation <dir>` 查询。
+该入口读取最终生产合同并进行独立对账。节点、阶段及历史查询参数见[显式本地综合验证](#显式本地综合验证)。
+
 ### 提交与交付
 
 检查当前目录快照。完成修改后用原生 Git 审阅并提交本次内容；
@@ -330,6 +333,8 @@ format、version/lock、核心测试四组。前三组运行原生 Dagger Check�
 `child_references` 记录 `core-tests/` 中实际导出的相对路径与 SHA-256。查询从回执直接定位，
 并分别核验原始退出、引用和报告交付。报告声明 JUnit 可用时，必须存在实际引用，且
 JUnit 的摘要、格式和计数与原生 JSON 一致。报告不可用时仍可查看已核验的原始退出。
+声明执行 `core-tests` 时，缺少整个子记录、记录类型错误或生产者不符均使交付证据不完整。
+历史回执缺少 Job 声明时，查询显示该义务未声明。只声明 lint 等其他 Job 的回执按其实际范围核验。
 `verify-timing.json` 同时记录过程内 `perf_counter` 单调耗时
 （按 `cli_preflight`、`lefthook_native`、`report_preparation` 拆分，显式标注排除
 `seal` 后写盘与外层 `uv`/Shell 启动耗时）、有界解析得到的 Lefthook Job/嵌套 Group
@@ -360,8 +365,9 @@ Plan 预期单元、观察单元、缺失单元和未封存观察。Git 实时 S
 Hook 和独立 Report 共用原生结果发生判定。封存的报告仍保留未执行状态和结果拒绝原因。
 Plan 范围声明与观察到的兼容投影分别记录。#87 A.1 保留原 Trace 和 isolation，
 B 执行绑定保持未知。GitHub 性能汇总保留原始指标，固定 Attempt 的 Job 清册由 #131/#75 提供。
-Dagger 和查询共用标准库 pytest/JUnit 计数规则。`--pytest-invocation` 读取 #168 声明
-的文件，并保留其 selection、collection、execution、report_delivery 和封存状态。
+Dagger 和查询共用标准库 pytest/JUnit 计数规则。`--pytest-invocation` 读取[本仓 pytest 调用报告](#本仓-pytest-调用报告)
+所声明的文件，并保留其 selection、collection、execution、report_delivery、封存状态和
+`sessionfinish_hook_exception`。
 生产者的 Hook 阶段退出与外层进程退出分别记录。ReportLog 的独立解析状态和节点
 实例对账分别可查。查阅 Invocation 外的文件时，显式传 `--junit-xml` 或
 `--pytest-reportlog`。查询保留原始文件，完整性冲突或输出路径覆盖输入时退出 2。
@@ -394,9 +400,10 @@ uv run --locked --no-sync engineering-ci verify report `
   --test-node 'tests/test_sample.py::test_case' --test-phase call --compare-tests
 ```
 
-`--compare-tests` 以第一份 ReportLog 样本为基线。比较要求不同 Invocation、相同的
-经对账选中实例范围，以及一致的 pytest/Python/插件版本、平台、根目录和调用参数。
-范围未知、记录不完整或实例无法配对时会说明不可比原因。查询不启动测试。
+`--compare-tests` 以第一份 ReportLog 样本为基线。比较要求每份样本各有一个边界完整的
+Session，并要求不同 Invocation、相同的经对账选中实例范围和一致的 pytest/Python/插件版本、
+平台、根目录及调用参数。来源冲突、交付不完整、范围未知或实例无法配对时，查询保留原始记录
+及不可比原因。查询不启动测试。
 
 Windows 终端下若遇到 Dagger 非交互调用无输出挂起（历史观察与诊断见
 [上游观察](../.agent/upstream-observations.md#dagger-beta-windows-非交互版本探测挂起)），

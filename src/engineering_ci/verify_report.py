@@ -904,10 +904,25 @@ def _load_verify_entry(
     if native_started_val is None and chosen is timing:
         native_started_val = True
 
+    declared_jobs = payload.get("declared_verify_jobs")
+    if "declared_verify_jobs" not in payload:
+        core_obligation = "undeclared"
+    elif not isinstance(declared_jobs, list) or any(
+        not isinstance(job, str) or not job for job in declared_jobs
+    ):
+        core_obligation = "invalid_declaration"
+        entry["internal_conflicts"].append({"reason": "verify_declared_jobs_invalid"})
+    else:
+        core_obligation = (
+            "required" if "core-tests" in declared_jobs else "not_required"
+        )
+
     child_references = payload.get("child_references")
-    if not isinstance(child_references, dict):
+    if "child_references" not in payload:
         child_references = {"status": "not_recorded"}
-    elif child_references.get("producer") == "dagger:repository-test-artifacts":
+    elif not isinstance(child_references, dict):
+        child_references = {"status": "invalid_record"}
+    if child_references.get("producer") == "dagger:repository-test-artifacts":
         child_references = _load_verify_core_tests(
             verify_dir, child_references, include_test_records=include_test_records
         )
@@ -931,10 +946,28 @@ def _load_verify_entry(
                     "detail": child_references["verification"],
                 }
             )
-        if "core-tests" in (payload.get("declared_verify_jobs") or ()):
-            outputs_complete &= (
-                child_references["report_delivery_status"] == "available"
-            )
+    elif core_obligation == "required":
+        problem = (
+            "missing_required_record"
+            if "child_references" not in payload
+            else "invalid_record"
+            if not isinstance(payload["child_references"], dict)
+            else "unexpected_producer"
+        )
+        child_references = {
+            **child_references,
+            "verification": problem,
+            "report_delivery_status": "unknown",
+        }
+        entry["internal_conflicts"].append(
+            {"reason": "verify_core_test_record_unfulfilled", "detail": problem}
+        )
+
+    if core_obligation == "required":
+        outputs_complete &= (
+            child_references.get("report_delivery_status") == "available"
+        )
+    outputs_complete &= not entry["internal_conflicts"]
 
     entry.update(
         {
@@ -964,6 +997,8 @@ def _load_verify_entry(
             "native_outputs_verification": verified_outputs,
             "missing_native_streams": missing_streams,
             "evidence_complete": outputs_complete,
+            "declared_verify_jobs": declared_jobs,
+            "core_test_delivery_obligation": core_obligation,
             "timing_receipt_present": timing is not None,
             "status_receipt_present": status is not None,
             "child_references": child_references,
@@ -1160,7 +1195,7 @@ def _parse_valid_nonneg_float(raw: Any) -> tuple[float | str, str | None]:
         return "invalid", "boolean"
     try:
         val = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return "invalid", "unparseable"
     if not math.isfinite(val) or val < 0:
         return "invalid", "negative_or_nonfinite"
@@ -1579,8 +1614,9 @@ def _parse_pytest_reportlog(
     node_records: dict[str, list[dict[str, Any]]] = {}
     durations: list[dict[str, Any]] = []
     cumulative_phase_seconds = 0.0
-    has_session_start = False
-    has_session_finish = False
+    session_start_count = 0
+    session_finish_count = 0
+    session_boundary_violations = set()
     has_collection = False
     collection_failed_count = 0
     collection_errors: list[dict[str, Any]] = []
@@ -1591,7 +1627,7 @@ def _parse_pytest_reportlog(
 
     def _consume_line(raw_line: bytes) -> None:
         nonlocal malformed_line_count, invalid_duration_count, cumulative_phase_seconds
-        nonlocal has_session_start, has_session_finish, has_collection
+        nonlocal session_start_count, session_finish_count, has_collection
         nonlocal collection_failed_count, session_start_ts
         nonlocal session_finish_ts, exit_status
         line = raw_line.decode("utf-8", errors="replace").strip()
@@ -1607,19 +1643,35 @@ def _parse_pytest_reportlog(
             return
         _extract_reportlog_props(record, session_corr_props, node_user_props)
         report_type = record.get("$report_type")
+        if session_finish_count and report_type != "SessionFinish":
+            session_boundary_violations.add("record_after_session_finish")
+        if not session_start_count and report_type in (
+            "CollectReport",
+            "TestReport",
+            "SessionFinish",
+        ):
+            session_boundary_violations.add("execution_record_before_session_start")
         if report_type == "SessionStart":
-            has_session_start = True
-            created = record.get("created_at") or record.get("start")
-            if isinstance(created, (int, float)) and math.isfinite(float(created)):
-                session_start_ts = float(created)
+            session_start_count += 1
+            if session_start_count > 1:
+                session_boundary_violations.add("multiple_session_starts")
+            candidate, _ = _parse_valid_nonneg_float(
+                record.get("created_at", record.get("start"))
+            )
+            if isinstance(candidate, float):
+                session_start_ts = candidate
         elif report_type == "SessionFinish":
-            has_session_finish = True
+            session_finish_count += 1
+            if session_finish_count > 1:
+                session_boundary_violations.add("multiple_session_finishes")
             raw_exit = record.get("exitstatus")
             if type(raw_exit) is int:
                 exit_status = raw_exit
-            finished = record.get("created_at") or record.get("stop")
-            if isinstance(finished, (int, float)) and math.isfinite(float(finished)):
-                session_finish_ts = float(finished)
+            candidate, _ = _parse_valid_nonneg_float(
+                record.get("created_at", record.get("stop"))
+            )
+            if isinstance(candidate, float):
+                session_finish_ts = candidate
         elif report_type == "CollectReport":
             has_collection = True
             if record.get("outcome") == "failed":
@@ -1829,9 +1881,24 @@ def _parse_pytest_reportlog(
         elif key not in prop_values and len(unique) == 1:
             prop_values[key] = unique[0]
 
+    has_session_start = session_start_count > 0
+    has_session_finish = session_finish_count > 0
+    if session_boundary_violations:
+        session_status = "invalid"
+        internal_conflicts.append(
+            {
+                "reason": "pytest_reportlog_session_boundary_invalid",
+                "violations": sorted(session_boundary_violations),
+            }
+        )
+    elif session_start_count == session_finish_count == 1 and exit_status is not None:
+        session_status = "single_session"
+    else:
+        session_status = "incomplete"
+    if session_finish_count > 1:
+        exit_status = None
     if (
-        has_session_start
-        and has_session_finish
+        session_status == "single_session"
         and session_start_ts is not None
         and session_finish_ts is not None
         and session_finish_ts >= session_start_ts
@@ -1852,9 +1919,7 @@ def _parse_pytest_reportlog(
     if malformed_line_count and not (has_session_finish or testcase_counts["passed"]):
         completeness = "corrupted"
     elif (
-        has_session_start
-        and has_session_finish
-        and exit_status is not None
+        session_status == "single_session"
         and not truncated
         and malformed_line_count == 0
         and invalid_duration_count == 0
@@ -1883,6 +1948,9 @@ def _parse_pytest_reportlog(
         "bytes_read": bytes_read,
         "has_session_start": has_session_start,
         "has_session_finish": has_session_finish,
+        "session_start_count": session_start_count,
+        "session_finish_count": session_finish_count,
+        "session_status": session_status,
         "has_collection": has_collection,
         "collection_failed_count": collection_failed_count,
         "collection_errors": collection_errors,
@@ -2655,6 +2723,7 @@ def _pytest_producer_observations(primary: dict[str, Any]) -> dict[str, Any]:
             "report_sealed",
             "exitstatus_scope",
             "session_exitstatus",
+            "sessionfinish_hook_exception",
             "writer_exception",
         )
     }
@@ -2679,10 +2748,8 @@ def _pytest_node_binding(observations, parsed, exitstatus):
         or selection.get("complete") is not True
         or collection.get("complete") is not True
         or execution.get("complete") is not True
-        or delivery.get("status") not in ("complete", "limited")
-        or observations["writer_exception"] is not None
     ):
-        return {"status": "unknown", "reason": "producer_scope_or_delivery_incomplete"}
+        return {"status": "unknown", "reason": "producer_lifecycle_scope_incomplete"}
     artifacts = delivery.get("artifacts")
     artifact = artifacts.get("report_log") if isinstance(artifacts, dict) else None
     if (
@@ -2691,7 +2758,8 @@ def _pytest_node_binding(observations, parsed, exitstatus):
     ):
         return {"status": "unknown", "reason": "reportlog_attribution_unproven"}
     if (
-        parsed.get("report_completeness") != "unverified_collection"
+        parsed.get("session_status") != "single_session"
+        or parsed.get("report_completeness") != "unverified_collection"
         or type(exitstatus) is not int
         or parsed.get("exit_status") != exitstatus
         or parsed.get("collection_failed_count") != 0
@@ -2714,6 +2782,28 @@ def _pytest_node_binding(observations, parsed, exitstatus):
         "status": "matched",
         "basis": "producer_selection_lifecycle_and_reportlog_node_multisets",
     }
+
+
+def _pytest_history_exclusion(observations, parsed):
+    if parsed.get("internal_conflicts"):
+        return "reportlog_conflict"
+    delivery = observations["report_delivery"] or {}
+    native_exit = observations["native_exit_observation"] or {}
+    if any(
+        facts.get(key) is not None
+        for facts in (observations, delivery, native_exit)
+        for key in ("sessionfinish_hook_exception", "writer_exception")
+    ):
+        return "producer_sessionfinish_exception"
+    if (
+        delivery.get("status") not in ("complete", "limited")
+        or observations["report_sealed"] is False
+        or delivery.get("summary_seal") == "failed"
+    ):
+        return "producer_report_delivery_incomplete"
+    if parsed["node_binding"]["status"] != "matched":
+        return "execution_scope_unproven"
+    return None
 
 
 def _load_pytest_invocation_entry(
@@ -2912,7 +3002,12 @@ def _load_pytest_invocation_entry(
             parsed["node_binding"] = _pytest_node_binding(
                 observations, parsed, exitstatus
             )
-            if parsed["node_binding"]["status"] == "matched" and not internal_conflicts:
+            if parsed["node_binding"]["status"] == "mismatch":
+                parsed["internal_conflicts"].append(dict(parsed["node_binding"]))
+            exclusion = _pytest_history_exclusion(observations, parsed)
+            if exclusion:
+                parsed["history_ineligibility_reason"] = exclusion
+            elif not internal_conflicts:
                 argv = primary.get("argv")
                 environment = {
                     field: primary.get(field)
@@ -3018,7 +3113,8 @@ def _load_pytest_invocation_entry(
     }
     if internal_conflicts:
         for child in child_entries:
-            child.pop("history_scope", None)
+            if child.pop("history_scope", None) is not None:
+                child["history_ineligibility_reason"] = "pytest_invocation_conflict"
     return [entry, *child_entries]
 
 
@@ -4683,7 +4779,12 @@ def _compare_test_samples(samples):
         comparison = {"baseline": baseline["path"], "candidate": candidate["path"]}
         comparisons.append(comparison)
         if not baseline.get("history_scope") or not candidate.get("history_scope"):
-            comparison.update(status="incomparable", reason="execution_scope_unproven")
+            missing_scope = baseline if not baseline.get("history_scope") else candidate
+            comparison.update(
+                status="incomparable",
+                reason=missing_scope.get("history_ineligibility_reason")
+                or "execution_scope_unproven",
+            )
             continue
         if baseline["history_scope"] != candidate["history_scope"]:
             comparison.update(
@@ -4754,12 +4855,17 @@ def _query_test_records(sources, *, nodes, modules, phases, compare):
                 "source_type": item["source_type"],
                 "status": item["status"],
                 "record_scope": "partial"
-                if item.get("truncated") or item.get("malformed_line_count")
+                if item.get("truncated")
+                or item.get("malformed_line_count")
+                or item.get("session_status") == "invalid"
                 else "observed"
                 if item["status"] == "loaded"
                 else "unavailable",
                 "invocation_id": item.get("pytest_invocation_id"),
                 "history_scope": item.get("history_scope"),
+                "history_ineligibility_reason": item.get(
+                    "history_ineligibility_reason"
+                ),
                 "records": records,
                 "aggregates": _test_record_aggregates(records),
             }
@@ -4841,6 +4947,13 @@ def build_verify_report(
         sources.append(_load_ci_performance(item))
 
     correlation = _evaluate_correlations(sources)
+    for source in sources:
+        if (
+            source["query_correlation"]["strength"] == "conflict"
+            and source.pop("history_scope", None) is not None
+        ):
+            source["history_ineligibility_reason"] = "reportlog_scoped_conflict"
+
     report = {
         "schema_version": 2,
         "read_only": True,
