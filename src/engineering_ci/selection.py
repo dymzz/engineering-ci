@@ -1940,10 +1940,15 @@ def _pytest_norecursedirs_from_text(text):
         data = tomllib.loads(text)
     except ValueError:
         return ()
-    pytest_cfg = (data.get("tool") or {}).get("pytest") or {}
+    if not isinstance(data, dict):
+        return ()
+    tool_cfg = data.get("tool")
+    if not isinstance(tool_cfg, dict):
+        return ()
+    pytest_cfg = tool_cfg.get("pytest")
     if not isinstance(pytest_cfg, dict):
         return ()
-    ini = pytest_cfg.get("ini_options") or {}
+    ini = pytest_cfg.get("ini_options")
     if not isinstance(ini, dict):
         return ()
     raw = ini.get("norecursedirs")
@@ -1967,17 +1972,53 @@ def _pytest_norecursedirs(root, *, tree=None):
         return ()
 
 
-def _is_excluded_test_parts(rel_parts, norecursedirs):
+def _normalized_tests_dir_parts(tests_dir_rel):
+    norm = _normalized(str(tests_dir_rel)).strip("/")
+    if not norm or norm == ".":
+        return ()
+    return tuple(part for part in norm.split("/") if part and part != ".")
+
+
+def _fnmatch_norecurse(pattern, rel_dir_posix, dir_name):
+    pat = _normalized(pattern)
+    while pat.startswith("./"):
+        pat = pat[2:]
+    pat = pat.rstrip("/")
+    if not pat:
+        return False
+    if "/" not in pat:
+        return fnmatch.fnmatchcase(dir_name, pat)
+    if fnmatch.fnmatchcase(rel_dir_posix, pat):
+        return True
+    if not pat.startswith("/"):
+        return fnmatch.fnmatchcase(rel_dir_posix, f"*/{pat}")
+    return False
+
+
+def _is_excluded_test_parts(rel_parts, norecursedirs, *, tests_dir_parts=()):
     if not norecursedirs or len(rel_parts) <= 1:
         return False
-    return any(
-        fnmatch.fnmatchcase(part, pattern)
-        for part in rel_parts[:-1]
-        for pattern in norecursedirs
-    )
+    dir_parts = rel_parts[:-1]
+    for depth in range(1, len(dir_parts) + 1):
+        sub_parts = dir_parts[:depth]
+        dir_name = sub_parts[-1]
+        rel_dir_posix = "/".join((*tests_dir_parts, *sub_parts))
+        if any(
+            _fnmatch_norecurse(pattern, rel_dir_posix, dir_name)
+            for pattern in norecursedirs
+        ):
+            return True
+    return False
 
 
-def _test_modules(tests_dir, prefix, *, norecursedirs=None):
+def _test_modules(
+    tests_dir,
+    prefix,
+    *,
+    norecursedirs=None,
+    framework="unittest",
+    tests_dir_rel=None,
+):
     if not tests_dir.is_dir():
         return ()
     excluded = (
@@ -1985,20 +2026,36 @@ def _test_modules(tests_dir, prefix, *, norecursedirs=None):
         if norecursedirs is None
         else tuple(norecursedirs)
     )
+    base_parts = _normalized_tests_dir_parts(
+        tests_dir_rel if tests_dir_rel is not None else prefix.replace(".", "/")
+    )
     modules = []
     for path in tests_dir.rglob("test_*.py"):
         if not path.is_file():
             continue
-        rel_parts = path.relative_to(tests_dir).with_suffix("").parts
-        if _is_excluded_test_parts(rel_parts, excluded):
+        rel = path.relative_to(tests_dir)
+        rel_parts = rel.with_suffix("").parts
+        if _is_excluded_test_parts(rel_parts, excluded, tests_dir_parts=base_parts):
             continue
-        modules.append(f"{prefix}.{'.'.join(rel_parts)}")
+        if framework == "pytest":
+            modules.append("/".join((*base_parts, *rel.parts)))
+        else:
+            modules.append(f"{prefix}.{'.'.join(rel_parts)}")
     return tuple(sorted(modules))
 
 
-def _tree_test_modules(root, tree, tests_dir_rel, prefix, *, norecursedirs=None):
+def _tree_test_modules(
+    root,
+    tree,
+    tests_dir_rel,
+    prefix,
+    *,
+    norecursedirs=None,
+    framework="unittest",
+):
     rel_dir = _normalized(tests_dir_rel).strip("/")
-    ls = _git(root, "ls-tree", "-r", "--name-only", "-z", tree, "--", rel_dir)
+    list_arg = () if not rel_dir or rel_dir == "." else ("--", rel_dir)
+    ls = _git(root, "ls-tree", "-r", "--name-only", "-z", tree, *list_arg)
     if ls.returncode != 0:
         return None
     excluded = (
@@ -2007,7 +2064,7 @@ def _tree_test_modules(root, tree, tests_dir_rel, prefix, *, norecursedirs=None)
         else tuple(norecursedirs)
     )
     modules = []
-    base_parts = Path(rel_dir).parts
+    base_parts = _normalized_tests_dir_parts(rel_dir)
     for item in ls.stdout.split("\0"):
         norm = _normalized(item).strip("/")
         if not norm.endswith(".py"):
@@ -2016,12 +2073,16 @@ def _tree_test_modules(root, tree, tests_dir_rel, prefix, *, norecursedirs=None)
         if not p.name.startswith("test_"):
             continue
         try:
-            rel_parts = p.relative_to(Path(*base_parts)).with_suffix("").parts
+            rel_file = p.relative_to(Path(*base_parts)) if base_parts else p
         except ValueError:
             continue
-        if _is_excluded_test_parts(rel_parts, excluded):
+        rel_parts = rel_file.with_suffix("").parts
+        if _is_excluded_test_parts(rel_parts, excluded, tests_dir_parts=base_parts):
             continue
-        modules.append(f"{prefix}.{'.'.join(rel_parts)}")
+        if framework == "pytest":
+            modules.append(norm)
+        else:
+            modules.append(f"{prefix}.{'.'.join(rel_parts)}")
     return tuple(sorted(modules))
 
 
@@ -2360,6 +2421,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             config.tests_dir,
             test_prefix,
             norecursedirs=excluded_test_dirs,
+            framework=config.framework,
         )
         resolved_all_tests = (
             tree_tests
@@ -2368,7 +2430,11 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                 tuple(all_tests)
                 if all_tests is not None
                 else _test_modules(
-                    tests_dir, test_prefix, norecursedirs=excluded_test_dirs
+                    tests_dir,
+                    test_prefix,
+                    norecursedirs=excluded_test_dirs,
+                    framework=config.framework,
+                    tests_dir_rel=config.tests_dir,
                 )
             )
         )
@@ -2376,7 +2442,11 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
         resolved_all_tests = tuple(all_tests)
     else:
         resolved_all_tests = _test_modules(
-            tests_dir, test_prefix, norecursedirs=excluded_test_dirs
+            tests_dir,
+            test_prefix,
+            norecursedirs=excluded_test_dirs,
+            framework=config.framework,
+            tests_dir_rel=config.tests_dir,
         )
     if full:
         return _escalated(
@@ -2436,6 +2506,8 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
         )
     deleted_set = {_normalized(item) for item in getattr(changes, "deleted_paths", ())}
     deleted_resolved = bool(getattr(changes, "deleted_paths_resolved", False))
+    tests_base_parts = _normalized_tests_dir_parts(config.tests_dir)
+    tests_dir_prefix = "/".join(tests_base_parts) + "/" if tests_base_parts else ""
     selected, reasons, changed_modules, unmapped = set(), {}, set(), []
     for path in paths:
         if _is_ignored(path, config):
@@ -2448,12 +2520,17 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     reasons.setdefault(test, []).append(rule.reason)
             continue
         if (
-            path.startswith(config.tests_dir.rstrip("/") + "/")
+            (not tests_dir_prefix or path.startswith(tests_dir_prefix))
             and path.endswith(".py")
             and path.split("/")[-1].startswith("test_")
             and not _is_excluded_test_parts(
-                Path(path).relative_to(Path(config.tests_dir.rstrip("/"))).parts,
+                (
+                    Path(path).relative_to(Path(*tests_base_parts)).parts
+                    if tests_base_parts
+                    else Path(path).parts
+                ),
                 excluded_test_dirs,
+                tests_dir_parts=tests_base_parts,
             )
         ):
             if deleted_resolved:
@@ -2474,9 +2551,13 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     f"Test file deleted or renamed: {path}",
                     root=root,
                 )
-            module = ".".join(Path(path).with_suffix("").parts)
-            selected.add(module)
-            reasons.setdefault(module, []).append(
+            target_id = (
+                path
+                if config.framework == "pytest"
+                else ".".join(Path(path).with_suffix("").parts)
+            )
+            selected.add(target_id)
+            reasons.setdefault(target_id, []).append(
                 f"Direct test file modification: {path}"
             )
             continue
@@ -3361,6 +3442,7 @@ def _ref_source_snapshot(
                 if config.framework == "pytest"
                 else ()
             ),
+            framework=config.framework,
         )
         tests_modules = list(tree_tests) if tree_tests is not None else []
         tests_digest = f"sha256:{_json_sha256(tests_modules)}"
@@ -3441,8 +3523,31 @@ def verify_per_ref_source_snapshot(
         if sel_entry.get("status") not in {"blocked", "not_applicable"}:
             if config_binding.get("status") not in {"verified", "event_shared"}:
                 raise SelectionError("expected_per_ref_source_unverifiable")
-            if not set(sel_entry.get("tests") or ()).issubset(set(tests_modules)):
-                raise SelectionError("expected_per_ref_source_unverifiable")
+            allowed_targets = set(tests_modules)
+            dotted_aliases = {
+                ".".join(stem_parts)
+                for item in tests_modules
+                if isinstance(item, str) and item.endswith(".py")
+                for stem_parts in (Path(item).with_suffix("").parts,)
+                if all("." not in part for part in stem_parts)
+            }
+            for target in sel_entry.get("tests") or ():
+                if not isinstance(target, str):
+                    raise SelectionError("expected_per_ref_source_unverifiable")
+                if (
+                    "/" in target
+                    or "\\" in target
+                    or target.endswith(".py")
+                    or "::" in target
+                ):
+                    base_target = target.partition("::")[0]
+                    if (
+                        target not in allowed_targets
+                        and base_target not in allowed_targets
+                    ):
+                        raise SelectionError("expected_per_ref_source_unverifiable")
+                elif target not in allowed_targets and target not in dotted_aliases:
+                    raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
         for key in (
             "remote_ref",
@@ -3594,6 +3699,8 @@ def verify_materialized_source_snapshot(
             norecursedirs=(
                 _pytest_norecursedirs(mat_path) if sel_cfg.framework == "pytest" else ()
             ),
+            framework=sel_cfg.framework,
+            tests_dir_rel=sel_cfg.tests_dir,
         )
     )
     if mat_tests != list(snap.get("tests_modules") or ()):
@@ -4055,6 +4162,8 @@ def plan(
         norecursedirs=(
             _pytest_norecursedirs(root) if config.framework == "pytest" else ()
         ),
+        framework=config.framework,
+        tests_dir_rel=config.tests_dir,
     )
     graph = _graph_validation(selection, config, root, tach_validation)
     profile_changed = False
@@ -4887,13 +4996,16 @@ def _validate_bound_pytest_cli_target(target):
 def _resolve_pytest_targets(targets, root):
     """Resolve selection targets into bound pytest CLI arguments or report the first refusal."""
     resolved_targets = []
+    seen = set()
     for target in targets:
         resolved_target, target_refusal = _resolve_pytest_target(target, root)
         if target_refusal:
             return None, target_refusal, target
         if not resolved_target or resolved_target.startswith(("-", "@")):
             return None, "pytest_target_invalid", target
-        resolved_targets.append(resolved_target)
+        if resolved_target not in seen:
+            seen.add(resolved_target)
+            resolved_targets.append(resolved_target)
     return resolved_targets, None, None
 
 

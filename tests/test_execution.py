@@ -6781,3 +6781,131 @@ def test_git_free_index_dagger_export_runs_tach_when_verified_and_refuses_unprov
     assert bad_check["status"] == "failed"
     assert bad_check["reason"] == "tach_config_invalid"
     assert bad_check["execution_started"] is False
+
+
+def test_dagger_export_verified_content_id_reuses_digest_and_host_never_bypasses(
+    repo, tmp_path, monkeypatch
+):
+    path, _ = repo
+    exported = tmp_path / "exported"
+    shutil.copytree(path, exported, ignore=shutil.ignore_patterns(".git"))
+    (exported / "tach.toml").write_text('source_roots = ["src"]\n', encoding="utf-8")
+    # Build a git-free exported index plan with valid tach.toml + inputs for _profile_reference / checks.
+    repo_with_tach = tmp_path / "repo_with_tach"
+    shutil.copytree(exported, repo_with_tach, copy_function=shutil.copyfile)
+    (repo_with_tach / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n\n[[modules]]\npath = "pkg.sub"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (repo_with_tach / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["tach"]\n\n[tach]\npath = "tach.toml"\n',
+        encoding="utf-8",
+    )
+    (repo_with_tach / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\nchecks = ["tach"]\nignored_prefixes = ["src/"]\n',
+        encoding="utf-8",
+    )
+    run(repo_with_tach, "init", "-q", "-b", "main")
+    run(repo_with_tach, "config", "user.email", "execution@example.invalid")
+    run(repo_with_tach, "config", "user.name", "Execution Test")
+    run(repo_with_tach, "add", "-A")
+    run(repo_with_tach, "commit", "-qm", "with-tach")
+    repo_base = run(repo_with_tach, "rev-parse", "HEAD").strip()
+    (repo_with_tach / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(repo_with_tach, "add", "src/pkg/sub.py")
+    cfg = selection.load_config(repo_with_tach / "ci-selection.toml")
+    sel = selection.select(
+        selection.changeset(repo_with_tach, base=repo_base, mode="index"),
+        cfg,
+        root=repo_with_tach,
+    )
+    idx_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=repo_with_tach / "ci-selection.toml",
+        root=repo_with_tach,
+    )
+    export_dir = tmp_path / "export_index"
+    shutil.copytree(repo_with_tach, export_dir, ignore=shutil.ignore_patterns(".git"))
+    idx_id = selection.directory_content_id(export_dir)
+    idx_plan["git"]["source_tree_id"] = idx_id
+    for cfg_key, rel_cfg in (
+        ("config", "ci-selection.toml"),
+        ("hygiene", "ci-hygiene.toml"),
+    ):
+        entry = (idx_plan.get("inputs") or {}).get(cfg_key)
+        if isinstance(entry, dict) and entry.get("path"):
+            entry["path"] = rel_cfg
+
+    orig_digest = selection.directory_content_id
+    calls = 0
+
+    def counting_digest(root):
+        nonlocal calls
+        calls += 1
+        return orig_digest(root)
+
+    monkeypatch.setattr(selection, "directory_content_id", counting_digest)
+    rep = execution.execute(
+        idx_plan,
+        root=export_dir,
+        execution_context="dagger_export",
+        runner=FakeRunner(code=0, stdout="All modules validated!\n"),
+        _verified_content_id=idx_id,
+    )
+    assert rep["status"] == "passed", rep
+    assert calls == 0
+    tach_chk = next(c for c in rep["checks"] if c["name"] == "tach")
+    assert tach_chk["check_contract"]["status"] == "valid"
+    assert tach_chk["source_ref"]["binding_status"] == "identity_only"
+    assert (
+        execution._has_verified_materialized_source(
+            idx_plan,
+            export_dir,
+            execution_context="dagger_export",
+            _verified_content_id=idx_id,
+        )
+        is True
+    )
+    assert calls == 0
+
+    # Wrong _verified_content_id fails closed immediately.
+    bad = execution.execute(
+        idx_plan,
+        root=export_dir,
+        execution_context="dagger_export",
+        runner=FakeRunner(code=0),
+        _verified_content_id="0" * 64,
+    )
+    assert bad["status"] == "not_executed"
+    assert bad["reason"] == "source_tree_mismatch"
+
+    # Mutable host execution_context ignores _verified_content_id completely.
+    (repo_with_tach / "src/pkg/sub.py").write_text("VALUE = 99\n", encoding="utf-8")
+    host_calls_before = calls
+    host_rep = execution.execute(
+        idx_plan,
+        root=repo_with_tach,
+        execution_context="host",
+        runner=FakeRunner(code=0),
+        _verified_content_id=idx_id,
+    )
+    assert host_rep["status"] == "not_executed"
+    assert host_rep["reason"] in {
+        "index_worktree_mismatch",
+        "index_snapshot_stale",
+        "source_tree_mismatch",
+    }
+    assert calls > host_calls_before or host_rep["reason"] in {
+        "index_worktree_mismatch",
+        "index_snapshot_stale",
+    }
+    assert (
+        execution._has_verified_materialized_source(
+            idx_plan,
+            export_dir,
+            execution_context="host",
+            _verified_content_id=idx_id,
+        )
+        is False
+    )

@@ -850,9 +850,60 @@ class EngineeringCi:
             .with_workdir("/workspace")
         )
 
-    async def _exec_uv_tool(self, source: dagger.Directory, argv: list[str]) -> dict:
-        container = self._uv_tool_container(source)
-        return await _exec_capture(container, argv)
+    async def _exec_uv_tool(
+        self,
+        source: dagger.Directory,
+        argv: list[str],
+        *,
+        _bound_source: dagger.Directory | None = None,
+        _source_excludes: list[str] | tuple[str, ...] | None = None,
+    ) -> dict:
+        from . import native_results
+
+        bound = (
+            _bound_source
+            if _bound_source is not None
+            else self._bound_public_source(source)
+        )
+        metadata_errors = {}
+        try:
+            input_ref = await native_results.directory_reference(source)
+        except Exception as error:  # noqa: BLE001 - retain container exit on optional metadata failure
+            input_ref = {"status": "unavailable", "reason": str(error)}
+            metadata_errors["source_directory"] = input_ref
+        try:
+            consumed_ref = await native_results.directory_reference(bound)
+        except Exception as error:  # noqa: BLE001 - retain container exit on optional metadata failure
+            consumed_ref = {"status": "unavailable", "reason": str(error)}
+            metadata_errors["consumed_source_directory"] = consumed_ref
+        filtered = (
+            consumed_ref["digest"] != input_ref["digest"]
+            if "digest" in input_ref and "digest" in consumed_ref
+            else None
+        )
+        excludes = list(
+            tooling.SOURCE_NOISE if _source_excludes is None else _source_excludes
+        )
+        container = self._uv_tool_container(source, _bound_source=bound)
+        result = await _exec_capture(container, argv)
+        observation = {
+            "execution_location": "dagger_container",
+            "freshness_policy": "native_exec_cache",
+            "process_started_at": result["process_started_at"],
+            "process_finished_at": result["process_finished_at"],
+            "argv": list(argv),
+            "source_directory": input_ref,
+            "consumed_source_directory": consumed_ref,
+            "container_source_filtered": filtered,
+            "origin_execution_attributed": False,
+        }
+        if filtered and excludes:
+            observation["container_source_excludes"] = excludes
+        if metadata_errors:
+            observation["metadata_status"] = "unavailable"
+            observation["metadata_errors"] = metadata_errors
+        result["observation"] = observation
+        return result
 
     async def _run_repository_script(self, source, policy, arguments, tool_key):
         from engineering_ci import workflow_analysis
@@ -1202,6 +1253,8 @@ class EngineeringCi:
         *,
         installed: dagger.Container | None = None,
         capture=None,
+        _bound_source: dagger.Directory | None = None,
+        _source_excludes: list[str] | tuple[str, ...] | None = None,
     ) -> dict:
         """Run pinned Lychee inside a container over an immutable Directory."""
         if installed is None:
@@ -1222,6 +1275,8 @@ class EngineeringCi:
             argv_tail,
             capture=capture or _exec_capture,
             source_noise=tooling.SOURCE_NOISE,
+            _bound_source=_bound_source,
+            _source_excludes=_source_excludes,
         )
 
     def _git_container(self, source: dagger.Directory) -> dagger.Container:

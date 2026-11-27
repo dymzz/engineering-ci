@@ -483,18 +483,29 @@ for actual request/reader counts and failure preservation.
   reconstruction; explicit `.dagger/src/` inclusion lives in `[check_scope]`.
 - When `framework = "pytest"`, `_test_modules`, `_tree_test_modules`, direct
   test matching, and per-ref source snapshots honor explicit list
-  `[tool.pytest.ini_options].norecursedirs` entries in `pyproject.toml`
+  `[tool.pytest.ini_options].norecursedirs` entries in `pyproject.toml`,
+  matching both basename patterns (`"fixtures"`, `".*"`) and path/glob
+  patterns (`"tests/sub.pkg"`, `"tests/**/nested"`) with `fnmatch_ex` parity
   (excluding `tests/fixtures/` from root collection while preserving standalone
-  fixture project test discovery). This helper is scoped to `pyproject.toml`
-  `norecursedirs` rather than acting as a full `pytest.ini` / `setup.cfg`
-  parser; unreadable or malformed `pyproject.toml` falls back safely without
-  claiming complete pytest discovery proof.
+  fixture project test discovery). Non-dict TOML sections (`[tool]`,
+  `[tool.pytest]`, `[tool.pytest.ini_options]`) and unreadable or malformed
+  `pyproject.toml` fall back safely without raising `AttributeError` or claiming
+  complete pytest discovery proof.
+- For `framework = "pytest"`, Selection discovery (`_test_modules`,
+  `_tree_test_modules`) and direct test-file edits emit lossless
+  Source-relative POSIX paths (for example `"tests/sub.pkg/test_case.py"`,
+  preventing directory-segment collisions with `tests/sub/pkg/test_case.py`),
+  while explicit historical dotted entries in `[module_tests]`,
+  `[[non_code_rules]]`, and `[prerequisites]` remain accepted alongside explicit
+  path and `::nodeid` entries. `verify_per_ref_source_snapshot` requires exact
+  literal membership for path/`::nodeid` targets while keeping stem-based
+  resolution for historical dotted entries.
 - Host `run_tests(..., framework="pytest")` and Dagger Plan-selected
-  `plan_execution._tests` / `EngineeringCi._run_pytest` keep
-  Selection's dotted test module identities in Plans and resolve them (plus
-  optional `::nodeid` suffixes) **once** via `selection.resolve_pytest_targets`
-  into bound repository-relative file or directory paths inside the bound Source
-  without `--pyargs`, placing `--` after all pytest options (`-q`, optional
+  `plan_execution._tests` / `EngineeringCi._run_pytest` resolve Selection targets
+  (including historical dotted modules and optional `::nodeid` suffixes)
+  **once** via `selection.resolve_pytest_targets` into deduplicated bound
+  repository-relative file or directory paths inside the bound Source without
+  `--pyargs`, placing `--` after all pytest options (`-q`, optional
   `--junitxml`) before resolved targets. `plan_execution._tests` hands off the
   already-bound CLI targets via private `_resolved_targets` so `_run_pytest`
   neither re-exports the Source nor re-interprets explicit directory paths
@@ -523,6 +534,18 @@ for actual request/reader counts and failure preservation.
   in `test_policy`. `unittest` semantics stay unchanged. Any non-`tach.toml`
   `tach` config path (after normalizing `./tach.toml`) is refused fail-closed
   matching native `tach 0.35.3` discovery.
+- In Dagger `plan-execution`, container-delegated `tach` (pinned `tach==0.35.3`),
+  `vulture` (`vulture==2.16`), and `docs` (`lychee`) consume an immutable
+  verified-tree / DAG-overlay Source Directory when verified (`tree_verified` or
+  data overlay), stripping `.git` without re-excluding `SOURCE_NOISE`-matching
+  tracked files, whereas unverified worktree Sources strip `SOURCE_NOISE` from
+  both the bound container directory and `NativeResult.source_ref.verified_input_scope`.
+  Container-delegated non-docs / non-workflow checks (`tach`, `vulture`) report
+  `result_origin = "dagger"`, `runner_ref = "execution:dagger"`, non-proven
+  container `source_ref` (`identity_only` or `unknown`), and
+  `evidence.source_limit = "input_closure_not_proven"`. When `dagger_export`
+  already verified the exported `source_tree_id`, that digest is reused across
+  binding, snapshot, and profile helpers without re-hashing `directory`.
 - **Adoption scope (R15 independent slice):** this delivers selection mapping,
   hygiene applicability, root `tach.toml` / `ci-selection.toml` artifacts, and
   host-native `tach check` / `tach check-external` evidence when those tools are

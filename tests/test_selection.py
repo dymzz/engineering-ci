@@ -2023,9 +2023,11 @@ def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixtur
 ):
     root = Path(__file__).resolve().parents[1]
     cfg = selection.load_config(root / "ci-selection.toml")
-    worktree_mods = selection._test_modules(root / "tests", "tests")
+    worktree_mods = selection._test_modules(
+        root / "tests", "tests", framework=cfg.framework
+    )
     assert not any("fixtures" in mod for mod in worktree_mods)
-    assert "tests.test_selection" in worktree_mods
+    assert "tests/test_selection.py" in worktree_mods
 
     full_worktree = selection.select(
         selection.ChangeSet(
@@ -2072,10 +2074,12 @@ def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixtur
     rl_cfg = selection.load_config(root_like / "ci-selection.toml")
     tree_id = run(root_like, "rev-parse", "HEAD^{tree}").strip()
     head = run(root_like, "rev-parse", "HEAD").strip()
-    assert selection._test_modules(root_like / "tests", "tests") == ("tests.test_unit",)
-    assert selection._tree_test_modules(root_like, tree_id, "tests", "tests") == (
-        "tests.test_unit",
-    )
+    assert selection._test_modules(
+        root_like / "tests", "tests", framework="pytest"
+    ) == ("tests/test_unit.py",)
+    assert selection._tree_test_modules(
+        root_like, tree_id, "tests", "tests", framework="pytest"
+    ) == ("tests/test_unit.py",)
     snap = selection._ref_source_snapshot(
         root_like,
         {"tree": tree_id, "ref_action": "update"},
@@ -2090,7 +2094,7 @@ def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixtur
             "tests": [],
         },
     )
-    assert snap["tests_modules"] == ["tests.test_unit"]
+    assert snap["tests_modules"] == ["tests/test_unit.py"]
 
     # Standalone fixture project continues discovering its own tests and running dotted pytest targets.
     fixture_repo, _ = repo
@@ -2540,3 +2544,341 @@ def test_selection_rejects_unsupported_custom_tach_config_paths(repo, tmp_path):
     missing_res = selection._tach_check(nested, config(path), changes)
     assert missing_res["status"] == "refused"
     assert missing_res["reason"] == "tach_config_missing"
+
+
+def test_pytest_lossless_paths_avoid_dotted_dir_collision_and_keep_legacy_aliases(
+    tmp_path,
+):
+    path = tmp_path / "dot_collision"
+    (path / "src").mkdir(parents=True)
+    (path / "tests/sub.pkg").mkdir(parents=True)
+    (path / "tests/sub/pkg").mkdir(parents=True)
+    (path / ".gitignore").write_text(
+        ".pytest_cache/\n__pycache__/\n", encoding="utf-8", newline="\n"
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["whitespace"]\n', encoding="utf-8", newline="\n"
+    )
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\nchecks = []\n\n[module_tests]\n"pkg" = ["tests.sub.pkg.test_case"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (path / "src/pkg.py").write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
+    (path / "tests/sub.pkg/test_case.py").write_text(
+        "def test_dot_dir():\n    assert False\n", encoding="utf-8", newline="\n"
+    )
+    (path / "tests/sub/pkg/test_case.py").write_text(
+        "def test_nested():\n    assert True\n", encoding="utf-8", newline="\n"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "core.autocrlf", "false")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "baseline")
+    base = run(path, "rev-parse", "HEAD").strip()
+    tree_id = run(path, "rev-parse", "HEAD^{tree}").strip()
+    cfg = config(path)
+
+    expected_discovered = ("tests/sub.pkg/test_case.py", "tests/sub/pkg/test_case.py")
+    assert (
+        selection._test_modules(path / "tests", "tests", framework="pytest")
+        == expected_discovered
+    )
+    assert (
+        selection._tree_test_modules(
+            path, tree_id, "tests", "tests", framework="pytest"
+        )
+        == expected_discovered
+    )
+    full_sel = selection.select(changes(path, base), cfg, root=path, full=True)
+    assert full_sel.tests == expected_discovered
+    tach_sha = selection._digest(path / "tach.toml")
+
+    def _valid_tach(sel_result):
+        return {
+            "status": "passed",
+            "exit_code": 0,
+            "tach_sha256": tach_sha,
+            "source_tree": (
+                sel_result.changeset.execution_tree or sel_result.changeset.tree
+            ),
+        }
+
+    # Direct modification of tests/sub.pkg/test_case.py selects and executes ONLY that file (exit 1).
+    (path / "tests/sub.pkg/test_case.py").write_text(
+        "def test_dot_dir():\n    assert False, 'boom'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    dot_sel = select(path, base)
+    assert dot_sel.tests == ("tests/sub.pkg/test_case.py",)
+    dot_plan = selection.plan(
+        dot_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation=_valid_tach(dot_sel),
+    )
+    assert dot_plan["selection"]["tests"] == ["tests/sub.pkg/test_case.py"]
+    assert next(c for c in dot_plan["check_scope"] if c["name"] == "pytest")[
+        "inputs"
+    ] == ["tests/sub.pkg/test_case.py"]
+    dot_exec = execution.execute(dot_plan, root=path)
+    assert dot_exec["status"] == "failed"
+    assert dot_exec["exit_code"] == 1
+    assert any(
+        ref.get("kind") in {"test_target", "changed_path"}
+        and ref.get("path") == "tests/sub.pkg/test_case.py"
+        for ref in dot_exec["tests"]["native_result"]["input_refs"]
+    )
+    assert "test_dot_dir" in dot_exec["native_stdout"]
+    assert "test_nested" not in dot_exec["native_stdout"]
+    run(path, "checkout", "--", "tests/sub.pkg/test_case.py")
+
+    # Direct modification of tests/sub/pkg/test_case.py executes ONLY the nested passing file (exit 0).
+    (path / "tests/sub/pkg/test_case.py").write_text(
+        "def test_nested():\n    assert 1 == 1\n", encoding="utf-8", newline="\n"
+    )
+    nested_sel = select(path, base)
+    assert nested_sel.tests == ("tests/sub/pkg/test_case.py",)
+    nested_plan = selection.plan(
+        nested_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation=_valid_tach(nested_sel),
+    )
+    nested_exec = execution.execute(nested_plan, root=path)
+    assert nested_exec["status"] == "passed"
+    assert nested_exec["exit_code"] == 0
+    run(path, "checkout", "--", "tests/sub/pkg/test_case.py")
+
+    # Index snapshot preserves lossless dot-directory path too.
+    (path / "tests/sub.pkg/test_case.py").write_text(
+        "def test_dot_dir():\n    assert False, 'staged'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    run(path, "add", "tests/sub.pkg/test_case.py")
+    idx_changes = selection.changeset(path, base=base, mode="index")
+    idx_sel = selection.select(idx_changes, cfg, root=path)
+    assert idx_sel.tests == ("tests/sub.pkg/test_case.py",)
+    idx_plan = selection.plan(
+        idx_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+        tach_validation=_valid_tach(idx_sel),
+    )
+    assert execution.execute(idx_plan, root=path)["exit_code"] == 1
+    run(path, "reset", "HEAD", "--", "tests/sub.pkg/test_case.py")
+    run(path, "checkout", "--", "tests/sub.pkg/test_case.py")
+
+    # Mixed historical dotted [module_tests] + direct path edit deduplicate cleanly in run_tests.
+    (path / "src/pkg.py").write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    (path / "tests/sub/pkg/test_case.py").write_text(
+        "def test_nested():\n    assert 2 == 2\n", encoding="utf-8", newline="\n"
+    )
+    mixed_sel = select(path, base)
+    assert mixed_sel.tests == ("tests.sub.pkg.test_case", "tests/sub/pkg/test_case.py")
+    cap = {}
+    assert (
+        selection.run_tests(mixed_sel.tests, root=path, framework="pytest", capture=cap)
+        == 0
+    )
+    assert "--" in cap["argv"]
+    assert cap["argv"][cap["argv"].index("--") + 1 :] == ["tests/sub/pkg/test_case.py"]
+
+    # Per-ref multi snapshot + materialized verification preserve lossless dot-dir paths
+    # alongside valid historical dotted aliases, and reject forged/ambiguous targets.
+    run(path, "add", "src/pkg.py", "tests/sub/pkg/test_case.py")
+    (path / "tests/sub.pkg/test_case.py").write_text(
+        "def test_dot_dir():\n    assert False, 'committed'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    run(path, "add", "tests/sub.pkg/test_case.py")
+    run(path, "commit", "-qm", "c2")
+    c2 = run(path, "rev-parse", "HEAD").strip()
+    multi_ch = selection.changeset_multi(
+        path, [("refs/heads/main", c2, "refs/heads/main", base)], config=cfg
+    )
+    multi_sel = selection.select(multi_ch, cfg, root=path)
+    multi_plan = selection.plan(
+        multi_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    entry = multi_plan["selection"]["per_ref"][0]
+    assert entry["tests"] == [
+        "tests.sub.pkg.test_case",
+        "tests/sub.pkg/test_case.py",
+        "tests/sub/pkg/test_case.py",
+    ]
+    assert entry["source_snapshot_ref"]["tests_modules"] == [
+        "tests/sub.pkg/test_case.py",
+        "tests/sub/pkg/test_case.py",
+    ]
+    plan_ref = multi_plan["git"]["references"][0]
+    plan_inputs = multi_plan["inputs"]
+    selection.verify_per_ref_source_snapshot(
+        entry, plan_ref=plan_ref, inputs=plan_inputs
+    )
+    mat_dir = tmp_path / "mat_dot"
+    shutil.copytree(
+        path,
+        mat_dir,
+        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__"),
+    )
+    selection.verify_materialized_source_snapshot(
+        entry, mat_dir, sel_cfg=cfg, plan_ref=plan_ref, inputs=plan_inputs
+    )
+
+    missing_entry = {**entry, "tests": ["tests/sub.pkg/missing.py"]}
+    missing_snap_raw = {
+        **entry["source_snapshot_ref"],
+        "selection_digest": selection._selection_entry_digest(
+            missing_entry,
+            ref=plan_ref,
+            sources_identity=plan_inputs.get("sources"),
+        ),
+    }
+    missing_snap = {
+        **missing_snap_raw,
+        "snapshot_digest": "sha256:"
+        + selection._json_sha256(
+            {k: v for k, v in missing_snap_raw.items() if k != "snapshot_digest"}
+        ),
+    }
+    with pytest.raises(
+        selection.SelectionError, match="expected_per_ref_source_unverifiable"
+    ):
+        selection.verify_per_ref_source_snapshot(
+            {**missing_entry, "source_snapshot_ref": missing_snap},
+            plan_ref=plan_ref,
+            inputs=plan_inputs,
+        )
+    # Historical dotted alias must NOT match tests/sub.pkg/test_case.py when tests/sub/pkg/test_case.py is absent.
+    ambig_entry = {**entry, "tests": ["tests.sub.pkg.test_case"]}
+    dot_mods = ["tests/sub.pkg/test_case.py"]
+    snap_dot_only_raw = {
+        **entry["source_snapshot_ref"],
+        "tests_modules": dot_mods,
+        "tests_digest": "sha256:" + selection._json_sha256(dot_mods),
+        "selection_digest": selection._selection_entry_digest(
+            ambig_entry,
+            ref=plan_ref,
+            sources_identity=plan_inputs.get("sources"),
+        ),
+    }
+    snap_dot_only = {
+        **snap_dot_only_raw,
+        "snapshot_digest": "sha256:"
+        + selection._json_sha256(
+            {k: v for k, v in snap_dot_only_raw.items() if k != "snapshot_digest"}
+        ),
+    }
+    with pytest.raises(
+        selection.SelectionError, match="expected_per_ref_source_unverifiable"
+    ):
+        selection.verify_per_ref_source_snapshot(
+            {**ambig_entry, "source_snapshot_ref": snap_dot_only},
+            plan_ref=plan_ref,
+            inputs=plan_inputs,
+        )
+
+
+def test_pytest_norecursedirs_path_patterns_and_non_dict_toml_sections(tmp_path):
+    # P2-04: path/glob norecursedirs patterns work across worktree, tree, and direct selection.
+    path = tmp_path / "norecurse_paths"
+    (path / "tests/sub.pkg").mkdir(parents=True)
+    (path / "tests/group/nested").mkdir(parents=True)
+    (path / "tests/fixtures").mkdir(parents=True)
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\nnorecursedirs = ["fixtures", "tests/sub.pkg", "tests/**/nested"]\n',
+        encoding="utf-8",
+    )
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "src").mkdir(parents=True)
+    (path / "src/pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n', encoding="utf-8"
+    )
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "tests/sub.pkg/test_ignored.py").write_text(
+        "def test_no():\n    assert False\n", encoding="utf-8"
+    )
+    (path / "tests/group/nested/test_deep.py").write_text(
+        "def test_no():\n    assert False\n", encoding="utf-8"
+    )
+    (path / "tests/fixtures/test_fix.py").write_text(
+        "def test_no():\n    assert False\n", encoding="utf-8"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    base = run(path, "rev-parse", "HEAD").strip()
+    tree_id = run(path, "rev-parse", "HEAD^{tree}").strip()
+
+    assert selection._test_modules(path / "tests", "tests", framework="pytest") == (
+        "tests/test_keep.py",
+    )
+    assert selection._tree_test_modules(
+        path, tree_id, "tests", "tests", framework="pytest"
+    ) == ("tests/test_keep.py",)
+    (path / "tests/sub.pkg/test_ignored.py").write_text(
+        "def test_no():\n    assert 1 == 2\n", encoding="utf-8"
+    )
+    (path / "tests/group/nested/test_deep.py").write_text(
+        "def test_no():\n    assert 1 == 2\n", encoding="utf-8"
+    )
+    # Excluded paths under tests/ are never treated as discovered test modules; without explicit
+    # non-code/ignore mapping they fail closed to the active discovered suite ('tests/test_keep.py').
+    esc_ignored = select(path, base)
+    assert esc_ignored.status == "escalated"
+    assert esc_ignored.tests == ("tests/test_keep.py",)
+    # With ignored_prefixes configured for those excluded fixture subtrees, changes resolve to no_tests.
+    direct_ignored = selection.select(
+        changes(path, base),
+        dataclasses.replace(
+            config(path),
+            ignored_prefixes=("tests/sub.pkg/", "tests/group/nested/"),
+        ),
+        root=path,
+    )
+    assert direct_ignored.status == "no_tests"
+    assert direct_ignored.tests == ()
+
+    # P2-05: non-dict TOML section types fail closed to () without AttributeError.
+    for idx, toml_body in enumerate(
+        (
+            'tool = "x"\n',
+            '[tool]\npytest = "x"\n',
+            "[tool.pytest]\nini_options = 1\n",
+            '[tool.pytest.ini_options]\nnorecursedirs = "fixtures"\n',
+        )
+    ):
+        case_dir = tmp_path / f"bad_toml_{idx}"
+        case_dir.mkdir()
+        (case_dir / "pyproject.toml").write_text(toml_body, encoding="utf-8")
+        assert selection._pytest_norecursedirs(case_dir) == ()

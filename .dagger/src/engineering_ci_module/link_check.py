@@ -23,10 +23,24 @@ def arguments(argv_tail):
     return False, ["--cache=false", *options, *targets]
 
 
-async def run(client, installed, source, argv_tail, *, capture, source_noise):
+async def run(
+    client,
+    installed,
+    source,
+    argv_tail,
+    *,
+    capture,
+    source_noise,
+    _bound_source=None,
+    _source_excludes=None,
+):
     """Keep tool preparation/local scans cached; reobserve online links."""
     offline, args = arguments(argv_tail)
-    bound = client.directory().with_directory("/", source, exclude=list(source_noise))
+    bound = (
+        _bound_source
+        if _bound_source is not None
+        else client.directory().with_directory("/", source, exclude=list(source_noise))
+    )
     container = installed.with_directory("/workspace", bound).with_workdir("/workspace")
     requested_at_ns = None
     if not offline:
@@ -39,16 +53,29 @@ async def run(client, installed, source, argv_tail, *, capture, source_noise):
         )
     argv = ["/usr/local/bin/lychee", *args]
     result = await capture(container, argv)
-    result["observation"] = {
+    consumed_digest = await bound.digest()
+    input_digest = None
+    try:
+        input_digest = await source.digest()
+    except Exception:  # noqa: BLE001 - optional metadata comparison preserves native scan
+        input_digest = None
+    excludes = list(source_noise if _source_excludes is None else _source_excludes)
+    filtered = consumed_digest != input_digest if input_digest is not None else None
+    observation = {
         "input_mode": "local_only" if offline else "external_network",
         "freshness_policy": "native_exec_cache" if offline else "external_reobserve",
         "requested_at_unix_ns": requested_at_ns,
         "process_started_at": result["process_started_at"],
         "process_finished_at": result["process_finished_at"],
         "execution_location": "dagger_container",
-        "source_directory_digest": await bound.digest(),
+        "source_directory_digest": consumed_digest,
         "argv": argv,
         "tool_response_cache_disabled": not offline,
         "origin_execution_attributed": False,
     }
+    if _bound_source is not None and filtered is not None:
+        observation["container_source_filtered"] = filtered
+        if filtered and excludes:
+            observation["container_source_excludes"] = excludes
+    result["observation"] = observation
     return result

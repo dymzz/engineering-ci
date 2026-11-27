@@ -5314,3 +5314,645 @@ def test_dagger_git_free_index_runs_tach_and_rejects_external_dir_symlink(
             )
         )
     assert repo_root.is_dir()
+
+
+def _load_main_for_plan_result(modules, monkeypatch):
+    import importlib
+
+    _, collector = modules
+    dagger_mod = sys.modules["dagger"]
+
+    def identity(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda fn: fn
+
+    for attr in ("Directory", "Container", "Secret"):
+        if not hasattr(dagger_mod, attr):
+            monkeypatch.setattr(dagger_mod, attr, object, raising=False)
+    monkeypatch.setattr(dagger_mod, "function", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "check", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    spec = importlib.util.spec_from_file_location(
+        collector.__package__ + ".main", MODULE / "main.py"
+    )
+    main_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, main_mod)
+    spec.loader.exec_module(main_mod)
+    return (
+        collector,
+        main_mod,
+        importlib.import_module(collector.__package__ + ".tooling"),
+    )
+
+
+def test_container_hygiene_preserves_verified_noise_and_delegates_vulture(
+    modules, monkeypatch, tmp_path
+):
+    import shutil
+
+    from engineering_ci import hygiene
+    from engineering_ci import selection as real_selection
+
+    collector, main_mod, tooling = _load_main_for_plan_result(modules, monkeypatch)
+    hyg_text = (
+        "schema_version = 1\n"
+        'checks = ["docs", "tach", "vulture"]\n'
+        "\n[lychee]\n"
+        'arguments = ["--offline", "--no-progress"]\n'
+        "\n[tach]\n"
+        'path = "tach.toml"\n'
+        "\n[vulture]\n"
+        'paths = ["src"]\n'
+    )
+    (tmp_path / "cfg_hyg.toml").write_text(hyg_text, encoding="utf-8")
+    hyg_sha = hashlib.sha256(hyg_text.encode("utf-8")).hexdigest()
+    hyg_cfg = hygiene.load_config(tmp_path / "cfg_hyg.toml")
+    hyg_id = hygiene.config_identity(tmp_path / "cfg_hyg.toml", hyg_cfg, root=tmp_path)
+
+    raw_public = {
+        "ci-hygiene.toml": hyg_text.encode("utf-8"),
+        "tach.toml": b'source_roots = ["src"]\n',
+        "src/app/__init__.py": b"VALUE = 1\n",
+        "src/.ruff_cache/tracked_fixture.py": b"FIXTURE = 1\n",
+        "docs/guide.md": b"# Guide\n",
+    }
+    tree_dir = tmp_path / "verified_tree"
+    for rel, data in raw_public.items():
+        dest = tree_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    verified_tree_id = real_selection.directory_content_id(tree_dir)
+    src_files = {".git/HEAD": b"ref: refs/heads/main\n", **raw_public}
+
+    uv_calls = []
+    lychee_calls = []
+
+    class ContainerSpyEngine(main_mod.EngineeringCi):
+        async def _exec_uv_tool(
+            self,
+            source,
+            argv,
+            *,
+            _bound_source=None,
+            _source_excludes=None,
+        ):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            excludes = (
+                list(_source_excludes)
+                if _source_excludes is not None
+                else list(tooling.SOURCE_NOISE)
+            )
+            mounted_files, _ = mounted._materialize()
+            uv_calls.append((list(argv), dict(mounted_files), excludes))
+            return {
+                "exit_code": 0,
+                "stdout": "ok\n",
+                "stderr": "",
+                "observation": {
+                    "execution_location": "dagger_container",
+                    "freshness_policy": "native_exec_cache",
+                    "argv": list(argv),
+                    "source_directory": {
+                        "digest": "sha256:src",
+                        "directory_id": "dir:src",
+                    },
+                    "consumed_source_directory": {
+                        "digest": "sha256:consumed",
+                        "directory_id": "dir:consumed",
+                    },
+                    "container_source_filtered": bool(excludes),
+                    "container_source_excludes": excludes,
+                    "origin_execution_attributed": False,
+                },
+            }
+
+        async def _run_lychee(
+            self,
+            source,
+            argv_tail,
+            *,
+            _bound_source=None,
+            _source_excludes=None,
+        ):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            excludes = (
+                list(_source_excludes)
+                if _source_excludes is not None
+                else list(tooling.SOURCE_NOISE)
+            )
+            mounted_files, _ = mounted._materialize()
+            lychee_calls.append((list(argv_tail), dict(mounted_files), excludes))
+            return {
+                "exit_code": 0,
+                "stdout": "0 links\n",
+                "stderr": "",
+                "observation": {
+                    "execution_location": "dagger_container",
+                    "freshness_policy": "offline_closed",
+                    "container_source_filtered": bool(excludes),
+                    "container_source_excludes": excludes,
+                    "origin_execution_attributed": False,
+                },
+            }
+
+        async def _run_git(self, source, argv):
+            out = "docs/guide.md\0" if "ls-files" in argv else ""
+            return {"exit_code": 0, "stdout": out, "stderr": ""}
+
+    orig_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: (
+            None if name in {"tach", "vulture", "git", "lychee"} else orig_which(name)
+        ),
+    )
+
+    # 1. Verified Git tree: BOTH tach and vulture retain tracked src/.ruff_cache/tracked_fixture.py,
+    # exclude ONLY .git, delegate missing binaries via uvx, and downgrade NativeResult provenance.
+    idx_plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {
+            "base_ref": "main",
+            "head_ref": "HEAD",
+            "base_commit": "0" * 40,
+            "head_commit": "1" * 40,
+            "snapshot": "index",
+            "execution_tree": "a" * 40,
+            "index_tree": "a" * 40,
+            "source_tree_id": verified_tree_id,
+            "changed_paths": ["src/app/__init__.py"],
+        },
+        "selection": {
+            "tests": [],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+            "checks": ["tach", "vulture"],
+        },
+        "check_scope": [
+            {"name": "tach", "status": "selected", "inputs": ["src/app/__init__.py"]},
+            {
+                "name": "vulture",
+                "status": "selected",
+                "inputs": ["src/app/__init__.py"],
+            },
+        ],
+        "inputs": {
+            "hygiene": {
+                "kind": "config",
+                "path": "ci-hygiene.toml",
+                "sha256": hyg_sha,
+                "policy_scope": "repo_target_tree",
+                "normalized": hyg_id["normalized"],
+                "effective_check_config_ref": hyg_id["effective_check_config_ref"],
+            }
+        },
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+
+    idx_exec = asyncio.run(
+        collector.execute(
+            ContainerSpyEngine(),
+            MemoryFile(json.dumps(idx_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    idx_rep = json.loads(asyncio.run(idx_exec.report()))
+    assert idx_rep["status"] == "passed", idx_rep
+    assert [call[0] for call in uv_calls] == [
+        ["uvx", "--from", "tach==0.35.3", "tach", "check"],
+        [
+            "uvx",
+            "--from",
+            "vulture==2.16",
+            "vulture",
+            "--min-confidence",
+            "60",
+            "--",
+            "src",
+        ],
+    ]
+    for _, mounted_files, excludes in uv_calls:
+        assert "src/.ruff_cache/tracked_fixture.py" in mounted_files
+        assert ".git/HEAD" not in mounted_files
+        assert excludes == [".git"]
+    for chk_name in ("tach", "vulture"):
+        entry = next(c for c in idx_rep["checks"] if c["name"] == chk_name)
+        assert entry["result_origin"] == "dagger"
+        assert entry["native_result"]["result_origin"] == "dagger"
+        assert entry["native_result"]["runner_ref"] == "execution:dagger"
+        assert entry["native_result"]["source_ref"]["binding_status"] == "identity_only"
+        assert (
+            entry["native_result"]["evidence"]["source_limit"]
+            == "input_closure_not_proven"
+        )
+        assert entry["native_result"]["evidence"]["observation"][
+            "container_source_excludes"
+        ] == [".git"]
+
+    # 2. Unverified worktree: strips SOURCE_NOISE from container AND source_ref.verified_input_scope.
+    uv_calls.clear()
+    wt_plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {
+            "base_ref": "main",
+            "head_ref": "WORKTREE",
+            "base_commit": "0" * 40,
+            "head_commit": "1" * 40,
+            "snapshot": "worktree",
+            "changed_paths": [
+                "src/app/__init__.py",
+                "src/.ruff_cache/tracked_fixture.py",
+            ],
+        },
+        "selection": {
+            "tests": [],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+            "checks": ["tach", "vulture"],
+        },
+        "check_scope": [
+            {
+                "name": "tach",
+                "status": "selected",
+                "inputs": [
+                    "src/app/__init__.py",
+                    "src/.ruff_cache/tracked_fixture.py",
+                ],
+            },
+            {
+                "name": "vulture",
+                "status": "selected",
+                "inputs": ["src/app/__init__.py"],
+            },
+        ],
+        "inputs": idx_plan["inputs"],
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+    wt_exec = asyncio.run(
+        collector.execute(
+            ContainerSpyEngine(),
+            MemoryFile(json.dumps(wt_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    wt_rep = json.loads(asyncio.run(wt_exec.report()))
+    assert wt_rep["status"] == "passed", wt_rep
+    for _, mounted_files, excludes in uv_calls:
+        assert "src/.ruff_cache/tracked_fixture.py" not in mounted_files
+        assert excludes == list(tooling.SOURCE_NOISE)
+    wt_tach = next(c for c in wt_rep["checks"] if c["name"] == "tach")
+    assert wt_tach["native_result"]["source_ref"]["binding_status"] == "identity_only"
+    assert (
+        "src/.ruff_cache/tracked_fixture.py"
+        not in wt_tach["native_result"]["source_ref"]["verified_input_scope"]
+    )
+    assert (
+        wt_tach["native_result"]["evidence"]["source_limit"]
+        == "input_closure_not_proven"
+    )
+
+    # 3. DAG mode with verified tree + Data Overlay preserves BOTH verified tree SOURCE_NOISE member AND overlays across tach + docs.
+    uv_calls.clear()
+    lychee_calls.clear()
+    gen_cmd = [
+        sys.executable,
+        "-c",
+        (
+            "import os; from pathlib import Path; "
+            "r = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+            "(r / 'docs').mkdir(parents=True, exist_ok=True); "
+            "(r / 'src/.ruff_cache').mkdir(parents=True, exist_ok=True); "
+            "(r / 'docs/guide.md').write_bytes(b'# Generated Guide\\n'); "
+            "(r / 'src/.ruff_cache/generated.py').write_bytes(b'Y = 2\\n')"
+        ),
+    ]
+    gen_doc_sha = hashlib.sha256(b"# Generated Guide\n").hexdigest()
+    gen_py_sha = hashlib.sha256(b"Y = 2\n").hexdigest()
+    decl_ref = {
+        "path": "ci-selection.toml",
+        "section": "prerequisite_actions.gen",
+        "sha256": hyg_sha,
+    }
+    dag_plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {
+            "name": "engineering-ci",
+            "version": "0.7.0",
+            "config_sha256": hyg_sha,
+        },
+        "git": idx_plan["git"],
+        "selection": {
+            "tests": [],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+            "checks": ["docs", "tach", "vulture"],
+            "prerequisites": ["gen"],
+        },
+        "prerequisite_actions": {"gen": {"type": "command", "argv": gen_cmd}},
+        "check_scope": [
+            {"name": "docs", "status": "selected", "inputs": ["docs/guide.md"]},
+            {"name": "tach", "status": "selected", "inputs": ["src/app/__init__.py"]},
+            {
+                "name": "vulture",
+                "status": "selected",
+                "inputs": ["src/app/__init__.py"],
+            },
+        ],
+        "inputs": {
+            **idx_plan["inputs"],
+            "config": {
+                "kind": "config",
+                "path": "ci-selection.toml",
+                "sha256": hyg_sha,
+            },
+        },
+        "dependency_contract": plan_contract.graph_contract(
+            [
+                {
+                    "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+                    "consumer_ref": {"kind": "check", "name": "docs"},
+                    "dependency_kind": "data",
+                    "execution_phase": "pre_execution",
+                    "output_ref": {
+                        "kind": "file",
+                        "path": "docs/guide.md",
+                        "sha256": gen_doc_sha,
+                    },
+                    "declaration_ref": decl_ref,
+                    "source_binding_ref": "git",
+                    "resolution": "resolved",
+                    "unresolved_reason": None,
+                    "requires_pass": True,
+                },
+                {
+                    "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+                    "consumer_ref": {"kind": "check", "name": "tach"},
+                    "dependency_kind": "data",
+                    "execution_phase": "pre_execution",
+                    "output_ref": {
+                        "kind": "file",
+                        "path": "src/.ruff_cache/generated.py",
+                        "sha256": gen_py_sha,
+                    },
+                    "declaration_ref": decl_ref,
+                    "source_binding_ref": "git",
+                    "resolution": "resolved",
+                    "unresolved_reason": None,
+                    "requires_pass": True,
+                },
+            ]
+        ),
+    }
+    dag_exec = asyncio.run(
+        collector.execute(
+            ContainerSpyEngine(),
+            MemoryFile(json.dumps(dag_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    dag_rep = json.loads(asyncio.run(dag_exec.report()))
+    assert dag_rep["status"] == "passed", (
+        dag_rep.get("reason"),
+        [
+            (c.get("name"), c.get("status"), c.get("reason"))
+            for c in dag_rep.get("checks", [])
+        ],
+        dag_rep.get("prerequisites"),
+        dag_rep.get("artifact_closure"),
+    )
+    assert sorted(call[0] for call in uv_calls) == [
+        ["uvx", "--from", "tach==0.35.3", "tach", "check"],
+        [
+            "uvx",
+            "--from",
+            "vulture==2.16",
+            "vulture",
+            "--min-confidence",
+            "60",
+            "--",
+            "src",
+        ],
+    ]
+    _, tach_mounted, tach_excludes = next(
+        call for call in uv_calls if "tach" in call[0]
+    )
+    assert tach_excludes == [".git"]
+    assert "src/.ruff_cache/tracked_fixture.py" in tach_mounted
+    assert tach_mounted.get("src/.ruff_cache/generated.py") == b"Y = 2\n"
+    assert len(lychee_calls) == 1
+    _, docs_mounted, docs_excludes = lychee_calls[0]
+    assert docs_excludes == [".git"]
+    assert docs_mounted.get("docs/guide.md") == b"# Generated Guide\n"
+
+
+def test_dagger_plan_execution_lossless_pytest_dot_dir_collision(
+    modules, monkeypatch, tmp_path
+):
+    import subprocess
+
+    collector, main_mod, _ = _load_main_for_plan_result(modules, monkeypatch)
+    src_files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        "pyproject.toml": b'[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+        "ci-selection.toml": b'schema_version = 1\nframework = "pytest"\n',
+        "src/pkg.py": b"VALUE = 1\n",
+        "tests/sub.pkg/test_case.py": b"def test_dot_dir():\n    assert False, 'dot_dir'\n",
+        "tests/sub/pkg/test_case.py": b"def test_nested():\n    assert True\n",
+    }
+    plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {
+            "snapshot": "worktree",
+            "changed_paths": ["tests/sub.pkg/test_case.py"],
+        },
+        "selection": {
+            "tests": ["tests/sub.pkg/test_case.py"],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+        },
+        "check_scope": [
+            {
+                "name": "pytest",
+                "status": "targeted",
+                "inputs": ["tests/sub.pkg/test_case.py"],
+            }
+        ],
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+
+    pytest_calls = []
+
+    class PytestContainerEngine(main_mod.EngineeringCi):
+        def _uv_container(
+            self,
+            source,
+            python_version,
+            sync_dependencies=True,
+            git_token=None,
+            dependency_packages=None,
+            *,
+            _bound_source=None,
+            system_packages=(),
+        ):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            ws = tmp_path / "dagger_pytest_ws"
+            if ws.exists():
+                import shutil
+
+                shutil.rmtree(ws)
+            ws.mkdir(parents=True)
+            files_map, _ = mounted._materialize()
+            for rel, content in files_map.items():
+                dest = ws / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(
+                    content if isinstance(content, bytes) else content.encode("utf-8")
+                )
+
+            class _Ctr:
+                def __init__(self, *, code=0, out="", err="", extra=None):
+                    self._code = code
+                    self._out = out
+                    self._err = err
+                    self._extra = dict(extra or {})
+
+                def with_new_file(self, path, contents):
+                    return _Ctr(
+                        code=self._code,
+                        out=self._out,
+                        err=self._err,
+                        extra={**self._extra, path: contents},
+                    )
+
+                def with_exec(self, command, **kwargs):
+                    cmd = list(command)
+                    argv = (
+                        [sys.executable, *cmd[4:]]
+                        if cmd[:4] == ["uv", "run", "--no-sync", "python"]
+                        else cmd
+                    )
+                    if len(argv) >= 2 and argv[1] == "/tmp/engineering-ci-pytest-ci.py":
+                        pytest_calls.append(cmd)
+                        helper = ws / "_pytest_ci_helper.py"
+                        helper.write_text(
+                            self._extra["/tmp/engineering-ci-pytest-ci.py"],
+                            encoding="utf-8",
+                        )
+                        rewritten = [
+                            sys.executable,
+                            str(helper),
+                            *(
+                                str(ws / ".dagger-junit.xml")
+                                if arg == "/tmp/engineering-ci-pytest.xml"
+                                else arg
+                                for arg in argv[2:]
+                            ),
+                        ]
+                        proc = subprocess.run(
+                            rewritten,
+                            cwd=ws,
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                        )
+                        return _Ctr(
+                            code=proc.returncode,
+                            out=proc.stdout,
+                            err=proc.stderr,
+                            extra=self._extra,
+                        )
+                    if len(argv) >= 3 and argv[1] == "-m" and argv[2] == "pytest":
+                        pytest_calls.append(cmd)
+                    proc = subprocess.run(
+                        argv,
+                        cwd=ws,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                    )
+                    return _Ctr(
+                        code=proc.returncode,
+                        out=proc.stdout,
+                        err=proc.stderr,
+                        extra=self._extra,
+                    )
+
+                async def exit_code(self):
+                    return self._code
+
+                async def stdout(self):
+                    return self._out
+
+                async def stderr(self):
+                    return self._err
+
+                def file(self, path):
+                    junit = ws / ".dagger-junit.xml"
+                    return MemoryFile(
+                        junit.read_text(encoding="utf-8")
+                        if junit.is_file()
+                        else "<testsuite/>"
+                    )
+
+            return _Ctr()
+
+    res = asyncio.run(
+        collector.execute(
+            PytestContainerEngine(),
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    rep = json.loads(asyncio.run(res.report()))
+    assert rep["status"] == "failed", (rep.get("reason"), rep.get("tests"))
+    assert rep["exit_code"] == 1, rep
+    stdout_txt = asyncio.run(res.artifacts.file("tests/stdout.txt").contents())
+    assert "test_dot_dir" in stdout_txt
+    assert "test_nested" not in stdout_txt
+    assert any(
+        ref.get("kind") in {"test_target", "changed_path"}
+        and ref.get("path") == "tests/sub.pkg/test_case.py"
+        for ref in rep["tests"]["native_result"]["input_refs"]
+    )
+    run_calls = [cmd for cmd in pytest_calls if "--" in cmd]
+    assert len(run_calls) == 1
+    assert run_calls[0][run_calls[0].index("--") + 1 :] == [
+        "tests/sub.pkg/test_case.py"
+    ]
