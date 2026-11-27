@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -2091,7 +2092,7 @@ def test_pytest_norecursedirs_aligns_worktree_tree_per_ref_and_standalone_fixtur
             "after": head,
             "tree": tree_id,
             "ref_action": "update",
-            "tests": [],
+            "tests": ["tests/test_unit.py"],
         },
     )
     assert snap["tests_modules"] == ["tests/test_unit.py"]
@@ -2936,14 +2937,14 @@ def test_pytest_norecursedirs_matches_native_fnmatch_ex_contract(tmp_path):
     assert selection._fnmatch_norecurse("Sub.PKG", "tests/sub.pkg", "sub.pkg") is False
     assert os.name != "nt" or fnmatch_ex("Sub.PKG", "/repo/tests/sub.pkg") is True
 
-    # Both separator spellings name the same directory on every host.
-    assert (
-        selection._fnmatch_norecurse("tests\\sub.pkg", "tests/sub.pkg", "sub.pkg")
-        is True
-    )
-    assert (
-        selection._fnmatch_norecurse("./fixtures", "tests/fixtures", "fixtures") is True
-    )
+    # No rewriting: POSIX pytest does not strip './', rewrite '\' or a trailing
+    # '/', so matching them would exclude directories pytest still collects.
+    for pattern in ("./fixtures", "tests\\fixtures", "fixtures/"):
+        assert (
+            selection._fnmatch_norecurse(pattern, "tests/fixtures", "fixtures") is False
+        ), pattern
+        if os.name != "nt":
+            assert fnmatch_ex(pattern, "/repo/tests/fixtures") is False, pattern
 
     # Absolute patterns are refused fail-closed, not silently unmatched.
     for pattern in (
@@ -3080,3 +3081,163 @@ def test_pytest_dotted_prerequisites_activate_for_lossless_path_targets(tmp_path
     resolved, refusal = selection.resolve_pytest_targets(mixed.tests, path)
     assert refusal is None
     assert resolved == ["tests/test_other.py"]
+
+
+def test_pytest_target_identity_follows_resolver_and_keeps_directories_distinct(
+    tmp_path,
+):
+    # P1-13: identity reproduces the resolver's file-first rule and never
+    # conflates a directory with a same-name file.
+    members = selection._identity_members(
+        ("tests/test_case.py", "tests/test_case/test_inner.py")
+    )
+    file_identity = selection._target_identity("tests.test_case", members)
+    assert file_identity == "file:tests/test_case.py"
+    assert selection._target_identity("tests/test_case.py", members) == file_identity
+    assert (
+        selection._target_identity("tests/test_case.py::TestX::test_y", members)
+        == file_identity
+    )
+    dir_identity = selection._target_identity("tests/test_case", members)
+    assert dir_identity == "dir:tests/test_case"
+    assert dir_identity != file_identity
+    for illegal in (
+        "/tests/test_case.py",
+        " tests/test_case.py",
+        "tests/test_case.py ",
+        "-q",
+        "tests/test_case.py::",
+        "../tests/test_case.py",
+    ):
+        assert selection._target_identity(illegal, members) is None, illegal
+
+    # Native exit codes show the file and the directory really execute differently.
+    repo = tmp_path / "same_name"
+    (repo / "tests/test_case").mkdir(parents=True)
+    (repo / "tests/test_case.py").write_text(
+        "def test_file():\n    assert True\n", encoding="utf-8"
+    )
+    (repo / "tests/test_case/test_inner.py").write_text(
+        "def test_dir():\n    assert False\n", encoding="utf-8"
+    )
+    file_exit = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--", "tests/test_case.py"],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+    ).returncode
+    dir_exit = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--", "tests/test_case"],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+    ).returncode
+    assert (file_exit, dir_exit) == (0, 1)
+
+
+def test_pytest_directory_target_does_not_activate_a_dotted_file_prerequisite(tmp_path):
+    path = tmp_path / "dir_vs_file"
+    (path / "tests/test_case").mkdir(parents=True)
+    (path / "src").mkdir()
+    (path / "src/pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "tests/test_case.py").write_text(
+        "def test_file():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "tests/test_case/test_inner.py").write_text(
+        "def test_dir():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8"
+    )
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n\n'
+        '[prerequisites]\nwheel_smoke = ["tests.test_case"]\n',
+        encoding="utf-8",
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    # The dotted prerequisite names the file, so a directory-inner test edit
+    # must not activate it.
+    (path / "tests/test_case/test_inner.py").write_text(
+        "def test_dir():\n    assert 1 == 1\n", encoding="utf-8"
+    )
+    dir_sel = select(path, base)
+    assert dir_sel.tests == ("tests/test_case/test_inner.py",)
+    assert "wheel_smoke" not in dir_sel.prerequisites
+    run(path, "checkout", "--", "tests")
+
+    # The same-name file does activate it.
+    (path / "tests/test_case.py").write_text(
+        "def test_file():\n    assert 1 == 1\n", encoding="utf-8"
+    )
+    file_sel = select(path, base)
+    assert file_sel.tests == ("tests/test_case.py",)
+    assert "wheel_smoke" in file_sel.prerequisites
+
+
+def test_absolute_norecursedirs_refuses_only_test_discovery(tmp_path):
+    # P2-04: an unsupported exclusion pattern may refuse an obligation that
+    # discovers tests, but not an independent check plan that selects none.
+    path = tmp_path / "norecurse_abs"
+    (path / "tests").mkdir(parents=True)
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        'norecursedirs = ["/abs/fixtures"]\n',
+        encoding="utf-8",
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\nchecks = ["hygiene"]\n',
+        encoding="utf-8",
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    no_change = select(path, "HEAD")
+    assert no_change.status == "no_changes"
+    planned = selection.plan(
+        no_change,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    # Independent Hygiene obligations must still be scoped, not refused.
+    assert {"whitespace", "forwarding", "docs"} <= {
+        item["name"] for item in planned["check_scope"]
+    }
+
+    # A policy-disabled selection (no tests bound) behaves the same.
+    disabled = dataclasses.replace(no_change, status="no_tests")
+    planned_disabled = selection.plan(
+        disabled,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    assert {"whitespace", "forwarding", "docs"} <= {
+        item["name"] for item in planned_disabled["check_scope"]
+    }
+
+    # Selecting tests must still refuse the unsupported pattern.
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert 1 == 1\n", encoding="utf-8"
+    )
+    with pytest.raises(
+        selection.SelectionError, match="pytest_norecursedirs_unsupported"
+    ):
+        select(path, base)

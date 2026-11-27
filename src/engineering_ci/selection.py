@@ -1995,27 +1995,25 @@ def _normalized_tests_dir_parts(tests_dir_rel):
 
 
 def _fnmatch_norecurse(pattern, rel_dir_posix, dir_name):
-    """Match one ``norecursedirs`` pattern with native POSIX ``fnmatch_ex`` rules.
+    """Match one ``norecursedirs`` pattern exactly like native POSIX ``fnmatch_ex``.
 
     Native pytest matches a basename pattern against the directory name and a
-    pattern containing a separator against the directory path (prefixed with
-    ``*<sep>`` because collection paths are absolute). Repo-relative matching
-    reproduces that suffix anchoring on every host. Both separator spellings
-    are normalized to ``/`` so one configuration selects the same directories
-    on a Windows host and in the Linux execution containers. Absolute patterns
-    are refused at configuration load; a direct caller passing one matches
-    nothing here.
+    pattern containing a separator against the absolute collection path; a
+    relative path pattern therefore anchors as a suffix (``*<sep>pattern``)
+    while ``rel_dir_posix`` supplies that suffix on every host. No rewriting is
+    applied: ``./fixtures``, ``tests\\fixtures`` and ``fixtures/`` keep their
+    native meaning (no match on POSIX), because rewriting them would exclude
+    directories pytest still collects. Absolute patterns are refused at
+    configuration load; a direct caller passing one matches nothing here.
     """
-    pat = _normalized(pattern)
-    while pat.startswith("./"):
-        pat = pat[2:]
-    pat = pat.rstrip("/")
-    if not pat or has_windows_or_absolute_root(pat):
+    if not isinstance(pattern, str) or not pattern:
         return False
-    if "/" not in pat:
-        return fnmatch.fnmatchcase(dir_name, pat)
-    return fnmatch.fnmatchcase(rel_dir_posix, pat) or fnmatch.fnmatchcase(
-        rel_dir_posix, f"*/{pat}"
+    if "/" not in pattern:
+        return fnmatch.fnmatchcase(dir_name, pattern)
+    if pattern.startswith("/"):
+        return False
+    return fnmatch.fnmatchcase(rel_dir_posix, pattern) or fnmatch.fnmatchcase(
+        rel_dir_posix, f"*/{pattern}"
     )
 
 
@@ -2035,64 +2033,79 @@ def _is_excluded_test_parts(rel_parts, norecursedirs, *, tests_dir_parts=()):
     return False
 
 
-def _target_identity_keys(target):
-    """Identity keys for one selected test target, independent of its spelling.
+def _identity_members(module_entries):
+    """Real Source members of one discovery context: test files and their dirs.
 
-    One real file may be addressed as a repository-relative path, an
-    unambiguous dotted module, or either form with a ``::`` nodeid. Selection,
-    prerequisite activation, per-Ref membership and the pytest resolver must
-    agree on that identity, so they compare through this helper instead of
-    string equality on a single representation. Paths whose parent directories
-    contain ``.`` stay path-only: their dotted spelling is ambiguous with a
-    nested package path.
+    Accepts the representation each framework emits (Source-relative POSIX
+    paths for pytest, dotted modules for unittest) without consulting the
+    worktree, so a Git Tree, per-Ref snapshot or materialized Source supplies
+    its own member facts.
+    """
+    files = set()
+    dirs = set()
+    for entry in module_entries or ():
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        rel = _normalized(entry.strip()).strip("/")
+        if not rel:
+            continue
+        if "/" not in rel and not rel.endswith(".py"):
+            rel = rel.replace(".", "/") + ".py"
+        if not rel or rel.startswith("../") or "/../" in rel:
+            continue
+        files.add(rel)
+        parts = rel.split("/")
+        for depth in range(1, len(parts)):
+            dirs.add("/".join(parts[:depth]))
+    return files, dirs
+
+
+def _target_identity(target, members):
+    """Resolve one target to the identity the pytest resolver would bind.
+
+    Returns ``"file:<rel>"`` or ``"dir:<rel>"``, or ``None`` when the target is
+    illegal (absolute, space-padded, escaping, option-like, empty nodeid) or
+    names no Source member. Dotted names follow the resolver's file-first rule,
+    so a directory and a same-name file stay different identities, and a
+    ``::nodeid`` narrows execution without changing the file identity. Legality
+    reuses ``_split_and_check_path_parts``.
     """
     if not isinstance(target, str):
-        return frozenset()
-    raw_target, sep, nodeid = target.partition("::")
-    raw_target = raw_target.strip()
-    if (
-        not raw_target
-        or (sep and not nodeid)
-        or any(ch in raw_target for ch in "\0\r\n")
-        or raw_target.startswith("-")
-    ):
-        return frozenset()
+        return None
+    raw, sep, nodeid = target.partition("::")
+    if not raw or raw != raw.strip() or (sep and not nodeid):
+        return None
+    if any(ch in raw for ch in "\0\r\n") or raw.startswith("-"):
+        return None
+    files, dirs = members
     is_path = (
-        "/" in raw_target
-        or "\\" in raw_target
-        or raw_target.endswith(".py")
-        or raw_target.startswith(".")
-        or ":" in raw_target
+        "/" in raw
+        or "\\" in raw
+        or raw.endswith(".py")
+        or raw.startswith(".")
+        or ":" in raw
     )
     if is_path:
-        parts = tuple(
-            part
-            for part in _normalized(raw_target).strip("/").split("/")
-            if part and part != "."
-        )
-        if not parts or ".." in parts:
-            return frozenset()
-        rel_posix = "/".join(parts)
-        stem_parts = (
-            Path(rel_posix).with_suffix("").parts
-            if rel_posix.endswith(".py")
-            else parts
-        )
-        keys = {"path:" + rel_posix}
-        if all("." not in part for part in stem_parts):
-            keys.add("mod:" + ".".join(stem_parts))
-        return frozenset(keys)
-    parts = tuple(raw_target.split("."))
+        rel, refusal = _split_and_check_path_parts(raw)
+        if refusal:
+            return None
+        if rel in files:
+            return "file:" + rel
+        if rel in dirs:
+            return "dir:" + rel
+        return None
+    parts = raw.split(".")
     if any(not part or part in {".", ".."} for part in parts):
-        return frozenset()
-    dotted = ".".join(parts)
-    return frozenset(
-        {
-            "mod:" + dotted,
-            "path:" + "/".join(parts) + ".py",
-            "path:" + "/".join(parts),
-        }
-    )
+        return None
+    if any(part.lower() == ".git" for part in parts):
+        return None
+    file_rel = "/".join(parts) + ".py"
+    if file_rel in files:
+        return "file:" + file_rel
+    dir_rel = "/".join(parts)
+    if dir_rel in dirs:
+        return "dir:" + dir_rel
+    return None
 
 
 def _test_modules(
@@ -2493,46 +2506,56 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
         bool(exec_tree)
         and _git(root, "cat-file", "-e", f"{exec_tree}^{{tree}}").returncode == 0
     )
-    excluded_test_dirs = (
-        _pytest_norecursedirs(root, tree=exec_tree if tree_in_odb else None)
-        if config.framework == "pytest"
-        else ()
-    )
-    if tree_in_odb:
-        tree_tests = _tree_test_modules(
-            root,
-            exec_tree,
-            config.tests_dir,
-            test_prefix,
-            norecursedirs=excluded_test_dirs,
-            framework=config.framework,
+
+    def discover():
+        """Enumerate the active source's tests; reads (and may refuse) norecursedirs."""
+        excluded = (
+            _pytest_norecursedirs(root, tree=exec_tree if tree_in_odb else None)
+            if config.framework == "pytest"
+            else ()
         )
-        resolved_all_tests = (
-            tree_tests
-            if tree_tests is not None
-            else (
-                tuple(all_tests)
-                if all_tests is not None
-                else _test_modules(
-                    tests_dir,
-                    test_prefix,
-                    norecursedirs=excluded_test_dirs,
-                    framework=config.framework,
-                    tests_dir_rel=config.tests_dir,
+        if tree_in_odb:
+            tree_tests = _tree_test_modules(
+                root,
+                exec_tree,
+                config.tests_dir,
+                test_prefix,
+                norecursedirs=excluded,
+                framework=config.framework,
+            )
+            resolved = (
+                tree_tests
+                if tree_tests is not None
+                else (
+                    tuple(all_tests)
+                    if all_tests is not None
+                    else _test_modules(
+                        tests_dir,
+                        test_prefix,
+                        norecursedirs=excluded,
+                        framework=config.framework,
+                        tests_dir_rel=config.tests_dir,
+                    )
                 )
             )
-        )
-    elif all_tests is not None:
-        resolved_all_tests = tuple(all_tests)
-    else:
-        resolved_all_tests = _test_modules(
-            tests_dir,
-            test_prefix,
-            norecursedirs=excluded_test_dirs,
-            framework=config.framework,
-            tests_dir_rel=config.tests_dir,
-        )
+        elif all_tests is not None:
+            resolved = tuple(all_tests)
+        else:
+            resolved = _test_modules(
+                tests_dir,
+                test_prefix,
+                norecursedirs=excluded,
+                framework=config.framework,
+                tests_dir_rel=config.tests_dir,
+            )
+        return excluded, resolved
+
+    paths = [_normalized(path) for path in changes.paths]
+    # Discovery is only required where tests are actually selected, escalated or
+    # reported. A no-change or policy-disabled selection never needs the
+    # exclusion configuration, so it must not be refused by an unrelated pattern.
     if full:
+        _, resolved_all_tests = discover()
         return _escalated(
             changes,
             config,
@@ -2542,6 +2565,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             root=root,
         )
     if not changes.complete:
+        _, resolved_all_tests = discover()
         return _escalated(
             changes,
             config,
@@ -2549,7 +2573,6 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             f"Git input could not be resolved: {changes.error}",
             root=root,
         )
-    paths = [_normalized(path) for path in changes.paths]
     if not paths:
         return Selection(
             changeset=changes,
@@ -2559,6 +2582,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             escalated=False,
             reasons={"skipped": ["No changed files detected"]},
         )
+    excluded_test_dirs, resolved_all_tests = discover()
     for path in paths:
         if path in config.escalation_files or any(
             path.startswith(prefix) for prefix in config.escalation_prefixes
@@ -2680,13 +2704,20 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     f"Impacted by Python module: {module}"
                 )
     ordered = tuple(sorted(selected))
-    selected_identity_keys = set()
-    for target in selected:
-        selected_identity_keys.update(_target_identity_keys(target))
+    identity_members = _identity_members(resolved_all_tests)
+    selected_identities = {
+        identity
+        for target in selected
+        for identity in (_target_identity(target, identity_members),)
+        if identity is not None
+    }
     base_prereqs = frozenset(
         name
         for name, tests in config.prerequisites.items()
-        if any(_target_identity_keys(test) & selected_identity_keys for test in tests)
+        if any(
+            _target_identity(test, identity_members) in selected_identities
+            for test in tests
+        )
     )
     prerequisites = set(base_prereqs)
     if config.dependency_edges:
@@ -3520,20 +3551,25 @@ def _ref_source_snapshot(
                 tach_graph_digest = f"sha256:{_json_sha256({'modules': list(tg[0]), 'reverse': {k: list(v) for k, v in sorted(tg[1].items())}})}"
             except SelectionError:
                 tach_graph_digest = None
-        test_prefix = ".".join(Path(config.tests_dir).parts)
-        tree_tests = _tree_test_modules(
-            root,
-            tree,
-            config.tests_dir,
-            test_prefix,
-            norecursedirs=(
-                _pytest_norecursedirs(root, tree=tree)
-                if config.framework == "pytest"
-                else ()
-            ),
-            framework=config.framework,
-        )
-        tests_modules = list(tree_tests) if tree_tests is not None else []
+        # Enumerate test modules only for a Ref that actually binds targets.
+        # A Ref selecting no tests keeps an empty list, so an unsupported
+        # exclusion pattern cannot refuse an independent check plan.
+        tests_modules = []
+        if entry.get("tests"):
+            test_prefix = ".".join(Path(config.tests_dir).parts)
+            tree_tests = _tree_test_modules(
+                root,
+                tree,
+                config.tests_dir,
+                test_prefix,
+                norecursedirs=(
+                    _pytest_norecursedirs(root, tree=tree)
+                    if config.framework == "pytest"
+                    else ()
+                ),
+                framework=config.framework,
+            )
+            tests_modules = list(tree_tests) if tree_tests is not None else []
         tests_digest = f"sha256:{_json_sha256(tests_modules)}"
     else:
         source_origin = "unverifiable"
@@ -3612,12 +3648,16 @@ def verify_per_ref_source_snapshot(
         if sel_entry.get("status") not in {"blocked", "not_applicable"}:
             if config_binding.get("status") not in {"verified", "event_shared"}:
                 raise SelectionError("expected_per_ref_source_unverifiable")
-            allowed_target_keys = set()
-            for item in tests_modules:
-                allowed_target_keys.update(_target_identity_keys(item))
+            identity_members = _identity_members(tests_modules)
+            allowed_identities = {
+                identity
+                for item in tests_modules
+                for identity in (_target_identity(item, identity_members),)
+                if identity is not None
+            }
             for target in sel_entry.get("tests") or ():
-                target_keys = _target_identity_keys(target)
-                if not target_keys or not (target_keys & allowed_target_keys):
+                identity = _target_identity(target, identity_members)
+                if identity is None or identity not in allowed_identities:
                     raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
         for key in (
@@ -3763,17 +3803,24 @@ def verify_materialized_source_snapshot(
     ):
         raise SelectionError("expected_per_ref_source_unverifiable")
     test_prefix = ".".join(Path(sel_cfg.tests_dir).parts)
-    mat_tests = list(
-        _test_modules(
-            mat_path / sel_cfg.tests_dir,
-            test_prefix,
-            norecursedirs=(
-                _pytest_norecursedirs(mat_path) if sel_cfg.framework == "pytest" else ()
-            ),
-            framework=sel_cfg.framework,
-            tests_dir_rel=sel_cfg.tests_dir,
+    if snap.get("tests_modules"):
+        mat_tests = list(
+            _test_modules(
+                mat_path / sel_cfg.tests_dir,
+                test_prefix,
+                norecursedirs=(
+                    _pytest_norecursedirs(mat_path)
+                    if sel_cfg.framework == "pytest"
+                    else ()
+                ),
+                framework=sel_cfg.framework,
+                tests_dir_rel=sel_cfg.tests_dir,
+            )
         )
-    )
+    else:
+        # Nothing was bound, so no discovery (and no exclusion configuration) is
+        # required to verify this Ref.
+        mat_tests = []
     if mat_tests != list(snap.get("tests_modules") or ()):
         raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
@@ -4227,15 +4274,26 @@ def plan(
     except SelectionError:
         tach_graph = None
     test_prefix = ".".join(Path(config.tests_dir).parts)
-    all_tests = _test_modules(
-        root / config.tests_dir,
-        test_prefix,
-        norecursedirs=(
-            _pytest_norecursedirs(root) if config.framework == "pytest" else ()
-        ),
-        framework=config.framework,
-        tests_dir_rel=config.tests_dir,
+    needs_test_discovery = (
+        bool(selection.tests) or selection.full_tests or selection.escalated
     )
+    try:
+        all_tests = _test_modules(
+            root / config.tests_dir,
+            test_prefix,
+            norecursedirs=(
+                _pytest_norecursedirs(root) if config.framework == "pytest" else ()
+            ),
+            framework=config.framework,
+            tests_dir_rel=config.tests_dir,
+        )
+    except SelectionError as error:
+        # Only an obligation that actually discovers tests may be refused by an
+        # unsupported exclusion pattern; a plan that selects no tests must still
+        # produce its independent checks (for example Hygiene).
+        if error.code != "pytest_norecursedirs_unsupported" or needs_test_discovery:
+            raise
+        all_tests = ()
     graph = _graph_validation(selection, config, root, tach_validation)
     profile_changed = False
     if resolved_profile_path is not None:
