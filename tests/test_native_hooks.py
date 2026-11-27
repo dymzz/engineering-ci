@@ -4,7 +4,6 @@ import json
 import os
 import shutil
 import subprocess
-import sysconfig
 import venv
 from pathlib import Path
 
@@ -874,7 +873,8 @@ def _clean_uv_env(hook_env, *, extra_path=None):
     env = {
         key: value
         for key, value in hook_env.items()
-        if key.upper() not in {"UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "PYTHONPATH"}
+        if key.upper()
+        not in {"UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "PYTHONPATH", "VIRTUAL_ENV"}
     }
     if extra_path is not None:
         env["PATH"] = os.pathsep.join([str(extra_path), env.get("PATH", "")])
@@ -904,7 +904,7 @@ def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
         b"#!/bin/sh\n"
         b'printf "UV_PROJECT_ENVIRONMENT=%s\\n" "${UV_PROJECT_ENVIRONMENT:-}"\n'
         b'printf "PYTHONPATH=%s\\n" "${PYTHONPATH:-}"\n'
-        b'if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ]; then\n'
+        b'if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ -d "$UV_PROJECT_ENVIRONMENT" ]; then\n'
         b'  if [ -x "$UV_PROJECT_ENVIRONMENT/Scripts/python.exe" ]; then\n'
         b'    py="$UV_PROJECT_ENVIRONMENT/Scripts/python.exe"\n'
         b"  else\n"
@@ -939,7 +939,7 @@ def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
             line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
         )
 
-    # 1. Fresh linked worktree without .venv: reuses primary/.venv, binds linked/src, preserves pre-push stdin.
+    # 1. Fresh linked worktree without .venv defaults to primary/.venv, binds linked/src, preserves pre-push stdin.
     push_stdin = "refs/heads/main aaaa refs/heads/main bbbb\n"
     fresh = invoke(
         linked,
@@ -959,17 +959,54 @@ def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
     assert push_stdin.strip() in fresh["STDIN"]
     assert not (linked / ".venv").exists()
 
-    # 2. Empty linked/.venv (e.g. left by an earlier --no-sync): still falls back to primary/.venv + linked/src.
-    _create_test_venv(linked / ".venv")
-    empty_fallback = invoke(linked, base_env, "run", "pre-commit")
+    # 2. A leftover linked/.venv (even populated) is NOT silently preferred over the default unified primary/.venv.
+    _create_test_venv(linked / ".venv", primary / "src")
+    stale_leftover = invoke(linked, base_env, "run", "pre-commit")
     assert (
-        Path(empty_fallback["UV_PROJECT_ENVIRONMENT"]).resolve()
+        Path(stale_leftover["UV_PROJECT_ENVIRONMENT"]).resolve()
         == (primary / ".venv").resolve()
     )
-    assert Path(empty_fallback["PYTHONPATH"]).resolve() == (linked / "src").resolve()
-    assert empty_fallback["MARKER"] == "linked"
+    assert Path(stale_leftover["PYTHONPATH"]).resolve() == (linked / "src").resolve()
+    assert stale_leftover["MARKER"] == "linked"
 
-    # 3. Pre-existing PYTHONPATH is preserved behind linked/src using platform path separator.
+    # 3. Explicit UV_PROJECT_ENVIRONMENT=linked/.venv respects explicit isolated selection and binds linked/src.
+    explicit_local = invoke(
+        linked,
+        {**base_env, "UV_PROJECT_ENVIRONMENT": str(linked / ".venv")},
+        "run",
+        "pre-commit",
+    )
+    assert (
+        Path(explicit_local["UV_PROJECT_ENVIRONMENT"]).resolve()
+        == (linked / ".venv").resolve()
+    )
+    assert Path(explicit_local["PYTHONPATH"]).resolve() == (linked / "src").resolve()
+    assert explicit_local["MARKER"] == "linked"
+
+    # 4. Explicit non-primary shared UV_PROJECT_ENVIRONMENT still binds linked/src independently.
+    external_venv = tmp_path / "external shared venv"
+    _create_test_venv(external_venv, primary / "src")
+    explicit_external = invoke(
+        linked,
+        {**base_env, "UV_PROJECT_ENVIRONMENT": str(external_venv)},
+        "run",
+        "pre-commit",
+    )
+    assert (
+        Path(explicit_external["UV_PROJECT_ENVIRONMENT"]).resolve()
+        == external_venv.resolve()
+    )
+    assert Path(explicit_external["PYTHONPATH"]).resolve() == (linked / "src").resolve()
+    assert explicit_external["MARKER"] == "linked"
+
+    # 5. Explicit UV_PROJECT keeps UV_PROJECT_ENVIRONMENT unset while still binding linked/src independently.
+    explicit_project = invoke(
+        linked, {**base_env, "UV_PROJECT": str(primary)}, "run", "pre-commit"
+    )
+    assert explicit_project["UV_PROJECT_ENVIRONMENT"] == ""
+    assert Path(explicit_project["PYTHONPATH"]).resolve() == (linked / "src").resolve()
+
+    # 6. Pre-existing PYTHONPATH is preserved behind linked/src using platform path separator.
     extra_py = str((tmp_path / "extra_py").resolve())
     with_pypath = invoke(
         linked, {**base_env, "PYTHONPATH": extra_py}, "run", "pre-commit"
@@ -979,30 +1016,92 @@ def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
     assert Path(entries[1]).resolve() == Path(extra_py).resolve()
     assert with_pypath["MARKER"] == "linked"
 
-    # 4. Explicit UV_PROJECT_ENVIRONMENT pointing at primary/.venv still binds linked/src.
-    explicit_shared = invoke(
-        linked,
-        {**base_env, "UV_PROJECT_ENVIRONMENT": str(primary / ".venv")},
-        "run",
-        "pre-commit",
+    # 7. --separate-git-dir layout resolves primary checkout via native Git core.worktree.
+    sep_git = tmp_path / "separate.git"
+    sep_primary = tmp_path / "separate primary"
+    sep_linked = tmp_path / "separate linked"
+    _run(
+        tmp_path,
+        hook_env,
+        "git",
+        "init",
+        "-q",
+        "-b",
+        "main",
+        "--template=",
+        "--separate-git-dir",
+        str(sep_git),
+        str(sep_primary),
     )
-    assert Path(explicit_shared["PYTHONPATH"]).resolve() == (linked / "src").resolve()
-    assert explicit_shared["MARKER"] == "linked"
-
-    # 5. Explicit UV_PROJECT is respected without rewriting UV_PROJECT_ENVIRONMENT or PYTHONPATH.
-    explicit_project = invoke(
-        linked, {**base_env, "UV_PROJECT": str(primary)}, "run", "pre-commit"
+    git(sep_primary, "config", "user.email", "hooks@example.invalid", env=hook_env)
+    git(sep_primary, "config", "user.name", "Separate Git Dir", env=hook_env)
+    _copy_lefthook_command(sep_primary)
+    (sep_primary / "src/engineering_ci/cli").mkdir(parents=True)
+    (sep_primary / "src/engineering_ci/__init__.py").write_bytes(
+        b'MARKER = "sep-primary"\n'
     )
-    assert explicit_project["UV_PROJECT_ENVIRONMENT"] == ""
-    assert explicit_project["PYTHONPATH"] == ""
+    (sep_primary / "src/engineering_ci/cli/__init__.py").write_bytes(b"")
+    git(sep_primary, "add", "--all", env=hook_env)
+    git(sep_primary, "commit", "-qm", "sep baseline", env=hook_env)
+    _create_test_venv(sep_primary / ".venv", sep_primary / "src")
+    git(
+        sep_primary,
+        "worktree",
+        "add",
+        "-qb",
+        "sep-wt",
+        str(sep_linked),
+        "HEAD",
+        env=hook_env,
+    )
+    (sep_linked / "src/engineering_ci/__init__.py").write_bytes(
+        b'MARKER = "sep-linked"\n'
+    )
+    # Without core.worktree, Git stores no back-pointer from sep.git to sep_primary,
+    # so the wrapper does not guess a wrong parent .venv while still binding sep_linked/src.
+    sep_unconfigured = invoke(sep_linked, base_env, "run", "pre-commit")
+    assert sep_unconfigured["UV_PROJECT_ENVIRONMENT"] == ""
+    assert (
+        Path(sep_unconfigured["PYTHONPATH"]).resolve() == (sep_linked / "src").resolve()
+    )
+    # With core.worktree configured on sep.git, the primary checkout .venv resolves automatically.
+    _run(
+        tmp_path,
+        hook_env,
+        "git",
+        f"--git-dir={sep_git}",
+        "config",
+        "core.worktree",
+        str(sep_primary),
+    )
+    sep_out = invoke(sep_linked, base_env, "run", "pre-commit")
+    assert (
+        Path(sep_out["UV_PROJECT_ENVIRONMENT"]).resolve()
+        == (sep_primary / ".venv").resolve()
+    )
+    assert Path(sep_out["PYTHONPATH"]).resolve() == (sep_linked / "src").resolve()
+    assert sep_out["MARKER"] == "sep-linked"
 
-    # 6. A linked worktree with its own populated .venv keeps using it.
-    _create_test_venv(linked / ".venv", linked / "src")
-    own_venv = invoke(linked, base_env, "run", "pre-commit")
-    assert own_venv["UV_PROJECT_ENVIRONMENT"] == ""
-    assert own_venv["PYTHONPATH"] == ""
+    # 8. Bare repo linked worktree does not fabricate a parent .venv path.
+    bare_repo = tmp_path / "bare.git"
+    bare_wt = tmp_path / "bare linked"
+    git(tmp_path, "init", "--bare", "-q", "-b", "main", str(bare_repo), env=hook_env)
+    git(primary, "push", "-q", str(bare_repo), "main", env=hook_env)
+    git(
+        bare_repo,
+        "worktree",
+        "add",
+        "-qb",
+        "bare-wt",
+        str(bare_wt),
+        "main",
+        env=hook_env,
+    )
+    bare_out = invoke(bare_wt, base_env, "run", "pre-commit")
+    assert bare_out["UV_PROJECT_ENVIRONMENT"] == ""
+    assert Path(bare_out["PYTHONPATH"]).resolve() == (bare_wt / "src").resolve()
 
-    # 7. Consumer linked worktree (no src/engineering_ci/cli) reuses primary/.venv without setting PYTHONPATH.
+    # 9. Consumer linked worktree (no src/engineering_ci/cli) defaults to primary/.venv without setting PYTHONPATH.
     consumer = tmp_path / "consumer primary"
     consumer_linked = tmp_path / "consumer linked"
     _init(consumer, hook_env)
@@ -1030,19 +1129,33 @@ def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
 
 
 def test_linked_worktree_hooks_succeed_without_local_venv_or_uv_env(tmp_path, hook_env):
+    """Joint native uv acceptance: shared venv, candidate Hook & CLI/Verify, and dependency drift."""
     root = tmp_path / "primary"
-    linked = tmp_path / "linked eci"
+    linked = tmp_path / "linked candidate"
     remote = tmp_path / "remote.git"
-    _init(root, hook_env)
+    base_yml = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
+    fast_verify_yml = (
+        base_yml.split("\nverify:\n", 1)[0]
+        + "\nverify:\n  jobs:\n    - name: smoke\n      run: printf 'verify-ok\\n'\n"
+    )
+    _init(root, hook_env, config=fast_verify_yml)
     for relative in ("pyproject.toml", "uv.lock", ".python-version", "README.md"):
         (root / relative).write_bytes((ROOT / relative).read_bytes())
+    shutil.copytree(
+        ROOT / "src" / "engineering_ci",
+        root / "src" / "engineering_ci",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
     checks = ("whitespace",)
-    source = _source(root, "sample", checks)
-    source.write_bytes(b"VALUE = 1\n")
+    (root / "ci-hygiene.toml").write_bytes(
+        b'schema_version = 1\nchecks = ["whitespace"]\n'
+    )
     _approve_profiles(
         root,
-        INDEX_SELECTION + '\n[push]\nnew_ref_baseline = "refs/heads/baseline"\n'
-        'effective_profiles = ["push-topic.json"]\n',
+        INDEX_SELECTION
+        + "\n[commit]\nselect_tests = false\n"
+        + '\n[push]\nselect_tests = false\nnew_ref_baseline = "refs/heads/baseline"\n'
+        + 'effective_profiles = ["push-topic.json"]\n',
         [
             ("ci-effective-profile.json", "index", "index", "HEAD", checks),
             ("push-topic.json", "push", "create", "refs/heads/topic", checks),
@@ -1054,33 +1167,269 @@ def test_linked_worktree_hooks_succeed_without_local_venv_or_uv_env(tmp_path, ho
     git(root, "init", "--bare", "-q", "--template=", str(remote), env=hook_env)
     git(root, "remote", "add", "origin", str(remote), env=hook_env)
 
-    # Build a primary .venv linked to the active environment's installed packages + ROOT/src.
-    paths = sysconfig.get_paths()
-    _create_test_venv(
-        root / ".venv",
-        ROOT / "src",
-        *dict.fromkeys(
-            Path(paths[key]).resolve()
-            for key in ("purelib", "platlib")
-            if paths.get(key)
-        ),
-    )
-    git(root, "worktree", "add", "-qb", "topic", str(linked), "baseline", env=hook_env)
-    _run(root, hook_env, *LEFTHOOK, "install")
-
-    # Strip UV_PROJECT, UV_PROJECT_ENVIRONMENT, and PYTHONPATH to match a fresh terminal in a linked worktree.
+    # Sync a real native uv environment into primary/.venv (editable install pointing at primary/src).
     clean_env = _clean_uv_env(hook_env)
-    linked_source = linked / source.relative_to(root)
-    linked_source.write_bytes(b"VALUE = 2\n")
-    git(linked, "add", "src/sample.py", env=clean_env)
+    sync_primary = subprocess.run(
+        ["uv", "sync", "--locked", "--group", "dev", "--offline"],
+        cwd=root,
+        env=clean_env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=120,
+    )
+    if sync_primary.returncode != 0:
+        _run(root, clean_env, "uv", "sync", "--locked", "--group", "dev", timeout=120)
+    _run(root, clean_env, *LEFTHOOK, "install")
 
-    commit = _run(linked, clean_env, "git", "commit", "-m", "linked commit")
+    git(root, "worktree", "add", "-qb", "topic", str(linked), "baseline", env=clean_env)
+    assert not (linked / ".venv").exists()
+
+    # Make linked worktree's candidate CLI/Verify and Hook implementation distinguishable from primary.
+    verify_py = linked / "src" / "engineering_ci" / "cli" / "verify.py"
+    verify_text = verify_py.read_text(encoding="utf-8")
+    verify_anchor = "Measure an explicit Lefthook verify invocation"
+    assert verify_anchor in verify_text
+    verify_exec_anchor = "def _verify(out):\n"
+    assert verify_exec_anchor in verify_text
+    verify_py.write_text(
+        verify_text.replace(
+            verify_anchor,
+            f"CANDIDATE_VERIFY_LINKED_MARKER: {verify_anchor}",
+            1,
+        ).replace(
+            verify_exec_anchor,
+            verify_exec_anchor
+            + '    print(f"CANDIDATE_VERIFY_SOURCE={Path(__file__).resolve()}", file=sys.stderr)\n',
+            1,
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert "CANDIDATE_VERIFY_LINKED_MARKER" in verify_py.read_text(encoding="utf-8")
+
+    hook_checks_py = linked / "src" / "engineering_ci" / "hook_checks.py"
+    hc_text = hook_checks_py.read_text(encoding="utf-8")
+    marker_anchor = "def print_result(outcome, invocation_ref):\n"
+    assert marker_anchor in hc_text
+    hook_checks_py.write_text(
+        hc_text.replace(
+            marker_anchor,
+            marker_anchor
+            + '    print(f"CANDIDATE_HOOK_SOURCE={Path(__file__).resolve()}", file=sys.stderr)\n',
+            1,
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    git(
+        linked,
+        "add",
+        "src/engineering_ci/cli/verify.py",
+        "src/engineering_ci/hook_checks.py",
+        env=clean_env,
+    )
+
+    # 1. Real pre-commit & pre-push in linked worktree with NO local .venv and NO uv/PYTHONPATH overrides.
+    expected_hook_source = str(hook_checks_py.resolve())
+    commit = _run(linked, clean_env, "git", "commit", "-m", "candidate hook and verify")
+    assert expected_hook_source in _diagnostic(commit)
     directory = _invocations(linked, clean_env)
     index = _new_invocation(directory, commit)
     assert _artifact(index, ".receipt")["status"] == "matched"
     assert not (linked / ".venv").exists()
 
     push = _run(linked, clean_env, "git", "push", "origin", "topic:topic")
+    assert expected_hook_source in _diagnostic(push)
     binding = _new_invocation(directory, push, [index.invocation_path])
     assert _artifact(binding, ".receipt")["receipts"][0]["status"] == "matched"
+    assert not (linked / ".venv").exists()
+
+    # 2. Direct CLI / Verify against the SAME native shared primary/.venv.
+    shared_only_env = {**clean_env, "UV_PROJECT_ENVIRONMENT": str(root / ".venv")}
+    # Without PYTHONPATH, editable CLI from primary/.venv refuses to silently run against linked worktree.
+    refused_cli = _run(
+        linked,
+        shared_only_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "engineering-ci",
+        "verify",
+        "--help",
+        exit_code=2,
+    )
+    assert "refusing to execute another checkout's CLI" in refused_cli.stderr
+    assert "PYTHONPATH=" in refused_cli.stderr
+
+    # With PYTHONPATH bound to linked/src, both `engineering-ci` and `python -P -m engineering_ci.cli`
+    # execute the actual linked candidate verify implementation and produce a real verify-timing.json receipt.
+    shared_candidate_env = {**shared_only_env, "PYTHONPATH": str(linked / "src")}
+    expected_verify_source = str(verify_py.resolve())
+    verify_out_dir = linked / ".artifacts" / "verify-cli"
+    direct_cli = _run(
+        linked,
+        shared_candidate_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "engineering-ci",
+        "verify",
+        "--out",
+        str(verify_out_dir),
+    )
+    assert expected_verify_source in direct_cli.stderr
+    receipt_file = Path(direct_cli.stdout.strip().splitlines()[-1])
+    assert receipt_file.name == "verify-timing.json" and receipt_file.is_file()
+    assert json.loads(receipt_file.read_text(encoding="utf-8"))["native_exit_code"] == 0
+
+    direct_module = _run(
+        linked,
+        shared_candidate_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "python",
+        "-P",
+        "-m",
+        "engineering_ci.cli",
+        "verify",
+        "--help",
+    )
+    assert "CANDIDATE_VERIFY_LINKED_MARKER" in direct_module.stdout
+
+    # Primary checkout itself continues running primary's unmodified CLI.
+    primary_cli = _run(
+        root,
+        clean_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "engineering-ci",
+        "verify",
+        "--help",
+    )
+    assert "CANDIDATE_VERIFY_LINKED_MARKER" not in primary_cli.stdout
+
+    # 3. Missing shared environment fails closed with accurate diagnostic and creates no empty .venv.
+    missing_env = tmp_path / "missing_shared_venv"
+    blocked_missing = _run(
+        linked,
+        {**clean_env, "UV_PROJECT_ENVIRONMENT": str(missing_env)},
+        "git",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "must fail with missing env",
+        exit_code=1,
+    )
+    assert "uv sync --locked --group dev" in blocked_missing.stderr
+    assert not missing_env.exists()
+
+    # 4. Dependency drift where top-level `engineering_ci` and `lefthook` are still installed
+    #    but a locked dev dependency (`ruff==0.16.10`) is missing from the shared env:
+    #    native `uv sync --locked --check` fails closed instead of trusting a top-level import,
+    #    and succeeds once a dedicated/updated env is synced natively.
+    drifted_venv = tmp_path / "drifted_shared_venv"
+    drifted_env = {**clean_env, "UV_PROJECT_ENVIRONMENT": str(drifted_venv)}
+    sync_drifted = subprocess.run(
+        ["uv", "sync", "--locked", "--group", "dev", "--offline"],
+        cwd=root,
+        env=drifted_env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=120,
+    )
+    if sync_drifted.returncode != 0:
+        _run(root, drifted_env, "uv", "sync", "--locked", "--group", "dev", timeout=120)
+    drifted_python = (
+        drifted_venv / "Scripts" / "python.exe"
+        if os.name == "nt"
+        else drifted_venv / "bin" / "python"
+    )
+    _run(
+        root,
+        drifted_env,
+        "uv",
+        "pip",
+        "uninstall",
+        "--python",
+        str(drifted_python),
+        "ruff",
+    )
+    # Prove top-level `import engineering_ci` still succeeds on drifted_venv (proving why import probe was insufficient).
+    _run(
+        linked,
+        drifted_env,
+        str(drifted_python),
+        "-I",
+        "-c",
+        "import engineering_ci",
+    )
+
+    sample_note = linked / "README.md"
+    sample_note.write_bytes(sample_note.read_bytes() + b"\nLinked worktree edit.\n")
+    git(linked, "add", "README.md", env=clean_env)
+
+    blocked_drift = _run(
+        linked,
+        drifted_env,
+        "git",
+        "commit",
+        "-m",
+        "blocked by missing locked dep in env",
+        exit_code=1,
+    )
+    drift_diag = _diagnostic(blocked_drift)
+    assert "ruff==0.16.10" in drift_diag
+    assert "uv sync --locked --group dev" in drift_diag
+    assert "UV_PROJECT_ENVIRONMENT=" in drift_diag
+    assert not (linked / ".venv").exists()
+
+    # Syncing the dedicated environment natively via `uv sync --locked --group dev` unblocks the commit.
+    resync = subprocess.run(
+        [
+            "uv",
+            "sync",
+            "--locked",
+            "--group",
+            "dev",
+            "--no-install-project",
+            "--offline",
+        ],
+        cwd=linked,
+        env=drifted_env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=120,
+    )
+    if resync.returncode != 0:
+        _run(
+            linked,
+            drifted_env,
+            "uv",
+            "sync",
+            "--locked",
+            "--group",
+            "dev",
+            "--no-install-project",
+            timeout=120,
+        )
+    admitted_drift = _run(
+        linked, drifted_env, "git", "commit", "-m", "admitted after native uv sync"
+    )
+    assert expected_hook_source in _diagnostic(admitted_drift)
+    drift_binding = _new_invocation(
+        directory, admitted_drift, [index.invocation_path, binding.invocation_path]
+    )
+    assert _artifact(drift_binding, ".receipt")["status"] == "matched"
     assert not (linked / ".venv").exists()
