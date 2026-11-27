@@ -3,6 +3,35 @@
 在实际任务对应的 engineering-ci checkout 或 linked worktree 操作。宿主工具环境准备及共享边界见[开始使用](getting-started.md)，参数见[CLI 参考](cli-reference.md)。
 新消费者使用[新仓库接入](new-repository.md)，不把消费者当成本仓库的发布目标。
 
+## 工程验证入口与选择
+
+先按实际变更、受影响工程性质及验收要求确定验证义务，再选适用入口。下列按验证目的分工，不是每次必须执行的命令清单。
+
+| 验证目的 | 标准入口 |
+| --- | --- |
+| 开发诊断、局部反例、专项测试 | 适用的原生工具和实际测试目标 |
+| 已定义的单项工程检查 | `dagger check --engineering-ci --check=...`；见[本地检查](../docs/architecture/local-checks.md) |
+| 完整本地综合验证 | [显式本地综合验证](#显式本地综合验证)：`uv run --locked --no-sync engineering-ci verify --out .artifacts/verify` |
+| Index / Ref 检查 | 原生 Git commit/push 触发 [Lefthook](#lefthook-本地入口) |
+| 远端候选检查 | 现有 GitHub Actions，按实际候选和要求查询 |
+| 发布验证与证据接纳 | [发布准备](../docs/delivery/release-readiness.md)及既有发布、证据合同 |
+
+同一任务可使用多个入口；直接调用原生工具合法，不要求经过 ECI Python CLI。开发诊断不能自动替代具有不同输入、环境、范围或结果合同的工程检查；单项检查不等于完整综合验证。已有证据足以证明实际义务时直接复用，不为回执或形式扩大范围、重复执行。按实际变化和风险选择定向或综合验证，现有 Actions 保留自己的执行路径。
+
+### 执行前的环境与对象绑定
+
+执行前按[环境准备](getting-started.md)确认实际工作目录、受检对象、适用配置、工具环境及候选实现。切换 checkout、worktree、消费者或执行宿主时重新确认受影响的绑定，不能假定切换目录自动更新继承变量。实际采用共享环境时，调用前完成适用的宿主环境及候选源码绑定；不得先运行可能创建错误环境、导入其他检出源码或隐式修改共享环境的命令再清理。共享环境的具体准备和调用按实际采用版本的技术合同执行，不将未合并候选能力当作现行能力。
+
+同一有效绑定直接复用；仅相关目录、解释器、依赖、配置等变化时重新确认，不要求每条命令重复检查。验证错误行为的定向探针可以使用不同入口，但须明确目的和隔离范围。
+
+### 原生结果与验证义务对账
+
+执行后保留实际入口、受检对象、验证范围、原生退出状态、结果及可追溯引用。输出截断、Shell 管道或后续命令的成功不得覆盖原生失败。
+
+按义务区分本次证据已证明、已有适用证据已证明、失败、未验证和有依据的不适用。Hook 对账只证明实际 Invocation 的适用范围；CI 结果只证明相应候选及实际 Job 的范围，不自动证明其他性质或受信接纳。先履行当前提交或推送前的适用本地义务，再按实际 Hook/远端结果补充后续对账；后置证据未取得前不能提前宣称全部通过。
+
+同一远端执行复用实际 Run/Attempt/Job 身份和原生等待结果；已有有效等待时，仅因独立事实需求、矛盾或等待失败另行查询。将义务、证据、剩余缺口及下一动作关联到原任务、PR 或 Review，按[提交关系维护](../docs/architecture/agent-instructions.md#graph-maintenance-on-every-submission)交接，不建第二份证据台账。
+
 ## 开发、审查与合并
 
 先确认当前分支、未提交内容与版本；版本必须与功能代码进入同一 PR。
@@ -62,7 +91,7 @@ uv run --locked --no-sync engineering-ci version show
 uv run --locked --no-sync engineering-ci version set v0.7.0
 ```
 
-开发中的单项/定向检查使用原生 `dagger check --engineering-ci --check=...`；本仓日常综合验证见下方[显式本地综合验证](#显式本地综合验证)。
+开发中的检查按上方[工程验证入口与选择](#工程验证入口与选择)执行。
 检查当前目录快照。完成修改后用原生 Git 审阅并提交本次内容；
 `git add -p` 逐块选择已跟踪改动，新文件用 `git status` 中的实际路径逐个暂存。
 发布入口不会自行提交或把无关文件加入 PR。
@@ -239,11 +268,8 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 打印目录路径，不写出完成回执。原始输出写文件而非实时透传终端，请从 stderr
 提示的本次目录定位输出。
 
-先根据实际义务决定验证范围，再采用对应标准入口并复用仍适用的原生证据；
-不为记录回执而扩大范围或重复执行。定向编辑检查、pre-commit/pre-push、单项
-`dagger check`、裸 `lefthook run verify --no-auto-install` 诊断以及 GitHub Actions
-保持各自适用入口。`dagger check` 单项选择不等于已配置的完整 Verify Job 集合。
-现有 Actions Job 保持原有执行路径，不因本入口自动改写。
+验证范围、证据复用和各入口的区别见[工程验证入口与选择](#工程验证入口与选择)。
+裸 `lefthook run verify --no-auto-install` 可用于原生诊断，不代替 ECI verify 的同次输出记录。
 
 Windows 终端下若遇到 Dagger 非交互调用无输出挂起（历史观察与诊断见
 [上游观察](../.agent/upstream-observations.md#dagger-beta-windows-非交互版本探测挂起)），
