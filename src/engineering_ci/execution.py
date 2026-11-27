@@ -2672,8 +2672,6 @@ def _diagnose_unretained_data_edge(edge, handoff, *, report=None):
         raise ExecutionError("producer_execution_inconsistent")
 
     observed_status = handoff_status or prereq_status
-    if observed_status == "passed":
-        raise ExecutionError("producer_handoff_missing")
     if isinstance(report, dict) and report.get("status") == "passed":
         raise ExecutionError("producer_handoff_missing")
 
@@ -2700,7 +2698,111 @@ def _diagnose_unretained_data_edge(edge, handoff, *, report=None):
             ),
             "retention_status": "not_retained",
         }
+    if observed_status == "passed" and closure_failed:
+        return {
+            "producer_ref": dict(p_ref),
+            "consumer_ref": dict(edge["consumer_ref"]),
+            "output_ref": dict(edge["output_ref"]),
+            "producer_status": "passed",
+            "closure_verified": False,
+            "closure_reason": (
+                (closure_rec or {}).get("reason")
+                or (handoff_exec or {}).get("reason")
+                or (prereq_rec or {}).get("reason")
+                or "artifact_closure_failed"
+            ),
+            "retention_status": "not_retained_closure_failed",
+        }
     raise ExecutionError("producer_handoff_missing")
+
+
+def _verify_handoff_outer_report_binding(
+    handoff,
+    *,
+    report=None,
+    expected_execution_ref=None,
+):
+    """Verify #86 Handoff binds to outer report execution_ref and prerequisite/closure digests."""
+    outer_exec_ref = expected_execution_ref
+    if isinstance(report, dict):
+        rep_ident = report.get("execution_identity")
+        if isinstance(rep_ident, dict):
+            rep_exec_ref = rep_ident.get("execution_ref") or None
+            if (
+                outer_exec_ref is not None
+                and rep_exec_ref is not None
+                and outer_exec_ref != rep_exec_ref
+            ):
+                raise ExecutionError("producer_handoff_execution_mismatch")
+            outer_exec_ref = outer_exec_ref or rep_exec_ref
+
+    if outer_exec_ref is not None:
+        h_ident = handoff.get("execution_identity")
+        h_exec_ref = h_ident.get("execution_ref") if isinstance(h_ident, dict) else None
+        if h_exec_ref != outer_exec_ref:
+            raise ExecutionError("producer_handoff_execution_mismatch")
+        for p_exec in handoff.get("producer_executions") or ():
+            if (
+                isinstance(p_exec, dict)
+                and p_exec.get("execution_ref") != outer_exec_ref
+            ):
+                raise ExecutionError("producer_handoff_execution_mismatch")
+        for rec in handoff.get("artifacts") or ():
+            if not isinstance(rec, dict):
+                continue
+            p_exec = rec.get("producer_execution")
+            if (
+                isinstance(p_exec, dict)
+                and p_exec.get("execution_ref") != outer_exec_ref
+            ):
+                raise ExecutionError("producer_handoff_execution_mismatch")
+
+    if not isinstance(report, dict):
+        return
+
+    rep_prereqs = {
+        item.get("name"): item
+        for item in (report.get("prerequisites") or ())
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    p_exec_entries = [
+        item
+        for item in (handoff.get("producer_executions") or ())
+        if isinstance(item, dict)
+    ]
+    for rec in handoff.get("artifacts") or ():
+        if isinstance(rec, dict) and isinstance(rec.get("producer_execution"), dict):
+            p_exec_entries.append(rec["producer_execution"])
+    for p_exec in p_exec_entries:
+        if p_exec.get("kind", "prerequisite_action") != "prerequisite_action":
+            continue
+        prereq_sha = p_exec.get("prerequisite_result_sha256")
+        if prereq_sha is None:
+            continue
+        pname = p_exec.get("name")
+        rep_item = rep_prereqs.get(pname)
+        if rep_item is None or _canonical_sha256(rep_item) != prereq_sha:
+            raise ExecutionError("producer_handoff_prerequisite_mismatch")
+
+    rep_closures = {
+        _edge_retention_key(
+            c.get("producer_ref"), c.get("consumer_ref"), c.get("output_ref")
+        ): c
+        for c in (report.get("artifact_closure") or ())
+        if isinstance(c, dict)
+    }
+    for rec in handoff.get("artifacts") or ():
+        if not isinstance(rec, dict):
+            continue
+        c_sha = rec.get("closure_sha256")
+        if c_sha is None:
+            continue
+        ckey = _edge_retention_key(
+            rec.get("producer_ref"), rec.get("consumer_ref"), rec.get("output_ref")
+        )
+        rep_c = rep_closures.get(ckey)
+        if rep_c is None or _canonical_sha256(rep_c) != c_sha:
+            raise ExecutionError("producer_handoff_closure_mismatch")
 
 
 def verify_producer_handoff_bundle(
@@ -2711,6 +2813,7 @@ def verify_producer_handoff_bundle(
     report=None,
     expected_run_ref=None,
     expected_attempt_ref=None,
+    expected_execution_ref=None,
     allow_failed_producers=False,
 ):
     """Read-only verification of a #86 Producer Artifact Handoff bundle (non-#63 admission)."""
@@ -2726,6 +2829,11 @@ def verify_producer_handoff_bundle(
     body = {k: v for k, v in handoff.items() if k != "handoff_digest"}
     if _canonical_sha256(body) != recorded_digest:
         raise ExecutionError("producer_handoff_digest_mismatch")
+    _verify_handoff_outer_report_binding(
+        handoff,
+        report=report,
+        expected_execution_ref=expected_execution_ref,
+    )
 
     matched_records = []
     non_produced_edges = []
@@ -2827,20 +2935,30 @@ def verify_producer_handoff_bundle(
         has_failed = any(
             item["producer_status"] == "failed" for item in non_produced_edges
         )
+        has_closure_failed = any(
+            item["producer_status"] == "passed" and not item["closure_verified"]
+            for item in non_produced_edges
+        )
         if verified:
             retention_status = "partial_retained"
-            delivery_status = "partial_with_failed_producer"
-        else:
-            retention_status = (
-                "not_retained_producer_failed"
-                if has_failed
-                else "not_retained_producer_blocked"
-            )
             delivery_status = (
-                "not_delivered_producer_failed"
+                "partial_with_failed_producer"
                 if has_failed
-                else "not_delivered_producer_blocked"
+                else (
+                    "partial_with_closure_failure"
+                    if has_closure_failed
+                    else "partial_with_blocked_producer"
+                )
             )
+        elif has_failed:
+            retention_status = "not_retained_producer_failed"
+            delivery_status = "not_delivered_producer_failed"
+        elif has_closure_failed:
+            retention_status = "not_retained_closure_failed"
+            delivery_status = "not_delivered_closure_failed"
+        else:
+            retention_status = "not_retained_producer_blocked"
+            delivery_status = "not_delivered_producer_blocked"
     elif verified:
         retention_status = "retained"
         delivery_status = (
@@ -2871,6 +2989,13 @@ def verify_producer_handoff_bundle(
                 "verified" if isinstance(plan, dict) else "unverified_missing_plan"
             )
 
+    consumer_delivery = (
+        dict(report["artifact_delivery"])
+        if isinstance(report, dict)
+        and isinstance(report.get("artifact_delivery"), dict)
+        else None
+    )
+
     return {
         "handoff_id": recorded_digest,
         "plan_envelope_verified": isinstance(plan, dict),
@@ -2879,6 +3004,7 @@ def verify_producer_handoff_bundle(
         "retention_status": retention_status,
         "prerequisite_statuses": prereq_statuses,
         "closure_statuses": closure_statuses,
+        "consumer_delivery": consumer_delivery,
         "non_produced_edges": non_produced_edges,
         "verified_artifacts": verified,
     }

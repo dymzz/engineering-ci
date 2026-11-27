@@ -8,7 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from engineering_ci import hook_checks, hooks, verify_report
+from engineering_ci import hook_checks, hooks, plan_contract, verify_report
 from engineering_ci.cli import main
 
 
@@ -313,26 +313,39 @@ def test_verify_report_correlation_tiers_bundle_and_onetomany(tmp_path):
     host_raw = json.dumps({"status": "passed", "exit_code": 0}).encode("utf-8")
     (bundle_dir / "host" / "report.json").write_bytes(host_raw)
     plan_payload = {
+        "kind": plan_contract.PLAN_KIND,
         "schema_version": 2,
-        "git": {"head_commit": head, "source_tree_id": "sha256:" + "c" * 64},
+        "generator": {"config_sha256": "a" * 64},
+        "git": {
+            "snapshot": "commit",
+            "head_commit": head,
+            "source_tree_id": "sha256:" + "c" * 64,
+        },
+        "selection": {"tests": [], "prerequisites": []},
+        "prerequisite_actions": {},
+        "dependency_contract": plan_contract.graph_contract([]),
     }
+    plan_payload_bytes = hooks.canonical_event_bytes(plan_payload)
     exec_report = {
         "kind": "engineering-ci-execution-report",
         "schema_version": 1,
         "status": "passed",
         "exit_code": 0,
         "duration_seconds": 0.4,
+        "checks": [],
+        "targets": [],
+        "plan_ref": hooks._digest_bytes(plan_payload_bytes),
         "execution_identity": {
             "run_ref": "run:42",
             "attempt_ref": "att:1",
             "execution_ref": "exec:42",
         },
-        "plan": {"git": plan_payload["git"]},
+        "plan": {"generator": plan_payload["generator"], "git": plan_payload["git"]},
         "source_handoff": {
             "host_report_sha256": hashlib.sha256(host_raw).hexdigest(),
         },
     }
-    (bundle_dir / "plan.json").write_bytes(hooks.canonical_event_bytes(plan_payload))
+    (bundle_dir / "plan.json").write_bytes(plan_payload_bytes)
     (bundle_dir / "report.json").write_bytes(hooks.canonical_event_bytes(exec_report))
     (bundle_dir / "exit-code.txt").write_text("0\n", encoding="utf-8")
     (bundle_dir / "junit.xml").write_text(
@@ -346,6 +359,7 @@ def test_verify_report_correlation_tiers_bundle_and_onetomany(tmp_path):
         "schema_version": 1,
         "status": "passed",
         "exit_code": 0,
+        "checks": [],
         "execution_identity": {
             "run_ref": "run:42",
             "attempt_ref": "att:2",
@@ -1096,30 +1110,48 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
         scratch_86, real_86, closure_records
     )
     plan86 = {
+        "kind": plan_contract.PLAN_KIND,
         "schema_version": 2,
+        "generator": {"config_sha256": "a" * 64},
         "git": {
             "mode": "index",
+            "snapshot": "index",
             "head_commit": head,
             "source_tree_id": "sha256:" + "c" * 64,
             "index_tree": "1" * 40,
             "execution_tree": "1" * 40,
         },
-        "selection": {"checks": ["whitespace"], "tests": []},
-        "prerequisite_actions": {
-            "codegen": {"type": "command"},
-            "stamp": {"type": "command"},
+        "selection": {
+            "checks": ["whitespace"],
+            "tests": [],
+            "prerequisites": ["codegen", "stamp"],
         },
-        "dependency_contract": {
-            "edges": [
+        "prerequisite_actions": {
+            "codegen": {"type": "command", "argv": ["python", "-c", "0"]},
+            "stamp": {"type": "command", "argv": ["python", "-c", "0"]},
+        },
+        "dependency_contract": plan_contract.graph_contract(
+            [
                 {
                     "producer_ref": rec["producer_ref"],
                     "consumer_ref": rec["consumer_ref"],
                     "dependency_kind": "data",
+                    "requires_pass": True,
                     "output_ref": rec["output_ref"],
+                    "source_binding_ref": "git",
+                    "declaration_ref": {
+                        "path": "ci-selection.toml",
+                        "sha256": "a" * 64,
+                        "section": f"prerequisite_actions.{rec['producer_ref']['name']}",
+                    },
+                    "selection": {"selected_by": "test", "escalation_reason": None},
+                    "execution_phase": "pre_execution",
+                    "resolution": "resolved",
+                    "unresolved_reason": None,
                 }
                 for rec in closure_records
             ]
-        },
+        ),
     }
     plan86_bytes = hooks.canonical_event_bytes(plan86)
     (real_86 / "plan.json").write_bytes(plan86_bytes)
@@ -1128,25 +1160,26 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
         "attempt_ref": "att:1",
         "execution_ref": "exec:real-86",
     }
+    prereq_results86 = [
+        {
+            "name": "codegen",
+            "type": "command",
+            "status": "passed",
+            "exit_code": 0,
+            "reason": None,
+        },
+        {
+            "name": "stamp",
+            "type": "command",
+            "status": "passed",
+            "exit_code": 0,
+            "reason": None,
+        },
+    ]
     handoff_payload = eci_execution.build_producer_artifact_handoff(
         plan86,
         closure_records=closure_records,
-        prerequisite_results=[
-            {
-                "name": "codegen",
-                "type": "command",
-                "status": "passed",
-                "exit_code": 0,
-                "reason": None,
-            },
-            {
-                "name": "stamp",
-                "type": "command",
-                "status": "passed",
-                "exit_code": 0,
-                "reason": None,
-            },
-        ],
+        prerequisite_results=prereq_results86,
         execution_identity=exec86_ident,
         execution_context="dagger_export",
         retention_metadata=retention_meta,
@@ -1156,6 +1189,10 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
         "schema_version": 1,
         "status": "passed",
         "exit_code": 0,
+        "plan_ref": hooks._digest_bytes(plan86_bytes),
+        "targets": [],
+        "prerequisites": prereq_results86,
+        "artifact_closure": closure_records,
         "checks": [
             {
                 "name": "whitespace",
@@ -1169,7 +1206,7 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
             }
         ],
         "execution_identity": exec86_ident,
-        "plan": {"git": plan86["git"]},
+        "plan": {"generator": plan86["generator"], "git": plan86["git"]},
         "source_handoff": {
             "host_report_sha256": hashlib.sha256(host_raw86).hexdigest()
         },
@@ -2086,11 +2123,22 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
         "producer_ref": {"kind": "prerequisite_action", "name": "codegen"},
         "consumer_ref": {"kind": "check", "name": "whitespace"},
         "dependency_kind": "data",
+        "requires_pass": True,
         "output_ref": {
             "kind": "file",
             "path": "generated/out.py",
             "sha256": "0" * 64,
         },
+        "source_binding_ref": "git",
+        "declaration_ref": {
+            "path": "ci-selection.toml",
+            "sha256": "a" * 64,
+            "section": "prerequisite_actions.codegen",
+        },
+        "selection": {"selected_by": "test", "escalation_reason": None},
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": None,
     }
     plan_dep = {
         "kind": "engineering-ci-selection-plan",
@@ -2102,8 +2150,10 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
             "tests": [],
             "prerequisites": ["codegen"],
         },
-        "prerequisite_actions": {"codegen": {"type": "command"}},
-        "dependency_contract": {"schema_version": 2, "edges": [data_edge]},
+        "prerequisite_actions": {
+            "codegen": {"type": "command", "argv": ["python", "-c", "0"]}
+        },
+        "dependency_contract": plan_contract.graph_contract([data_edge]),
     }
     plan_dep_bytes = hooks.canonical_event_bytes(plan_dep)
     (failed_bundle / "plan.json").write_bytes(plan_dep_bytes)
@@ -2268,7 +2318,10 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
             "framework": "pytest",
             "tests": ["tests/test_alpha.py"],
             "checks": ["whitespace"],
+            "prerequisites": [],
         },
+        "prerequisite_actions": {},
+        "dependency_contract": plan_contract.graph_contract([]),
     }
     plan_b_swapped = {
         **plan_a,
@@ -2276,6 +2329,7 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
             "framework": "pytest",
             "tests": ["tests/test_beta.py"],
             "checks": ["forwarding"],
+            "prerequisites": [],
         },
     }
     plan_a_ref = hooks._digest_bytes(hooks.canonical_event_bytes(plan_a))
@@ -2366,3 +2420,627 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
     assert miss_p104["sources"][0]["plan_binding_status"] == "unknown_missing_plan"
     assert miss_p104["sources"][0]["observed_plan_file_ref"] is None
     assert miss_p104["sources"][0]["declared_report_plan_ref"] == plan_a_ref
+
+    # Round-5 P1-04: empty {} plan.json -> invalid_plan (NEVER verified).
+    (bundle_p104 / "plan.json").write_bytes(hooks.canonical_event_bytes({}))
+    (bundle_p104 / "report.json").write_bytes(
+        hooks.canonical_event_bytes(rep_no_plan_ref)
+    )
+    empty_plan_p104 = verify_report.build_verify_report(execution_reports=[bundle_p104])
+    assert empty_plan_p104["correlation"]["overall_status"] == "mismatch_detected"
+    empty_src = empty_plan_p104["sources"][0]
+    assert empty_src["plan_contract_status"] == "invalid"
+    assert empty_src["plan_binding_status"] == "invalid_plan"
+    assert empty_src["plan_binding_status"] != "verified"
+
+    # Round-5 P1-04: valid plan.json + matching projection WITHOUT declared plan_ref -> unverified_plan_ref_undeclared.
+    (bundle_p104 / "plan.json").write_bytes(hooks.canonical_event_bytes(plan_a))
+    (bundle_p104 / "report.json").write_bytes(
+        hooks.canonical_event_bytes(rep_no_plan_ref)
+    )
+    undecl_p104 = verify_report.build_verify_report(execution_reports=[bundle_p104])
+    undecl_src = undecl_p104["sources"][0]
+    assert undecl_src["internal_conflicts"] == []
+    assert undecl_src["plan_contract_status"] == "valid"
+    assert undecl_src["plan_projection_status"] == "matched"
+    assert undecl_src["plan_binding_status"] == "unverified_plan_ref_undeclared"
+    assert undecl_src["observed_plan_file_ref"] == plan_a_ref
+    assert undecl_src["declared_report_plan_ref"] is None
+
+
+def test_verify_report_round5_native_pytest_subset_handoff_binding_and_unit_disqualification(
+    tmp_path,
+):
+    from engineering_ci import check_contract, native_producer
+    from engineering_ci import execution as eci_execution
+
+    # --- Section A: P1-02a native Dagger pytest schema v1 bundles & check-result.json ---
+    np_pass = tmp_path / "np-pass"
+    np_pass.mkdir()
+    (np_pass / "exit-code.txt").write_text("0\n", encoding="utf-8")
+    (np_pass / "junit.xml").write_text(
+        '<testsuite tests="2" time="0.2"><testcase name="a"/><testcase name="b"/></testsuite>',
+        encoding="utf-8",
+    )
+    (np_pass / "report.json").write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                "schema_version": 1,
+                "exit_code": 0,
+                "reason": "passed",
+                "status": "passed",
+                "report_available": True,
+                "counts": {
+                    "tests": 2,
+                    "failures": 0,
+                    "errors": 0,
+                    "skipped": 0,
+                    "passed": 2,
+                },
+                "failures": [],
+                "omitted_failures": 0,
+                "diagnostic": None,
+            }
+        )
+    )
+    np_pass_res = verify_report.build_verify_report(execution_reports=[np_pass])
+    assert np_pass_res["correlation"]["overall_status"] == "uncorrelated"
+    pass_src = next(
+        s for s in np_pass_res["sources"] if s["source_type"] == "execution_bundle"
+    )
+    assert pass_src["internal_conflicts"] == []
+    assert pass_src["report_contract_status"] == "valid"
+    assert pass_src["native_execution_status"] == "passed"
+    assert pass_src["report_delivery_status"] == "available"
+    assert pass_src["execution_status"] == "passed"
+    assert pass_src["plan_binding_status"] == "not_applicable"
+
+    np_fail = tmp_path / "np-fail"
+    np_fail.mkdir()
+    (np_fail / "exit-code.txt").write_text("1\n", encoding="utf-8")
+    (np_fail / "report.json").write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                "schema_version": 1,
+                "exit_code": 1,
+                "reason": "failed",
+                "status": "failed",
+                "report_available": True,
+                "counts": {
+                    "tests": 2,
+                    "failures": 1,
+                    "errors": 0,
+                    "skipped": 0,
+                    "passed": 1,
+                },
+                "failures": [
+                    {
+                        "nodeid": "tests/t.py::test_fail",
+                        "outcome": "failed",
+                        "message": "assertion failed",
+                    }
+                ],
+                "omitted_failures": 0,
+                "diagnostic": None,
+            }
+        )
+    )
+    np_fail_res = verify_report.build_verify_report(execution_reports=[np_fail])
+    fail_src = np_fail_res["sources"][0]
+    assert fail_src["internal_conflicts"] == []
+    assert fail_src["report_contract_status"] == "valid"
+    assert fail_src["native_execution_status"] == "failed"
+    assert fail_src["report_delivery_status"] == "available"
+    assert fail_src["execution_status"] == "failed"
+
+    # exit_code == 0 with report_available == False (XML missing or malformed): execution succeeded, report unavailable.
+    np_xml_missing = tmp_path / "np-xml-missing"
+    np_xml_missing.mkdir()
+    (np_xml_missing / "exit-code.txt").write_text("0\n", encoding="utf-8")
+    (np_xml_missing / "junit.xml").write_text("<broken", encoding="utf-8")
+    (np_xml_missing / "report.json").write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                "schema_version": 1,
+                "exit_code": 0,
+                "reason": "invalid_junit_xml",
+                "status": "error",
+                "report_available": False,
+                "counts": None,
+                "failures": [],
+                "omitted_failures": 0,
+                "diagnostic": "ParseError: unclosed token",
+            }
+        )
+    )
+    np_unavail_res = verify_report.build_verify_report(
+        execution_reports=[np_xml_missing]
+    )
+    assert np_unavail_res["correlation"]["overall_status"] == "uncorrelated"
+    unavail_src = next(
+        s for s in np_unavail_res["sources"] if s["source_type"] == "execution_bundle"
+    )
+    assert unavail_src["internal_conflicts"] == []
+    assert unavail_src["report_contract_status"] == "valid"
+    assert unavail_src["native_execution_status"] == "passed"
+    assert unavail_src["report_available"] is False
+    assert unavail_src["report_delivery_status"] == "unavailable"
+    assert unavail_src["execution_status"] == "error"
+    assert unavail_src["exit_code"] == 0
+    assert unavail_src["plan_binding_status"] == "not_applicable"
+    broken_junit_src = next(
+        s for s in np_unavail_res["sources"] if s["source_type"] == "junit_xml"
+    )
+    assert broken_junit_src["status"] == "invalid"
+    assert broken_junit_src["internal_conflicts"] == []
+
+    # Malformed native pytest v1 & unknown JSON fail contract validation.
+    for label, payload in (
+        (
+            "bad_np_status",
+            {
+                "schema_version": 1,
+                "exit_code": 0,
+                "reason": "passed",
+                "status": "bogus",
+                "report_available": True,
+                "counts": {"total": 1},
+                "failures": [],
+                "omitted_failures": 0,
+                "diagnostic": None,
+            },
+        ),
+        ("unknown_json", {"hello": "world"}),
+    ):
+        bad_dir = tmp_path / label
+        bad_dir.mkdir()
+        (bad_dir / "report.json").write_bytes(hooks.canonical_event_bytes(payload))
+        bad_out = verify_report.build_verify_report(execution_reports=[bad_dir])
+        assert bad_out["correlation"]["overall_status"] == "mismatch_detected"
+        assert bad_out["sources"][0]["report_contract_status"] == "invalid"
+
+    # Valid standalone check-result.json passes contract validation.
+    from test_native_hooks import INDEX_SELECTION, _approve_profiles, _source
+
+    repo = tmp_path / "repo-r5"
+    repo.mkdir()
+    head = _init_git_repo(repo)
+    git_snap = {
+        "mode": "index",
+        "snapshot": "index",
+        "head_commit": head,
+        "source_tree_id": "sha256:" + "b" * 64,
+        "index_tree": "1" * 40,
+        "execution_tree": "1" * 40,
+    }
+    impl, _ = native_producer.implementation("test", {})
+    native_check = native_producer.test_check(
+        {"status": "passed", "exit_code": 0},
+        framework="pytest",
+        targets=["tests/a.py"],
+        observation={"executable": "pytest", "tool_version": "9.0.0"},
+        source=native_producer.source_reference({"git": git_snap}, actual="worktree"),
+        context={
+            "run_ref": "run:r5-cr",
+            "attempt_ref": "att:1",
+            "execution_ref": "exec:r5-cr",
+        },
+        impl=impl,
+        origin="host",
+        artifact_prefix=None,
+        plan_authorized=True,
+    )
+    cr_path = tmp_path / "check-result.json"
+    cr_path.write_bytes(hooks.canonical_event_bytes({"name": "pytest", **native_check}))
+    cr_res = verify_report.build_verify_report(execution_reports=[cr_path])
+    assert cr_res["correlation"]["overall_status"] == "uncorrelated"
+    assert cr_res["sources"][0]["internal_conflicts"] == []
+    assert cr_res["sources"][0]["report_contract_status"] == "valid"
+
+    # --- Section B: P1-04 real hook_checks split-job subset vs shared Plan ---
+    (repo / "lefthook.yml").write_text("min_version: '2.2.2'\n", encoding="utf-8")
+    mod_file = _source(repo, "mod", ("whitespace", "forwarding"))
+    mod_file.write_text("VALUE = 1\n", encoding="utf-8")
+    _approve_profiles(
+        repo,
+        INDEX_SELECTION,
+        [
+            (
+                "ci-effective-profile.json",
+                "index",
+                "index",
+                "HEAD",
+                ("whitespace", "forwarding"),
+            )
+        ],
+    )
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "ci-effective-profile.json",
+            "ci-hygiene.toml",
+            "ci-selection.toml",
+            "lefthook.yml",
+            "src",
+            "tach.toml",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    assert hooks.main(["capture", "pre-commit", "--root", str(repo)]) == 0
+    inv_dir = repo / ".git" / "eci-hooks" / "invocations"
+    inv_file = max(inv_dir.glob("*.json"), key=lambda p: p.stat().st_mtime_ns)
+    binding = hooks.load_invocation_binding(inv_file)
+    assert hook_checks.prepare(repo, binding, split_checks=True)["exit_code"] == 0
+    assert (
+        hook_checks.run_checks(repo, binding, job_ref="check-whitespace")["exit_code"]
+        == 0
+    )
+    assert (
+        hook_checks.run_checks(repo, binding, job_ref="check-forwarding")["exit_code"]
+        == 0
+    )
+    assert hook_checks.reconcile(repo, binding)["exit_code"] == 0
+    assert hook_checks.consume_index_result(repo, binding)["exit_code"] == 0
+
+    ws_exec = json.loads(
+        inv_file.with_suffix(".execution-check-whitespace").read_text(encoding="utf-8")
+    )
+    fwd_exec = json.loads(
+        inv_file.with_suffix(".execution-check-forwarding").read_text(encoding="utf-8")
+    )
+    shared_plan_sidecar = json.loads(
+        inv_file.with_suffix(".plan").read_text(encoding="utf-8")
+    )
+    shared_plan = shared_plan_sidecar["plan"]
+    # First check unmodified real split-job Plan <-> check-whitespace subset Report.
+    real_subset_plan_bytes = hooks.canonical_event_bytes(shared_plan)
+    subset_bundle = tmp_path / "bundle-subset-ws"
+    subset_bundle.mkdir()
+    (subset_bundle / "plan.json").write_bytes(real_subset_plan_bytes)
+    (subset_bundle / "report.json").write_bytes(
+        hooks.canonical_event_bytes(ws_exec["report"])
+    )
+    subset_res = verify_report.build_verify_report(execution_reports=[subset_bundle])
+    subset_src = subset_res["sources"][0]
+    assert subset_src["internal_conflicts"] == []
+    assert subset_src["plan_contract_status"] == "valid"
+    assert subset_src["plan_execution_scope"] == "subset_of_plan"
+    assert subset_src["plan_projection_status"] == "subset_compatible"
+    assert subset_src["plan_binding_status"] == "unverified_plan_ref_undeclared"
+    assert subset_src["declared_report_plan_ref"] is None
+
+    # Include both pytest tests and multiple checks in a valid shared Plan to confirm partial check_names subsets never trigger targets/checks mismatch.
+    full_subset_plan = {
+        **shared_plan,
+        "selection": {
+            **shared_plan["selection"],
+            "framework": shared_plan["selection"].get("framework", "unittest"),
+            "tests": ["tests/test_alpha.py"],
+            "checks": ["whitespace", "forwarding"],
+        },
+    }
+    full_subset_plan_bytes = hooks.canonical_event_bytes(full_subset_plan)
+    (subset_bundle / "plan.json").write_bytes(full_subset_plan_bytes)
+    (subset_bundle / "report.json").write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                **ws_exec["report"],
+                "plan_ref": hooks._digest_bytes(full_subset_plan_bytes),
+            }
+        )
+    )
+    subset_res_tests = verify_report.build_verify_report(
+        execution_reports=[subset_bundle]
+    )
+    subset_tests_src = subset_res_tests["sources"][0]
+    assert subset_tests_src["internal_conflicts"] == []
+    assert subset_tests_src["plan_contract_status"] == "valid"
+    assert subset_tests_src["plan_execution_scope"] == "subset_of_plan"
+    assert subset_tests_src["plan_projection_status"] == "subset_compatible"
+    assert subset_tests_src["plan_binding_status"] == "verified"
+
+    # --- Section C: P1-03a closure_failed (producer passed, closure verified=False) & P1-03b Handoff identity/hash bindings ---
+    scratch_p103 = tmp_path / "scratch-p103"
+    gen_dir = scratch_p103 / "prerequisite_action" / "codegen" / "generated"
+    gen_dir.mkdir(parents=True)
+    gen_file = gen_dir / "out.py"
+    gen_file.write_text("X = 1\n", encoding="utf-8")
+    out_ref = {
+        "kind": "file",
+        "path": "generated/out.py",
+        "sha256": hashlib.sha256(gen_file.read_bytes()).hexdigest(),
+    }
+    data_edge = {
+        "producer_ref": {"kind": "prerequisite_action", "name": "codegen"},
+        "consumer_ref": {"kind": "check", "name": "whitespace"},
+        "dependency_kind": "data",
+        "requires_pass": True,
+        "output_ref": out_ref,
+        "source_binding_ref": "git",
+        "declaration_ref": {
+            "path": "ci-selection.toml",
+            "sha256": "a" * 64,
+            "section": "prerequisite_actions.codegen",
+        },
+        "selection": {"selected_by": "test", "escalation_reason": None},
+        "execution_phase": "pre_execution",
+        "resolution": "resolved",
+        "unresolved_reason": None,
+    }
+    plan_p103 = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"config_sha256": "a" * 64},
+        "git": git_snap,
+        "selection": {
+            "checks": ["whitespace"],
+            "tests": [],
+            "prerequisites": ["codegen"],
+        },
+        "prerequisite_actions": {
+            "codegen": {"type": "command", "argv": ["python", "-c", "0"]}
+        },
+        "dependency_contract": plan_contract.graph_contract([data_edge]),
+    }
+    plan_p103_bytes = hooks.canonical_event_bytes(plan_p103)
+    plan_p103_ref = hooks._digest_bytes(plan_p103_bytes)
+
+    prereq_pass = [
+        {
+            "name": "codegen",
+            "type": "command",
+            "status": "passed",
+            "exit_code": 0,
+            "reason": None,
+        }
+    ]
+    closure_fail_records = [
+        {
+            "producer_ref": data_edge["producer_ref"],
+            "consumer_ref": data_edge["consumer_ref"],
+            "dependency_kind": "data",
+            "output_ref": out_ref,
+            "sha256": out_ref["sha256"],
+            "verified": False,
+            "reason": "closure_artifact_missing",
+        }
+    ]
+    closure_fail_ident = {
+        "run_ref": "run:r5-p103",
+        "attempt_ref": "att:1",
+        "execution_ref": "exec:r5-p103a",
+    }
+    closure_fail_handoff = eci_execution.build_producer_artifact_handoff(
+        plan_p103,
+        closure_records=closure_fail_records,
+        prerequisite_results=prereq_pass,
+        execution_identity=closure_fail_ident,
+        execution_context="dagger_export",
+    )
+    b_p103a = tmp_path / "bundle-p103a"
+    b_p103a.mkdir()
+    (b_p103a / "plan.json").write_bytes(plan_p103_bytes)
+    (b_p103a / "report.json").write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                "kind": "engineering-ci-execution-report",
+                "schema_version": 1,
+                "status": "blocked",
+                "exit_code": 5,
+                "reason": "artifact_closure_failed",
+                "plan_ref": plan_p103_ref,
+                "plan": {"generator": plan_p103["generator"], "git": git_snap},
+                "targets": [],
+                "framework": "unittest",
+                "execution_identity": closure_fail_ident,
+                "dependency_contract": plan_p103["dependency_contract"],
+                "prerequisites": prereq_pass,
+                "artifact_closure": closure_fail_records,
+                "artifact_delivery": {
+                    "status": "blocked",
+                    "reason": "closure_artifact_missing",
+                    "consumers": [
+                        {
+                            "consumer_ref": data_edge["consumer_ref"],
+                            "status": "blocked",
+                            "reason": "closure_artifact_missing",
+                        }
+                    ],
+                },
+                "checks": [
+                    {
+                        "name": "whitespace",
+                        "status": "not_executed",
+                        "plan_authorized": True,
+                        "reason": "closure_artifact_missing",
+                        "check_contract": {
+                            "kind": check_contract.CHECK_CONTRACT_KIND,
+                            "schema_version": check_contract.CONTRACT_VERSION,
+                            "status": "valid",
+                        },
+                    }
+                ],
+                "producer_artifact_handoff": closure_fail_handoff,
+            }
+        )
+    )
+    p103a_res = verify_report.build_verify_report(execution_reports=[b_p103a])
+    p103a_src = p103a_res["sources"][0]
+    assert p103a_src["internal_conflicts"] == []
+    assert (
+        p103a_src["producer_artifact_handoff_status"] == "not_delivered_closure_failed"
+    )
+    assert (
+        p103a_src["producer_artifact_handoff"]["delivery_status"]
+        == "not_delivered_closure_failed"
+    )
+    assert (
+        p103a_src["producer_artifact_handoff"]["retention_status"]
+        == "not_retained_closure_failed"
+    )
+    assert (
+        p103a_src["producer_artifact_handoff"]["non_produced_edges"][0][
+            "producer_status"
+        ]
+        == "passed"
+    )
+    assert p103a_src["producer_artifact_handoff"]["consumer_delivery"]
+
+    # P1-03b: swapped handoff (identical plan/run/attempt, different execution_ref) & hash binding checks.
+    closure_ok = [
+        {
+            "producer_ref": data_edge["producer_ref"],
+            "consumer_ref": data_edge["consumer_ref"],
+            "dependency_kind": "data",
+            "output_ref": out_ref,
+            "sha256": out_ref["sha256"],
+            "verified": True,
+        }
+    ]
+    prod_bundle_1 = tmp_path / "bundle-prod-1"
+    prod_bundle_1.mkdir()
+    ret_1 = eci_execution.retain_closure_artifacts(
+        scratch_p103, prod_bundle_1, closure_ok
+    )
+    ident_1 = {
+        "run_ref": "run:r5-p103b",
+        "attempt_ref": "att:1",
+        "execution_ref": "exec:r5-p103b-1",
+    }
+    ident_2 = {
+        "run_ref": "run:r5-p103b",
+        "attempt_ref": "att:1",
+        "execution_ref": "exec:r5-p103b-2",
+    }
+    handoff_1 = eci_execution.build_producer_artifact_handoff(
+        plan_p103,
+        closure_records=closure_ok,
+        prerequisite_results=prereq_pass,
+        execution_identity=ident_1,
+        execution_context="dagger_export",
+        retention_metadata=ret_1,
+    )
+    handoff_2 = eci_execution.build_producer_artifact_handoff(
+        plan_p103,
+        closure_records=closure_ok,
+        prerequisite_results=prereq_pass,
+        execution_identity=ident_2,
+        execution_context="dagger_export",
+        retention_metadata=ret_1,
+    )
+    base_rep_p103b = {
+        "kind": "engineering-ci-execution-report",
+        "schema_version": 1,
+        "status": "passed",
+        "exit_code": 0,
+        "plan_ref": plan_p103_ref,
+        "plan": {"generator": plan_p103["generator"], "git": git_snap},
+        "targets": [],
+        "execution_identity": ident_1,
+        "prerequisites": prereq_pass,
+        "artifact_closure": closure_ok,
+        "checks": [
+            {
+                "name": "whitespace",
+                "status": "passed",
+                "plan_authorized": True,
+                "check_contract": {
+                    "kind": check_contract.CHECK_CONTRACT_KIND,
+                    "schema_version": check_contract.CONTRACT_VERSION,
+                    "status": "valid",
+                },
+            }
+        ],
+        "producer_artifact_handoff": handoff_1,
+    }
+    (prod_bundle_1 / "plan.json").write_bytes(plan_p103_bytes)
+    (prod_bundle_1 / "report.json").write_bytes(
+        hooks.canonical_event_bytes(base_rep_p103b)
+    )
+    ok_p103b = verify_report.build_verify_report(execution_reports=[prod_bundle_1])
+    assert ok_p103b["sources"][0]["internal_conflicts"] == []
+    assert ok_p103b["sources"][0]["producer_artifact_handoff_status"] == "verified"
+
+    for label, mutated_rep, expected_detail in (
+        (
+            "swapped_handoff",
+            {**base_rep_p103b, "producer_artifact_handoff": handoff_2},
+            "producer_handoff_execution_mismatch",
+        ),
+        (
+            "mutated_prereq",
+            {**base_rep_p103b, "prerequisites": [{**prereq_pass[0], "exit_code": 99}]},
+            "producer_handoff_prerequisite_mismatch",
+        ),
+        (
+            "mutated_closure",
+            {
+                **base_rep_p103b,
+                "artifact_closure": [{**closure_ok[0], "sha256": "f" * 64}],
+            },
+            "producer_handoff_closure_mismatch",
+        ),
+    ):
+        (prod_bundle_1 / "report.json").write_bytes(
+            hooks.canonical_event_bytes(mutated_rep)
+        )
+        bad_p103b = verify_report.build_verify_report(execution_reports=[prod_bundle_1])
+        assert bad_p103b["correlation"]["overall_status"] == "mismatch_detected", label
+        assert any(
+            c["reason"] == "bundle_producer_handoff_failed"
+            and expected_detail in c.get("error", "")
+            for c in bad_p103b["sources"][0]["internal_conflicts"]
+        ), (label, bad_p103b["sources"][0]["internal_conflicts"])
+
+    # --- Section D: P1-05 & P2-02 conflicted Hook unit disqualification & conflict_unit_count ---
+    ws_bundle = tmp_path / "bundle-ws-r5"
+    ws_bundle.mkdir()
+    (ws_bundle / "report.json").write_bytes(
+        hooks.canonical_event_bytes(ws_exec["report"])
+    )
+    fwd_bundle = tmp_path / "bundle-fwd-r5"
+    fwd_bundle.mkdir()
+    (fwd_bundle / "report.json").write_bytes(
+        hooks.canonical_event_bytes(fwd_exec["report"])
+    )
+
+    # Tamper whitespace hook execution body without recomputing report_digest -> only whitespace unit is conflicted!
+    ws_sidecar = inv_file.with_suffix(".execution-check-whitespace")
+    tampered_ws = json.loads(ws_sidecar.read_text(encoding="utf-8"))
+    tampered_ws["report"]["exit_code"] = 99
+    ws_sidecar.write_bytes(hooks.canonical_event_bytes(tampered_ws))
+
+    p105_res = verify_report.build_verify_report(
+        hook_root=repo,
+        invocation_ref=binding.invocation_ref,
+        execution_reports=[ws_bundle, fwd_bundle],
+    )
+    assert p105_res["correlation"]["overall_status"] == "mismatch_detected"
+    hook_src = next(
+        s for s in p105_res["sources"] if s["source_type"] == "hook_invocation"
+    )
+    ws_src = next(
+        s for s in p105_res["sources"] if str(ws_bundle) in str(s.get("path", ""))
+    )
+    fwd_src = next(
+        s for s in p105_res["sources"] if str(fwd_bundle) in str(s.get("path", ""))
+    )
+    assert hook_src["query_correlation"]["matched_unit_count"] == 1
+    assert hook_src["query_correlation"]["conflict_unit_count"] == 1
+    assert hook_src["query_correlation"]["unqueried_unit_count"] == 0
+    assert {
+        u["scope"]: u["status"]
+        for u in hook_src["query_correlation"]["execution_units"]
+    } == {
+        "execution-check-forwarding": "matched",
+        "execution-check-whitespace": "conflict",
+    }
+    assert ws_src["query_correlation"]["same_execution_proven"] is False
+    assert ws_src["query_correlation"]["strength"] != "execution_matched"
+    assert fwd_src["query_correlation"]["same_execution_proven"] is True
+    assert fwd_src["query_correlation"]["strength"] == "execution_matched"
+    groups = p105_res["correlation"]["execution_groups"]
+    assert len(groups) == 1
+    assert sorted(groups[0]["source_indices"]) == [0, 2]

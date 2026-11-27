@@ -644,6 +644,17 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
         )
         and not entry["internal_conflicts"]
     )
+    native_exit = payload.get("native_exit_code")
+    native_exit_source = _norm_optional_str(payload.get("native_exit_source"))
+    if native_exit_source is None and chosen is timing and native_exit is not None:
+        native_exit_source = "natural_exit"
+    outer_exit_code = payload.get("outer_exit_code")
+    if outer_exit_code is None and chosen is timing and type(native_exit) is int:
+        outer_exit_code = native_exit if native_exit >= 0 else 128 - native_exit
+    native_started_val = payload.get("native_started")
+    if native_started_val is None and chosen is timing:
+        native_started_val = True
+
     entry.update(
         {
             "status": (
@@ -660,7 +671,10 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
             "observed_lefthook_config_sha256": _norm_optional_str(
                 payload.get("observed_lefthook_config_sha256")
             ),
-            "native_exit_code": payload.get("native_exit_code"),
+            "native_started": native_started_val,
+            "native_exit_code": native_exit,
+            "native_exit_source": native_exit_source,
+            "outer_exit_code": outer_exit_code,
             "elapsed_seconds": payload.get("elapsed_seconds"),
             "stages": payload.get("stages"),
             "started_at_ns": payload.get("started_at_ns"),
@@ -672,6 +686,10 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
             "lefthook_summary": payload.get("lefthook_summary"),
         }
     )
+    if payload.get("signal") is not None:
+        entry["signal"] = payload.get("signal")
+    if payload.get("error") is not None:
+        entry["error"] = payload.get("error")
     return entry
 
 
@@ -941,6 +959,7 @@ def _load_hook_entry(
                 {
                     "reason": "hook_activation_identity_mismatch",
                     "artifact": act_name,
+                    "exec_artifact": exec_name,
                     "expected_run_ref": expected_run,
                     "expected_attempt_ref": expected_att,
                 }
@@ -1240,17 +1259,110 @@ def _load_hook_entry(
                 for ex in executions
                 if ex.get("report_ref") and ex.get("report_digest_verified")
             }
+            all_exec_report_ref_to_arts: dict[str, list[str]] = {}
+            for ex in executions:
+                rep_obj = raw_reports_by_artifact.get(ex["artifact"])
+                if ex.get("report_ref"):
+                    all_exec_report_ref_to_arts.setdefault(ex["report_ref"], []).append(
+                        ex["artifact"]
+                    )
+                elif (
+                    isinstance(rep_obj, dict)
+                    and rep_obj.get("kind") == execution.REPORT_KIND
+                ):
+                    computed_rref = _compute_execution_report_ref_key(rep_obj)
+                    if computed_rref:
+                        all_exec_report_ref_to_arts.setdefault(
+                            computed_rref, []
+                        ).append(ex["artifact"])
+            job_to_exec_art: dict[str, str] = {}
+            for ex in executions:
+                jkey = (
+                    hook_checks._JOB_REF
+                    if ex["scope"] == "execution"
+                    else ex["scope"].removeprefix("execution-")
+                )
+                job_to_exec_art[jkey] = ex["artifact"]
+
+            # Map receipt report_ref occurrences to candidate execution artifacts when known.
+            ref_owner_artifacts: dict[str, list[str]] = {}
+
+            def _collect_ref_owners(
+                obj: dict[str, Any], *, push_idx: int | None = None
+            ) -> None:
+                top_job = _norm_optional_str(obj.get("job_ref"))
+                top_rr = _report_ref_key(obj.get("report_ref"))
+                if top_rr:
+                    if push_idx is not None:
+                        ref_owner_artifacts.setdefault(top_rr, []).append(
+                            f"{stem}.execution-{push_idx}"
+                        )
+                    elif top_job and top_job in job_to_exec_art:
+                        ref_owner_artifacts.setdefault(top_rr, []).append(
+                            job_to_exec_art[top_job]
+                        )
+                for seq_key in ("entries", "results", "references"):
+                    seq = obj.get(seq_key)
+                    if not isinstance(seq, list):
+                        continue
+                    for item in seq:
+                        if not isinstance(item, dict):
+                            continue
+                        ijob = _norm_optional_str(item.get("job_ref")) or top_job
+                        irr = _report_ref_key(item.get("report_ref"))
+                        if irr:
+                            if push_idx is not None:
+                                ref_owner_artifacts.setdefault(irr, []).append(
+                                    f"{stem}.execution-{push_idx}"
+                                )
+                            elif ijob and ijob in job_to_exec_art:
+                                ref_owner_artifacts.setdefault(irr, []).append(
+                                    job_to_exec_art[ijob]
+                                )
+                        for sub_key in (
+                            "evidence",
+                            "job_instances",
+                            "rejected_observations",
+                            "observed_results",
+                        ):
+                            sub = item.get(sub_key)
+                            if not isinstance(sub, list):
+                                continue
+                            for sub_item in sub:
+                                if not isinstance(sub_item, dict):
+                                    continue
+                                sjob = (
+                                    _norm_optional_str(sub_item.get("job_ref")) or ijob
+                                )
+                                srr = _report_ref_key(sub_item.get("report_ref"))
+                                if srr:
+                                    if push_idx is not None:
+                                        ref_owner_artifacts.setdefault(srr, []).append(
+                                            f"{stem}.execution-{push_idx}"
+                                        )
+                                    elif sjob and sjob in job_to_exec_art:
+                                        ref_owner_artifacts.setdefault(srr, []).append(
+                                            job_to_exec_art[sjob]
+                                        )
+                if isinstance(obj.get("receipts"), list):
+                    for idx_r, sub_rec in enumerate(obj["receipts"]):
+                        if isinstance(sub_rec, dict):
+                            _collect_ref_owners(sub_rec, push_idx=idx_r)
+
+            _collect_ref_owners(receipt_data)
             missing_exec_for_receipt = False
             # Always verify receipt report_refs against verified loaded executions.
             for rr in receipt_report_refs:
                 if rr not in valid_exec_report_refs:
                     missing_exec_for_receipt = True
-                    entry["internal_conflicts"].append(
-                        {
-                            "reason": "hook_receipt_report_ref_not_in_executions",
-                            "observed": rr,
-                        }
-                    )
+                    owners = sorted(set(ref_owner_artifacts.get(rr, ())))
+                    conflict_rec: dict[str, Any] = {
+                        "reason": "hook_receipt_report_ref_not_in_executions",
+                        "observed": rr,
+                    }
+                    if owners:
+                        conflict_rec["affected_artifacts"] = owners
+                    entry["internal_conflicts"].append(conflict_rec)
 
             if not is_fallback_exit_only and validation_status == "valid":
                 if plan_data_obj is None or not has_plan_key:
@@ -1346,12 +1458,37 @@ def _load_hook_entry(
                                 }
                             )
                         else:
-                            entry["internal_conflicts"].append(
-                                {
-                                    "reason": "hook_receipt_scope_or_report_mismatch",
-                                    "error": exc.code,
-                                }
-                            )
+                            conflict_item: dict[str, Any] = {
+                                "reason": "hook_receipt_scope_or_report_mismatch",
+                                "error": exc.code,
+                            }
+                            if exc.code == "hook_final_report_mismatch":
+                                failing_arts: list[str] = []
+                                for j_name, j_rep in reports_by_job.items():
+                                    j_art = job_to_exec_art.get(j_name)
+                                    if not j_art:
+                                        continue
+                                    j_ex = next(
+                                        (
+                                            e
+                                            for e in executions
+                                            if e["artifact"] == j_art
+                                        ),
+                                        None,
+                                    )
+                                    if j_ex and not j_ex.get("report_digest_verified"):
+                                        failing_arts.append(j_art)
+                                    elif isinstance(j_rep, dict):
+                                        j_rref = _compute_execution_report_ref_key(
+                                            j_rep
+                                        )
+                                        if j_rref and j_rref not in receipt_report_refs:
+                                            failing_arts.append(j_art)
+                                if failing_arts:
+                                    conflict_item["affected_artifacts"] = sorted(
+                                        set(failing_arts)
+                                    )
+                            entry["internal_conflicts"].append(conflict_item)
 
             has_integrity_conflict = any(
                 c.get("reason", "").startswith(
@@ -2176,6 +2313,7 @@ def _build_bundle_manifest_index(
                 report=report_payload,
                 expected_run_ref=meta.get("run_ref"),
                 expected_attempt_ref=meta.get("attempt_ref"),
+                expected_execution_ref=meta.get("execution_ref"),
                 allow_failed_producers=True,
             )
             delivery_status = verified.get("delivery_status")
@@ -2217,6 +2355,7 @@ def _build_bundle_manifest_index(
                 "retention_status": verified.get("retention_status"),
                 "prerequisite_statuses": verified.get("prerequisite_statuses", []),
                 "closure_statuses": verified.get("closure_statuses", []),
+                "consumer_delivery": verified.get("consumer_delivery"),
                 "non_produced_edges": verified.get("non_produced_edges", []),
                 "artifacts": verified["verified_artifacts"],
             }
@@ -2250,19 +2389,84 @@ def _build_bundle_manifest_index(
     return index, handoff_summary
 
 
+def _is_native_pytest_v1_shape(payload: dict[str, Any]) -> bool:
+    """Return True when payload matches Dagger python_test_artifacts schema v1 JSON."""
+    if "kind" in payload or "checks" in payload or "execution_identity" in payload:
+        return False
+    return {"report_available", "failures", "omitted_failures"}.issubset(payload)
+
+
+def _validate_native_pytest_v1(payload: dict[str, Any]) -> str | None:
+    """Validate native Dagger pytest schema v1 contract per docs/architecture/testing/pytest-reporting.md."""
+    if payload.get("schema_version") != 1:
+        return "native_pytest_schema_unsupported"
+    exit_code = payload.get("exit_code")
+    if type(exit_code) is not int or not 0 <= exit_code <= 255:
+        return "native_pytest_exit_code_invalid"
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason:
+        return "native_pytest_reason_invalid"
+    status = payload.get("status")
+    if status not in {"passed", "failed", "error"}:
+        return "native_pytest_status_invalid"
+    report_available = payload.get("report_available")
+    if type(report_available) is not bool:
+        return "native_pytest_report_available_invalid"
+    failures = payload.get("failures")
+    omitted = payload.get("omitted_failures")
+    if not isinstance(failures, list) or type(omitted) is not int or omitted < 0:
+        return "native_pytest_failures_invalid"
+    counts = payload.get("counts")
+    if report_available:
+        if not isinstance(counts, dict):
+            return "native_pytest_counts_missing"
+        for field in ("tests", "failures", "errors", "skipped", "passed"):
+            val = counts.get(field)
+            if type(val) is not int or val < 0:
+                return "native_pytest_counts_invalid"
+        if exit_code == 0 and counts["failures"] == 0 and counts["errors"] == 0:
+            expected_status = "passed"
+        elif exit_code == 1:
+            expected_status = "failed"
+        else:
+            expected_status = "error"
+        if status != expected_status:
+            return "native_pytest_status_mismatch"
+    else:
+        if counts is not None or status != "error":
+            return "native_pytest_unavailable_status_invalid"
+        diag = payload.get("diagnostic")
+        if not isinstance(diag, str) or not diag:
+            return "native_pytest_diagnostic_missing"
+    return None
+
+
 def _validate_execution_report_contract(
     payload: dict[str, Any], *, is_single_check_artifact: bool = False
 ) -> dict[str, Any]:
-    """Validate Native Execution Report contract via reconciliation without merging #63 admission."""
+    """Validate Native Execution Report, single check-result, or native pytest v1 contracts."""
     if not isinstance(payload, dict):
         return {
+            "report_format": "unknown",
             "status": "invalid",
             "error": "execution_report_invalid",
             "rejections": {},
             "native_result_count": 0,
         }
+    if not is_single_check_artifact and _is_native_pytest_v1_shape(payload):
+        err = _validate_native_pytest_v1(payload)
+        return {
+            "report_format": "native_pytest_v1",
+            "status": "valid" if err is None else "invalid",
+            "error": err,
+            "rejections": {},
+            "native_result_count": 0,
+        }
+
+    report_format = "eci_execution_report"
     target: dict[str, Any] = payload
     if is_single_check_artifact and "kind" not in payload and "checks" not in payload:
+        report_format = "native_check_result"
         has_check_shape = isinstance(payload.get("name"), str) and bool(
             payload.get("name")
         )
@@ -2273,6 +2477,7 @@ def _validate_execution_report_contract(
         )
         if not (has_check_shape and has_contract_or_result):
             return {
+                "report_format": "unknown",
                 "status": "invalid",
                 "error": "execution_report_invalid",
                 "rejections": {},
@@ -2285,8 +2490,17 @@ def _validate_execution_report_contract(
             "checks": [payload],
         }
     else:
+        if payload.get("kind") != execution.REPORT_KIND:
+            return {
+                "report_format": "unknown",
+                "status": "invalid",
+                "error": "execution_report_invalid",
+                "rejections": {},
+                "native_result_count": 0,
+            }
         if payload.get("schema_version") != execution.SCHEMA_VERSION:
             return {
+                "report_format": report_format,
                 "status": "invalid",
                 "error": "execution_report_schema_unsupported",
                 "rejections": {},
@@ -2301,12 +2515,14 @@ def _validate_execution_report_contract(
             else exc.code
         )
         return {
+            "report_format": report_format,
             "status": "invalid",
             "error": err,
             "rejections": {},
             "native_result_count": 0,
         }
     return {
+        "report_format": report_format,
         "status": "valid",
         "error": None,
         "rejections": dict(rejections),
@@ -2361,16 +2577,9 @@ def _verify_plan_report_correspondence(
     report_payload: dict[str, Any],
     *,
     internal_conflicts: list[dict[str, Any]],
-) -> None:
-    """Verify bundle plan.json matches report projection fields without equating projection to full Plan."""
-    if "kind" in plan_payload and plan_payload.get("kind") != plan_contract.PLAN_KIND:
-        internal_conflicts.append(
-            {
-                "reason": "bundle_plan_invalid",
-                "detail": "plan_kind_mismatch",
-            }
-        )
-        return
+) -> str:
+    """Verify validated bundle plan.json matches report projection fields (full or host subset)."""
+    conflict_before = len(internal_conflicts)
 
     plan_git = plan_payload.get("git")
     rep_plan = report_payload.get("plan")
@@ -2398,17 +2607,6 @@ def _verify_plan_report_correspondence(
         else {}
     )
     plan_tests = plan_sel.get("tests")
-    if isinstance(plan_tests, list) and "targets" in report_payload:
-        rep_targets = report_payload.get("targets")
-        if not isinstance(rep_targets, list) or list(rep_targets) != list(plan_tests):
-            internal_conflicts.append(
-                {
-                    "reason": "bundle_plan_targets_mismatch",
-                    "expected": list(plan_tests),
-                    "observed": rep_targets,
-                }
-            )
-
     has_fw = isinstance(plan_sel.get("framework"), str)
     expected_fw = (
         plan_sel.get("framework") if has_fw else ("unittest" if plan_sel else None)
@@ -2462,13 +2660,69 @@ def _verify_plan_report_correspondence(
     if plan_tests and expected_fw:
         allowed_checks.add(expected_fw)
 
+    plan_prereqs = (
+        list(plan_sel.get("prerequisites") or ())
+        if isinstance(plan_sel.get("prerequisites"), list)
+        else (
+            list((plan_payload.get("prerequisite_actions") or {}).keys())
+            if isinstance(plan_payload.get("prerequisite_actions"), dict)
+            else []
+        )
+    )
+    plan_edges = (
+        list((plan_payload.get("dependency_contract") or {}).get("edges") or ())
+        if isinstance(plan_payload.get("dependency_contract"), dict)
+        else []
+    )
+
     rep_checks = report_payload.get("checks")
-    if plan_declares_checks and isinstance(rep_checks, list):
-        rep_check_names = [
+    rep_check_names = (
+        [
             item.get("name")
             for item in rep_checks
             if isinstance(item, dict) and isinstance(item.get("name"), str)
         ]
+        if isinstance(rep_checks, list)
+        else []
+    )
+    required_non_fw = {
+        name
+        for name in (set(sel_checks) | set(selected_scope_names))
+        if not (plan_tests and name == expected_fw)
+    }
+    is_host_subset = (
+        report_payload.get("execution_context") == "host"
+        and not plan_prereqs
+        and not plan_edges
+        and bool(rep_check_names)
+        and set(rep_check_names).issubset(allowed_checks)
+        and (
+            set(rep_check_names) < required_non_fw
+            or (
+                bool(plan_tests)
+                and expected_fw is not None
+                and expected_fw not in rep_check_names
+            )
+        )
+    )
+
+    if isinstance(plan_tests, list) and "targets" in report_payload:
+        rep_targets = report_payload.get("targets")
+        targets_ok_as_non_test_subset = (
+            is_host_subset and expected_fw not in rep_check_names and rep_targets == []
+        )
+        if not targets_ok_as_non_test_subset and (
+            not isinstance(rep_targets, list) or list(rep_targets) != list(plan_tests)
+        ):
+            internal_conflicts.append(
+                {
+                    "reason": "bundle_plan_targets_mismatch",
+                    "expected": list(plan_tests),
+                    "observed": rep_targets,
+                }
+            )
+
+    if plan_declares_checks and isinstance(rep_checks, list):
         if rep_check_names:
             unexpected = sorted(
                 {name for name in rep_check_names if name not in allowed_checks}
@@ -2481,22 +2735,20 @@ def _verify_plan_report_correspondence(
                         "allowed": sorted(allowed_checks),
                     }
                 )
-        if report_payload.get("status") not in ("not_executed", "rejected"):
-            required_non_fw = {
-                name
-                for name in (set(sel_checks) | set(selected_scope_names))
-                if not (plan_tests and name == expected_fw)
-            }
-            if required_non_fw:
-                missing = sorted(required_non_fw - set(rep_check_names))
-                if missing:
-                    internal_conflicts.append(
-                        {
-                            "reason": "bundle_plan_selected_checks_mismatch",
-                            "missing": missing,
-                            "observed": sorted(set(rep_check_names)),
-                        }
-                    )
+        if (
+            report_payload.get("status") not in ("not_executed", "rejected")
+            and not is_host_subset
+            and required_non_fw
+        ):
+            missing = sorted(required_non_fw - set(rep_check_names))
+            if missing:
+                internal_conflicts.append(
+                    {
+                        "reason": "bundle_plan_selected_checks_mismatch",
+                        "missing": missing,
+                        "observed": sorted(set(rep_check_names)),
+                    }
+                )
         if expected_entries and rep_checks:
             expected_by_name = {
                 item["name"]: item
@@ -2542,17 +2794,8 @@ def _verify_plan_report_correspondence(
             }
         )
 
-    plan_prereqs = (
-        list(plan_sel.get("prerequisites") or ())
-        if isinstance(plan_sel.get("prerequisites"), list)
-        else (
-            list((plan_payload.get("prerequisite_actions") or {}).keys())
-            if isinstance(plan_payload.get("prerequisite_actions"), dict)
-            else None
-        )
-    )
     rep_prereqs = report_payload.get("prerequisites")
-    if isinstance(plan_prereqs, list) and isinstance(rep_prereqs, list) and rep_prereqs:
+    if isinstance(rep_prereqs, list) and rep_prereqs:
         rep_pnames = {
             item.get("name")
             for item in rep_prereqs
@@ -2608,6 +2851,9 @@ def _verify_plan_report_correspondence(
                 "observed": rep_tree_id,
             }
         )
+    if len(internal_conflicts) > conflict_before:
+        return "mismatch"
+    return "subset_of_plan" if is_host_subset else "full_plan"
 
 
 def _extract_execution_metadata(
@@ -2619,6 +2865,7 @@ def _extract_execution_metadata(
     contract = _validate_execution_report_contract(
         payload, is_single_check_artifact=is_single_check_artifact
     )
+    report_format = contract["report_format"]
     contract_valid = contract["status"] == "valid"
     if not contract_valid:
         internal_conflicts.append(
@@ -2627,6 +2874,58 @@ def _extract_execution_metadata(
                 "error": contract["error"],
             }
         )
+
+    if report_format == "native_pytest_v1":
+        exit_code = payload.get("exit_code")
+        native_exec_status = (
+            ("passed" if exit_code == 0 else "failed")
+            if type(exit_code) is int
+            else None
+        )
+        rep_avail = (
+            payload.get("report_available")
+            if type(payload.get("report_available")) is bool
+            else None
+        )
+        out_pytest: dict[str, Any] = {
+            "report_format": "native_pytest_v1",
+            "report_contract_status": contract["status"],
+            "report_contract_rejections": {},
+            "native_result_count": 0,
+            "native_execution_status": native_exec_status,
+            "report_available": rep_avail,
+            "report_delivery_status": (
+                ("available" if rep_avail else "unavailable")
+                if rep_avail is not None
+                else None
+            ),
+            "pytest_reason": _norm_optional_str(payload.get("reason")),
+            "pytest_counts": payload.get("counts"),
+            "pytest_diagnostic": payload.get("diagnostic"),
+            "selected_targets": payload.get("selected_targets"),
+            "declared_identity": {
+                "run_ref": None,
+                "attempt_ref": None,
+                "execution_ref": None,
+                "report_ref": None,
+                "plan_ref": None,
+                "git_commit": None,
+                "source_tree_id": None,
+            },
+            "declared_report_plan_ref": None,
+            "verifiable_execution_proven": False,
+            "admission_authority_63": "not_evaluated",
+            "run_ref": None,
+            "attempt_ref": None,
+            "execution_ref": None,
+            "report_ref": None,
+            "plan_ref": None,
+            "git_commit": None,
+            "source_tree_id": None,
+        }
+        if contract["error"] is not None:
+            out_pytest["report_contract_error"] = contract["error"]
+        return out_pytest
 
     ident = payload.get("execution_identity")
     handoff = payload.get("source_handoff")
@@ -2697,12 +2996,14 @@ def _extract_execution_metadata(
     }
 
     out: dict[str, Any] = {
+        "report_format": report_format,
         "report_contract_status": contract["status"],
         "report_contract_rejections": contract["rejections"],
         "native_result_count": contract["native_result_count"],
         "declared_identity": declared_identity,
         "declared_report_plan_ref": declared_plan_ref,
-        "verifiable_execution_proven": contract_valid,
+        "verifiable_execution_proven": contract_valid
+        and report_format in ("eci_execution_report", "native_check_result"),
         "admission_authority_63": "not_evaluated",
         "run_ref": run_ref if contract_valid else None,
         "attempt_ref": attempt_ref if contract_valid else None,
@@ -2737,16 +3038,29 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
 
         plan_payload: dict[str, Any] | None = None
         plan_ref: str | None = None
+        plan_contract_status = "missing"
+        plan_contract_error: str | None = None
         plan_candidate = bundle_dir / "plan.json"
         if plan_candidate.exists():
             consumed_files.append(str(plan_candidate))
             loaded_plan = _load_bounded_json(plan_candidate)
             if loaded_plan.get("status") == "loaded":
-                plan_payload = loaded_plan["payload"]
-                plan_ref = hooks._digest_bytes(
-                    hooks.canonical_event_bytes(plan_payload)
-                )
+                raw_plan = loaded_plan["payload"]
+                plan_ref = hooks._digest_bytes(hooks.canonical_event_bytes(raw_plan))
+                try:
+                    plan_contract.validate(raw_plan)
+                except plan_contract.PlanError as exc:
+                    plan_contract_status = "invalid"
+                    plan_contract_error = exc.code
+                    internal_conflicts.append(
+                        {"reason": "bundle_plan_invalid", "detail": exc.code}
+                    )
+                else:
+                    plan_contract_status = "valid"
+                    plan_payload = raw_plan
             else:
+                plan_contract_status = "invalid"
+                plan_contract_error = str(loaded_plan.get("status"))
                 internal_conflicts.append(
                     {
                         "reason": "bundle_plan_invalid",
@@ -2800,9 +3114,15 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                     }
                 )
 
-            if isinstance(plan_payload, dict):
-                conflict_count_before = len(internal_conflicts)
-                _verify_plan_report_correspondence(
+            plan_projection_status = "not_evaluated"
+            plan_execution_scope: str | None = None
+            has_plan_ref_conflict = any(
+                c.get("reason")
+                in ("bundle_plan_ref_mismatch", "bundle_declared_plan_ref_conflict")
+                for c in internal_conflicts
+            )
+            if plan_contract_status == "valid" and isinstance(plan_payload, dict):
+                scope_res = _verify_plan_report_correspondence(
                     plan_payload,
                     report_payload,
                     internal_conflicts=internal_conflicts,
@@ -2814,35 +3134,57 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                     meta["source_tree_id"] = _norm_optional_str(
                         plan_git.get("source_tree_id")
                     )
-                if (
-                    (plan_ref != declared_plan_ref and declared_plan_ref is not None)
-                    or len(internal_conflicts) > conflict_count_before
-                    or any(
-                        c.get("reason")
-                        in (
-                            "bundle_plan_ref_mismatch",
-                            "bundle_declared_plan_ref_conflict",
-                        )
-                        for c in internal_conflicts
-                    )
-                ):
+                if scope_res == "mismatch":
+                    plan_projection_status = "mismatch"
                     plan_binding_status = "mismatch"
-                else:
+                elif has_plan_ref_conflict:
+                    plan_projection_status = (
+                        "subset_compatible"
+                        if scope_res == "subset_of_plan"
+                        else "matched"
+                    )
+                    plan_execution_scope = scope_res
+                    plan_binding_status = "mismatch"
+                elif declared_plan_ref is not None and plan_ref == declared_plan_ref:
+                    plan_projection_status = (
+                        "subset_compatible"
+                        if scope_res == "subset_of_plan"
+                        else "matched"
+                    )
+                    plan_execution_scope = scope_res
                     plan_binding_status = "verified"
-                    if (
-                        plan_ref is not None
-                        and meta.get("plan_ref") is None
-                        and contract_valid
-                    ):
+                    if contract_valid and meta.get("plan_ref") is None:
                         meta["plan_ref"] = plan_ref
-            elif plan_candidate.exists() or any(
+                else:
+                    plan_projection_status = (
+                        "subset_compatible"
+                        if scope_res == "subset_of_plan"
+                        else "matched"
+                    )
+                    plan_execution_scope = scope_res
+                    plan_binding_status = "unverified_plan_ref_undeclared"
+            elif plan_contract_status == "invalid":
+                plan_binding_status = "invalid_plan"
+            elif any(
                 c.get("reason") == "bundle_declared_plan_ref_conflict"
                 for c in internal_conflicts
             ):
                 plan_binding_status = "mismatch"
+            elif (
+                meta.get("report_format") == "native_pytest_v1"
+                and declared_plan_ref is None
+            ):
+                plan_binding_status = "not_applicable"
+                plan_projection_status = "not_applicable"
             else:
                 plan_binding_status = "unknown_missing_plan"
             meta["observed_plan_file_ref"] = plan_ref
+            meta["plan_contract_status"] = plan_contract_status
+            if plan_contract_error is not None:
+                meta["plan_contract_error"] = plan_contract_error
+            meta["plan_projection_status"] = plan_projection_status
+            if plan_execution_scope is not None:
+                meta["plan_execution_scope"] = plan_execution_scope
             meta["plan_binding_status"] = plan_binding_status
 
             exit_file = bundle_dir / "exit-code.txt"
@@ -2933,11 +3275,13 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                     "bundle_directory": (
                         bundle_dir.as_posix()
                         if meta.get("report_contract_status") == "valid"
+                        and meta.get("verifiable_execution_proven")
                         else None
                     ),
                     "colocated_directory": (
                         None
                         if meta.get("report_contract_status") == "valid"
+                        and meta.get("verifiable_execution_proven")
                         else bundle_dir.as_posix()
                     ),
                     "status": "loaded",
@@ -3038,7 +3382,11 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
         ]
     payload = loaded["payload"]
     internal_conflicts = []
-    meta = _extract_execution_metadata(payload, internal_conflicts=internal_conflicts)
+    meta = _extract_execution_metadata(
+        payload,
+        internal_conflicts=internal_conflicts,
+        is_single_check_artifact=(path.name == "check-result.json"),
+    )
     return [
         {
             "source_type": "execution_report",
@@ -3478,20 +3826,65 @@ def _connected_components(
     return components
 
 
+def _conflict_targets_unit(
+    conflict: dict[str, Any],
+    unit: dict[str, Any],
+    exec_item: dict[str, Any],
+    *,
+    stem: str | None = None,
+) -> bool:
+    """Return True if conflict applies to this specific execution unit rather than an unrelated sibling."""
+    if unit.get("execution_index") is None:
+        return True
+    if isinstance(conflict.get("anchor"), dict):
+        return _anchor_matches_unit(conflict["anchor"], unit, exec_item)
+    unit_art = unit.get("artifact")
+    affected = conflict.get("affected_artifacts")
+    if isinstance(affected, list) and affected:
+        return unit_art in affected
+    if conflict.get("exec_artifact") is not None:
+        return unit_art == conflict.get("exec_artifact")
+    c_art = conflict.get("artifact")
+    if isinstance(c_art, str) and c_art:
+        if c_art == unit_art:
+            return True
+        if stem and c_art.startswith(
+            (f"{stem}.execution", f"{stem}.activation", f"{stem}.timing-")
+        ):
+            return False
+    return True
+
+
 def _concrete_execution_units(
-    src_idx: int, src: dict[str, Any], ids: dict[str, Any]
+    src_idx: int,
+    src: dict[str, Any],
+    ids: dict[str, Any],
+    *,
+    scoped_conflicts: list[dict[str, Any]] = (),
 ) -> list[dict[str, Any]]:
-    """Build per-concrete-execution nodes so multi-execution hooks never bridge siblings."""
+    """Build per-concrete-execution nodes so conflicted or multi-exec units never forge matches."""
+    src_conflicts = [
+        *list(src.get("internal_conflicts") or ()),
+        *[c for c in scoped_conflicts if _anchor_matches_source(c["anchor"], ids)],
+    ]
     if src.get("source_type") != "hook_invocation":
+        has_conflict = bool(src_conflicts)
         return [
             {
                 "unit_index": -1,
                 "src_idx": src_idx,
                 "execution_index": None,
-                "keys": ids["execution"],
+                "verified": not has_conflict,
+                "declared_keys": ids["execution"],
+                "keys": (
+                    {k: set() for k in ids["execution"]}
+                    if has_conflict
+                    else ids["execution"]
+                ),
             }
         ]
     execs = src.get("executions") or ()
+    stem = Path(src["path"]).stem if isinstance(src.get("path"), str) else None
     units: list[dict[str, Any]] = []
     for exec_idx, ex in enumerate(execs):
         keys: dict[str, set[str]] = {
@@ -3506,16 +3899,30 @@ def _concrete_execution_units(
             keys["report_ref"].add(ex["report_ref"])
         if ex.get("bundle_directory"):
             keys["bundle_directory"].add(ex["bundle_directory"])
-        units.append(
-            {
-                "unit_index": -1,
-                "src_idx": src_idx,
-                "execution_index": exec_idx,
-                "artifact": ex.get("artifact"),
-                "scope": ex.get("scope"),
-                "keys": keys,
+        unit_stub = {
+            "unit_index": -1,
+            "src_idx": src_idx,
+            "execution_index": exec_idx,
+            "artifact": ex.get("artifact"),
+            "scope": ex.get("scope"),
+            "keys": keys,
+        }
+        u_conflicts = [
+            c
+            for c in src_conflicts
+            if _conflict_targets_unit(c, unit_stub, ex, stem=stem)
+        ]
+        unit_verified = bool(ex.get("report_digest_verified", True)) and not u_conflicts
+        unit_stub["verified"] = unit_verified
+        unit_stub["declared_keys"] = keys
+        if not unit_verified:
+            unit_stub["keys"] = {
+                "execution_ref": set(),
+                "report_ref": set(),
+                "bundle_directory": set(),
+                "ci_attempt_pair": set(),
             }
-        )
+        units.append(unit_stub)
     return units
 
 
@@ -3527,7 +3934,9 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
     units: list[dict[str, Any]] = []
     src_unit_indices: dict[int, list[int]] = {}
     for idx, (src, ids) in enumerate(zip(sources, identities, strict=True)):
-        built = _concrete_execution_units(idx, src, ids)
+        built = _concrete_execution_units(
+            idx, src, ids, scoped_conflicts=scoped_conflicts
+        )
         for u in built:
             u["unit_index"] = len(units)
             src_unit_indices.setdefault(idx, []).append(u["unit_index"])
@@ -3536,9 +3945,13 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
     unit_edges: dict[tuple[int, int], dict[str, list[str]]] = {}
     for u_idx in range(len(units)):
         unit_u = units[u_idx]
+        if not unit_u.get("verified", True):
+            continue
         for v_idx in range(u_idx + 1, len(units)):
             unit_v = units[v_idx]
-            if unit_u["src_idx"] == unit_v["src_idx"]:
+            if unit_u["src_idx"] == unit_v["src_idx"] or not unit_v.get(
+                "verified", True
+            ):
                 continue
             eshared: dict[str, list[str]] = {}
             for key, vals in unit_u["keys"].items():
@@ -3670,6 +4083,7 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
         is_multi_exec_hook = (
             src.get("source_type") == "hook_invocation" and len(hook_u_idxs) > 1
         )
+        stem = Path(src["path"]).stem if isinstance(src.get("path"), str) else None
         hook_execs = src.get("executions") or []
         hook_unit_summaries: list[dict[str, Any]] = []
         for u_idx in hook_u_idxs:
@@ -3679,21 +4093,20 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
                 if isinstance(ex_idx, int) and 0 <= ex_idx < len(hook_execs)
                 else {}
             )
+            decl_unit = {
+                **units[u_idx],
+                "keys": units[u_idx].get("declared_keys", units[u_idx]["keys"]),
+            }
             u_conflicts = [
                 c
                 for c in src_conflicts
-                if (
-                    isinstance(c.get("anchor"), dict)
-                    and _anchor_matches_unit(c["anchor"], units[u_idx], ex_item)
-                )
-                or (
-                    c.get("artifact") is not None
-                    and c.get("artifact") == units[u_idx].get("artifact")
-                )
+                if _conflict_targets_unit(c, decl_unit, ex_item, stem=stem)
             ]
             u_matched = bool(unit_matches.get(u_idx))
             u_status = (
-                "conflict" if u_conflicts else ("matched" if u_matched else "unqueried")
+                "conflict"
+                if (u_conflicts or not ex_item.get("report_digest_verified", True))
+                else ("matched" if u_matched else "unqueried")
             )
             hook_unit_summaries.append(
                 {
@@ -3710,7 +4123,12 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
         matched_unit_count = sum(
             1 for item in hook_unit_summaries if item["status"] == "matched"
         )
-        unqueried_unit_count = len(hook_unit_summaries) - matched_unit_count
+        conflict_unit_count = sum(
+            1 for item in hook_unit_summaries if item["status"] == "conflict"
+        )
+        unqueried_unit_count = sum(
+            1 for item in hook_unit_summaries if item["status"] == "unqueried"
+        )
 
         if src_conflicts:
             verdict = {
@@ -3726,9 +4144,11 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
                 verdict["container_kind"] = "multi_execution_hook"
                 verdict["execution_group_indices"] = group_indices
                 verdict["matched_unit_count"] = matched_unit_count
+                verdict["conflict_unit_count"] = conflict_unit_count
                 verdict["unqueried_unit_count"] = unqueried_unit_count
                 verdict["execution_units"] = hook_unit_summaries
             elif hook_unit_summaries:
+                verdict["conflict_unit_count"] = conflict_unit_count
                 verdict["execution_units"] = hook_unit_summaries
         elif src.get("bundle_binding") == "colocated_unverified":
             verdict = {
@@ -3749,6 +4169,7 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
                 "reason": "hook_invocation_contains_multiple_independent_executions",
                 "execution_group_indices": group_indices,
                 "matched_unit_count": matched_unit_count,
+                "conflict_unit_count": conflict_unit_count,
                 "unqueried_unit_count": unqueried_unit_count,
                 "execution_units": hook_unit_summaries,
                 "execution_keys": exec_matches,

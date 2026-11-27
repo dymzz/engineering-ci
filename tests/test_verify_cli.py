@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from engineering_ci import verify_report
 from engineering_ci.cli import main, verify
 
 
@@ -886,3 +887,111 @@ def test_verify_interrupt_preserves_observed_exit_before_and_after_terminate(
     assert status_pre["outer_exit_code"] == 130
     assert pre_exit_instances[0].terminated is False
     assert pre_exit_instances[0].killed is False
+
+
+def test_verify_report_projects_native_exit_source_and_started(tmp_path):
+    natural_dir = tmp_path / "natural-exit"
+    natural_dir.mkdir()
+    (natural_dir / "verify-timing.json").write_text(
+        json.dumps(
+            {
+                "kind": "engineering-ci-verify-timing",
+                "schema_version": 1,
+                "exit_code": 0,
+                "native_exit_code": 0,
+                "native_exit_source": "natural_exit",
+                "outer_exit_code": 0,
+                "native_started": True,
+                "elapsed_seconds": 0.25,
+                "stages": {
+                    "lefthook_native": {"status": "passed", "elapsed_seconds": 0.2}
+                },
+                "lefthook_summary": {"status": "parsed", "counts": {"passed": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    natural_rep = verify_report.build_verify_report(verify_dir=natural_dir)
+    natural_src = natural_rep["sources"][0]
+    assert natural_src["native_started"] is True
+    assert natural_src["native_exit_code"] == 0
+    assert natural_src["native_exit_source"] == "natural_exit"
+    assert natural_src["outer_exit_code"] == 0
+    assert natural_src.get("signal") is None
+    assert natural_src.get("error") is None
+
+    for label, status_payload in (
+        (
+            "before_term",
+            {
+                "kind": "engineering-ci-verify-status",
+                "schema_version": 1,
+                "status": "interrupted",
+                "native_started": True,
+                "native_exit_code": 2,
+                "native_exit_source": "observed_before_terminate",
+                "outer_exit_code": 130,
+                "signal": "SIGINT",
+                "error": None,
+                "elapsed_seconds": 0.1,
+            },
+        ),
+        (
+            "after_term",
+            {
+                "kind": "engineering-ci-verify-status",
+                "schema_version": 1,
+                "status": "interrupted",
+                "native_started": True,
+                "native_exit_code": -15,
+                "native_exit_source": "observed_after_terminate",
+                "outer_exit_code": 130,
+                "signal": "SIGINT",
+                "error": None,
+                "elapsed_seconds": 0.1,
+            },
+        ),
+        (
+            "unobserved_after_term",
+            {
+                "kind": "engineering-ci-verify-status",
+                "schema_version": 1,
+                "status": "interrupted",
+                "native_started": True,
+                "native_exit_code": None,
+                "native_exit_source": "unobserved_after_terminate",
+                "outer_exit_code": 130,
+                "signal": "SIGINT",
+                "error": "terminate timed out",
+                "elapsed_seconds": 0.2,
+            },
+        ),
+        (
+            "unknown_spawn",
+            {
+                "kind": "engineering-ci-verify-status",
+                "schema_version": 1,
+                "status": "interrupted",
+                "native_started": "unknown",
+                "native_exit_code": None,
+                "native_exit_source": "unknown_spawn",
+                "outer_exit_code": 130,
+                "signal": "SIGINT",
+                "error": None,
+                "elapsed_seconds": 0.01,
+            },
+        ),
+    ):
+        vdir = tmp_path / label
+        vdir.mkdir()
+        (vdir / "verify-status.json").write_text(
+            json.dumps(status_payload), encoding="utf-8"
+        )
+        rep = verify_report.build_verify_report(verify_dir=vdir)
+        src = rep["sources"][0]
+        assert src["native_started"] == status_payload["native_started"], label
+        assert src["native_exit_code"] == status_payload["native_exit_code"], label
+        assert src["native_exit_source"] == status_payload["native_exit_source"], label
+        assert src["outer_exit_code"] == status_payload["outer_exit_code"], label
+        assert src.get("signal") == status_payload["signal"], label
+        assert src.get("error") == status_payload["error"], label
