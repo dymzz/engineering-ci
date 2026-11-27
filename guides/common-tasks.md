@@ -93,10 +93,18 @@ uv run --locked --no-sync engineering-ci version set v0.7.0
 
 开发中的检查按上方[工程验证入口与选择](#工程验证入口与选择)执行。
 本仓根 `pytest` / `python -m pytest` 每次正常调用会在
-`.artifacts/pytest/<invocation-id>/` 自动保留原生 `report.jsonl`（pytest-reportlog）、
-`junit.xml`、以及墙钟/`selected` 摘要（#167 R3）；终端打印报告目录。已显式传入的
-`--report-log` / `--junitxml` 路径不被覆盖。可用 `ECI_PYTEST_NO_AUTO_REPORT=1` 或
-`--eci-no-auto-report` 关闭。不另起报告服务，也不改变消费者通用 Dagger `_run_pytest`。
+`.artifacts/pytest/<invocation-id>/` 自动保留原生 `pytest-reportlog.jsonl`
+（pytest-reportlog）、`junit.xml`，以及 `metadata.json`（配置时）与 `summary.json`
+（结束时：原生 `exitstatus`、选中/未选 node ID 清册、耗时与报告交付状态；#167 R3/R6）。
+历史 `report.jsonl` 目录不迁移、保持可读。
+显式传入的 `--report-log` / `--junitxml` 路径不被覆盖；`--durations` 默认值由根
+`addopts` 提供，显式 CLI 仍覆盖。可用 `ECI_PYTEST_NO_AUTO_REPORT=1` 或
+`--eci-no-auto-report` 关闭。报告是本地观察：`outer_invocation_ref` 为 `unknown`、
+不证明外层 Invocation/Receipt；未观察到选择范围时标 `unknown`，不把事件行数当用例数。
+报告交付缺失以 `report_delivery.status` 独立表达，不改变原生退出，也不能当作通过。
+报告文件仅在本机 `.artifacts/`（已忽略）保留，不上传、不作为发布证据；共享或上传时按
+[#48](https://github.com/dymzz/engineering-ci/issues/48) 敏感信息出口合同处理。不另起报告
+服务，也不改变消费者通用 Dagger `_run_pytest`。
 检查当前目录快照。完成修改后用原生 Git 审阅并提交本次内容；
 `git add -p` 逐块选择已跟踪改动，新文件用 `git status` 中的实际路径逐个暂存。
 发布入口不会自行提交或把无关文件加入 PR。
@@ -253,9 +261,9 @@ Receipt，缺失最终对账时阻断。
 
 ### Live Collector E2E（opt-in）
 
-默认全量 / 定向 pytest **不**启动 Docker Collector 或 Dagger Engine。两条 Live
-Collector E2E（`tests/test_github_receiver.py`、
-`tests/test_issue52_githubreceiver_e2e.py`）仅在显式 opt-in 时运行：
+本仓的两条 Live Collector E2E（`tests/test_github_receiver.py`、
+`tests/test_issue52_githubreceiver_e2e.py`）默认不运行，只在显式 opt-in 时执行；该开关
+只约束这两条测试，不承诺其他测试或原生工具调用不使用 Docker / Dagger。
 
 ```powershell
 $env:ECI_RUN_LIVE_COLLECTOR_TESTS = "1"
@@ -263,11 +271,14 @@ uv run --locked --no-sync pytest -q tests/test_github_receiver.py::test_live_col
 uv run --locked --no-sync pytest -q tests/test_issue52_githubreceiver_e2e.py::test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e
 ```
 
-需要：本机 `docker` / `dagger` 在 PATH、已拉取
-`otelcol-contrib` 固定镜像，以及 Issue #52 路径可用的 `grpcio`。已设置
-`ECI_RUN_LIVE_COLLECTOR_TESTS=1` 但缺少依赖时用例 **fail-closed**（`pytest.fail`），
-不会静默 skip。临时压制可设 `ECI_SKIP_LIVE_COLLECTOR_TESTS=1`（即使已 opt-in）。
-正式 #52/#74/#75 live 验收仍须在具备依赖的环境下显式开启并保留原有义务。
+需要本机 `docker` / `dagger` 在 PATH、已拉取 `otelcol-contrib` 固定镜像，以及 Issue #52
+路径可用的 `grpcio`。已设置 `ECI_RUN_LIVE_COLLECTOR_TESTS=1` 但缺少依赖时用例
+**fail-closed**（`pytest.fail`），不会静默 skip；`ECI_SKIP_LIVE_COLLECTOR_TESTS=1`
+优先，可临时压制。两条 E2E 使用固定工作目录
+（`.artifacts/pytest-githubreceiver-e2e`、`.artifacts/pytest-issue52-e2e`）和固定端口
+（`19428`、`19429`），不能与同一宿主上的另一个实例并发，需串行执行；本轮不实现并发隔离。
+正式 #52/#74/#75 live 验收仍须在具备依赖的环境下显式开启并保留原有义务，普通 CI 通过
+不证明 live 通过。
 
 ### 显式本地综合验证
 
