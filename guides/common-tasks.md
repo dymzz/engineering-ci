@@ -22,8 +22,35 @@ export PYTHONPATH="<当前检出>/src"
 
 仅切换目录（`cd` / `Set-Location`）**不会**自动重绑环境变量，会话作用域变量会随子进程继承传播：
 - 在同一 Shell 切换至另一个 ECI worktree 时，必须重设 `PYTHONPATH="<新检出>/src"`；切回主管理 checkout 时应移除 `PYTHONPATH`（含守卫的新版 editable CLI 在同仓另一检出触发 `PYTHONPATH` 错配时会以退出码 `2` 阻断提示，直接 Python 调用仍依赖正确的会话绑定）。
-- 进入独立消费者项目（如 `cd ../consumer`）执行消费者 `git` / `uv` / `dagger` 时，必须先清除 `UV_PROJECT_ENVIRONMENT`、`UV_PROJECT`、`VIRTUAL_ENV`、`PYTHONPATH`（PowerShell：`Remove-Item Env:UV_PROJECT_ENVIRONMENT, Env:UV_PROJECT, Env:VIRTUAL_ENV, Env:PYTHONPATH -ErrorAction SilentlyContinue`；sh：`unset UV_PROJECT_ENVIRONMENT UV_PROJECT VIRTUAL_ENV PYTHONPATH`）或显式指向消费者自身环境，避免继续继承 ECI 的共享 `.venv` 与 `src/`。
-- 从 ECI 会话调用 `python -P -m engineering_ci.tools.consumer --consumer <目录>` 跨仓同步时，工具会在向 `cwd=consumer` 拉起 `dagger develop`/`check` 与 `git add`/`commit`/`push` 前自动剥离归属 ECI 检出的 `UV_PROJECT*`/`VIRTUAL_ENV`/`PYTHONPATH`（及对应 `.venv/{Scripts,bin}` `PATH` 项，含未显式指向消费端且等于当前激活解释器前缀的隐式 `VIRTUAL_ENV`），同时保留调用方显式指定给消费者的非 ECI 目标环境。
+- 进入独立消费者项目（如 `cd ../consumer`）执行消费者 `git` / `uv` / `dagger` 时，必须先清除 `UV_PROJECT_ENVIRONMENT`、`UV_PROJECT`、`VIRTUAL_ENV`、`PYTHONPATH`（PowerShell：`Remove-Item Env:UV_PROJECT_ENVIRONMENT, Env:UV_PROJECT, Env:VIRTUAL_ENV, Env:PYTHONPATH -ErrorAction SilentlyContinue`；sh：`unset UV_PROJECT_ENVIRONMENT UV_PROJECT VIRTUAL_ENV PYTHONPATH`）或显式指向消费者自身环境，避免继续继承 ECI 的共享 `.venv` 与 `src/`。本条针对本人在消费者目录直接运行的原生命令；由 `tools.consumer` 从 ECI 检出代跑时按其宿主/目标环境区分处理，见下条。
+- 从 ECI 会话调用 `python -P -m engineering_ci.tools.consumer --consumer <目录>` 时注意工具会向 `cwd=consumer` 拉起 `dagger` 与 `git`：只 `cd` 到消费者目录不会改变本进程已继承的变量，也盖不住这些子进程。`tools.consumer` 以当前解释器前缀（`sys.prefix`）区分**ECI 工具的宿主环境**与**消费者目标环境**：等于宿主前缀且不在消费者内的外置共享环境按宿主剥离；指向其他路径的 `UV_PROJECT_ENVIRONMENT` 仍作为消费者目标保留。
+
+外置共享环境下的可执行方式——以该宿主解释器直接启动工具，`UV_PROJECT_ENVIRONMENT` 等宿主变量无需手工清除：
+
+```powershell
+$env:PYTHONPATH = "<当前检出>/src"   # 需要当前检出候选源码时
+& "<共享 .venv>/Scripts/python.exe" -P -m engineering_ci.tools.consumer --consumer <消费者目录>
+```
+
+```sh
+PYTHONPATH="<当前检出>/src" "<共享 .venv>/bin/python" -P -m engineering_ci.tools.consumer --consumer <消费者目录>
+```
+
+标准入口 `uv run --locked --no-sync python -P -m engineering_ci.tools.consumer ...` 在 `UV_PROJECT_ENVIRONMENT` 指向共享环境时同样适用。若改用其他解释器启动（例如系统 `python` 加 `PYTHONPATH`），工具无法从解释器前缀识别宿主环境，须在同一命令作用域清除 ECI 绑定，或把 `UV_PROJECT_ENVIRONMENT` 改指消费者自己的环境后再启动：
+
+```powershell
+Remove-Item Env:UV_PROJECT_ENVIRONMENT, Env:UV_PROJECT, Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+$env:PYTHONPATH = "<当前检出>/src"
+python -P -m engineering_ci.tools.consumer --consumer <消费者目录>
+# 或仅把本次调用的消费者目标环境改指消费者自己的环境：
+# $env:UV_PROJECT_ENVIRONMENT = "<消费者目录>/.venv"
+# & "<共享 .venv>/Scripts/python.exe" -P -m engineering_ci.tools.consumer --consumer <消费者目录>
+```
+
+```sh
+env -u UV_PROJECT_ENVIRONMENT -u UV_PROJECT -u VIRTUAL_ENV \
+  PYTHONPATH="<当前检出>/src" python -P -m engineering_ci.tools.consumer --consumer <消费者目录>
+```
 
 查看状态并核对或准备版本（消费端始终携带 `--no-sync`，避免触发隐式同步改写共享环境的 editable `.pth` 或误删超集包）；例如准备 v0.7.0：
 

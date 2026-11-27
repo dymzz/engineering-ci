@@ -350,6 +350,34 @@ class VersionSyncTests(unittest.TestCase):
                 (out_of_repo_eci_venv / "Scripts").resolve(), implicit_path_parts
             )
 
+            # 4. External shared env equal to the active interpreter prefix is the
+            #    host session, not a consumer target.
+            shared_host = tmp / "external-shared-host"
+            (shared_host / "Scripts").mkdir(parents=True)
+            try:
+                sys.prefix = str(shared_host)
+                sys.base_prefix = str(tmp / "system-python")
+                host_env = clean_git_env()
+                host_env["UV_PROJECT_ENVIRONMENT"] = str(shared_host)
+                host_env["VIRTUAL_ENV"] = str(shared_host)
+                host_env["PATH"] = os.pathsep.join(
+                    [str(shared_host / "Scripts"), host_env.get("PATH", "")]
+                )
+                sanitized_host = sync.consumer_subprocess_env(
+                    eci_linked, consumer, base_env=host_env
+                )
+            finally:
+                sys.prefix = orig_prefix
+                sys.base_prefix = orig_base_prefix
+            self.assertNotIn("UV_PROJECT_ENVIRONMENT", sanitized_host)
+            self.assertNotIn("VIRTUAL_ENV", sanitized_host)
+            host_path_parts = {
+                Path(p).resolve()
+                for p in sanitized_host.get("PATH", "").split(os.pathsep)
+                if p
+            }
+            self.assertNotIn((shared_host / "Scripts").resolve(), host_path_parts)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,12 +60,29 @@ def _matching_env_keys(env: Mapping[str, str], target: str) -> list[str]:
     return [target] if target in env else []
 
 
+def _is_host_session_path(
+    resolved: Path, *, active_prefix: Path | None, consumer: Path
+) -> bool:
+    """Return whether ``resolved`` is this tool's host env, not a consumer target."""
+    return (
+        active_prefix is not None
+        and resolved == active_prefix
+        and not (resolved == consumer or resolved.is_relative_to(consumer))
+    )
+
+
 def consumer_subprocess_env(
     source: Path,
     consumer: Path,
     base_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Strip inherited ECI session env bindings while preserving intentional consumer targets."""
+    """Strip inherited ECI session env bindings while preserving intentional consumer targets.
+
+    The active interpreter prefix is the host environment running this tool, so a
+    shared environment resolving to that prefix is stripped even when it lives
+    outside the ECI checkout family. Any other ``UV_PROJECT_ENVIRONMENT`` path
+    remains the consumer's intentional target.
+    """
     env = dict(os.environ if base_env is None else base_env)
     src_root = source.resolve()
     cons_root = consumer.resolve()
@@ -87,7 +104,15 @@ def consumer_subprocess_env(
                     if resolved_env is not None and resolved_env not in stripped_envs:
                         stripped_envs.append(resolved_env)
             elif target == "UV_PROJECT_ENVIRONMENT" and val:
-                kept_uv_env = _resolved_optional_path(val)
+                resolved_env = _resolved_optional_path(val)
+                if resolved_env is not None and _is_host_session_path(
+                    resolved_env, active_prefix=active_prefix, consumer=cons_root
+                ):
+                    env.pop(key, None)
+                    if resolved_env not in stripped_envs:
+                        stripped_envs.append(resolved_env)
+                else:
+                    kept_uv_env = resolved_env
 
     for key in _matching_env_keys(env, "VIRTUAL_ENV"):
         venv_val = env.get(key)
@@ -95,11 +120,9 @@ def consumer_subprocess_env(
             continue
         resolved_venv = _resolved_optional_path(venv_val)
         implicit_out_of_repo_eci = (
-            active_prefix is not None
-            and resolved_venv is not None
-            and resolved_venv == active_prefix
-            and not (
-                resolved_venv == cons_root or resolved_venv.is_relative_to(cons_root)
+            resolved_venv is not None
+            and _is_host_session_path(
+                resolved_venv, active_prefix=active_prefix, consumer=cons_root
             )
             and resolved_venv != kept_uv_env
         )

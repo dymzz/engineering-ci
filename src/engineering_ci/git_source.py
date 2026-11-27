@@ -73,8 +73,9 @@ def shared_git_common_dir(checkout, candidate):
     """Prove that two checkout roots share one Git common directory.
 
     This is strictly weaker than :func:`registered_worktree` (for example under
-    ``--separate-git-dir`` without ``core.worktree``) and is only for local
-    diagnostic guards, never for Dagger module admission.
+    ``--separate-git-dir`` without ``core.worktree``). Callers may use it for
+    non-authorizing local diagnostics and environment attribution. It must not
+    replace :func:`registered_worktree` for Dagger module admission.
     """
     env = _clean_git_env()
     try:
