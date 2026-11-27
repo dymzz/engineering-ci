@@ -1121,17 +1121,36 @@ def test_reconcile_rejects_negative_tampered_captures():
         )
 
 
-def _docker_and_dagger_available() -> bool:
-    if os.environ.get("ECI_SKIP_LIVE_COLLECTOR_TESTS") == "1":
-        return False
-    if not shutil.which("docker") or not shutil.which("dagger"):
-        return False
+def _live_collector_opt_in() -> bool:
+    """True only when the operator explicitly requests live collector E2E."""
+    return (
+        os.environ.get("ECI_RUN_LIVE_COLLECTOR_TESTS") == "1"
+        and os.environ.get("ECI_SKIP_LIVE_COLLECTOR_TESTS") != "1"
+    )
+
+
+def _require_live_collector_deps() -> None:
+    """Fail closed when opt-in is set but Docker/Dagger/image deps are missing."""
+    missing = []
+    if not shutil.which("docker"):
+        missing.append("docker on PATH")
+    if not shutil.which("dagger"):
+        missing.append("dagger on PATH")
+    if missing:
+        pytest.fail(
+            "ECI_RUN_LIVE_COLLECTOR_TESTS=1 but live collector deps are missing: "
+            + ", ".join(missing)
+        )
     probe = subprocess.run(
         ["docker", "image", "inspect", gr.COLLECTOR_CONTRIB_REF],
         capture_output=True,
         check=False,
     )
-    return probe.returncode == 0
+    if probe.returncode != 0:
+        pytest.fail(
+            "ECI_RUN_LIVE_COLLECTOR_TESTS=1 but docker image "
+            f"{gr.COLLECTOR_CONTRIB_REF!r} is not available locally"
+        )
 
 
 class _RecordingOtlpTraceServer(trace_service_pb2_grpc.TraceServiceServicer):
@@ -1242,11 +1261,12 @@ def _run_dagger_weaver(
 
 
 @pytest.mark.skipif(
-    not _docker_and_dagger_available(),
-    reason="Requires Docker with pinned otelcol-contrib image and Dagger CLI",
+    not _live_collector_opt_in(),
+    reason="Set ECI_RUN_LIVE_COLLECTOR_TESTS=1 to run Docker + Dagger live collector E2E",
 )
 def test_live_collector_to_otlp_to_weaver_v1_45_0_e2e():
     """Live E2E: official otelcol-contrib:0.165.0 + pinned SemConv v1.45.0 Weaver."""
+    _require_live_collector_deps()
     work_root = ROOT / ".artifacts" / "pytest-githubreceiver-e2e"
     if work_root.exists():
         shutil.rmtree(work_root)
