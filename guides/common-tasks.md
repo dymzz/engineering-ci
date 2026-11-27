@@ -95,25 +95,29 @@ uv run --locked --no-sync engineering-ci version set v0.7.0
 本仓根 `pytest` / `python -m pytest` 每次正常调用会在
 `.artifacts/pytest/<invocation-id>/` 自动保留原生 `pytest-reportlog.jsonl`
 （pytest-reportlog）、`junit.xml`，以及 `metadata.json`（配置时）与 `summary.json`
-（结束时）。summary 分别记录原生 `exitstatus`、`selection`（选中/未选 node ID 清册）、
-`collection`（是否完整、收集错误、usage/interrupt/internal 信号）与 `execution`：
-后者以原生 `pytest_runtest_logstart`/`logfinish` 表达已启动/结束，setup/call/teardown
-report 仅作阶段结果（`phase_counts`），并保留 selected-but-not-started、started-not-finished
-及重复实例多重性；`report_delivery` 记录逐件可用性/同次归属；collect-only 标
-`execution.status=not_run`，不当作执行通过。
+（结束时）。summary 分别记录阶段 `exitstatus`（`exitstatus_scope=pytest_sessionfinish_hook_stage`）、
+`selection`（选中/未选 node ID 清册）、`collection`（是否完整、收集错误、usage/interrupt/internal
+信号）与 `execution`：后者以原生 `pytest_runtest_logstart`/`logfinish` 表达已启动/结束，
+setup/call/teardown report 仅作阶段结果（`phase_counts`），并保留 selected-but-not-started、
+started-not-finished 及重复实例多重性；collect-only 标 `execution.status=not_run`，不当作执行通过。
+sessionfinish 原生 writer 异常记录在 `writer_exception`；`native_exit_observation` 在进程内把
+`outer_process_exit` 标为 `unknown`，真实进程退出由外层调用者观察，二者不互相替代。
 `collection_finish` 的 finally 回调及“无 failed CollectReport”不等于收集成功；异常退出或
-未正常返回时标 `unknown`/`incomplete`。`report_complete` 只表示整体报告封存成功，
-`report_delivery.native_artifacts_available` 只表示原生文件可用，二者不互相替代。
-历史 `report.jsonl` 目录不迁移、保持可读。
-显式传入的 `--report-log` / `--junitxml` 路径不被覆盖；这类目录外路径只验证文件存在与
-原生格式，不能证明同次归属时 `report_delivery` 标 `unknown`，不声明完整。`--durations`
-默认值由根 `addopts` 提供，显式 CLI 仍覆盖。可用 `ECI_PYTEST_NO_AUTO_REPORT=1` 或
-`--eci-no-auto-report` 关闭。报告是本地观察：`outer_invocation_ref` 为 `unknown`、
-不证明外层 Invocation/Receipt；未观察到选择范围时标 `unknown`，不把事件行数当用例数。
-报告交付缺失或无法验证以 `report_delivery.status` 独立表达，不改变原生退出，也不能当作
-通过。本仓 Dagger self-test 会加载 `tests/conftest.py`，容器内可能生成同样本地报告但不
-导出；Dagger/CI 原生报告导出仍归 #167 R3/#86。报告文件仅在本机 `.artifacts/`（已忽略）
-保留，不上传、不作为发布证据；共享或上传时按
+未正常返回时标 `unknown`/`incomplete`。
+报告交付分别表达：`report_sealed` 仅表示 summary 封存成功；`report_delivery.status` 为
+`limited`/`unknown`/`incomplete`/`failed`；`native_artifacts_available` 仅表示文件存在且非空
+（物理可用），`limited_checks_passed` 仅表示定向末尾/格式检查通过，`content_completeness`
+恒为 `unverified`（本插件不做完整内容解析），`attribution_verified` 表示同次目录归属。
+显式传入的 `--report-log` / `--junitxml` 路径不被覆盖；JUnit 路径按 pytest 原生
+`expanduser`/`expandvars` 展开；不能证明同次归属时 `report_delivery.status=unknown`，
+不声明完整。历史 `report.jsonl` 目录不迁移、保持可读。`--durations` 默认值由根
+`addopts` 提供，显式 CLI 仍覆盖。可用
+`ECI_PYTEST_NO_AUTO_REPORT=1` 或 `--eci-no-auto-report` 关闭。报告是本地观察：
+`outer_invocation_ref` 为 `unknown`、不证明外层 Invocation/Receipt；未观察到选择范围时标
+`unknown`，不把事件行数当用例数。报告交付缺失或无法验证以 `report_delivery.status` 独立
+表达，不能当作通过。本仓 Dagger self-test 会加载 `tests/conftest.py`，容器内可能生成同样
+本地报告但不导出；Dagger/CI 原生报告导出仍归 #167 R3/#86。报告文件仅在本机 `.artifacts/`
+（已忽略）保留，不上传、不作为发布证据；共享或上传时按
 [#48](https://github.com/dymzz/engineering-ci/issues/48) 敏感信息出口合同处理。不另起报告
 服务，也不改变消费者通用 Dagger `_run_pytest`。
 检查当前目录快照。完成修改后用原生 Git 审阅并提交本次内容；

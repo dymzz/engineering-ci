@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -21,7 +20,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = REPO_ROOT / "tests"
-REPORT_LINE = re.compile(r"ECI pytest report\b.*?dir=(?P<directory>\S+)")
 
 BODY_OK = (
     "import pytest\n"
@@ -86,6 +84,17 @@ BODY_SETUP_INTERRUPT = (
 BODY_COLLECTION_INTERRUPT = "raise KeyboardInterrupt\n"
 BODY_DUPLICATES = (
     "def test_first():\n    assert True\n\ndef test_second():\n    assert True\n"
+)
+BODY_WRITER_FAILURE_CONFTEST = (
+    "from pathlib import Path\n"
+    "\n"
+    "def pytest_sessionstart(session):\n"
+    "    target = session.config.option.xmlpath\n"
+    "    if target:\n"
+    "        path = Path(target)\n"
+    "        if path.exists():\n"
+    "            path.unlink()\n"
+    "        path.mkdir(parents=True, exist_ok=True)\n"
 )
 BODY_FILTER = (
     "def test_keep():\n    assert True\n"
@@ -213,9 +222,14 @@ def _run_pytest(
 
 def _report_dir(result: subprocess.CompletedProcess) -> Path:
     combined = result.stdout + result.stderr
-    match = REPORT_LINE.search(combined)
-    assert match is not None, combined
-    return Path(match.group("directory").strip())
+    for line in combined.splitlines():
+        if "ECI pytest report" not in line or "dir=" not in line:
+            continue
+        _, _, tail = line.partition("dir=")
+        candidate = tail.strip().rstrip("=").strip()
+        if candidate:
+            return Path(candidate)
+    raise AssertionError(combined)
 
 
 def _read_json(path: Path) -> dict:
@@ -252,9 +266,17 @@ def test_serial_invocation_records_native_reports_and_selection(tmp_path):
     assert summary["pytest_version"] == pytest.__version__
     assert summary["exitstatus"] == 0
     assert summary["session_finished"] is True
-    assert summary["report_complete"] is True
-    assert summary["report_delivery"]["status"] == "complete"
-    assert summary["report_delivery"]["native_artifacts_available"] is True
+    assert summary["report_sealed"] is True
+    delivery = summary["report_delivery"]
+    assert delivery["status"] == "limited"
+    assert delivery["native_artifacts_available"] is True
+    assert delivery["limited_checks_passed"] is True
+    assert delivery["attribution_verified"] is True
+    assert delivery["content_completeness"] == "unverified"
+    assert delivery["report_sealed"] is True
+    assert "report_complete" not in delivery
+    assert summary["native_exit_observation"]["status"] == "unknown_in_process"
+    assert summary["native_exit_observation"]["outer_process_exit"] is None
     assert summary["source_observation"]["status"] == "unknown"
     assert summary["invocation_binding"]["outer_invocation_ref"] is None
 
@@ -296,6 +318,16 @@ def test_serial_invocation_records_native_reports_and_selection(tmp_path):
     assert phase_counts["setup"] == {"passed": 2}
     assert phase_counts["call"] == {"passed": 1, "skipped": 1}
     assert phase_counts["teardown"] == {"passed": 2}
+
+
+def test_report_directory_with_spaces_is_parsed(tmp_path):
+    root = _probe_root(tmp_path / "space dir")
+    result = _run_probe(root, BODY_OK)
+    assert result.returncode == 0, result.stdout + result.stderr
+    invocation = _report_dir(result)
+    assert "space dir" in str(invocation)
+    assert (invocation / "summary.json").is_file()
+    assert (invocation / "pytest-reportlog.jsonl").is_file()
 
 
 def test_two_invocations_use_distinct_directories(tmp_path):
@@ -349,8 +381,12 @@ def test_explicit_native_report_paths_are_not_overwritten(tmp_path):
     assert not (invocation / "junit.xml").exists()
     delivery = summary["report_delivery"]
     assert delivery["status"] == "unknown"
-    assert summary["report_complete"] is False
-    assert delivery["native_artifacts_available"] is False
+    assert summary["report_sealed"] is True
+    assert delivery["native_artifacts_available"] is True
+    assert delivery["limited_checks_passed"] is True
+    assert delivery["attribution_verified"] is False
+    assert delivery["content_completeness"] == "unverified"
+    assert "report_complete" not in delivery
     assert delivery["artifacts"]["report_log"]["attribution"] == (
         "explicit_path_unverified"
     )
@@ -359,6 +395,88 @@ def test_explicit_native_report_paths_are_not_overwritten(tmp_path):
     )
     assert delivery["artifacts"]["report_log"]["status"] == "unknown"
     assert delivery["artifacts"]["junit_xml"]["status"] == "unknown"
+
+
+def test_explicit_junit_path_matches_native_expansion(tmp_path):
+    root = _probe_root(tmp_path)
+    target = tmp_path / "expanded junit.xml"
+    token = "%ECI_JUNIT_TARGET%" if os.name == "nt" else "${ECI_JUNIT_TARGET}"
+    result = _run_probe(
+        root,
+        BODY_OK,
+        f"--junitxml={token}",
+        env_overrides={"ECI_JUNIT_TARGET": str(target)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = _read_json(_report_dir(result) / "summary.json")
+    assert Path(summary["junit_xml"]) == target
+    assert target.is_file()
+    delivery = summary["report_delivery"]
+    assert delivery["status"] == "unknown"
+    assert delivery["native_artifacts_available"] is True
+    assert delivery["artifacts"]["junit_xml"]["exists"] is True
+    assert "junit_xml" not in delivery["missing"]
+
+
+def test_explicit_junit_writer_failure_records_outcome_and_native_exit(tmp_path):
+    root = _probe_root(tmp_path)
+    target = tmp_path / "explicit-junit.xml"
+    (root / "conftest.py").write_text(BODY_WRITER_FAILURE_CONFTEST, encoding="utf-8")
+    result = _run_probe(root, BODY_OK, f"--junitxml={target}")
+    assert result.returncode == 1, result.stdout + result.stderr
+    invocation = _report_dir(result)
+    summary = _read_json(invocation / "summary.json")
+    metadata = _read_json(invocation / "metadata.json")
+    assert metadata["phase"] == "configured"
+    assert summary["phase"] == "finished"
+    assert Path(summary["junit_xml"]) == target
+    assert summary["exitstatus"] == 0
+    assert summary["exitstatus_scope"] == "pytest_sessionfinish_hook_stage"
+    assert summary["session_exitstatus"] == 0
+    writer_exception = summary["writer_exception"]
+    assert writer_exception is not None
+    assert writer_exception["type"] in {
+        "IsADirectoryError",
+        "PermissionError",
+        "OSError",
+    }
+    assert summary["native_exit_observation"]["status"] == "unknown_in_process"
+    assert summary["native_exit_observation"]["outer_process_exit"] is None
+    assert summary["native_exit_observation"]["writer_exception"] == writer_exception
+    assert summary["report_sealed"] is True
+    delivery = summary["report_delivery"]
+    assert delivery["writer_exception"] == writer_exception
+    assert delivery["native_artifacts_available"] is False
+    assert "junit_xml" in delivery["missing"]
+    assert delivery["status"] == "incomplete"
+
+
+def test_auto_junit_writer_failure_records_outcome_and_native_exit(tmp_path):
+    root = _probe_root(tmp_path)
+    (root / "conftest.py").write_text(BODY_WRITER_FAILURE_CONFTEST, encoding="utf-8")
+    result = _run_probe(root, BODY_OK)
+    assert result.returncode == 1, result.stdout + result.stderr
+    invocation = _report_dir(result)
+    summary = _read_json(invocation / "summary.json")
+    metadata = _read_json(invocation / "metadata.json")
+    assert metadata["phase"] == "configured"
+    assert summary["phase"] == "finished"
+    assert summary["exitstatus"] == 0
+    writer_exception = summary["writer_exception"]
+    assert writer_exception is not None
+    assert writer_exception["type"] in {
+        "IsADirectoryError",
+        "PermissionError",
+        "OSError",
+    }
+    assert summary["native_exit_observation"]["outer_process_exit"] is None
+    assert summary["native_exit_observation"]["writer_exception"] == writer_exception
+    assert summary["report_sealed"] is True
+    delivery = summary["report_delivery"]
+    assert delivery["writer_exception"] == writer_exception
+    assert delivery["native_artifacts_available"] is False
+    assert "junit_xml" in delivery["missing"]
+    assert delivery["status"] == "incomplete"
 
 
 def test_collect_only_records_selection_without_execution(tmp_path):
@@ -375,8 +493,8 @@ def test_collect_only_records_selection_without_execution(tmp_path):
         "tests/test_probe.py::test_ok",
         "tests/test_probe.py::test_skip",
     ]
-    assert summary["report_complete"] is True
-    assert summary["report_delivery"]["status"] == "complete"
+    assert summary["report_sealed"] is True
+    assert summary["report_delivery"]["status"] == "limited"
     assert (invocation / "pytest-reportlog.jsonl").is_file()
     execution = summary["execution"]
     assert execution["mode"] == "collect_only"
@@ -396,7 +514,7 @@ def test_no_tests_collected_preserves_native_exit(tmp_path):
     assert summary["session_finished"] is True
     assert summary["selection"]["selected_items"] == 0
     assert summary["selection"]["selected_node_ids"] == []
-    assert summary["report_delivery"]["status"] == "complete"
+    assert summary["report_delivery"]["status"] == "limited"
     execution = summary["execution"]
     assert execution["status"] == "empty"
     assert execution["unknown_reasons"] == ["no_selected_items"]
@@ -409,7 +527,7 @@ def test_failed_and_errored_sessions_keep_native_exit(tmp_path):
     assert failed.returncode == 1, failed.stdout + failed.stderr
     failed_summary = _read_json(_report_dir(failed) / "summary.json")
     assert failed_summary["exitstatus"] == 1
-    assert failed_summary["report_delivery"]["status"] == "complete"
+    assert failed_summary["report_delivery"]["status"] == "limited"
     assert failed_summary["execution"]["status"] == "complete"
     assert failed_summary["execution"]["started_items"] == 1
     assert failed_summary["execution"]["completed_items"] == 1
@@ -419,7 +537,7 @@ def test_failed_and_errored_sessions_keep_native_exit(tmp_path):
     assert errored.returncode == 1, errored.stdout + errored.stderr
     error_summary = _read_json(_report_dir(errored) / "summary.json")
     assert error_summary["exitstatus"] == 1
-    assert error_summary["report_delivery"]["status"] == "complete"
+    assert error_summary["report_delivery"]["status"] == "limited"
     assert error_summary["execution"]["status"] == "complete"
     assert error_summary["execution"]["started_items"] == 1
     assert error_summary["execution"]["completed_items"] == 1
@@ -514,7 +632,7 @@ def test_keyboard_interrupt_preserves_native_exit(tmp_path):
     summary = _read_json(_report_dir(result) / "summary.json")
     assert summary["exitstatus"] == 2
     assert summary["session_finished"] is True
-    assert summary["report_delivery"]["status"] == "complete"
+    assert summary["report_delivery"]["status"] == "limited"
     execution = summary["execution"]
     assert execution["status"] == "incomplete"
     assert execution["started_items"] == 1
@@ -597,7 +715,7 @@ def test_duplicate_selection_preserves_instances(tmp_path):
     assert execution["started_items"] == 2
     assert execution["completed_items"] == 2
     assert execution["duplicate_node_ids"] == ["tests/test_probe.py::test_second"]
-    assert summary["report_delivery"]["status"] == "complete"
+    assert summary["report_delivery"]["status"] == "limited"
 
 
 def test_keyword_selection_and_deselection_are_recorded(tmp_path):
@@ -740,7 +858,7 @@ def test_sealing_failure_keeps_native_session_and_separates_delivery(
     plugin.finished_order.append("tests/test_probe.py::test_ok")
     session = SimpleNamespace(exitstatus=1, config=config)
 
-    plugin._finalize(session)
+    plugin._finalize(session, hook_exitstatus=1, outcome=SimpleNamespace(excinfo=None))
 
     assert session.exitstatus == 1
     assert not (invocation / "summary.json").exists()
@@ -748,11 +866,15 @@ def test_sealing_failure_keeps_native_session_and_separates_delivery(
     assert metadata["phase"] == "delivery_failed"
     assert metadata["session_finished"] is True
     assert metadata["exitstatus"] == 1
-    assert metadata["report_complete"] is False
+    assert metadata["report_sealed"] is False
+    assert metadata["writer_exception"] is None
+    assert metadata["native_exit_observation"]["status"] == "unknown_in_process"
     assert metadata["report_delivery"]["status"] == "failed"
     assert metadata["report_delivery"]["native_artifacts_available"] is True
+    assert metadata["report_delivery"]["limited_checks_passed"] is True
+    assert metadata["report_delivery"]["content_completeness"] == "unverified"
     assert metadata["report_delivery"]["summary_seal"] == "failed"
-    assert metadata["report_delivery"]["native_exit_preserved"] is True
+    assert metadata["report_delivery"]["report_sealed"] is False
     assert "report_complete" not in metadata["report_delivery"]
     assert metadata["execution"]["status"] == "complete"
     assert any("delivery failed" in line for line in reporter.lines)
@@ -780,10 +902,12 @@ def test_missing_native_artifact_marks_report_incomplete(tmp_path):
     delivery = plugin._delivery(0)
     assert delivery["status"] == "incomplete"
     assert delivery["native_artifacts_available"] is False
+    assert delivery["limited_checks_passed"] is False
+    assert delivery["content_completeness"] == "unverified"
     assert delivery["missing"] == ["junit_xml"]
     assert delivery["unknown"] == ["report_log"]
     assert delivery["artifacts"]["report_log"]["session_finish_observed"] is False
-    assert delivery["native_exit_preserved"] is True
+    assert "native_exit_preserved" not in delivery
 
 
 def test_invalid_native_artifacts_are_not_complete(tmp_path):
@@ -806,10 +930,44 @@ def test_invalid_native_artifacts_are_not_complete(tmp_path):
     plugin = report_plugin._InvocationReportPlugin(meta)
     delivery = plugin._delivery(0)
     assert delivery["status"] == "incomplete"
-    assert delivery["native_artifacts_available"] is False
+    assert delivery["native_artifacts_available"] is True
+    assert delivery["limited_checks_passed"] is False
+    assert delivery["content_completeness"] == "unverified"
     assert set(delivery["invalid"]) == {"report_log", "junit_xml"}
     assert delivery["artifacts"]["report_log"]["status"] == "invalid"
     assert delivery["artifacts"]["junit_xml"]["status"] == "invalid"
+
+
+def test_corrupt_prefix_is_only_a_limited_check(tmp_path):
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    reportlog = invocation / "pytest-reportlog.jsonl"
+    reportlog.write_text(
+        "not-json\n"
+        + json.dumps({"$report_type": "SessionFinish", "exitstatus": 0})
+        + "\n",
+        encoding="utf-8",
+    )
+    junit = invocation / "junit.xml"
+    junit.write_text("<testsuites/>\n", encoding="utf-8")
+    config = _stub_config(tmp_path, _Reporter())
+    meta = report_plugin._build_meta(
+        config,
+        invocation_id="probe-invocation",
+        out_dir=invocation,
+        report_log=reportlog,
+        junit_xml=junit,
+        report_log_explicit=False,
+        junit_explicit=False,
+    )
+    plugin = report_plugin._InvocationReportPlugin(meta)
+    delivery = plugin._delivery(0)
+    assert delivery["status"] == "limited"
+    assert delivery["native_artifacts_available"] is True
+    assert delivery["limited_checks_passed"] is True
+    assert delivery["attribution_verified"] is True
+    assert delivery["content_completeness"] == "unverified"
+    assert "report_complete" not in delivery
 
 
 def test_duplicate_node_ids_use_multiset_lifecycle(tmp_path):

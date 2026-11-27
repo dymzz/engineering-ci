@@ -86,6 +86,12 @@ def _eci_repo_root(config) -> Path | None:
     return root
 
 
+def _native_junit_path(raw: str) -> Path:
+    """Mirror pytest's native JUnit writer path expansion exactly."""
+    expanded = os.path.expanduser(os.path.expandvars(str(raw)))
+    return Path(os.path.abspath(os.path.normpath(expanded)))
+
+
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     """Seal a JSON document without leaving a partial completion receipt."""
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -176,6 +182,9 @@ def _inspect_report_log(
         "non_empty": False,
         "bytes": None,
         "format": "unknown",
+        "limited_checks_passed": False,
+        "limited_check_scope": "reportlog_tail_session_finish_and_exit_match",
+        "content_completeness": "unverified",
         "session_finish_observed": False,
         "exitstatus_match": None,
         "status": "missing",
@@ -222,11 +231,12 @@ def _inspect_report_log(
         info["status"] = "conflict"
         info["reasons"] = ["exitstatus_mismatch"]
         return info
+    info["limited_checks_passed"] = True
     if info["attribution"] != "colocated_invocation_dir":
         info["status"] = "unknown"
         info["reasons"] = ["attribution_unverified"]
         return info
-    info["status"] = "complete"
+    info["status"] = "limited_ok"
     info["reasons"] = []
     return info
 
@@ -241,6 +251,9 @@ def _inspect_junit(path: Path, out_dir: Path, *, explicit: bool) -> dict[str, An
         "non_empty": False,
         "bytes": None,
         "format": "unknown",
+        "limited_checks_passed": False,
+        "limited_check_scope": "junit_root_parse",
+        "content_completeness": "unverified",
         "root_tag": None,
         "status": "missing",
         "reasons": ["missing"],
@@ -272,17 +285,22 @@ def _inspect_junit(path: Path, out_dir: Path, *, explicit: bool) -> dict[str, An
         info["status"] = "invalid"
         info["reasons"] = ["unexpected_junit_root"]
         return info
+    info["limited_checks_passed"] = True
     if info["attribution"] != "colocated_invocation_dir":
         info["status"] = "unknown"
         info["reasons"] = ["attribution_unverified"]
         return info
-    info["status"] = "complete"
+    info["status"] = "limited_ok"
     info["reasons"] = []
     return info
 
 
 def _overall_delivery(
-    report_log: dict[str, Any], junit: dict[str, Any]
+    report_log: dict[str, Any],
+    junit: dict[str, Any],
+    *,
+    writer_exception: dict[str, str] | None = None,
+    summary_seal: str = "ok",
 ) -> dict[str, Any]:
     artifacts = {"report_log": report_log, "junit_xml": junit}
     missing = [
@@ -296,12 +314,23 @@ def _overall_delivery(
         if info["status"] in {"invalid", "conflict"}
     ]
     unknown = [name for name, info in artifacts.items() if info["status"] == "unknown"]
-    if missing or invalid:
+    physical_available = all(
+        info["exists"] and info["non_empty"] for info in artifacts.values()
+    )
+    limited_checks_passed = all(
+        info["limited_checks_passed"] for info in artifacts.values()
+    )
+    attribution_verified = all(
+        info["attribution"] == "colocated_invocation_dir" for info in artifacts.values()
+    )
+    if summary_seal == "failed":
+        status = "failed"
+    elif missing or invalid:
         status = "incomplete"
-    elif unknown:
+    elif unknown or not attribution_verified:
         status = "unknown"
     else:
-        status = "complete"
+        status = "limited"
     errors = [
         f"{name}: {reason}"
         for name, info in artifacts.items()
@@ -309,14 +338,21 @@ def _overall_delivery(
     ]
     return {
         "status": status,
-        "native_artifacts_available": status == "complete",
+        "report_sealed": summary_seal == "ok",
+        "native_artifacts_available": physical_available,
+        "limited_checks_passed": limited_checks_passed,
+        "limited_check_scope": [
+            info["limited_check_scope"] for info in artifacts.values()
+        ],
+        "content_completeness": "unverified",
+        "attribution_verified": attribution_verified,
         "missing": missing,
         "invalid": invalid,
         "unknown": unknown,
         "artifacts": artifacts,
         "errors": errors,
-        "native_exit_preserved": True,
-        "summary_seal": "ok",
+        "writer_exception": writer_exception,
+        "summary_seal": summary_seal,
     }
 
 
@@ -420,7 +456,7 @@ def pytest_configure(config):
         Path(existing_log).resolve() if existing_log else out_dir / _REPORT_LOG_NAME
     )
     junit_xml = (
-        Path(existing_junit).resolve() if existing_junit else out_dir / _JUNIT_NAME
+        _native_junit_path(existing_junit) if existing_junit else out_dir / _JUNIT_NAME
     )
 
     try:
@@ -527,9 +563,9 @@ class _InvocationReportPlugin:
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_sessionfinish(self, session, exitstatus) -> None:
-        yield
+        outcome = yield
         try:
-            self._finalize(session)
+            self._finalize(session, hook_exitstatus=exitstatus, outcome=outcome)
         except Exception as exc:  # noqa: BLE001 - never mask the native exit
             _emit(
                 session.config,
@@ -721,7 +757,12 @@ class _InvocationReportPlugin:
             "unknown_reasons": reasons,
         }
 
-    def _delivery(self, exitstatus: int) -> dict[str, Any]:
+    def _delivery(
+        self,
+        exitstatus: int,
+        *,
+        writer_exception: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         meta = self.meta
         out_dir = Path(meta["out_dir"])
         report_log = _inspect_report_log(
@@ -735,27 +776,51 @@ class _InvocationReportPlugin:
             out_dir,
             explicit=bool(meta["junit_explicit"]),
         )
-        return _overall_delivery(report_log, junit_xml)
+        return _overall_delivery(
+            report_log,
+            junit_xml,
+            writer_exception=writer_exception,
+        )
 
-    def _finalize(self, session) -> None:
+    def _finalize(self, session, *, hook_exitstatus, outcome) -> None:
         config = session.config
         meta = self.meta
         finished_mono = time.perf_counter()
         wall_time = finished_mono - float(meta["started_mono"])
-        exitstatus = int(session.exitstatus)
+        writer_exception: dict[str, str] | None = None
+        if outcome.excinfo is not None:
+            exc_type, exc_value = outcome.excinfo[0], outcome.excinfo[1]
+            writer_exception = {
+                "type": exc_type.__name__,
+                "message": str(exc_value)[:500],
+            }
+        exitstatus = int(hook_exitstatus)
+        session_exitstatus = int(session.exitstatus)
         collection = self._collection(exitstatus)
         selection = self._selection(config, exitstatus)
         execution = self._execution(config, exitstatus)
-        delivery = self._delivery(exitstatus)
+        delivery = self._delivery(exitstatus, writer_exception=writer_exception)
         finished_at_unix = time.time()
+        native_exit_observation = {
+            "status": "unknown_in_process",
+            "source": "pytest_sessionfinish_hook_stage",
+            "stage_exitstatus": exitstatus,
+            "session_exitstatus": session_exitstatus,
+            "outer_process_exit": None,
+            "writer_exception": writer_exception,
+        }
         summary = {
             **meta,
             "phase": "finished",
             "session_finished": True,
-            "report_complete": delivery["status"] == "complete",
+            "report_sealed": True,
             "finished_at_unix": finished_at_unix,
             "wall_time_seconds": round(wall_time, 3),
             "exitstatus": exitstatus,
+            "exitstatus_scope": "pytest_sessionfinish_hook_stage",
+            "session_exitstatus": session_exitstatus,
+            "writer_exception": writer_exception,
+            "native_exit_observation": native_exit_observation,
             "selection": selection,
             "collection": collection,
             "execution": execution,
@@ -786,6 +851,8 @@ class _InvocationReportPlugin:
                 selection=selection,
                 collection=collection,
                 execution=execution,
+                session_exitstatus=session_exitstatus,
+                writer_exception=writer_exception,
             )
             return
 
@@ -804,7 +871,7 @@ class _InvocationReportPlugin:
             print(detail)
         _emit(config, f"reportlog: {meta['report_log']}")
         _emit(config, f"junit:     {meta['junit_xml']}")
-        if delivery["status"] != "complete":
+        if delivery["status"] != "limited":
             details: list[str] = []
             if delivery["missing"]:
                 details.append("missing " + ", ".join(delivery["missing"]))
@@ -816,7 +883,7 @@ class _InvocationReportPlugin:
                 config,
                 f"report delivery {delivery['status']}: "
                 + "; ".join(details)
-                + " (native exit is preserved)",
+                + " (outer process exit is not observed in-process)",
                 error=True,
             )
 
@@ -830,14 +897,28 @@ class _InvocationReportPlugin:
         selection,
         collection,
         execution,
+        session_exitstatus: int,
+        writer_exception: dict[str, str] | None,
     ) -> None:
         meta = self.meta
+        native_exit_observation = {
+            "status": "unknown_in_process",
+            "source": "pytest_sessionfinish_hook_stage",
+            "stage_exitstatus": exitstatus,
+            "session_exitstatus": session_exitstatus,
+            "outer_process_exit": None,
+            "writer_exception": writer_exception,
+        }
         failure = {
             **meta,
             "phase": "delivery_failed",
             "session_finished": True,
-            "report_complete": False,
+            "report_sealed": False,
             "exitstatus": exitstatus,
+            "exitstatus_scope": "pytest_sessionfinish_hook_stage",
+            "session_exitstatus": session_exitstatus,
+            "writer_exception": writer_exception,
+            "native_exit_observation": native_exit_observation,
             "failed_at_unix": time.time(),
             "selection": selection,
             "collection": collection,
@@ -845,6 +926,7 @@ class _InvocationReportPlugin:
             "report_delivery": {
                 **delivery,
                 "status": "failed",
+                "report_sealed": False,
                 "summary_seal": "failed",
                 "errors": [
                     *(delivery.get("errors") or []),
@@ -857,6 +939,7 @@ class _InvocationReportPlugin:
         _emit(
             config,
             "ECI pytest report delivery failed: "
-            f"{type(exc).__name__}: {exc} (native exit is preserved)",
+            f"{type(exc).__name__}: {exc} (outer process exit is not observed "
+            "in-process)",
             error=True,
         )
