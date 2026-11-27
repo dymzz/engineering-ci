@@ -133,10 +133,16 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
             --summary "$GITHUB_STEP_SUMMARY"
           )
-          if [[ "$full" == "1" ]]; then
-            args+=(--full --full-reason "$reason" --head "$HEAD_SHA")
-          else
+          if [[ "${#change_args[@]}" -gt 0 ]]; then
             args+=("${change_args[@]}")
+          fi
+          if [[ "$full" == "1" ]]; then
+            args+=(--full --full-reason "$reason")
+            # A forced full run keeps its concrete base/head when available, so
+            # the report still records the candidate identity and paths.
+            if [[ "${#change_args[@]}" -eq 0 ]]; then
+              args+=(--head "$HEAD_SHA")
+            fi
           fi
           uv run --locked --no-sync "${args[@]}"
       - name: Upload applicability decision

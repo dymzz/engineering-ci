@@ -381,6 +381,119 @@ def test_workflow_jobs_run_after_a_failed_decision_and_require_prior_steps():
     assert "change-applicability.outputs.tests" not in telemetry
 
 
+def _step_conditions(block):
+    return re.findall(r"^        if: \$\{\{ (.+) \}\}$", block, re.MULTILINE)
+
+
+def _evaluate_condition(condition, *, cancelled, setup_ok, decision_ok, outputs=None):
+    """Evaluate the workflow's own condition text for the documented truth table.
+
+    GitHub evaluates the expressions natively; this helper only substitutes the
+    exact tokens this workflow uses so the declared fallback semantics can be
+    tested without starting a failing Workflow.
+    """
+    outputs = outputs or {}
+    expr = condition.replace("${{", "").replace("}}", "").strip()
+    expr = expr.replace("!cancelled()", "False" if cancelled else "True")
+    expr = expr.replace("success()", "True" if setup_ok else "False")
+    expr = expr.replace(
+        "needs.change-applicability.result != 'success'",
+        "True" if not decision_ok else "False",
+    )
+
+    def _replace_output(match):
+        value = outputs.get(match.group(1))
+        return "True" if value != "false" else "False"
+
+    expr = re.sub(
+        r"needs\.change-applicability\.outputs\.(\w+) != 'false'",
+        _replace_output,
+        expr,
+    )
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    assert set(re.findall(r"[A-Za-z_]+", expr)) <= {
+        "True",
+        "False",
+        "and",
+        "or",
+        "not",
+    }, expr
+    return bool(eval(expr, {"__builtins__": {}}, {}))
+
+
+def test_job_fallback_truth_table():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    for job in ("python-ci", "sync-tool-tests", "version-metadata"):
+        condition = _job_block(workflow, job).split("    if: ", 1)[1].splitlines()[0]
+        assert _evaluate_condition(
+            condition, cancelled=False, setup_ok=True, decision_ok=False
+        )
+        assert not _evaluate_condition(
+            condition, cancelled=True, setup_ok=True, decision_ok=True
+        )
+
+
+def test_step_fallback_truth_table():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    lint_conditions = [
+        condition
+        for condition in _step_conditions(_job_block(workflow, "python-ci"))
+        if "outputs.lint" in condition and "outputs.format_check" not in condition
+    ]
+    # checkout, tool installation and the lint step share one fail-closed form.
+    assert lint_conditions
+    assert len(set(lint_conditions)) == 1
+    lint = lint_conditions[0]
+    scenarios = (
+        # decision failed / skipped or outputs missing: run every native check
+        (False, True, False, {}, True),
+        (False, True, True, {}, True),
+        (False, True, True, {"lint": "true"}, True),
+        # explicit false only, and only when this job's setup succeeded
+        (False, True, True, {"lint": "false"}, False),
+        (False, False, True, {"lint": "true"}, False),
+        # cancellation always prevents the step
+        (True, True, True, {"lint": "true"}, False),
+    )
+    for cancelled, setup_ok, decision_ok, outputs, expected in scenarios:
+        assert (
+            _evaluate_condition(
+                lint,
+                cancelled=cancelled,
+                setup_ok=setup_ok,
+                decision_ok=decision_ok,
+                outputs=outputs,
+            )
+            is expected
+        ), (cancelled, setup_ok, decision_ok, outputs)
+
+
+def test_version_metadata_runs_when_either_check_is_applicable():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    version_conditions = [
+        condition
+        for condition in _step_conditions(_job_block(workflow, "version-metadata"))
+        if "outputs.version" in condition
+    ]
+    assert version_conditions
+    assert len(set(version_conditions)) == 1
+    condition = version_conditions[0]
+    assert _evaluate_condition(
+        condition,
+        cancelled=False,
+        setup_ok=True,
+        decision_ok=True,
+        outputs={"version": "false", "lock": "true"},
+    )
+    assert not _evaluate_condition(
+        condition,
+        cancelled=False,
+        setup_ok=True,
+        decision_ok=True,
+        outputs={"version": "false", "lock": "false"},
+    )
+
+
 def test_reusable_call_requires_explicit_full_intent():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "full_verification:" in workflow
