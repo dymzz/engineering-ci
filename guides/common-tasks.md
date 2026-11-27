@@ -9,7 +9,7 @@
 
 | 验证目的 | 标准入口 |
 | --- | --- |
-| 开发诊断、局部反例、专项测试 | 适用的原生工具和实际测试目标 |
+| 开发诊断、局部反例、专项测试 | 适用的原生工具和实际测试目标；本仓 pytest 见[本仓 pytest 调用报告](#本仓-pytest-调用报告) |
 | 已定义的单项工程检查 | `dagger check --engineering-ci --check=...`；见[本地检查](../docs/architecture/local-checks.md) |
 | 完整本地综合验证 | [显式本地综合验证](#显式本地综合验证)：`uv run --locked --no-sync engineering-ci verify --out .artifacts/verify` |
 | Index / Ref 检查 | 原生 Git commit/push 触发 [Lefthook](#lefthook-本地入口) |
@@ -26,7 +26,7 @@
 
 ### 原生结果与验证义务对账
 
-执行后保留实际入口、受检对象、验证范围、原生退出状态、结果及可追溯引用。输出截断、Shell 管道或后续命令的成功不得覆盖原生失败。
+执行后保留实际入口、受检对象、验证范围、原生退出状态、结果及可追溯引用。输出截断、Shell 管道或后续命令的成功不得覆盖原生失败。实际产生结构化报告时，按本次执行的显式引用读取相关原生结果及交付状态，并用于适用义务对账；本仓 pytest 按[调用报告](#本仓-pytest-调用报告)执行，不只引用终端通过数量。
 
 按义务区分本次证据已证明、已有适用证据已证明、失败、未验证和有依据的不适用。Hook 对账只证明实际 Invocation 的适用范围；CI 结果只证明相应候选及实际 Job 的范围，不自动证明其他性质或受信接纳。先履行当前提交或推送前的适用本地义务，再按实际 Hook/远端结果补充后续对账；后置证据未取得前不能提前宣称全部通过。
 
@@ -92,6 +92,9 @@ uv run --locked --no-sync engineering-ci version set v0.7.0
 ```
 
 开发中的检查按上方[工程验证入口与选择](#工程验证入口与选择)执行。
+
+### 本仓 pytest 调用报告
+
 本仓根 `pytest` / `python -m pytest` 每次正常调用会在
 `.artifacts/pytest/<invocation-id>/` 自动保留原生 `pytest-reportlog.jsonl`
 （pytest-reportlog）、`junit.xml`，以及 `metadata.json`（配置时）与 `summary.json`
@@ -122,6 +125,13 @@ reportlog/JUnit 选项不会提交，显式路径仍由原生 writer 使用。`-
 （已忽略）保留，不上传、不作为发布证据；共享或上传时按
 [#48](https://github.com/dymzz/engineering-ci/issues/48) 敏感信息出口合同处理。不另起报告
 服务，也不改变消费者通用 Dagger `_run_pytest`。
+
+实际消费：从本次 pytest 输出的 `dir=` 完整路径（包括空格）或已核实的显式 Invocation 引用定位目录，保留外层实际进程退出；读取该目录的 `metadata.json`、`summary.json` 及所需原生报告，按实际义务对账目标、收集、选中/未执行、已启动/结束、失败、封存及归属。已有可用的同次报告直接复用，不按最新目录、相同 HEAD、时间接近或文件名猜测归属，不自动跟随未获授权的外部路径。未取得实际目录或报告时保留已观察退出及缺失/未知，不为补造报告再次运行 pytest。已有只读查询能力时使用其显式输入；尚未采用时直接读取上述文件，不新建解析服务。报告的有限检查和进程内观察不替代独立解析、实际退出及证据接纳。
+
+当前交付边界：本地 pytest 自动生产已接入；综合 Verify、Dagger 及 Actions 使用各自实际导出和引用，不能将容器内报告生成当作宿主交付。新增原生报告的同次导出、CI 出口与外层关联分别沿 [#167 R3/#86 原交接](https://github.com/dymzz/engineering-ci/issues/167#issuecomment-7226828756)和 [#169 消费交接](https://github.com/dymzz/engineering-ci/pull/169#issuecomment-7226830766)维护，按实际已采用版本消费，不以本地报告宣称所有入口已贯通。Live Collector 专项仍按其 opt-in 入口选择，不扩大默认验证范围。
+
+### 提交与交付
+
 检查当前目录快照。完成修改后用原生 Git 审阅并提交本次内容；
 `git add -p` 逐块选择已跟踪改动，新文件用 `git status` 中的实际路径逐个暂存。
 发布入口不会自行提交或把无关文件加入 PR。
