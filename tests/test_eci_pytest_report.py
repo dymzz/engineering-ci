@@ -33,6 +33,31 @@ BODY_OK = (
     "    pytest.skip('probe')\n"
 )
 BODY_FAIL = "def test_fail():\n    assert 1 == 2\n"
+BODY_FAIL_FIRST = (
+    "def test_fail_first():\n    assert 1 == 2\n\ndef test_second():\n    assert True\n"
+)
+BODY_COLLECTION_ERROR = "import definitely_missing_module\n"
+BODY_TEARDOWN_ERROR = (
+    "import pytest\n"
+    "\n"
+    "@pytest.fixture\n"
+    "def teardown_broken():\n"
+    "    yield\n"
+    "    raise RuntimeError('teardown boom')\n"
+    "\n"
+    "def test_teardown_error(teardown_broken):\n"
+    "    assert True\n"
+)
+BODY_SETUP_SKIP = (
+    "import pytest\n"
+    "\n"
+    "@pytest.fixture\n"
+    "def skipping():\n"
+    "    pytest.skip('setup skip')\n"
+    "\n"
+    "def test_setup_skip(skipping):\n"
+    "    assert True\n"
+)
 BODY_ERROR = (
     "import pytest\n"
     "\n"
@@ -101,8 +126,20 @@ def _run_probe(
     body: str,
     *extra: str,
     env_overrides: dict[str, str] | None = None,
+    extra_files: dict[str, str] | None = None,
+    extra_targets: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess:
-    (root / "tests" / "test_probe.py").write_text(body, encoding="utf-8")
+    files = {"test_probe.py": body}
+    if extra_files:
+        files.update(extra_files)
+    for name, content in files.items():
+        path = root / "tests" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    targets = [
+        "tests/test_probe.py",
+        *(f"tests/{name}" for name in extra_targets),
+    ]
     command = [
         sys.executable,
         "-m",
@@ -113,7 +150,7 @@ def _run_probe(
         "-p",
         "no:cacheprovider",
         f"--rootdir={root}",
-        "tests/test_probe.py",
+        *targets,
         *extra,
     ]
     return subprocess.run(
@@ -198,6 +235,14 @@ def test_serial_invocation_records_native_reports_and_selection(tmp_path):
     assert selection["collected_items"] == 2
     assert summary["selected_items"] == 2
     assert summary["deselected_items"] == 0
+    assert summary["collection"]["complete"] is True
+    execution = summary["execution"]
+    assert execution["mode"] == "run"
+    assert execution["status"] == "complete"
+    assert execution["started_items"] == 2
+    assert execution["completed_items"] == 2
+    assert execution["not_started_node_ids"] == []
+    assert execution["incomplete_node_ids"] == []
 
 
 def test_two_invocations_use_distinct_directories(tmp_path):
@@ -249,7 +294,17 @@ def test_explicit_native_report_paths_are_not_overwritten(tmp_path):
     assert explicit_junit.is_file()
     assert not (invocation / "pytest-reportlog.jsonl").exists()
     assert not (invocation / "junit.xml").exists()
-    assert summary["report_delivery"]["status"] == "complete"
+    delivery = summary["report_delivery"]
+    assert delivery["status"] == "unknown"
+    assert delivery["report_complete"] is False
+    assert delivery["artifacts"]["report_log"]["attribution"] == (
+        "explicit_path_unverified"
+    )
+    assert delivery["artifacts"]["junit_xml"]["attribution"] == (
+        "explicit_path_unverified"
+    )
+    assert delivery["artifacts"]["report_log"]["status"] == "unknown"
+    assert delivery["artifacts"]["junit_xml"]["status"] == "unknown"
 
 
 def test_collect_only_records_selection_without_execution(tmp_path):
@@ -269,6 +324,13 @@ def test_collect_only_records_selection_without_execution(tmp_path):
     assert summary["report_complete"] is True
     assert summary["report_delivery"]["status"] == "complete"
     assert (invocation / "pytest-reportlog.jsonl").is_file()
+    execution = summary["execution"]
+    assert execution["mode"] == "collect_only"
+    assert execution["status"] == "not_run"
+    assert execution["started_items"] == 0
+    assert execution["completed_items"] == 0
+    assert execution["complete"] is False
+    assert execution["unknown_reasons"] == ["collect_only_no_execution_intent"]
 
 
 def test_no_tests_collected_preserves_native_exit(tmp_path):
@@ -281,6 +343,10 @@ def test_no_tests_collected_preserves_native_exit(tmp_path):
     assert summary["selection"]["selected_items"] == 0
     assert summary["selection"]["selected_node_ids"] == []
     assert summary["report_delivery"]["status"] == "complete"
+    execution = summary["execution"]
+    assert execution["status"] == "empty"
+    assert execution["unknown_reasons"] == ["no_selected_items"]
+    assert execution["started_items"] == 0
 
 
 def test_failed_and_errored_sessions_keep_native_exit(tmp_path):
@@ -290,6 +356,9 @@ def test_failed_and_errored_sessions_keep_native_exit(tmp_path):
     failed_summary = _read_json(_report_dir(failed) / "summary.json")
     assert failed_summary["exitstatus"] == 1
     assert failed_summary["report_delivery"]["status"] == "complete"
+    assert failed_summary["execution"]["status"] == "complete"
+    assert failed_summary["execution"]["started_items"] == 1
+    assert failed_summary["execution"]["completed_items"] == 1
 
     error_root = _probe_root(tmp_path / "error")
     errored = _run_probe(error_root, BODY_ERROR)
@@ -297,6 +366,73 @@ def test_failed_and_errored_sessions_keep_native_exit(tmp_path):
     error_summary = _read_json(_report_dir(errored) / "summary.json")
     assert error_summary["exitstatus"] == 1
     assert error_summary["report_delivery"]["status"] == "complete"
+    assert error_summary["execution"]["status"] == "complete"
+    assert error_summary["execution"]["started_items"] == 1
+    assert error_summary["execution"]["completed_items"] == 1
+
+
+def test_stop_first_preserves_selected_but_not_started(tmp_path):
+    root = _probe_root(tmp_path)
+    result = _run_probe(root, BODY_FAIL_FIRST, "-x")
+    assert result.returncode == 1, result.stdout + result.stderr
+    summary = _read_json(_report_dir(result) / "summary.json")
+    selection = summary["selection"]
+    assert selection["selected_items"] == 2
+    assert sorted(selection["selected_node_ids"]) == [
+        "tests/test_probe.py::test_fail_first",
+        "tests/test_probe.py::test_second",
+    ]
+    assert selection["deselected_items"] == 0
+    execution = summary["execution"]
+    assert execution["status"] == "incomplete"
+    assert execution["complete"] is False
+    assert execution["started_node_ids"] == ["tests/test_probe.py::test_fail_first"]
+    assert execution["completed_node_ids"] == ["tests/test_probe.py::test_fail_first"]
+    assert execution["not_started_node_ids"] == ["tests/test_probe.py::test_second"]
+    assert execution["incomplete_node_ids"] == []
+
+
+def test_collection_error_is_not_declared_complete(tmp_path):
+    root = _probe_root(tmp_path)
+    result = _run_probe(
+        root,
+        BODY_OK,
+        extra_files={"test_broken.py": BODY_COLLECTION_ERROR},
+        extra_targets=("test_broken.py",),
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    summary = _read_json(_report_dir(result) / "summary.json")
+    assert summary["exitstatus"] == 2
+    assert summary["selection"]["selected_items"] == 2
+    assert summary["selection"]["complete"] is False
+    assert "collection_incomplete" in summary["selection"]["unknown_reasons"]
+    collection = summary["collection"]
+    assert collection["complete"] is False
+    assert collection["errors"]
+    assert collection["errors"][0]["nodeid"].endswith("test_broken.py")
+    execution = summary["execution"]
+    assert execution["status"] == "unknown"
+    assert execution["complete"] is False
+    assert execution["started_items"] == 0
+    assert "collection_incomplete" in execution["unknown_reasons"]
+
+
+def test_teardown_error_and_setup_skip_are_completed(tmp_path):
+    teardown_root = _probe_root(tmp_path / "teardown")
+    teardown = _run_probe(teardown_root, BODY_TEARDOWN_ERROR)
+    assert teardown.returncode == 1, teardown.stdout + teardown.stderr
+    teardown_summary = _read_json(_report_dir(teardown) / "summary.json")
+    assert teardown_summary["execution"]["status"] == "complete"
+    assert teardown_summary["execution"]["started_items"] == 1
+    assert teardown_summary["execution"]["completed_items"] == 1
+
+    skip_root = _probe_root(tmp_path / "skip")
+    skipped = _run_probe(skip_root, BODY_SETUP_SKIP)
+    assert skipped.returncode == 0, skipped.stdout + skipped.stderr
+    skip_summary = _read_json(_report_dir(skipped) / "summary.json")
+    assert skip_summary["execution"]["status"] == "complete"
+    assert skip_summary["execution"]["started_items"] == 1
+    assert skip_summary["execution"]["completed_items"] == 1
 
 
 def test_early_exit_preserves_native_exit(tmp_path):
@@ -310,6 +446,11 @@ def test_early_exit_preserves_native_exit(tmp_path):
     events = _reportlog_events(invocation / "pytest-reportlog.jsonl")
     assert events[-1]["$report_type"] == "SessionFinish"
     assert events[-1]["exitstatus"] == 2
+    execution = summary["execution"]
+    assert execution["status"] == "incomplete"
+    assert execution["started_items"] == 1
+    assert execution["completed_items"] == 0
+    assert execution["incomplete_node_ids"] == ["tests/test_probe.py::test_stop"]
 
 
 def test_keyboard_interrupt_preserves_native_exit(tmp_path):
@@ -320,6 +461,11 @@ def test_keyboard_interrupt_preserves_native_exit(tmp_path):
     assert summary["exitstatus"] == 2
     assert summary["session_finished"] is True
     assert summary["report_delivery"]["status"] == "complete"
+    execution = summary["execution"]
+    assert execution["status"] == "incomplete"
+    assert execution["started_items"] == 1
+    assert execution["completed_items"] == 0
+    assert execution["incomplete_node_ids"] == ["tests/test_probe.py::test_interrupt"]
 
 
 def test_keyword_selection_and_deselection_are_recorded(tmp_path):
@@ -334,6 +480,8 @@ def test_keyword_selection_and_deselection_are_recorded(tmp_path):
     assert selection["deselection_observed"] is True
     assert selection["complete"] is True
     assert selection["collected_items"] == 3
+    assert summary["execution"]["status"] == "complete"
+    assert summary["execution"]["not_started_node_ids"] == []
 
 
 def test_marker_selection_and_deselection_are_recorded(tmp_path):
@@ -348,6 +496,8 @@ def test_marker_selection_and_deselection_are_recorded(tmp_path):
     assert selection["deselection_observed"] is True
     assert selection["complete"] is True
     assert selection["collected_items"] == 2
+    assert summary["execution"]["status"] == "complete"
+    assert summary["execution"]["not_started_node_ids"] == []
 
 
 def test_explicit_durations_options_are_preserved(tmp_path):
@@ -412,12 +562,18 @@ def test_xdist_worker_inventories_are_not_summed():
     assert selection["complete"] is False
 
 
-def test_sealing_failure_preserves_native_exit(tmp_path, monkeypatch):
+def test_sealing_failure_keeps_native_session_and_separates_delivery(
+    tmp_path, monkeypatch
+):
     invocation = tmp_path / "invocation"
     invocation.mkdir()
     reportlog = invocation / "pytest-reportlog.jsonl"
     reportlog.write_text(
-        json.dumps({"$report_type": "SessionStart"}) + "\n", encoding="utf-8"
+        json.dumps({"$report_type": "SessionStart"})
+        + "\n"
+        + json.dumps({"$report_type": "SessionFinish", "exitstatus": 1})
+        + "\n",
+        encoding="utf-8",
     )
     junit = invocation / "junit.xml"
     junit.write_text("<testsuites/>\n", encoding="utf-8")
@@ -445,6 +601,10 @@ def test_sealing_failure_preserves_native_exit(tmp_path, monkeypatch):
     plugin.collection_observed = True
     plugin.collection_mode = "serial"
     plugin.selected_node_ids = ["tests/test_probe.py::test_ok"]
+    plugin.started_counts["tests/test_probe.py::test_ok"] = 1
+    plugin.finished_counts["tests/test_probe.py::test_ok"] = 1
+    plugin.started_order.append("tests/test_probe.py::test_ok")
+    plugin.finished_order.append("tests/test_probe.py::test_ok")
     session = SimpleNamespace(exitstatus=1, config=config)
 
     plugin._finalize(session)
@@ -453,9 +613,13 @@ def test_sealing_failure_preserves_native_exit(tmp_path, monkeypatch):
     assert not (invocation / "summary.json").exists()
     metadata = json.loads((invocation / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["phase"] == "delivery_failed"
-    assert metadata["session_finished"] is False
+    assert metadata["session_finished"] is True
+    assert metadata["exitstatus"] == 1
+    assert metadata["report_complete"] is False
     assert metadata["report_delivery"]["status"] == "failed"
+    assert metadata["report_delivery"]["summary_seal"] == "failed"
     assert metadata["report_delivery"]["native_exit_preserved"] is True
+    assert metadata["execution"]["status"] == "complete"
     assert any("delivery failed" in line for line in reporter.lines)
 
 
@@ -478,7 +642,108 @@ def test_missing_native_artifact_marks_report_incomplete(tmp_path):
         junit_explicit=False,
     )
     plugin = report_plugin._InvocationReportPlugin(meta)
-    delivery = plugin._delivery()
+    delivery = plugin._delivery(0)
     assert delivery["status"] == "incomplete"
     assert delivery["missing"] == ["junit_xml"]
+    assert delivery["unknown"] == ["report_log"]
+    assert delivery["artifacts"]["report_log"]["session_finish_observed"] is False
     assert delivery["native_exit_preserved"] is True
+
+
+def test_invalid_native_artifacts_are_not_complete(tmp_path):
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    reportlog = invocation / "pytest-reportlog.jsonl"
+    reportlog.write_text("not json\n", encoding="utf-8")
+    junit = invocation / "junit.xml"
+    junit.write_text("not xml\n", encoding="utf-8")
+    config = _stub_config(tmp_path, _Reporter())
+    meta = report_plugin._build_meta(
+        config,
+        invocation_id="probe-invocation",
+        out_dir=invocation,
+        report_log=reportlog,
+        junit_xml=junit,
+        report_log_explicit=False,
+        junit_explicit=False,
+    )
+    plugin = report_plugin._InvocationReportPlugin(meta)
+    delivery = plugin._delivery(0)
+    assert delivery["status"] == "incomplete"
+    assert set(delivery["invalid"]) == {"report_log", "junit_xml"}
+    assert delivery["artifacts"]["report_log"]["status"] == "invalid"
+    assert delivery["artifacts"]["junit_xml"]["status"] == "invalid"
+
+
+def test_duplicate_node_ids_use_multiset_lifecycle(tmp_path):
+    config = _stub_config(tmp_path, _Reporter())
+    plugin = report_plugin._InvocationReportPlugin({})
+    plugin.collection_observed = True
+    plugin.collection_mode = "serial"
+    plugin.selected_node_ids = ["tests/a.py::t1", "tests/a.py::t1"]
+    plugin.started_counts["tests/a.py::t1"] = 1
+    plugin.started_order.append("tests/a.py::t1")
+    plugin.finished_counts["tests/a.py::t1"] = 1
+    plugin.finished_order.append("tests/a.py::t1")
+    execution = plugin._execution(config)
+    assert execution["status"] == "incomplete"
+    assert execution["not_started_node_ids"] == ["tests/a.py::t1"]
+    assert execution["duplicate_node_ids"] == ["tests/a.py::t1"]
+
+
+def _repo_subprocess_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
+    ignored = {
+        "ECI_PYTEST_NO_AUTO_REPORT",
+        "PYTEST_ADDOPTS",
+        "PYTEST_CURRENT_TEST",
+    }
+    env = {key: value for key, value in os.environ.items() if key not in ignored}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if overrides:
+        env.update(overrides)
+    return env
+
+
+def test_repo_conftest_loads_plugin_under_both_import_modes():
+    target = (
+        "tests/test_eci_pytest_report.py::"
+        "test_missing_native_artifact_marks_report_incomplete"
+    )
+    cases = (
+        (
+            "prepend",
+            ["--import-mode=prepend", "--eci-no-auto-report"],
+            None,
+        ),
+        (
+            "importlib",
+            ["--import-mode=importlib", "--eci-no-auto-report"],
+            None,
+        ),
+        (
+            "importlib env disable",
+            ["--import-mode=importlib"],
+            {"ECI_PYTEST_NO_AUTO_REPORT": "1"},
+        ),
+    )
+    for label, args, env in cases:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                *args,
+                target,
+            ],
+            cwd=REPO_ROOT,
+            env=_repo_subprocess_env(env),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        assert result.returncode == 0, f"{label}: {result.stdout}{result.stderr}"
