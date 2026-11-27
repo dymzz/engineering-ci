@@ -20,6 +20,7 @@ from . import (
     expected_checks,
     git_source,
     hooks,
+    plan_contract,
     reconciliation,
     selection,
 )
@@ -32,21 +33,44 @@ _RUNNER_REF = "execution:host"
 _INAPPLICABLE = {"not_applicable", "no_tests", "no_changes"}
 
 
-def _artifact(binding, suffix, payload=None, *, exclusive=False):
+_HOOK_ARTIFACT_LIMIT = 16 * 1024 * 1024
+
+
+def _hook_artifact_path(binding, suffix):
     path = binding.invocation_path.with_suffix(suffix)
-    if path.is_symlink() or path.resolve().parent != binding.invocation_path.parent:
+    if (
+        path.is_symlink()
+        or path.is_junction()
+        or path.resolve().parent != binding.invocation_path.parent
+    ):
         raise hooks.HookEventError("hook_artifact_outside_invocation")
-    if payload is None:
-        if not path.is_file():
-            return None
-        try:
-            raw = path.read_bytes()
-            content = json.loads(raw)
-        except (OSError, ValueError):
-            raise hooks.HookEventError("hook_artifact_invalid") from None
+    return path
+
+
+def _decode_hook_artifact(path, *, limit):
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise hooks.HookEventError("hook_artifact_invalid")
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise hooks.HookEventError("hook_artifact_oversized")
+        content = json.loads(raw)
         if not isinstance(content, dict) or hooks.canonical_event_bytes(content) != raw:
             raise hooks.HookEventError("hook_artifact_invalid")
-        return content
+    except (OSError, ValueError, RecursionError) as exc:
+        if isinstance(exc, hooks.HookEventError):
+            raise
+        raise hooks.HookEventError("hook_artifact_invalid") from None
+    return content
+
+
+def _artifact(binding, suffix, payload=None, *, exclusive=False):
+    path = _hook_artifact_path(binding, suffix)
+    if payload is None:
+        return _decode_hook_artifact(path, limit=_HOOK_ARTIFACT_LIMIT)
     git_dir = hooks._invocation_git_dir(binding.invocation_path)
     with hooks._capture_lock(git_dir):
         raw = hooks.canonical_event_bytes(payload)
@@ -179,21 +203,31 @@ def _load_plan(binding):
     prepared = _artifact(binding, ".plan")
     if prepared is None:
         raise hooks.HookEventError("hook_plan_missing")
+    _validate_plan_record(binding, prepared)
+    return prepared
+
+
+def _validate_plan_record(binding, prepared):
     if any(prepared.get(key) != value for key, value in _identity(binding).items()):
         raise hooks.HookEventError("hook_plan_invocation_mismatch")
     if "plan" not in prepared or prepared.get("plan_ref") != hooks._digest_bytes(
         hooks.canonical_event_bytes(prepared["plan"])
     ):
         raise hooks.HookEventError("hook_plan_digest_mismatch")
-    return prepared
+    if "split_checks" in prepared and type(prepared["split_checks"]) is not bool:
+        raise hooks.HookEventError("hook_plan_invalid")
 
 
 def _planned(root, binding):
     prepared = _load_plan(binding)
     head = _index_source(root, binding)
-    plan = prepared["plan"]
+    _validate_index_plan_source(binding, prepared["plan"], head)
+    return prepared
+
+
+def _validate_index_plan_source(binding, plan, head):
     if plan is not None:
-        if not isinstance(plan, dict):
+        if not isinstance(plan, dict) or not isinstance(plan.get("git"), dict):
             raise hooks.HookEventError("hook_plan_invalid")
         git = plan.get("git") or {}
         tree = binding.event["index"]["tree"]
@@ -206,7 +240,6 @@ def _planned(root, binding):
             or (head is None and git.get("base_tree") != binding.event["base_tree"])
         ):
             raise hooks.HookEventError("hook_plan_source_mismatch")
-    return prepared
 
 
 def prepare(root, binding, *, dagger_module=None, split_checks=False):
@@ -356,18 +389,9 @@ def _push_checkout(root, ref):
 def _push_plans(root, binding):
     prepared = _load_plan(binding)
     source = _artifact(binding, ".push-source")
-    if source is None or any(
-        source.get(key) != value for key, value in _identity(binding).items()
-    ):
-        raise hooks.HookEventError("hook_push_source_invocation_mismatch")
-    plans, refs = prepared["plan"], source.get("references")
-    if not isinstance(plans, list) or not isinstance(refs, list) or source["exit_code"]:
-        raise hooks.HookEventError("hook_push_plan_source_invalid")
+    refs = _validate_push_plan_source(binding, prepared, source)
     args = binding.event["refs"]
-    if len(plans) != len(refs) or len(refs) != len(args):
-        raise hooks.HookEventError("hook_push_plan_ref_count_mismatch")
-    # The immutable resolved create baseline replaces the mutable ref name when
-    # rechecking Source. Every other OID still comes from the original Git stdin.
+    # The immutable resolved create baseline replaces the mutable ref name when rechecking Git.
     current = selection.changeset_multi(
         root,
         [
@@ -382,9 +406,52 @@ def _push_plans(root, binding):
     )
     if list(current.references) != refs:
         raise hooks.HookEventError("hook_push_source_mismatch")
-    for plan, ref in zip(plans, refs, strict=True):
-        if not isinstance(plan, dict):
+    return prepared, refs
+
+
+def _validate_push_plan_source(binding, prepared, source):
+    if source is None or any(
+        source.get(key) != value for key, value in _identity(binding).items()
+    ):
+        raise hooks.HookEventError("hook_push_source_invocation_mismatch")
+    plans, refs = prepared["plan"], source.get("references")
+    if (
+        not isinstance(plans, list)
+        or not isinstance(refs, list)
+        or type(source.get("exit_code")) is not int
+        or source["exit_code"]
+    ):
+        raise hooks.HookEventError("hook_push_plan_source_invalid")
+    args = binding.event["refs"]
+    if len(plans) != len(refs) or len(refs) != len(args):
+        raise hooks.HookEventError("hook_push_plan_ref_count_mismatch")
+    for plan, ref, raw in zip(plans, refs, args, strict=True):
+        if not isinstance(plan, dict) or not isinstance(plan.get("git"), dict):
             raise hooks.HookEventError("hook_plan_invalid")
+        if (
+            not isinstance(ref, dict)
+            or any(
+                key not in ref
+                for key in (
+                    "tree",
+                    "before",
+                    "after",
+                    "paths",
+                    "deleted_paths",
+                    "ref_action",
+                )
+            )
+            or any(
+                ref.get(key) != raw.get(key)
+                for key in ("local_ref", "remote_ref", "ref_action")
+            )
+        ):
+            raise hooks.HookEventError("hook_push_source_mismatch")
+        if (ref.get("raw_before"), ref.get("raw_after")) != (
+            raw.get("before"),
+            raw.get("after"),
+        ):
+            raise hooks.HookEventError("hook_push_source_mismatch")
         git = plan.get("git") or {}
         if (
             git.get("snapshot") != "push"
@@ -394,11 +461,13 @@ def _push_plans(root, binding):
             or git.get("tree") != ref["tree"]
             or git.get("execution_tree") != ref["tree"]
             or git.get("ref_action") != ref["ref_action"]
-            or git.get("changed_paths") != list(ref["paths"])
-            or git.get("deleted_paths") != list(ref["deleted_paths"])
+            or not isinstance(ref["paths"], list)
+            or not isinstance(ref["deleted_paths"], list)
+            or git.get("changed_paths") != ref["paths"]
+            or git.get("deleted_paths") != ref["deleted_paths"]
         ):
             raise hooks.HookEventError("hook_push_plan_source_mismatch")
-    return prepared, refs
+    return refs
 
 
 def _independent_index_jobs(plan):
@@ -470,50 +539,50 @@ def run_checks(root, binding, *, job_ref=_JOB_REF):
         suffix = _index_execution_suffix(job_ref)
         if prepared["plan"] is None:
             report = hooks.check_pre_commit(root, invocation_ref=binding.invocation_ref)
-            _record_execution(binding, prepared, report, suffix=suffix)
-            timing["extra"].update(
-                plan_ref=prepared["plan_ref"], exit_code=report["exit_code"]
+        else:
+            head = _index_source(root, binding)
+            report = _source_worker(
+                root,
+                binding.event["index"]["tree"],
+                head,
+                "execute",
+                {
+                    **prepared,
+                    "dagger_bundle": str(_dagger_bundle(binding, suffix)),
+                    "job_ref": job_ref,
+                    "check_names": jobs[job_ref],
+                },
             )
-            return report
-        head = _index_source(root, binding)
-        report = _source_worker(
-            root,
-            binding.event["index"]["tree"],
-            head,
-            "execute",
-            {
-                **prepared,
-                "dagger_bundle": str(_dagger_bundle(binding, suffix)),
-                "job_ref": job_ref,
-                "check_names": jobs[job_ref],
-            },
-        )
-        # Record the actually observed check execution before verifying live Source
-        # immutability so a late Index mutation cannot erase execution facts.
-        _record_execution(binding, prepared, report, suffix=suffix)
         timing["extra"].update(
             plan_ref=prepared["plan_ref"], exit_code=report["exit_code"]
         )
         try:
             _index_source(root, binding)
-        except hooks.HookEventError as exc:
-            timing["extra"]["source_rejection"] = exc.code
-            with suppress(OSError, hooks.HookEventError):
-                _artifact(
-                    binding,
-                    suffix.replace(".execution", ".source-rejection"),
-                    {
-                        **_identity(binding),
-                        "job_ref": job_ref,
-                        "reason": exc.code,
-                        "report_digest": hooks._digest_bytes(
-                            hooks.canonical_event_bytes(report)
-                        ),
-                        "exit_code": report["exit_code"],
-                    },
-                )
+        except BaseException as exc:
+            timing["extra"]["source_rejection"] = getattr(
+                exc, "code", type(exc).__name__
+            )
+            _record_unsealed_observation(binding, prepared, report, suffix)
+            raise
+        try:
+            _record_execution(binding, prepared, report, suffix=suffix)
+        except BaseException:
+            timing["extra"]["report_status"] = "seal_failed"
+            _record_unsealed_observation(binding, prepared, report, suffix)
             raise
         return report
+
+
+def _record_unsealed_observation(binding, prepared, report, suffix):
+    # Only `.execution*` is consumed by live reconciliation. The separate raw
+    # observation preserves returned facts if Source qualification or sealing fails.
+    with suppress(OSError, hooks.HookEventError):
+        _record_execution(
+            binding,
+            prepared,
+            report,
+            suffix=suffix.replace(".execution", ".observation", 1),
+        )
 
 
 def _record_execution(binding, prepared, report, *, suffix=".execution"):
@@ -561,21 +630,8 @@ def _requires_dagger(root, plan):
 def _observe(
     plan, recorded, expected, report, job_ref, execution_suffix, *, native_dagger
 ):
-    identity = report.get("execution_identity") or {}
-    if (
-        identity.get("run_ref") != recorded["run_ref"]
-        or identity.get("attempt_ref") != recorded["attempt_ref"]
-        or (report.get("plan") or {}).get("git") != plan["git"]
-    ):
-        return None, None
-    if native_dagger:
-        if not identity.get("execution_ref") or not dagger_plan.source_bound(
-            plan, report
-        ):
-            return None, None
-    elif (
-        identity.get("execution_ref")
-        != f"execution:{recorded['invocation_ref']}:{execution_suffix}"
+    if not _report_matches_role(
+        plan, recorded, report, execution_suffix, native_dagger=native_dagger
     ):
         return None, None
     _results, _rejections, report_ref = reconciliation.verify_execution_report(report)
@@ -624,6 +680,30 @@ def _observe(
     return route, observation
 
 
+def _report_matches_role(plan, recorded, report, execution_suffix, *, native_dagger):
+    identity = report.get("execution_identity")
+    projection = report.get("plan")
+    if (
+        not isinstance(identity, dict)
+        or not isinstance(projection, dict)
+        or identity.get("run_ref") != recorded["run_ref"]
+        or identity.get("attempt_ref") != recorded["attempt_ref"]
+        or projection.get("git") != plan["git"]
+    ):
+        return False
+    if native_dagger:
+        ref = identity.get("execution_ref")
+        return (
+            isinstance(ref, str)
+            and bool(ref)
+            and dagger_plan.source_bound(plan, report)
+        )
+    return (
+        identity.get("execution_ref")
+        == f"execution:{recorded['invocation_ref']}:{execution_suffix}"
+    )
+
+
 def _load_execution(
     binding,
     prepared,
@@ -633,39 +713,54 @@ def _load_execution(
     native_plan=None,
 ):
     recorded = _artifact(binding, suffix)
+    if (
+        recorded is not None
+        and _artifact(binding, suffix.replace(".execution", ".source-rejection", 1))
+        is not None
+    ):
+        raise hooks.HookEventError("hook_source_rejected_after_execution")
     activated = _artifact(binding, activation)
-    if recorded is not None and activated != _identity(binding):
+    report = _validate_execution_record(binding, prepared, recorded, activated)
+    if report is not None and native_plan is not None:
+        _validate_recorded_dagger_bundle(binding, suffix, native_plan, recorded, report)
+    return recorded, report
+
+
+def _validate_execution_record(binding, prepared, recorded, activated):
+    if recorded is None:
+        return None
+    if activated != _identity(binding):
         raise hooks.HookEventError("hook_report_activation_missing")
-    if recorded is not None and recorded.get("plan_ref") != prepared["plan_ref"]:
+    if recorded.get("plan_ref") != prepared["plan_ref"]:
         raise hooks.HookEventError("hook_report_plan_mismatch")
-    if recorded is not None and recorded.get("dagger_module") != prepared.get(
+    if "dagger_module" not in recorded or recorded["dagger_module"] != prepared.get(
         "dagger_module"
     ):
         raise hooks.HookEventError("hook_report_dagger_module_mismatch")
-    if recorded is not None and any(
-        recorded.get(key) != value for key, value in _identity(binding).items()
-    ):
+    if any(recorded.get(key) != value for key, value in _identity(binding).items()):
         raise hooks.HookEventError("hook_report_invocation_mismatch")
-    report = recorded.get("report") if recorded is not None else None
-    if recorded is not None and (
-        not isinstance(report, dict)
-        or recorded.get("report_digest")
-        != hooks._digest_bytes(hooks.canonical_event_bytes(report))
-    ):
+    report = recorded.get("report")
+    if not isinstance(report, dict) or recorded.get(
+        "report_digest"
+    ) != hooks._digest_bytes(hooks.canonical_event_bytes(report)):
         raise hooks.HookEventError("hook_report_digest_mismatch")
+    return report
+
+
+def _validate_recorded_dagger_bundle(
+    binding, suffix, native_plan, recorded, report, *, max_bytes=None
+):
     if (
-        report is not None
-        and native_plan is not None
-        and dagger_plan.load_result(
+        dagger_plan.load_result(
             _dagger_bundle(binding, suffix),
             native_plan,
             run_ref=recorded["run_ref"],
             attempt_ref=recorded["attempt_ref"],
+            max_bytes=max_bytes,
         )
         != report
     ):
         raise hooks.HookEventError("hook_dagger_report_mismatch")
-    return recorded, report
 
 
 def _reconcile_plan(
@@ -908,28 +1003,6 @@ def verify_push_receipt_binding(
             raise hooks.HookEventError("hook_final_report_mismatch")
 
 
-def _read_bounded_hook_json(path, *, limit):
-    """Read and parse one hook artifact strictly within ``limit`` bytes."""
-    if path.is_symlink():
-        return None, "symlink_rejected"
-    if not path.is_file():
-        return None, "missing"
-    try:
-        with path.open("rb") as stream:
-            raw = stream.read(limit + 1)
-    except OSError:
-        return None, "unreadable"
-    if len(raw) > limit:
-        return None, "oversized"
-    try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None, "invalid"
-    if not isinstance(parsed, dict):
-        return None, "invalid"
-    return parsed, "loaded"
-
-
 def _report_ref_canonical(report_ref):
     if isinstance(report_ref, dict):
         try:
@@ -988,76 +1061,72 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
     consumed_files = []
 
     def _load_sidecar(sidecar_path):
-        if (
-            sidecar_path.is_symlink()
-            or sidecar_path.resolve().parent != invocations_dir
-        ):
-            conflicts.append(
-                {"reason": "hook_sidecar_outside_store", "artifact": sidecar_path.name}
-            )
-            return None
-        payload, load_status = _read_bounded_hook_json(sidecar_path, limit=max_bytes)
         consumed_files.append(str(sidecar_path))
-        if load_status != "loaded" or payload is None:
+        try:
+            suffix = sidecar_path.name.removeprefix(stem)
+            return _decode_hook_artifact(
+                _hook_artifact_path(binding, suffix), limit=max_bytes
+            )
+        except hooks.HookEventError as exc:
             conflicts.append(
                 {
                     "reason": "hook_sidecar_invalid",
                     "artifact": sidecar_path.name,
-                    "detail": load_status,
+                    "detail": exc.code,
                 }
             )
             return None
-        for key in ("invocation_ref", "event_payload_ref"):
-            if key in payload and payload[key] != identity[key]:
-                conflicts.append(
-                    {
-                        "reason": f"hook_sidecar_{key}_mismatch",
-                        "artifact": sidecar_path.name,
-                        "expected": identity[key],
-                        "observed": payload[key],
-                    }
-                )
-        return payload
 
     plan_ref = None
     plan_data_obj = None
     plan_payload_obj = None
     has_plan_key = False
     plan_path = invocations_dir / f"{stem}.plan"
-    if plan_path.exists():
-        plan_data = _load_sidecar(plan_path)
-        plan_data_obj = plan_data
-        if plan_data is not None:
-            raw_pr = plan_data.get("plan_ref")
-            plan_ref = (
-                raw_pr.strip() if isinstance(raw_pr, str) and raw_pr.strip() else None
-            )
-            plan_payload_obj = plan_data.get("plan")
-            has_plan_key = "plan" in plan_data or plan_payload_obj is not None
-            if has_plan_key:
-                expected_plan_ref = hooks._digest_bytes(
-                    hooks.canonical_event_bytes(plan_payload_obj)
-                )
-                if plan_ref != expected_plan_ref:
-                    conflicts.append(
-                        {
-                            "reason": "hook_plan_digest_mismatch",
-                            "expected": expected_plan_ref,
-                            "observed": plan_ref,
-                        }
+    if plan_path.exists() or plan_path.is_symlink():
+        candidate = _load_sidecar(plan_path)
+        if candidate is not None:
+            try:
+                _validate_plan_record(binding, candidate)
+                plan = candidate["plan"]
+                if binding.hook == "pre-commit":
+                    _validate_index_plan_source(binding, plan, event.get("head_commit"))
+                    if plan is not None:
+                        plan_contract.validate(plan)
+                elif binding.hook == "pre-push":
+                    source_path = invocations_dir / f"{stem}.push-source"
+                    push_source = (
+                        _load_sidecar(source_path) if source_path.exists() else None
                     )
+                    _validate_push_plan_source(binding, candidate, push_source)
+                    for ref_plan in plan:
+                        plan_contract.validate(ref_plan)
+            except (
+                hooks.HookEventError,
+                plan_contract.PlanError,
+                TypeError,
+                KeyError,
+                AttributeError,
+            ) as exc:
+                conflicts.append(
+                    {
+                        "reason": getattr(exc, "code", "hook_plan_invalid"),
+                        "artifact": plan_path.name,
+                    }
+                )
+            else:
+                plan_data_obj = candidate
+                plan_payload_obj = plan
+                plan_ref = candidate["plan_ref"]
+                has_plan_key = True
     plan_scope = (
         "push_multi_ref_aggregate"
         if isinstance(plan_payload_obj, list)
         else ("single_plan" if isinstance(plan_payload_obj, dict) else "none")
     )
 
-    push_refs = []
-    push_source_path = invocations_dir / f"{stem}.push-source"
-    if push_source_path.exists():
-        ps = _load_sidecar(push_source_path)
-        if ps is not None and isinstance(ps.get("references"), list):
-            push_refs = list(ps["references"])
+    push_refs = (
+        push_source["references"] if has_plan_key and binding.hook == "pre-push" else []
+    )
 
     expected_jobs_map = None
     expected_exec_to_remote = {}
@@ -1159,10 +1228,7 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
         if act_data is None:
             activation_cache[act_name] = False
             return False
-        ok = (
-            act_data.get("run_ref") == expected_run
-            and act_data.get("attempt_ref") == expected_att
-        )
+        ok = act_data == identity
         if not ok:
             conflicts.append(
                 {
@@ -1210,6 +1276,95 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
                             "detail": source_rejection_reason,
                         }
                     )
+            if (
+                exec_path.name in expected_unit_artifacts
+                and plan_data_obj is not None
+                and act_ok
+            ):
+                artifact_suffix = exec_path.name.removeprefix(stem)
+                try:
+                    report = _validate_execution_record(
+                        binding, plan_data_obj, exec_data, identity
+                    )
+                    if binding.hook == "pre-commit":
+                        role = next(
+                            job
+                            for job in expected_jobs_map
+                            if _index_execution_suffix(job) == artifact_suffix
+                        )
+                        role_plan = plan_payload_obj
+                    else:
+                        index = int(artifact_suffix.removeprefix(".execution-"))
+                        role = _push_execution_suffix(index)
+                        role_plan = plan_payload_obj[index]
+                    if role_plan is not None:
+                        native = (
+                            report.get("execution_context") == "dagger_export"
+                            or dagger_plan.required(role_plan, python_project=False)
+                            or (
+                                binding.hook == "pre-commit"
+                                and plan_data_obj.get("dagger_module") is not None
+                            )
+                        )
+                        if (
+                            native
+                            or binding.invocation_path.with_suffix(
+                                artifact_suffix.replace(".execution", ".dagger", 1)
+                            ).exists()
+                        ):
+                            bundle = _dagger_bundle(binding, artifact_suffix)
+                            consumed_files.extend(
+                                str(bundle / name)
+                                for name in (
+                                    "plan.json",
+                                    "report.json",
+                                    "exit-code.txt",
+                                )
+                            )
+                            _validate_recorded_dagger_bundle(
+                                binding,
+                                artifact_suffix,
+                                role_plan,
+                                exec_data,
+                                report,
+                                max_bytes=max_bytes,
+                            )
+                            native = True
+                        if not _report_matches_role(
+                            role_plan, exec_data, report, role, native_dagger=native
+                        ):
+                            raise hooks.HookEventError("hook_execution_role_mismatch")
+                        if (
+                            binding.hook == "pre-commit"
+                            and expected_jobs_map[role] is not None
+                        ):
+                            checks = report.get("checks")
+                            if not isinstance(checks, list) or {
+                                check.get("name")
+                                for check in checks
+                                if isinstance(check, dict)
+                            } != set(expected_jobs_map[role]):
+                                raise hooks.HookEventError(
+                                    "hook_execution_job_checks_mismatch"
+                                )
+                except (hooks.HookEventError, ValueError, TypeError, KeyError) as exc:
+                    conflicts.append(
+                        {
+                            "reason": getattr(
+                                exc, "code", "hook_execution_record_invalid"
+                            ),
+                            "artifact": exec_path.name,
+                        }
+                    )
+                    binding_status = "invalid"
+                else:
+                    binding_status = (
+                        "verified" if role_plan is not None else "fallback_exit_only"
+                    )
+            else:
+                binding_status = "unbound"
+            if source_rejection_reason is not None:
+                binding_status = "source_rejected"
             raw_epr = exec_data.get("plan_ref")
             exec_plan_ref = (
                 raw_epr.strip()
@@ -1309,7 +1464,10 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
                                 "observed": attempt_ref,
                             }
                         )
-                plan_git = (report.get("plan") or {}).get("git")
+                report_plan = report.get("plan")
+                plan_git = (
+                    report_plan.get("git") if isinstance(report_plan, dict) else None
+                )
                 if isinstance(plan_git, dict):
                     hc = plan_git.get("head_commit")
                     git_commit = (
@@ -1348,6 +1506,7 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
                     "report_ref": report_ref_val,
                     "report_digest_verified": bool(report_digest_verified and act_ok),
                     "source_rejection": source_rejection_reason,
+                    "execution_binding_status": binding_status,
                     "bundle_directory": bundle_dir,
                     "git_commit": git_commit,
                     "source_tree_id": source_tree_id,
@@ -1357,7 +1516,30 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
                 }
             )
 
-    loaded_arts = {ex["artifact"] for ex in executions}
+    raw_observations = []
+    for raw_path in sorted(invocations_dir.glob(f"{stem}.observation*")):
+        observed = _load_sidecar(raw_path)
+        if observed is None or plan_data_obj is None:
+            continue
+        try:
+            _validate_execution_record(binding, plan_data_obj, observed, identity)
+        except hooks.HookEventError as exc:
+            conflicts.append({"reason": exc.code, "artifact": raw_path.name})
+            continue
+        raw_observations.append(
+            {
+                "artifact": raw_path.name,
+                "status": "unsealed_observation",
+                "exit_code": observed["report"].get("exit_code"),
+                "report": observed["report"],
+            }
+        )
+
+    loaded_arts = {
+        ex["artifact"]
+        for ex in executions
+        if ex["execution_binding_status"] in ("verified", "fallback_exit_only")
+    }
     missing_expected_executions = [
         art for art in expected_unit_artifacts if art not in loaded_arts
     ]
@@ -1763,6 +1945,17 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
         stage_data = _load_sidecar(sidecar)
         if stage_data is None:
             continue
+        if (
+            any(
+                stage_data.get(key) != identity[key]
+                for key in ("invocation_ref", "event_payload_ref")
+            )
+            or stage_data.get("hook") != binding.hook
+        ):
+            conflicts.append(
+                {"reason": "hook_timing_identity_mismatch", "artifact": sidecar.name}
+            )
+            continue
         raw_spr = stage_data.get("plan_ref")
         stage_plan_ref = (
             raw_spr.strip() if isinstance(raw_spr, str) and raw_spr.strip() else None
@@ -1794,6 +1987,9 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
                 "duplicate_attempts": stage_data.get("duplicate_attempts"),
                 "primary_record_policy": stage_data.get("primary_record_policy"),
                 "per_ref": stage_data.get("per_ref"),
+                "exit_code": stage_data.get("exit_code"),
+                "source_rejection": stage_data.get("source_rejection"),
+                "report_status": stage_data.get("report_status"),
             }
         )
 
@@ -1832,7 +2028,9 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
     return {
         "plan_ref": plan_ref,
         "plan_scope": plan_scope,
-        "expected_unit_count": max(len(expected_unit_artifacts), len(executions)),
+        "expected_unit_count": len(expected_unit_artifacts) if has_plan_key else None,
+        "observed_unit_count": len(executions),
+        "raw_observations": raw_observations,
         "expected_execution_artifacts": expected_unit_artifacts,
         "missing_expected_executions": missing_expected_executions,
         "git_commits": git_commits,
@@ -1908,7 +2106,15 @@ def run_push_checks(root, binding):
                         _push_execution_suffix(index),
                         "execute",
                     )
-                    _record_execution(binding, prepared, report, suffix=artifact_suffix)
+                    try:
+                        _record_execution(
+                            binding, prepared, report, suffix=artifact_suffix
+                        )
+                    except BaseException:
+                        _record_unsealed_observation(
+                            binding, prepared, report, artifact_suffix
+                        )
+                        raise
                 reports.append(report)
             except BaseException:
                 errored = True
@@ -1919,11 +2125,16 @@ def run_push_checks(root, binding):
                         "remote_ref": source["remote_ref"],
                         "ref_action": source["ref_action"],
                         "elapsed_seconds": time.perf_counter() - ref_started,
-                        "exit_code": None
-                        if errored
-                        else (report.get("exit_code") if report else 0),
+                        "exit_code": report.get("exit_code")
+                        if report is not None
+                        else (None if errored else 0),
                         "skipped_execution": False if errored else (report is None),
                         **({"status": "errored"} if errored else {}),
+                        **(
+                            {"report_status": "seal_failed"}
+                            if errored and report is not None
+                            else {}
+                        ),
                     }
                 )
         exit_code = next((r["exit_code"] for r in reports if r and r["exit_code"]), 0)

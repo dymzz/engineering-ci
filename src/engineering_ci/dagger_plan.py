@@ -133,7 +133,7 @@ def execute(plan, *, source, checkout, destination, module_ref, run_ref, attempt
         return report
 
 
-def load_result(destination, plan, *, run_ref, attempt_ref):
+def load_result(destination, plan, *, run_ref, attempt_ref, max_bytes=None):
     """Read one retained native result and its original exit without rerunning it."""
     if (
         destination.is_symlink()
@@ -141,14 +141,26 @@ def load_result(destination, plan, *, run_ref, attempt_ref):
         or not destination.is_dir()
     ):
         raise hooks.HookEventError("hook_dagger_result_missing")
+
+    def read(name, limit):
+        path = destination / name
+        if path.is_symlink() or path.is_junction():
+            raise hooks.HookEventError("hook_dagger_artifact_outside_result")
+        if not path.is_file():
+            raise hooks.HookEventError("hook_dagger_result_invalid")
+        with path.open("rb") as stream:
+            data = stream.read(limit + 1) if limit is not None else stream.read()
+        if limit is not None and len(data) > limit:
+            raise hooks.HookEventError("hook_dagger_artifact_oversized")
+        return data
+
     try:
-        for name in ("plan.json", "report.json", "exit-code.txt"):
-            if (destination / name).is_symlink():
-                raise hooks.HookEventError("hook_dagger_artifact_outside_result")
-        plan_payload = (destination / "plan.json").read_bytes()
-        report = json.loads((destination / "report.json").read_bytes())
-        original_exit = int((destination / "exit-code.txt").read_bytes())
-    except (OSError, ValueError):
+        plan_payload = read("plan.json", max_bytes)
+        report = json.loads(read("report.json", max_bytes))
+        original_exit = int(read("exit-code.txt", 64))
+    except hooks.HookEventError:
+        raise
+    except (OSError, ValueError, RecursionError):
         raise hooks.HookEventError("hook_dagger_result_invalid") from None
     if plan_payload != hooks.canonical_event_bytes(plan):
         raise hooks.HookEventError("hook_dagger_plan_mismatch")
@@ -162,11 +174,12 @@ def load_result(destination, plan, *, run_ref, attempt_ref):
         or (original_exit == 0 and report.get("status") != "passed")
     ):
         raise hooks.HookEventError("hook_dagger_original_exit_mismatch")
-    identity = report.get("execution_identity") or {}
+    identity = report.get("execution_identity")
     if original_exit == 0 and (
-        identity.get("run_ref"),
-        identity.get("attempt_ref"),
-    ) != (run_ref, attempt_ref):
+        not isinstance(identity, dict)
+        or (identity.get("run_ref"), identity.get("attempt_ref"))
+        != (run_ref, attempt_ref)
+    ):
         raise hooks.HookEventError("hook_dagger_attempt_mismatch")
     return report
 
@@ -176,7 +189,9 @@ def source_bound(plan, report):
     handoff = report.get("source_handoff") or {}
     identity = report.get("execution_identity") or {}
     return (
-        report.get("execution_context") == "dagger_export"
+        isinstance(handoff, dict)
+        and isinstance(identity, dict)
+        and report.get("execution_context") == "dagger_export"
         and bool(git.get("source_tree_id"))
         and report.get("tree_verified") is True
         and report.get("source_tree_verified") == "verified"

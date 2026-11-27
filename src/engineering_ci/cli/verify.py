@@ -14,6 +14,7 @@ from time import perf_counter, time_ns
 from uuid import uuid4
 
 from engineering_ci.verify_report import (
+    VERIFY_CORE_FILES,
     _collect_config_tree,
     parse_lefthook_output,
     run_report_cli,
@@ -50,6 +51,35 @@ def _native_output(path):
             "path": path.name,
             "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
         }
+
+
+def _core_test_references(invocation):
+    bundle = invocation / "core-tests"
+    files = []
+    if not bundle.is_symlink() and not bundle.is_junction():
+        for name in VERIFY_CORE_FILES:
+            path = bundle / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                reference = _native_output(path)
+            except OSError:
+                continue
+            reference["path"] = path.relative_to(invocation).as_posix()
+            files.append(reference)
+    required = {"core-tests/exit-code.txt", "core-tests/report.json"}
+    return {
+        "status": (
+            "recorded"
+            if required <= {ref["path"] for ref in files}
+            else "incomplete"
+            if files
+            else "not_emitted"
+        ),
+        "producer": "dagger:repository-test-artifacts",
+        "job": "core-tests",
+        "references": files,
+    }
 
 
 def _safe_native_outputs(stdout_path, stderr_path):
@@ -92,6 +122,8 @@ def _write_json_atomic(path, payload):
 
 def _write_status_best_effort(invocation, payload):
     path = invocation / "verify-status.json"
+    if payload.get("native_started") is not False:
+        payload["child_references"] = _core_test_references(invocation)
     text = json.dumps(payload, indent=2) + "\n"
     try:
         _write_json_atomic(path, payload)
@@ -339,7 +371,17 @@ def _verify(out):
             spawn_attempted = True
             cmd = (lefthook, "run", "verify", "--no-auto-install")
             try:
-                proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=stdout,
+                    stderr=stderr,
+                    env={
+                        **os.environ,
+                        "ECI_VERIFY_CORE_TESTS_OUT": str(
+                            invocation.resolve() / "core-tests"
+                        ),
+                    },
+                )
             except (OSError, subprocess.SubprocessError) as exc:
                 _write_status_best_effort(
                     invocation,
@@ -572,11 +614,7 @@ def _verify(out):
             "native_outputs": native_outputs,
             "lefthook_summary": lefthook_summary,
             "declared_verify_jobs": ["/".join(p) for p in declared_leaf_paths],
-            "child_references": {
-                "status": "none_emitted_by_native_dagger_check",
-                "reason": "lefthook_verify_invokes_raw_dagger_check_without_bundle_export",
-                "references": [],
-            },
+            "child_references": _core_test_references(invocation),
         }
         receipt_path = invocation / "verify-timing.json"
         _write_json_atomic(receipt_path, receipt)

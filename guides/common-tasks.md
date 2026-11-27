@@ -261,11 +261,14 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 `uv run --locked --no-sync python -P -m engineering_ci.cli verify --out .artifacts/verify`），
 确保实际运行当前 worktree 的候选 `cli/verify.py` 而非共享环境里另一检出的 editable `.pth`。
 
-该入口启动一次原生 `lefthook run verify --no-auto-install`（Lefthook 仍是调度权威），
-运行 `lefthook.yml` 中的 verify Jobs（Dagger lint、format、version/lock、核心测试），
-在独立 Invocation 目录保存 `lefthook.stdout`、`lefthook.stderr` 和引用二者摘要的
-`verify-timing.json`。因为默认 `lefthook.yml` 中四个 `dagger check` 仅返回退出状态且不发射统一结构化报告，
-`verify-timing.json` 显式写入 `declared_verify_jobs` 与 `child_references`（`status="none_emitted_by_native_dagger_check"`，严格禁止靠猜最新目录回填）。`verify-timing.json` 同时记录过程内 `perf_counter` 单调耗时
+该入口启动一次原生 `lefthook run verify --no-auto-install`。Lefthook 并行调度 lint、
+format、version/lock、核心测试四组。前三组运行原生 Dagger Check。核心测试组调用
+`repository-test-artifacts` 导出同一次 pytest 的原始退出、JSON、可用的 JUnit 与摘要，
+随后运行导出产物的原生 `ci.py gate`。裸 Lefthook 调用仍使用 `tests` Check。
+本次 Invocation 目录保存 `lefthook.stdout`、`lefthook.stderr` 和 `verify-timing.json`。
+`child_references` 记录 `core-tests/` 中实际导出的相对路径与 SHA-256。查询从回执直接定位，
+并对账原始退出和报告。导出失败、部分交付与未产生的 Trace 保留未知或缺失状态。
+`verify-timing.json` 同时记录过程内 `perf_counter` 单调耗时
 （按 `cli_preflight`、`lefthook_native`、`report_preparation` 拆分，显式标注排除
 `seal` 后写盘与外层 `uv`/Shell 启动耗时）、有界解析得到的 Lefthook Job/嵌套 Group
 分级与跳过/失败耗时明细（区分 Group 的原生 `cumulative_child_durations` 累计和、`wall_clock_seconds="unknown"` 与根部 `lefthook_reported_wall_seconds` 及 `bytes_parsed`；缺失 summary 或缺项显式记为 `"unknown"`），以及宿主 UTC
@@ -280,25 +283,23 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 返回原生检查退出状态；被中断时返回 `130`、保留已写入的部分输出并在 `stderr` 打印目录路径。原始输出写文件而非实时透传终端，
 请从 `stderr` 提示的 Invocation 目录定位输出。
 
-真实 Git Hook（`pre-commit` / `pre-push`）在原有 `.git/eci-hooks/invocations/<id>.*`
-下写入各阶段单调耗时 sidecar（`.timing-capture`、`.timing-prepare`、
-`.timing-run` / `.timing-run-<job>`、`.timing-reconcile`、`.timing-consume`）：
-`run` 绑定首次有效排他激活且并发/重复不覆盖合法样本，`prepare` / `reconcile` / `consume`
-在各自阶段退出 `finally:` 时写入（保留首次成功消费的阶段计时并记录重复尝试计数，不引入阶段状态机）；`pre-push` 在 `run_push_checks` 阶段 `finally:` 时将完整 `per_ref` 摘要一次性落盘（post-check `_index_source` 触发 `index_changed_during_check` 时仍先保留已生成的 `.execution*`、`.source-rejection*` 与 `.timing-run` 事实再按 fail-closed 抛出）；`capture_pre_commit`
-与 `_active_index_matches` 共用带 `before == after` 字节复核的 `index.lock` 受控快照回退，
-不篡改原有 `.plan` / `.execution` / `.receipt` 规范字节，并在过期清理时一并回收。
-本能力只提供过程内单调计时与 Hook 阶段观测，不改动 `lefthook.yml` 中的多次 `uv run` 冷启动路径，内部 `perf_counter` 亦不覆盖外层启动耗时（`#162 R17`）。
+真实 Git Hook（`pre-commit` / `pre-push`）沿用已有 Invocation、Plan、Execution 和 Receipt。
+`.timing-*` 记录实际 prepare、run、reconcile、consume 阶段，保留首次有效激活计时。
+pre-push 逐 Ref 记录耗时及已观察的退出。后验 Source 校验失败或 Execution 封存失败时，
+`.observation*` 尽力保存原始报告，计时记录保留已知退出。生产对账只读取完成 Source
+校验后封存的 `.execution*`。外层 Git、Shell 和 uv 启动成本由单独测量记录（#162 R17）。
 
-需要只读汇总结算与跨源关联时，使用 `verify report`（严格只读、不启动任何检查/Git 子进程，
-完整保留 `verify-timing.json`/`verify-status.json` 的 `native_started`、`native_exit_code`、`native_exit_source`、`outer_exit_code`、`child_references`、`signal` 与 `error`，
-要求 `--hook-root` 与 `--invocation-ref` 成对传入且与 `--hook-invocation` 互斥，支持通过 `--pytest-invocation` 显式读取 `#168` `metadata.json`/`summary.json`/`report.jsonl`/`junit.xml` 目录并禁止 `latest` 目录扫描，
-通过 `hook_checks.inspect_invocation_offline` 消费原 Hook owner 离线身份、共享 `.activation` 冲突与 `.plan` 预期单元数/缺失 sibling 诊断，
-使用与 `hooks.load_invocation_binding(..., max_bytes=...)` 同源的严格字节上限且拒绝 `--out` 覆盖任何已消费输入或产物目录）：
-关联判定基于规范元组键（禁止 `"|"` 拼接）按具体执行单元（Concrete Execution Unit）连通分量区分 `execution_matched`（单执行 Hook 或同一报告副本方可整组证明；多执行 Hook 容器按 `.plan` 预期单元数判定，在缺 sibling 或同时查询 0/1/2+ 子报告时始终维持 `multi_execution_container`、`same_execution_proven=false` 与 `expected_unit_count`/`matched_unit_count`/`conflict_unit_count`/`unqueried_unit_count`/`missing_unit_count`，按 sibling 隔离冲突且禁止已冲突/未验摘要单元形成匹配边或污染无辜邻接节点；多组互不相连或仅子集匹配记
-`partial_execution_matched` 并列出 `execution_groups`）、按格式分流核验所有独立执行报告及 Bundle `report.json`/`check-result.json`（共享纯标准库 `pytest_contracts.py` Schema v1 与严格 JUnit 契约，ReportLog 解析 `CollectReport` 且要求 `has_session_start` 与 collection/test/exit-5 证据方判 `complete` 并标注 `slowest_phases_scope="top_25_phases_not_exhaustive"`；ECI 执行报告复用 `reconciliation.verify_execution_report` 与 `execution.SCHEMA_VERSION`；原生 Dagger `pytest_report` schema v1 分离 `native_execution_status` 与 `report_delivery_status`；父 Bundle 存在完整性冲突时自动收回子产物 `verified_manifest_digest` 资格，`core-junit.xml` 先核验自身 manifest 摘要再作别名去重）、用 `plan_contract.validate` 校验 `plan.json` 后核对 `observed_plan_file_ref`/`declared_report_plan_ref` 与真实投影字段（`verified` / `unverified_plan_ref_undeclared` / `invalid_plan` / `unknown_missing_plan` / `not_applicable` / `mismatch`）、上层 Run/Invocation/CI Attempt (`ci_attempt_context`)/`#87` Trace 共享上下文
-`shared_context_only`（完整投影 `tools/performance.py` 排队/执行窗口/结束 Job/并行时间/首失败步骤与限制字段，并用 `cicd_telemetry` 校验 Attempt/Job 成员与非负整数 ID，同 Attempt 不同 Job 与无效字符串 Run/Attempt 绝不判 `execution_matched`；`#87 A.1` `bound` 与自报 `execution_ref` 需 Verified `#87 B` source/origin 证明方进入具体执行）、跨 Bundle 同 SHA-256 等内容等价 `content_equivalent`（`artifact_sha256` 仅作内容一致而不证明是否同一执行）、版本重合 `revision_only`、
-未认证共存 `colocated_unverified`、`standalone_uncorrelated` 与 `conflict`（同一次多 Ref `pre-push`
-共享 `run_ref`/`attempt_ref` 且推送不同 Ref Commit/Tree 时不误判冲突），并复用 `#66-C` `hook_checks.verify_index_receipt_binding` / `verify_push_receipt_binding`、合法零执行 `pre-push` 判定、以及 `execution.verify_producer_handoff_bundle(..., expected_execution_ref=..., allow_failed_producers=True)`（含 Handoff 重复与多余产物双向 edge 校验）、有界原始 `testcase_verifies` 诊断映射（`*_diagnostic_only_not_c2_delivery`，`#162 C2` 消费合同独立）与 `#63`/`#61` 独立边界；冲突或非法 `--out` 返回退出码 `2`，且全程保持 `time_source_verified=false`：
+`verify report` 从显式路径读取原始证据。传入 `--verify-dir` 可查询该次核心测试交接。
+Hook 支持 `--hook-root` 与 `--invocation-ref` 成对使用，或单独使用 `--hook-invocation`。
+历史 Hook 的字节、Plan、激活、执行包络与 Receipt 检验复用生产端校验。查询分别显示
+Plan 预期单元、观察单元、缺失单元和未封存观察。Git 实时 Source 检验由 Hook 自身完成。
+
+报告分别显示具体执行身份、Artifact 成员关系、内容等价和 Run/Attempt/Trace 上下文。
+Plan 范围声明与观察到的兼容投影分别记录。#87 A.1 保留原 Trace 和 isolation，
+B 执行绑定保持未知。GitHub 性能汇总保留原始指标，固定 Attempt 的 Job 清册由 #131/#75 提供。
+Dagger 和查询共用标准库 pytest/JUnit 计数规则。ReportLog 要证明已选用例覆盖才显示完整。
+`--pytest-invocation` 从 #168 原 metadata 读取声明的文件。Invocation 外的文件由调用者
+显式传 `--junit-xml` 或 `--pytest-reportlog`。查询保留原始文件，冲突或输出路径覆盖输入时退出 2。
 
 ```powershell
 uv run --locked --no-sync engineering-ci verify report `

@@ -8,6 +8,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from engineering_ci import hook_checks, hooks, plan_contract, verify_report
 from engineering_ci.cli import main
 
@@ -227,6 +229,31 @@ def test_verify_report_real_hook_linked_worktree_and_negative_paths(
         "consume",
     }
 
+    plan_path = inv_file.with_suffix(".plan")
+    original_plan = plan_path.read_bytes()
+    plan = json.loads(original_plan)
+    del plan["event_payload_ref"]
+    plan_path.write_bytes(hooks.canonical_event_bytes(plan))
+    with pytest.raises(hooks.HookEventError, match="hook_plan_invocation_mismatch"):
+        hook_checks._load_plan(binding)
+    inspected = verify_report.build_verify_report(hook_invocation=inv_file)["sources"][
+        0
+    ]
+    assert inspected["expected_unit_count"] is None
+    assert inspected["observed_unit_count"] == 1
+    assert inspected["executions"][0]["execution_binding_status"] == "unbound"
+    plan_path.write_bytes(original_plan + b"\n")
+    with pytest.raises(hooks.HookEventError, match="hook_artifact_invalid"):
+        hook_checks._load_plan(binding)
+    inspected = verify_report.build_verify_report(hook_invocation=inv_file)["sources"][
+        0
+    ]
+    assert any(
+        c.get("detail") == "hook_artifact_invalid"
+        for c in inspected["internal_conflicts"]
+    )
+    plan_path.write_bytes(original_plan)
+
     # Invalid ref / bare hex rejected cleanly
     bad_ref = verify_report.build_verify_report(
         hook_root=worktree, invocation_ref=inv_file.stem
@@ -399,7 +426,7 @@ def test_verify_report_correlation_tiers_bundle_and_onetomany(tmp_path):
     (bundle_dir / "report.json").write_bytes(hooks.canonical_event_bytes(exec_report))
     (bundle_dir / "exit-code.txt").write_text("0\n", encoding="utf-8")
     (bundle_dir / "junit.xml").write_text(
-        '<testsuite tests="1" time="0.2"><testcase name="t" time="0.2"/></testsuite>',
+        '<testsuite tests="1" failures="0" errors="0" skipped="0" time="0.2"><testcase name="t" time="0.2"/></testsuite>',
         encoding="utf-8",
     )
 
@@ -453,7 +480,7 @@ def test_verify_report_correlation_tiers_bundle_and_onetomany(tmp_path):
     assert telem_src["source_binding"]["source_binding_status"] == "unknown"
     assert telem_src["query_correlation"]["same_execution_proven"] is False
 
-    # Same execution_ref with conflicting report_ref triggers exit 2 conflict
+    # Identity declarations without native results do not create an execution conflict.
     exec_conflict = tmp_path / "exec-conflict.json"
     exec_conflict.write_bytes(
         hooks.canonical_event_bytes(
@@ -471,7 +498,7 @@ def test_verify_report_correlation_tiers_bundle_and_onetomany(tmp_path):
                 str(exec_conflict),
             ]
         )
-        == 2
+        == 0
     )
 
     # Tampered lefthook.stdout triggers digest mismatch conflict
@@ -566,7 +593,7 @@ def test_verify_report_pytest_phase_failures_and_junit_invalid_durations(tmp_pat
 
     bad_junit = tmp_path / "junit.xml"
     bad_junit.write_text(
-        '<testsuite tests="3"><testcase name="a" time="-1.5"/>'
+        '<testsuite tests="3" failures="0" errors="0" skipped="0"><testcase name="a" time="-1.5"/>'
         '<testcase name="b" time="NaN"/><testcase name="c"/></testsuite>',
         encoding="utf-8",
     )
@@ -673,6 +700,8 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     telem.write_text(
         json.dumps(
             {
+                "kind": verify_report.dagger_telemetry.NATIVE_TRACE_RECEIPT_KIND,
+                "schema_version": verify_report.dagger_telemetry.CONTRACT_VERSION,
                 "correlation": {
                     "status": "bound",
                     "matched_trace_id": "trace-live-1",
@@ -886,18 +915,7 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     ] not in ws_both["query_correlation"]["execution_keys"].get("execution_ref", [])
 
     # Disconnected pairs (A<->B and C<->D) must NEVER yield overall execution_matched.
-    rep_c = {
-        "kind": "engineering-ci-execution-report",
-        "schema_version": 1,
-        "status": "passed",
-        "exit_code": 0,
-        "checks": [],
-        "execution_identity": {
-            "run_ref": "run:other",
-            "attempt_ref": "att:other",
-            "execution_ref": "exec:other-group",
-        },
-    }
+    rep_c = single_exec["report"]
     p_c = tmp_path / "rep_c.json"
     p_d = tmp_path / "rep_d.json"
     p_c.write_bytes(hooks.canonical_event_bytes(rep_c))
@@ -914,38 +932,8 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     # Same run_attempt or same matched_trace_id alone stays shared_context_only, never execution_matched.
     ctx_a = tmp_path / "ctx_a.json"
     ctx_b = tmp_path / "ctx_b.json"
-    ctx_a.write_bytes(
-        hooks.canonical_event_bytes(
-            {
-                "kind": "engineering-ci-execution-report",
-                "schema_version": 1,
-                "status": "passed",
-                "exit_code": 0,
-                "checks": [],
-                "execution_identity": {
-                    "run_ref": "run:shared",
-                    "attempt_ref": "att:1",
-                    "execution_ref": "exec:job-1",
-                },
-            }
-        )
-    )
-    ctx_b.write_bytes(
-        hooks.canonical_event_bytes(
-            {
-                "kind": "engineering-ci-execution-report",
-                "schema_version": 1,
-                "status": "passed",
-                "exit_code": 0,
-                "checks": [],
-                "execution_identity": {
-                    "run_ref": "run:shared",
-                    "attempt_ref": "att:1",
-                    "execution_ref": "exec:job-2",
-                },
-            }
-        )
-    )
+    ctx_a.write_bytes(hooks.canonical_event_bytes(rep))
+    ctx_b.write_bytes(hooks.canonical_event_bytes(fwd_exec_data["report"]))
     ctx_only = verify_report.build_verify_report(execution_reports=[ctx_a, ctx_b])
     assert ctx_only["correlation"]["overall_status"] == "shared_context_only"
     assert all(
@@ -958,11 +946,13 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     trace_1.write_text(
         json.dumps(
             {
+                "kind": verify_report.dagger_telemetry.NATIVE_TRACE_RECEIPT_KIND,
+                "schema_version": verify_report.dagger_telemetry.CONTRACT_VERSION,
                 "correlation": {
                     "status": "bound",
                     "matched_trace_id": "trace-shared-1",
                     "anchor_span_id": "span-1",
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -970,11 +960,13 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     trace_2.write_text(
         json.dumps(
             {
+                "kind": verify_report.dagger_telemetry.NATIVE_TRACE_RECEIPT_KIND,
+                "schema_version": verify_report.dagger_telemetry.CONTRACT_VERSION,
                 "correlation": {
                     "status": "bound",
                     "matched_trace_id": "trace-shared-1",
                     "anchor_span_id": "span-2",
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -987,7 +979,7 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
 
     # P1-02: two distinct bundles producing identical JUnit XML bytes MUST stay two separate execution groups.
     shared_junit = (
-        b'<testsuite tests="1" time="0.1"><testcase name="t_same" time="0.1">'
+        b'<testsuite tests="1" failures="0" errors="0" skipped="0" time="0.1"><testcase name="t_same" time="0.1">'
         b'<properties><property name="verifies" value="AC-202"/></properties>'
         b"</testcase></testsuite>"
     )
@@ -1017,23 +1009,15 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     same_junit_bundles = verify_report.build_verify_report(
         execution_reports=[b_sha1, b_sha2]
     )
-    assert (
-        same_junit_bundles["correlation"]["overall_status"]
-        == "partial_execution_matched"
-    )
-    assert (
-        same_junit_bundles["correlation"]["reason"]
-        == "multiple_disconnected_execution_groups"
-    )
-    assert len(same_junit_bundles["correlation"]["execution_groups"]) == 2
+    assert same_junit_bundles["correlation"]["overall_status"] == "content_equivalent"
+    assert not same_junit_bundles["correlation"]["execution_groups"]
     j_sha_sources = [
         s for s in same_junit_bundles["sources"] if s["source_type"] == "junit_xml"
     ]
     assert len(j_sha_sources) == 2
-    assert {j["query_correlation"]["execution_group_index"] for j in j_sha_sources} == {
-        0,
-        1,
-    }
+    assert all(
+        not j["query_correlation"]["same_execution_proven"] for j in j_sha_sources
+    )
     for j in j_sha_sources:
         assert j["bundle_binding"] == "verified_manifest_digest"
         assert "artifact_digest" not in j["query_correlation"]["execution_keys"]
@@ -1058,7 +1042,7 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     host_raw86 = json.dumps({"status": "passed", "exit_code": 0}).encode("utf-8")
     (real_86 / "host" / "report.json").write_bytes(host_raw86)
     junit_bytes = (
-        b'<testsuite tests="1" time="0.1"><testcase name="t1" time="0.1">'
+        b'<testsuite tests="1" failures="0" errors="0" skipped="0" time="0.1"><testcase name="t1" time="0.1">'
         b'<properties><property name="verifies" value="AC-101"/></properties>'
         b"</testcase></testsuite>"
     )
@@ -1217,12 +1201,12 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     (real_86 / "report.json").write_bytes(hooks.canonical_event_bytes(real_86_rep))
     (real_86 / "exit-code.txt").write_text("0\n", encoding="utf-8")
     real_86_res = verify_report.build_verify_report(execution_reports=[real_86])
-    assert real_86_res["correlation"]["overall_status"] == "execution_matched"
+    assert real_86_res["correlation"]["execution_groups"] == []
     b86_src = next(
         s for s in real_86_res["sources"] if s["source_type"] == "execution_bundle"
     )
     assert b86_src["report_contract_status"] == "valid"
-    assert b86_src["plan_binding_status"] == "verified"
+    assert b86_src["plan_binding_status"] == "declared_plan_ref_matches"
     assert b86_src["admission_authority_63"] == "not_evaluated"
     assert b86_src["producer_artifact_handoff_status"] == "verified"
     assert (
@@ -1271,7 +1255,7 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
     fake_bundle = tmp_path / "bundle-fake"
     (fake_bundle / "tests").mkdir(parents=True)
     fake_xml = (
-        b'<testsuite tests="1" time="0.1"><properties>'
+        b'<testsuite tests="1" failures="0" errors="0" skipped="0" time="0.1"><properties>'
         b'<property name="run_ref" value="run:fake-1"/>'
         b'<property name="attempt_ref" value="att:1"/>'
         b'</properties><testcase name="t1" time="0.1"/></testsuite>'
@@ -1709,13 +1693,13 @@ def test_verify_report_p1_hook_integrity_multiref_push_and_p2_fixes(tmp_path):
         verify_report.build_verify_report(execution_reports=[push_c1, push_c2])[
             "correlation"
         ]["overall_status"]
-        == "mismatch_detected"
+        == "revision_only"
     )
 
     # P1-03 standalone _pytest_bundle deduplicates core-junit.xml alias cleanly.
     std_pytest = tmp_path / "standalone-pytest-bundle"
     std_pytest.mkdir()
-    std_xml = b'<testsuite tests="1" time="0.1"><testcase name="t_std" time="0.1"/></testsuite>'
+    std_xml = b'<testsuite tests="1" failures="0" errors="0" skipped="0" time="0.1"><testcase name="t_std" time="0.1"/></testsuite>'
     (std_pytest / "junit.xml").write_bytes(std_xml)
     (std_pytest / "core-junit.xml").write_bytes(std_xml)
     (std_pytest / "exit-code.txt").write_text("0\n", encoding="utf-8")
@@ -1737,7 +1721,7 @@ def test_verify_report_p1_hook_integrity_multiref_push_and_p2_fixes(tmp_path):
         )
     )
     std_res = verify_report.build_verify_report(execution_reports=[std_pytest])
-    assert std_res["correlation"]["overall_status"] == "execution_matched"
+    assert std_res["correlation"]["execution_groups"] == []
     j_srcs = [s for s in std_res["sources"] if s["source_type"] == "junit_xml"]
     assert len(j_srcs) == 1
     assert j_srcs[0]["alias_paths"] == ["core-junit.xml"]
@@ -2036,7 +2020,7 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
     p_not_exec.write_bytes(hooks.canonical_event_bytes(valid_not_exec))
     not_exec_res = verify_report.build_verify_report(execution_reports=[p_not_exec])
     assert not_exec_res["sources"][0]["report_contract_status"] == "valid"
-    assert not_exec_res["sources"][0]["verifiable_execution_proven"] is True
+    assert not_exec_res["sources"][0]["verifiable_execution_proven"] is False
     assert not_exec_res["sources"][0]["admission_authority_63"] == "not_evaluated"
     assert not_exec_res["sources"][0]["internal_conflicts"] == []
 
@@ -2108,7 +2092,7 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
     plain_dir = tmp_path / "plain-non-eci-pytest"
     plain_dir.mkdir()
     (plain_dir / "junit.xml").write_text(
-        '<testsuite tests="1"><testcase name="t_plain" time="0.1"/></testsuite>',
+        '<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase name="t_plain" time="0.1"/></testsuite>',
         encoding="utf-8",
     )
     plain_res = verify_report.build_verify_report(execution_reports=[plain_dir])
@@ -2235,7 +2219,7 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
     fb_src = failed_prod_res["sources"][0]
     assert fb_src["internal_conflicts"] == []
     assert fb_src["execution_status"] == "failed"
-    assert fb_src["plan_binding_status"] == "verified"
+    assert fb_src["plan_binding_status"] == "declared_plan_ref_matches"
     assert fb_src["producer_artifact_handoff_status"] == "not_delivered_producer_failed"
     assert (
         fb_src["producer_artifact_handoff"]["delivery_status"]
@@ -2371,7 +2355,9 @@ def test_verify_report_p1_contract_handoff_failure_and_plan_binding(tmp_path):
     )
     paired_p104 = verify_report.build_verify_report(execution_reports=[bundle_p104])
     assert paired_p104["sources"][0]["internal_conflicts"] == []
-    assert paired_p104["sources"][0]["plan_binding_status"] == "verified"
+    assert (
+        paired_p104["sources"][0]["plan_binding_status"] == "declared_plan_ref_matches"
+    )
     assert paired_p104["sources"][0]["observed_plan_file_ref"] == plan_a_ref
     assert paired_p104["sources"][0]["declared_report_plan_ref"] == plan_a_ref
 
@@ -2460,7 +2446,7 @@ def test_verify_report_round5_native_pytest_subset_handoff_binding_and_unit_disq
     np_pass.mkdir()
     (np_pass / "exit-code.txt").write_text("0\n", encoding="utf-8")
     (np_pass / "junit.xml").write_text(
-        '<testsuite tests="2" time="0.2"><testcase name="a"/><testcase name="b"/></testsuite>',
+        '<testsuite tests="2" failures="0" errors="0" skipped="0" time="0.2"><testcase name="a"/><testcase name="b"/></testsuite>',
         encoding="utf-8",
     )
     (np_pass / "report.json").write_bytes(
@@ -3178,7 +3164,7 @@ def test_verify_report_round6_il01_il02_il03_and_ci_performance_metrics(tmp_path
         )
         assert src["query_correlation"]["same_execution_proven"] is False
 
-    # Verified #87 B proves execution_ref unless isolated_capture is False.
+    # Self-reported #87 B fields cannot establish an execution binding.
     t_b_ok = tmp_path / "trace-b-ok.json"
     t_b_non_iso = tmp_path / "trace-b-non-iso.json"
     rep_b = tmp_path / "exec-b.json"
@@ -3201,7 +3187,11 @@ def test_verify_report_round6_il01_il02_il03_and_ci_performance_metrics(tmp_path
     t_b_ok.write_text(
         json.dumps(
             {
-                "correlation": {"status": "bound", "matched_trace_id": "trace-b"},
+                "correlation": {
+                    "status": "bound",
+                    "matched_trace_id": "trace-b",
+                    "isolated_capture": True,
+                },
                 "source_binding": {"source_binding_status": "verified"},
                 "origin_execution": {"status": "verified"},
                 "cache_observation": {"isolated_capture": True},
@@ -3213,7 +3203,11 @@ def test_verify_report_round6_il01_il02_il03_and_ci_performance_metrics(tmp_path
     t_b_non_iso.write_text(
         json.dumps(
             {
-                "correlation": {"status": "bound", "matched_trace_id": "trace-c"},
+                "correlation": {
+                    "status": "bound",
+                    "matched_trace_id": "trace-c",
+                    "isolated_capture": False,
+                },
                 "source_binding": {"source_binding_status": "verified"},
                 "origin_execution": {"status": "verified"},
                 "cache_observation": {"isolated_capture": False},
@@ -3225,9 +3219,9 @@ def test_verify_report_round6_il01_il02_il03_and_ci_performance_metrics(tmp_path
     b_match = verify_report.build_verify_report(
         execution_reports=[rep_b], dagger_telemetries=[t_b_ok, t_b_non_iso]
     )
-    assert b_match["correlation"]["overall_status"] == "partial_execution_matched"
-    assert b_match["sources"][0]["query_correlation"]["strength"] == "execution_matched"
-    assert b_match["sources"][1]["query_correlation"]["strength"] == "execution_matched"
+    assert b_match["correlation"]["execution_groups"] == []
+    assert not b_match["sources"][0]["verifiable_execution_proven"]
+    assert b_match["sources"][1]["execution_ref"] is None
     assert b_match["sources"][2]["execution_provenance_status"] == "cache_not_isolated"
     assert b_match["sources"][2]["execution_ref"] is None
 
@@ -3286,11 +3280,8 @@ def test_verify_report_round6_q14_keys_missing_siblings_parent_conflict_and_acti
         )
     )
     mix_res = verify_report.build_verify_report(execution_reports=[mix_1, mix_2])
-    assert mix_res["correlation"]["overall_status"] == "mismatch_detected"
-    assert any(
-        c["field"] == "exit_code" and set(map(repr, c["values"])) == {"0", "'1'"}
-        for c in mix_res["correlation"]["scoped_conflicts"]
-    )
+    assert mix_res["correlation"]["overall_status"] == "uncorrelated"
+    assert not mix_res["correlation"]["scoped_conflicts"]
 
     # Split pre-commit missing sibling preserves multi_execution_hook & catches shared activation conflict.
     repo = tmp_path / "split-miss"
@@ -3345,9 +3336,7 @@ def test_verify_report_round6_q14_keys_missing_siblings_parent_conflict_and_acti
     # Parent execution_bundle integrity conflict revokes child verified_manifest_digest.
     bad_parent = tmp_path / "parent-conflict-bundle"
     bad_parent.mkdir()
-    j_xml = (
-        b'<testsuite tests="1" time="0.1"><testcase name="t" time="0.1"/></testsuite>'
-    )
+    j_xml = b'<testsuite tests="1" failures="0" errors="0" skipped="0" time="0.1"><testcase name="t" time="0.1"/></testsuite>'
     (bad_parent / "junit.xml").write_bytes(j_xml)
     (bad_parent / "exit-code.txt").write_text("99\n", encoding="utf-8")
     (bad_parent / "report.json").write_bytes(
@@ -3383,9 +3372,7 @@ def test_verify_report_round6_core_junit_manifest_and_post_check_source_rejectio
     # core-junit.xml matching junit.xml bytes MUST still fail if manifest expects different sha256.
     b_core = tmp_path / "core-alias-mismatch"
     b_core.mkdir()
-    j_bytes = (
-        b'<testsuite tests="1" time="0.1"><testcase name="t" time="0.1"/></testsuite>'
-    )
+    j_bytes = b'<testsuite tests="1" failures="0" errors="0" skipped="0" time="0.1"><testcase name="t" time="0.1"/></testsuite>'
     j_sha = hashlib.sha256(j_bytes).hexdigest()
     (b_core / "junit.xml").write_bytes(j_bytes)
     (b_core / "core-junit.xml").write_bytes(j_bytes)
@@ -3420,7 +3407,8 @@ def test_verify_report_round6_core_junit_manifest_and_post_check_source_rejectio
         for s in core_res["sources"]
     )
 
-    # hook_checks.run_checks retains .execution, .source-rejection, and .timing-run when post-check _index_source fails.
+    # A native result stays visible even if restoring the Index lets a later
+    # consumer re-open the original invocation.
     import pytest
     from test_native_hooks import INDEX_SELECTION, _approve_profiles, _source
 
@@ -3455,6 +3443,8 @@ def test_verify_report_round6_core_junit_manifest_and_post_check_source_rejectio
     binding = hooks.load_invocation_binding(inv_file)
     assert hook_checks.prepare(repo, binding)["exit_code"] == 0
 
+    index = repo / ".git" / "index"
+    captured_index = index.read_bytes()
     orig_worker = hook_checks._source_worker
 
     def mutating_worker(root, tree, head, op, payload):
@@ -3467,30 +3457,53 @@ def test_verify_report_round6_core_junit_manifest_and_post_check_source_rejectio
     with pytest.raises(hooks.HookEventError, match="index_changed_during_check"):
         hook_checks.run_checks(repo, binding)
 
-    assert inv_file.with_suffix(".execution").is_file()
-    rej_data = json.loads(
-        inv_file.with_suffix(".source-rejection").read_text(encoding="utf-8")
-    )
-    assert rej_data["reason"] == "index_changed_during_check"
+    assert not inv_file.with_suffix(".execution").exists()
+    assert inv_file.with_suffix(".observation").is_file()
     timing_run = json.loads(
         inv_file.with_suffix(".timing-run").read_text(encoding="utf-8")
     )
     assert timing_run["status"] == "failed"
     assert timing_run["source_rejection"] == "index_changed_during_check"
+    assert timing_run["exit_code"] == 0
+    monkeypatch.setattr(hook_checks, "_source_worker", orig_worker)
+    index.write_bytes(captured_index)
+    assert hook_checks.reconcile(repo, binding)["exit_code"] != 0
+    with pytest.raises(hooks.HookEventError, match="hook_report_missing"):
+        hook_checks.consume_index_result(repo, binding)
 
     post_rep = verify_report.build_verify_report(
         hook_root=repo, invocation_ref=binding.invocation_ref
     )
-    assert post_rep["correlation"]["overall_status"] == "mismatch_detected"
-    assert any(
-        c["reason"] == "hook_source_rejected_after_execution"
-        and c["detail"] == "index_changed_during_check"
-        for c in post_rep["sources"][0]["internal_conflicts"]
+    hook_source = post_rep["sources"][0]
+    assert not hook_source["executions"]
+    assert hook_source["raw_observations"][0]["exit_code"] == 0
+    assert hook_source["missing_expected_executions"] == [
+        inv_file.with_suffix(".execution").name
+    ]
+
+    another = hooks.persist_event(repo, hooks.capture_pre_commit(repo))
+    another_binding = hooks.load_invocation_binding(another.invocation_path)
+    assert hook_checks.prepare(repo, another_binding)["exit_code"] == 0
+    original_artifact = hook_checks._artifact
+
+    def fail_seal(binding, suffix, payload=None, *, exclusive=False):
+        if suffix == ".execution" and payload is not None:
+            raise OSError("execution write failed")
+        return original_artifact(binding, suffix, payload, exclusive=exclusive)
+
+    monkeypatch.setattr(hook_checks, "_artifact", fail_seal)
+    with pytest.raises(OSError, match="execution write failed"):
+        hook_checks.run_checks(repo, another_binding)
+    observed = verify_report.build_verify_report(
+        hook_invocation=another.invocation_path
+    )["sources"][0]
+    assert observed["raw_observations"][0]["exit_code"] == 0
+    assert not observed["executions"]
+    run_stage = next(
+        stage for stage in observed["stage_timings"] if stage["stage"] == "run"
     )
-    assert (
-        post_rep["sources"][0]["executions"][0]["source_rejection"]
-        == "index_changed_during_check"
-    )
+    assert run_stage["exit_code"] == 0
+    assert run_stage["report_status"] == "seal_failed"
 
 
 def test_verify_report_round6_lifecycle_lefthook_pytest_contracts_168_and_cli(
@@ -3671,7 +3684,7 @@ def test_verify_report_round6_lifecycle_lefthook_pytest_contracts_168_and_cli(
         encoding="utf-8",
     )
     ce_parsed = verify_report._parse_pytest_reportlog(collect_err)
-    assert ce_parsed["report_completeness"] == "complete"
+    assert ce_parsed["report_completeness"] == "unverified_collection"
     assert ce_parsed["has_collection"] is True
     assert ce_parsed["collection_failed_count"] == 1
     assert ce_parsed["slowest_phases_scope"] == "top_25_phases_not_exhaustive"
@@ -3717,11 +3730,13 @@ def test_verify_report_round6_lifecycle_lefthook_pytest_contracts_168_and_cli(
         "wall_time_seconds": 0.42,
         "exitstatus": 0,
         "session_finished": True,
+        "report_log": str(p168_inv / "custom-report.jsonl"),
+        "junit_xml": str(p168_inv / "junit.xml"),
         "argv": ["-q"],
     }
     (p168_inv / "metadata.json").write_text(json.dumps(meta_168), encoding="utf-8")
     (p168_inv / "summary.json").write_text(json.dumps(meta_168), encoding="utf-8")
-    (p168_inv / "report.jsonl").write_text(
+    (p168_inv / "custom-report.jsonl").write_text(
         "\n".join(
             [
                 json.dumps({"$report_type": "SessionStart", "created_at": 1.0}),
@@ -3793,6 +3808,11 @@ def test_verify_report_round6_lifecycle_lefthook_pytest_contracts_168_and_cli(
     assert inv_src["selected_items"] == 4
     assert inv_src["deselected_items"] == 1
     assert inv_src["wall_time_seconds"] == 0.42
+    child_src = next(
+        s for s in loaded_168["sources"] if s["source_type"] == "pytest_reportlog"
+    )
+    assert child_src["bundle_relative_path"] == "custom-report.jsonl"
+    assert child_src["report_completeness"] == "unverified_collection"
 
     # Refuse overwriting files inside --pytest-invocation store.
     assert (

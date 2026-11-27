@@ -1,13 +1,7 @@
-"""Shared pure-Python pytest schema v1, JUnit XML, and ReportLog contracts.
-
-This module intentionally uses only the Python standard library so both the
-host verification layer and pure-data contract checks share the exact same
-rules without adding runtime dependencies or touching standalone Dagger bundles.
-"""
+"""Standard-library contracts for native pytest results and JUnit counts."""
 
 from __future__ import annotations
 
-import json
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -29,6 +23,12 @@ PYTEST_INVOCATION_KIND = "engineering-ci-pytest-invocation"
 PYTEST_INVOCATION_SCHEMA_VERSION = 1
 
 
+def native_pytest_status(exit_code: int, counts: dict[str, int]) -> str:
+    if exit_code == 0 and counts["failures"] == 0 and counts["errors"] == 0:
+        return "passed"
+    return "failed" if exit_code == 1 else "error"
+
+
 def is_native_pytest_v1_shape(payload: dict[str, Any]) -> bool:
     """Return True when payload matches Dagger python_test_artifacts schema v1 JSON."""
     if "kind" in payload or "checks" in payload or "execution_identity" in payload:
@@ -38,7 +38,8 @@ def is_native_pytest_v1_shape(payload: dict[str, Any]) -> bool:
 
 def validate_native_pytest_v1(payload: dict[str, Any]) -> str | None:
     """Validate native Dagger pytest schema v1 contract per docs/architecture/testing/pytest-reporting.md."""
-    if payload.get("schema_version") != NATIVE_PYTEST_SCHEMA_VERSION:
+    version = payload.get("schema_version")
+    if type(version) is not int or version != NATIVE_PYTEST_SCHEMA_VERSION:
         return "native_pytest_schema_unsupported"
     exit_code = payload.get("exit_code")
     if type(exit_code) is not int or not 0 <= exit_code <= 255:
@@ -47,7 +48,7 @@ def validate_native_pytest_v1(payload: dict[str, Any]) -> str | None:
     if not isinstance(reason, str) or not reason:
         return "native_pytest_reason_invalid"
     status = payload.get("status")
-    if status not in NATIVE_PYTEST_STATUSES:
+    if not isinstance(status, str) or status not in NATIVE_PYTEST_STATUSES:
         return "native_pytest_status_invalid"
     report_available = payload.get("report_available")
     if type(report_available) is not bool:
@@ -64,13 +65,12 @@ def validate_native_pytest_v1(payload: dict[str, Any]) -> str | None:
             val = counts.get(field)
             if type(val) is not int or val < 0:
                 return "native_pytest_counts_invalid"
-        if exit_code == 0 and counts["failures"] == 0 and counts["errors"] == 0:
-            expected_status = "passed"
-        elif exit_code == 1:
-            expected_status = "failed"
-        else:
-            expected_status = "error"
-        if status != expected_status:
+        if (
+            sum(counts[field] for field in NATIVE_PYTEST_COUNT_FIELDS[1:])
+            != counts["tests"]
+        ):
+            return "native_pytest_counts_invalid"
+        if status != native_pytest_status(exit_code, counts):
             return "native_pytest_status_mismatch"
     else:
         if counts is not None or status != "error":
@@ -97,17 +97,21 @@ def parse_junit_suites_and_counts(
 
     totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
     for suite in suites:
-        for attr in ("tests", "failures", "errors", "skipped"):
+        counts = {}
+        for attr in totals:
             raw_num = suite.attrib.get(attr)
             if raw_num is None:
-                continue
+                raise ValueError(f"Missing JUnit count attribute {attr!r}")
             stripped = raw_num.strip()
-            if not stripped.isdigit():
+            if not stripped.isascii() or not stripped.isdecimal():
                 raise ValueError(f"Invalid JUnit count attribute {attr!r}: {raw_num!r}")
-            totals[attr] += int(stripped)
-    totals["passed"] = max(
-        0,
-        totals["tests"] - totals["failures"] - totals["errors"] - totals["skipped"],
+            counts[attr] = int(stripped)
+        if counts["failures"] + counts["errors"] + counts["skipped"] > counts["tests"]:
+            raise ValueError("JUnit outcomes exceed the suite test count")
+        for attr, value in counts.items():
+            totals[attr] += value
+    totals["passed"] = (
+        totals["tests"] - totals["failures"] - totals["errors"] - totals["skipped"]
     )
     return suites, totals
 
@@ -117,12 +121,8 @@ def is_pytest_invocation_metadata(payload: Any) -> bool:
     return (
         isinstance(payload, dict)
         and payload.get("kind") == PYTEST_INVOCATION_KIND
+        and type(payload.get("schema_version")) is int
         and payload.get("schema_version") == PYTEST_INVOCATION_SCHEMA_VERSION
         and isinstance(payload.get("invocation_id"), str)
         and bool(payload.get("invocation_id"))
     )
-
-
-def canonical_tuple_key(*parts: Any) -> str:
-    """Build an injection-proof canonical key string without ambiguity on delimiters."""
-    return json.dumps(list(parts), separators=(",", ":"), ensure_ascii=True)

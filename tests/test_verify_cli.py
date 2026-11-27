@@ -17,7 +17,7 @@ from engineering_ci.cli import main, verify
 
 def _make_fake_popen(handler):
     class _FakePopen:
-        def __init__(self, cmd, *, stdout, stderr):
+        def __init__(self, cmd, *, stdout, stderr, env):
             self.cmd = cmd
             self.stdout = stdout
             self.stderr = stderr
@@ -569,7 +569,7 @@ def test_verify_output_open_and_spawn_failures_never_mark_native_started(
         return subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n")
 
     class _SpawnFailPopen:
-        def __init__(self, cmd, *, stdout, stderr):
+        def __init__(self, cmd, *, stdout, stderr, env):
             raise FileNotFoundError("lefthook binary disappeared")
 
     monkeypatch.setattr(verify.subprocess, "run", run_git_ok)
@@ -665,7 +665,7 @@ def test_verify_unconfirmed_spawn_interrupt_reports_unknown_started(
         return subprocess.CompletedProcess(cmd, 0, b"e" * 40 + b"\n")
 
     class _InterruptSpawnPopen:
-        def __init__(self, cmd, *, stdout, stderr):
+        def __init__(self, cmd, *, stdout, stderr, env):
             raise KeyboardInterrupt()
 
     monkeypatch.setattr(verify.subprocess, "run", run_git)
@@ -705,7 +705,7 @@ def test_verify_post_spawn_wait_failure_marks_native_started_and_wait_failed(
     instances = []
 
     class _WaitFailPopen:
-        def __init__(self, cmd, *, stdout, stderr):
+        def __init__(self, cmd, *, stdout, stderr, env):
             self.terminated = False
             self.killed = False
             self._rc = None
@@ -764,7 +764,7 @@ def test_verify_post_spawn_interrupt_reaps_timeout_without_losing_interrupted_st
     instances = []
 
     class _ReapTimeoutPopen:
-        def __init__(self, cmd, *, stdout, stderr):
+        def __init__(self, cmd, *, stdout, stderr, env):
             self.cmd = cmd
             self.terminated = False
             self.killed = False
@@ -823,7 +823,7 @@ def test_verify_interrupt_preserves_observed_exit_before_and_after_terminate(
     terminated_instances = []
 
     class _ObservedAfterTerminatePopen:
-        def __init__(self, cmd, *, stdout, stderr):
+        def __init__(self, cmd, *, stdout, stderr, env):
             stdout.write(b"\xe2\x94\x83 lint \xe2\x9d\xaf \n")
             stdout.flush()
             self._rc = None
@@ -860,7 +860,7 @@ def test_verify_interrupt_preserves_observed_exit_before_and_after_terminate(
     pre_exit_instances = []
 
     class _ObservedBeforeTerminatePopen:
-        def __init__(self, cmd, *, stdout, stderr):
+        def __init__(self, cmd, *, stdout, stderr, env):
             self.terminated = False
             self.killed = False
             pre_exit_instances.append(self)
@@ -1031,11 +1031,8 @@ def test_verify_records_explicit_native_exit_fields_and_non_emission_child_refs(
     assert timing["native_exit_source"] == "natural_exit"
     assert timing["outer_exit_code"] == 0
     assert timing["declared_verify_jobs"] == ["lint"]
-    assert timing["child_references"]["status"] == "none_emitted_by_native_dagger_check"
-    assert (
-        timing["child_references"]["reason"]
-        == "lefthook_verify_invokes_raw_dagger_check_without_bundle_export"
-    )
+    assert timing["child_references"]["status"] == "not_emitted"
+    assert timing["child_references"]["job"] == "core-tests"
     assert timing["child_references"]["references"] == []
 
     rep = verify_report.build_verify_report(verify_dir=inv_dir)
@@ -1045,4 +1042,54 @@ def test_verify_records_explicit_native_exit_fields_and_non_emission_child_refs(
     assert vsrc["outer_exit_code"] == 0
     assert vsrc["timing_receipt_present"] is True
     assert vsrc["status_receipt_present"] is False
-    assert vsrc["child_references"]["status"] == "none_emitted_by_native_dagger_check"
+    assert vsrc["child_references"]["status"] == "not_emitted"
+
+
+def test_verify_consumes_its_core_artifact_and_checks_the_original_exit(
+    tmp_path, monkeypatch
+):
+    from test_pytest_report import report as producer
+
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"core-tests"}]}}'
+        ),
+    )
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
+    )
+    calls = []
+
+    class CoreExport(_make_fake_popen(lambda *args, **kwargs: 1)):
+        def __init__(self, cmd, *, stdout, stderr, env):
+            super().__init__(cmd, stdout=stdout, stderr=stderr, env=env)
+            calls.append(cmd)
+            bundle = Path(env["ECI_VERIFY_CORE_TESTS_OUT"])
+            bundle.mkdir()
+            (bundle / "exit-code.txt").write_text("1\n", encoding="utf-8")
+            report = producer.summarize_pytest(
+                "", 1, "pytest failed before writing JUnit"
+            )
+            (bundle / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    monkeypatch.setattr(verify.subprocess, "Popen", CoreExport)
+    assert main(["verify", "--out", str(tmp_path)]) == 1
+    assert len(calls) == 1
+    (invocation,) = tmp_path.iterdir()
+    source = verify_report.build_verify_report(verify_dir=invocation)["sources"][0]
+    child = source["child_references"]
+    assert child["verification"] == "verified"
+    assert child["native_exit_code"] == 1
+    assert child["report"]["report_available"] is False
+    native_exit = invocation / "core-tests" / "exit-code.txt"
+    native_exit.write_text("0\n", encoding="utf-8")
+    source = verify_report.build_verify_report(verify_dir=invocation)["sources"][0]
+    assert source["child_references"]["verification"] == "file_verification_failed"
+    assert source["native_exit_code"] == 1

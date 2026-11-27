@@ -16,6 +16,7 @@ from typing import Any
 
 from engineering_ci import (
     cicd_telemetry,
+    dagger_telemetry,
     execution,
     hook_checks,
     hooks,
@@ -33,6 +34,18 @@ MAX_REPORTLOG_LINE_BYTES = 1024 * 1024
 MAX_GITDIR_POINTER_BYTES = 4096
 MAX_SLOW_ITEMS = 25
 MAX_TESTCASE_PROPERTY_RECORDS = 500
+VERIFY_CORE_FILES = (
+    "report.json",
+    "exit-code.txt",
+    "junit.xml",
+    "summary.md",
+    "ci.py",
+    "quality-policy.json",
+    "pytest_quality.py",
+    "coverage.xml",
+    "coverage.json",
+    "dependency-packages.json",
+)
 
 _ANSI_ESCAPE_RE = re.compile(
     r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
@@ -631,6 +644,54 @@ def _norm_optional_str(value: Any) -> str | None:
     return text or None
 
 
+def _load_verify_core_tests(verify_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
+    refs = record.get("references")
+    if not isinstance(refs, list) or len(refs) > len(VERIFY_CORE_FILES):
+        return {**record, "verification": "invalid_references"}
+    verified = {}
+    paths = {f"core-tests/{name}" for name in VERIFY_CORE_FILES}
+    for ref in refs:
+        name = ref.get("path") if isinstance(ref, dict) else None
+        if not isinstance(name, str) or name not in paths or name in verified:
+            return {**record, "verification": "invalid_references"}
+        verified[name] = _verify_native_output_entry(verify_dir, ref)
+    result = {**record, "files": verified}
+    if not verified:
+        return {**result, "verification": "not_emitted"}
+    if any(item["status"] != "verified" for item in verified.values()):
+        return {**result, "verification": "file_verification_failed"}
+    exit_file = verified.get("core-tests/exit-code.txt")
+    report_file = verified.get("core-tests/report.json")
+    if exit_file is None or report_file is None:
+        return {**result, "verification": "incomplete"}
+    raw_exit, _, _ = _read_bounded_bytes(Path(exit_file["resolved_path"]), limit=16)
+    raw_report, _, _ = _read_bounded_bytes(
+        Path(report_file["resolved_path"]), limit=MAX_JSON_REPORT_BYTES
+    )
+    payload = None
+    if (
+        raw_report is not None
+        and hashlib.sha256(raw_report).hexdigest() == report_file["sha256"]
+    ):
+        with suppress(ValueError, RecursionError):
+            payload = json.loads(raw_report)
+    if raw_exit is not None and re.fullmatch(rb"[0-9]{1,3}\r?\n?", raw_exit):
+        exit_code = int(raw_exit)
+        if (
+            exit_code <= 255
+            and hashlib.sha256(raw_exit).hexdigest() == exit_file["sha256"]
+        ):
+            result["native_exit_code"] = exit_code
+    if (
+        not isinstance(payload, dict)
+        or not pytest_contracts.is_native_pytest_v1_shape(payload)
+        or pytest_contracts.validate_native_pytest_v1(payload) is not None
+        or payload["exit_code"] != result.get("native_exit_code")
+    ):
+        return {**result, "verification": "native_report_invalid"}
+    return {**result, "verification": "verified", "report": payload}
+
+
 def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "source_type": "verify",
@@ -776,6 +837,27 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
     child_references = payload.get("child_references")
     if not isinstance(child_references, dict):
         child_references = {"status": "not_recorded"}
+    elif child_references.get("producer") == "dagger:repository-test-artifacts":
+        child_references = _load_verify_core_tests(verify_dir, child_references)
+        entry["consumed_dirs"] = [str(verify_dir / "core-tests")]
+        entry["consumed_files"].extend(
+            file["resolved_path"]
+            for file in child_references.get("files", {}).values()
+            if "resolved_path" in file
+        )
+        if child_references["verification"] in (
+            "invalid_references",
+            "file_verification_failed",
+            "native_report_invalid",
+        ):
+            entry["internal_conflicts"].append(
+                {
+                    "reason": "verify_core_test_reference_invalid",
+                    "detail": child_references["verification"],
+                }
+            )
+        if "core-tests" in (payload.get("declared_verify_jobs") or ()):
+            outputs_complete &= child_references["verification"] == "verified"
 
     entry.update(
         {
@@ -979,6 +1061,8 @@ def _load_hook_entry(
             "plan_ref": inspected["plan_ref"],
             "plan_scope": inspected["plan_scope"],
             "expected_unit_count": inspected["expected_unit_count"],
+            "observed_unit_count": inspected["observed_unit_count"],
+            "raw_observations": inspected["raw_observations"],
             "expected_execution_artifacts": inspected["expected_execution_artifacts"],
             "missing_expected_executions": inspected["missing_expected_executions"],
             "git_commits": inspected["git_commits"],
@@ -1235,6 +1319,7 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
         "status": "loaded",
         "sha256": raw_sha256,
         "counts": totals,
+        "collection_scope": "unverified",
         "total_duration_seconds": total_duration,
         "invalid_duration_count": invalid_durations,
         "missing_duration_count": missing_durations,
@@ -1651,7 +1736,7 @@ def _parse_pytest_reportlog(
         and testcase_counts["repeated_ambiguous"] == 0
         and has_meaningful_pytest_evidence
     ):
-        completeness = "complete"
+        completeness = "unverified_collection"
     else:
         completeness = "partial"
 
@@ -1664,6 +1749,7 @@ def _parse_pytest_reportlog(
         "status": "loaded",
         "sha256": None if truncated else hasher.hexdigest(),
         "report_completeness": completeness,
+        "observed_node_count": len(node_records),
         "truncated": truncated,
         "line_count": line_count,
         "bytes_read": bytes_read,
@@ -1761,7 +1847,10 @@ def _build_bundle_manifest_index(
                     rel_posix = f"{p_root_rel}/{f_rel}"
                     norm_sha = _norm_sha256_value(f_sha)
                     if norm_sha:
-                        index[rel_posix] = {"sha256": norm_sha}
+                        index[rel_posix] = {
+                            "sha256": norm_sha,
+                            "origin": "producer_handoff",
+                        }
                     f_path = _safe_child_path(bundle_dir, rel_posix)
                     if f_path is not None:
                         consumed_files.append(str(f_path))
@@ -1796,14 +1885,26 @@ def _build_bundle_manifest_index(
                 continue
             rpath = rec.get("path")
             sha = _norm_sha256_value(rec.get("sha256"))
-            if isinstance(rpath, str) and sha:
-                index[Path(rpath).as_posix()] = {"sha256": sha}
+            if isinstance(rpath, str) and sha and _safe_child_path(bundle_dir, rpath):
+                relative_path = Path(rpath).as_posix()
+                previous = index.setdefault(
+                    relative_path, {"sha256": sha, "origin": "declared_manifest"}
+                )
+                if previous["sha256"] != sha:
+                    internal_conflicts.append(
+                        {
+                            "reason": "bundle_artifact_digest_declarations_conflict",
+                            "path": relative_path,
+                        }
+                    )
 
     embedded_junit = report_payload.get("junit")
-    if isinstance(embedded_junit, str) and embedded_junit:
+    if isinstance(embedded_junit, str) and embedded_junit.lstrip().startswith("<"):
         junit_sha = hashlib.sha256(embedded_junit.encode("utf-8")).hexdigest()
         for rel_junit in ("tests/junit.xml", "junit.xml"):
-            index.setdefault(rel_junit, {"sha256": junit_sha})
+            index.setdefault(
+                rel_junit, {"sha256": junit_sha, "origin": "embedded_junit"}
+            )
 
     return index, handoff_summary
 
@@ -1885,11 +1986,16 @@ def _validate_execution_report_contract(
             }
     try:
         results, rejections, _ = reconciliation.verify_execution_report(target)
-    except reconciliation.ReconciliationError as exc:
+    except (
+        reconciliation.ReconciliationError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ) as exc:
         err = (
             f"{exc.code}:{exc.native_code}"
             if getattr(exc, "native_code", None)
-            else exc.code
+            else getattr(exc, "code", "execution_report_invalid")
         )
         return {
             "report_format": report_format,
@@ -1898,12 +2004,38 @@ def _validate_execution_report_contract(
             "rejections": {},
             "native_result_count": 0,
         }
+    native_executions = set()
+    identity = payload.get("execution_identity")
+    execution_ref = (
+        identity.get("execution_ref") if isinstance(identity, dict) else None
+    )
+    for result in results:
+        if result["result_id"] in rejections or (
+            type(result.get("native_exit_code")) is not int
+            and result.get("status") not in ("passed", "failed")
+        ):
+            continue
+        observed = (result.get("evidence") or {}).get("execution")
+        if isinstance(observed, dict):
+            if not isinstance(identity, dict) or any(
+                observed.get(key) != identity.get(key)
+                for key in ("run_ref", "attempt_ref")
+            ):
+                continue
+            ref = observed.get("parent_execution_ref") or observed.get("execution_ref")
+            if isinstance(ref, str):
+                native_executions.add(ref)
+        elif isinstance(execution_ref, str) and result["result_instance"].startswith(
+            (execution_ref + ":", execution_ref.removeprefix("execution:") + ":")
+        ):
+            native_executions.add(execution_ref)
     return {
         "report_format": report_format,
         "status": "valid",
         "error": None,
         "rejections": dict(rejections),
         "native_result_count": len(results),
+        "native_executions": native_executions,
     }
 
 
@@ -2347,7 +2479,8 @@ def _extract_execution_metadata(
                     "observed": h_att,
                 }
             )
-    plan_git = (payload.get("plan") or {}).get("git")
+    projection = payload.get("plan")
+    plan_git = projection.get("git") if isinstance(projection, dict) else None
     git_commit = (
         _norm_optional_str(plan_git.get("head_commit"))
         if isinstance(plan_git, dict)
@@ -2379,8 +2512,18 @@ def _extract_execution_metadata(
         "native_result_count": contract["native_result_count"],
         "declared_identity": declared_identity,
         "declared_report_plan_ref": declared_plan_ref,
-        "verifiable_execution_proven": contract_valid
-        and report_format in ("eci_execution_report", "native_check_result"),
+        "verifiable_execution_proven": bool(
+            contract_valid
+            and execution_ref
+            and payload.get("status") in ("passed", "failed", "error")
+            and type(payload.get("exit_code")) is int
+            and any(
+                occurrence == execution_ref
+                or occurrence == execution_ref.removeprefix("execution:")
+                for occurrence in contract.get("native_executions", ())
+            )
+        ),
+        "requested_check_names": payload.get("requested_check_names"),
         "admission_authority_63": "not_evaluated",
         "run_ref": run_ref if contract_valid else None,
         "attempt_ref": attempt_ref if contract_valid else None,
@@ -2538,20 +2681,59 @@ def _load_pytest_invocation_entry(path: Path) -> list[dict[str, Any]]:
     )
 
     child_entries: list[dict[str, Any]] = []
-    for rel_name, parser in (
-        ("report.jsonl", _parse_pytest_reportlog),
-        ("pytest-reportlog.jsonl", _parse_pytest_reportlog),
-        ("junit.xml", _parse_junit_xml),
+    child_status = {}
+    for field, parser in (
+        ("report_log", _parse_pytest_reportlog),
+        ("junit_xml", _parse_junit_xml),
     ):
+        declared = primary.get(field)
+        recorded = secondary.get(field)
+        if recorded is not None and declared is not None and recorded != declared:
+            internal_conflicts.append(
+                {"reason": "pytest_invocation_path_conflict", "field": field}
+            )
+            child_status[field] = "conflict"
+            continue
+        raw_path = declared if declared is not None else recorded
+        if not isinstance(raw_path, str) or not raw_path:
+            child_status[field] = "not_declared"
+            continue
+        artifact = Path(raw_path)
+        if not artifact.is_absolute():
+            cwd = primary.get("cwd") or secondary.get("cwd")
+            if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+                child_status[field] = "unknown_relative_path_base"
+                continue
+            artifact = Path(cwd) / artifact
+        try:
+            rel_name = artifact.relative_to(inv_dir).as_posix()
+        except ValueError:
+            child_status[field] = "external_path_requires_explicit_input"
+            continue
         child = _safe_child_path(inv_dir, rel_name)
-        if child is None or not (child.exists() or child.is_symlink()):
+        if child is None:
+            child_status[field] = "path_unsafe"
             continue
         parsed = parser(child)
         consumed_files.append(str(child))
-        parsed["bundle_binding"] = "colocated_unverified"
-        parsed["colocated_directory"] = inv_dir.as_posix()
+        child_status[field] = parsed["status"]
+        parsed["bundle_binding"] = "declared_by_pytest_metadata"
         parsed["bundle_relative_path"] = rel_name
         parsed["pytest_invocation_id"] = inv_id
+        selected = primary.get("selected_items")
+        if (
+            field == "report_log"
+            and parsed.get("report_completeness") == "unverified_collection"
+            and type(selected) is int
+            and selected > 0
+            and parsed.get("observed_node_count") == selected
+            and parsed.get("exit_status") == exitstatus
+            and exitstatus in (0, 1)
+            and primary.get("session_finished") is True
+            and primary.get("collect_only") is False
+            and len(parsed.get("collection_errors") or ()) == 0
+        ):
+            parsed["report_completeness"] = "complete"
         if (
             parsed.get("source_type") == "pytest_reportlog"
             and parsed.get("status") == "loaded"
@@ -2604,6 +2786,7 @@ def _load_pytest_invocation_entry(path: Path) -> list[dict[str, Any]]:
         "wall_time_seconds": wall_time,
         "elapsed_seconds": wall_time,
         "exitstatus": exitstatus,
+        "declared_artifact_status": child_status,
         "session_finished": (
             primary["session_finished"]
             if "session_finished" in primary
@@ -2735,6 +2918,14 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                     report_payload,
                     internal_conflicts=internal_conflicts,
                 )
+                requested = report_payload.get("requested_check_names")
+                meta["requested_plan_scope"] = (
+                    "explicit_host_subset"
+                    if isinstance(requested, list)
+                    else "full_selection"
+                    if "requested_check_names" in report_payload and requested is None
+                    else "unknown"
+                )
                 plan_git = plan_payload.get("git")
                 if isinstance(plan_git, dict) and meta.get("git_commit") is None:
                     meta["git_commit"] = _norm_optional_str(plan_git.get("head_commit"))
@@ -2751,7 +2942,9 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                         if scope_res == "subset_of_plan"
                         else "matched"
                     )
-                    plan_execution_scope = scope_res
+                    plan_execution_scope = (
+                        scope_res if meta["requested_plan_scope"] != "unknown" else None
+                    )
                     plan_binding_status = "mismatch"
                 elif declared_plan_ref is not None and plan_ref == declared_plan_ref:
                     plan_projection_status = (
@@ -2759,8 +2952,19 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                         if scope_res == "subset_of_plan"
                         else "matched"
                     )
-                    plan_execution_scope = scope_res
-                    plan_binding_status = "verified"
+                    plan_execution_scope = (
+                        scope_res if meta["requested_plan_scope"] != "unknown" else None
+                    )
+                    projection = report_payload.get("plan")
+                    bound = (
+                        isinstance(projection, dict)
+                        and projection.get("git") == plan_payload.get("git")
+                        and projection.get("generator") == plan_payload.get("generator")
+                        and meta.get("verifiable_execution_proven")
+                    )
+                    plan_binding_status = (
+                        "verified" if bound else "declared_plan_ref_matches"
+                    )
                     if contract_valid and meta.get("plan_ref") is None:
                         meta["plan_ref"] = plan_ref
                 else:
@@ -2769,7 +2973,9 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                         if scope_res == "subset_of_plan"
                         else "matched"
                     )
-                    plan_execution_scope = scope_res
+                    plan_execution_scope = (
+                        scope_res if meta["requested_plan_scope"] != "unknown" else None
+                    )
                     plan_binding_status = "unverified_plan_ref_undeclared"
             elif plan_contract_status == "invalid":
                 plan_binding_status = "invalid_plan"
@@ -2938,7 +3144,6 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
             and entries[0].get("source_type") == "execution_bundle"
             and entries[0].get("status") == "loaded"
             and meta.get("report_contract_status") == "valid"
-            and bool(meta.get("verifiable_execution_proven"))
             and not internal_conflicts
             and meta.get("plan_binding_status") not in ("mismatch", "invalid_plan")
         )
@@ -2994,11 +3199,17 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                 if entries and str(child) not in entries[0]["consumed_files"]:
                     entries[0]["consumed_files"].append(str(child))
                 continue
-            if digest_verified and parent_integrity_ok:
+            if (
+                digest_verified
+                and parent_integrity_ok
+                and manifest_rec["origin"] != "declared_manifest"
+            ):
                 # Only concrete native digest bindings on unconflicted, contract-valid bundles prove membership.
                 parsed["bundle_binding"] = "verified_manifest_digest"
                 parsed["bound_bundle_directory"] = bundle_dir.as_posix()
                 parsed["bound_artifact_digest"] = sha
+            elif digest_verified and parent_integrity_ok:
+                parsed["bundle_binding"] = "declared_manifest_digest"
             else:
                 parsed["bundle_binding"] = "colocated_unverified"
                 parsed["colocated_directory"] = bundle_dir.as_posix()
@@ -3127,22 +3338,20 @@ def _load_dagger_telemetry(path: Path) -> dict[str, Any]:
     )
     cache_obs = payload.get("cache_observation")
     isolated_capture = (
-        cache_obs.get("isolated_capture") if isinstance(cache_obs, dict) else None
+        native_corr.get("isolated_capture") if isinstance(native_corr, dict) else None
     )
     declared_run_ref = _norm_optional_str(payload.get("run_ref"))
     declared_attempt_ref = _norm_optional_str(payload.get("attempt_ref"))
     declared_exec_ref = _norm_optional_str(payload.get("execution_ref"))
 
-    # #87 A.1 bound only links trace <-> invocation; proving ECI execution requires verified #87 B source & origin bindings.
-    proven_b_binding = (
-        corr_status == "bound"
-        and source_binding_status == "verified"
-        and origin_status == "verified"
-        and isolated_capture is not False
+    # A.1 receipts describe trace selection. They carry no verified #87 B
+    # execution binding to an ECI result, including when Origin is reported.
+    is_native_receipt = (
+        payload.get("kind") == dagger_telemetry.NATIVE_TRACE_RECEIPT_KIND
+        and type(payload.get("schema_version")) is int
+        and payload["schema_version"] == dagger_telemetry.CONTRACT_VERSION
     )
-    if proven_b_binding:
-        exec_prov_status = "verified"
-    elif isolated_capture is False:
+    if isolated_capture is False:
         exec_prov_status = "cache_not_isolated"
     elif declared_exec_ref is not None:
         exec_prov_status = "unverified_self_reported_execution_ref_without_b_proof"
@@ -3166,6 +3375,10 @@ def _load_dagger_telemetry(path: Path) -> dict[str, Any]:
         "core_span_id": core_span_id,
         "lineage_span_ids": lineage_span_ids,
         "native_correlation_status": corr_status,
+        "native_receipt_recognized": is_native_receipt,
+        "isolated_capture": isolated_capture
+        if type(isolated_capture) is bool
+        else None,
         "source_binding_status": source_binding_status,
         "origin_execution_status": origin_status,
         "execution_provenance_status": exec_prov_status,
@@ -3176,9 +3389,9 @@ def _load_dagger_telemetry(path: Path) -> dict[str, Any]:
             "execution_ref": declared_exec_ref,
             "target_source_ref": declared_source_ref,
         },
-        "run_ref": declared_run_ref if proven_b_binding else None,
-        "attempt_ref": declared_attempt_ref if proven_b_binding else None,
-        "execution_ref": declared_exec_ref if proven_b_binding else None,
+        "run_ref": None,
+        "attempt_ref": None,
+        "execution_ref": None,
         "git_commit": _norm_optional_str(
             payload.get("git_commit") or payload.get("sha")
         ),
@@ -3313,6 +3526,7 @@ def _load_ci_performance(path: Path) -> dict[str, Any]:
             "event": payload.get("event"),
             "url": payload.get("url"),
             "authoritative_ci_end_state": False,
+            "job_membership_status": "not_proven_by_performance_summary",
             "rerun_witness_attribution": rerun_attribution,
         },
         "jobs": raw_jobs,
@@ -3332,14 +3546,22 @@ def _sort_mixed_values(vals: Any) -> list[Any]:
     )
 
 
+def _scope_key(*parts: Any) -> str:
+    return json.dumps(parts, separators=(",", ":"), ensure_ascii=True)
+
+
+def _hook_unit_is_bound(unit: dict[str, Any]) -> bool:
+    return (
+        bool(unit.get("report_digest_verified"))
+        and unit.get("execution_binding_status") == "verified"
+    )
+
+
 def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
     """Extract scoped concrete execution, upper context, content, and revision identifiers."""
     stype = src["source_type"]
-    concrete_keys: dict[str, set[str]] = {
-        "execution_ref": set(),
-        "report_ref": set(),
-        "bundle_directory": set(),
-    }
+    concrete_keys: dict[str, set[str]] = {"execution_ref": set()}
+    scopes: dict[str, set[str]] = {"push_ref_target": set(), "ci_job": set()}
     context_keys: dict[str, set[str]] = {
         "invocation_ref": set(),
         "run_attempt_pair": set(),
@@ -3356,6 +3578,7 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         "source_tree_id": set(),
         "declared_target_source_ref": set(),
         "artifact_sha256": set(),
+        "report_ref": set(),
     }
     revisions: set[str] = set()
     has_conflicts = bool(src.get("internal_conflicts"))
@@ -3381,20 +3604,20 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         for gc in src.get("git_commits") or ():
             revisions.add(gc)
         for ex in src.get("executions") or ():
-            if not ex.get("report_digest_verified", True):
+            if not _hook_unit_is_bound(ex):
                 continue
             if ex.get("run_ref") and ex.get("attempt_ref"):
                 context_keys["run_attempt_pair"].add(
-                    pytest_contracts.canonical_tuple_key(
-                        ex["run_ref"], ex["attempt_ref"]
-                    )
+                    _scope_key(ex["run_ref"], ex["attempt_ref"])
                 )
+                if ex.get("remote_ref"):
+                    scopes["push_ref_target"].add(
+                        _scope_key(ex["run_ref"], ex["attempt_ref"], ex["remote_ref"])
+                    )
             if ex.get("execution_ref"):
                 concrete_keys["execution_ref"].add(ex["execution_ref"])
             if ex.get("report_ref"):
-                concrete_keys["report_ref"].add(ex["report_ref"])
-            if ex.get("bundle_directory"):
-                concrete_keys["bundle_directory"].add(ex["bundle_directory"])
+                content_keys["report_ref"].add(ex["report_ref"])
             if ex.get("git_commit"):
                 revisions.add(ex["git_commit"])
             if ex.get("source_tree_id"):
@@ -3407,31 +3630,25 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         ):
             if src.get("run_ref") and src.get("attempt_ref"):
                 context_keys["run_attempt_pair"].add(
-                    pytest_contracts.canonical_tuple_key(
-                        src["run_ref"], src["attempt_ref"]
-                    )
+                    _scope_key(src["run_ref"], src["attempt_ref"])
                 )
             if src.get("execution_ref"):
                 concrete_keys["execution_ref"].add(src["execution_ref"])
-            if src.get("report_ref"):
-                concrete_keys["report_ref"].add(src["report_ref"])
-            if src.get("bundle_directory"):
-                concrete_keys["bundle_directory"].add(src["bundle_directory"])
             if src.get("plan_ref"):
                 content_keys["plan_ref"].add(src["plan_ref"])
             if src.get("source_tree_id"):
                 content_keys["source_tree_id"].add(src["source_tree_id"])
+        if (
+            src.get("report_ref")
+            and src.get("report_contract_status") == "valid"
+            and not has_conflicts
+        ):
+            content_keys["report_ref"].add(src["report_ref"])
         if src.get("git_commit") and not has_conflicts:
             revisions.add(src["git_commit"])
     elif stype in ("junit_xml", "pytest_reportlog"):
         if src.get("pytest_invocation_id") and not has_conflicts:
             context_keys["pytest_invocation_id"].add(src["pytest_invocation_id"])
-        if (
-            src.get("bundle_binding") == "verified_manifest_digest"
-            and src.get("bound_bundle_directory")
-            and not has_conflicts
-        ):
-            concrete_keys["bundle_directory"].add(src["bound_bundle_directory"])
         if src.get("sha256"):
             # Identical JUnit/reportlog bytes across distinct bundles are content equivalence only.
             content_keys["artifact_sha256"].add(src["sha256"])
@@ -3440,9 +3657,7 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
             rref = _norm_optional_str(props.get("run_ref"))
             aref = _norm_optional_str(props.get("attempt_ref"))
             if rref and aref:
-                context_keys["run_attempt_pair"].add(
-                    pytest_contracts.canonical_tuple_key(rref, aref)
-                )
+                context_keys["run_attempt_pair"].add(_scope_key(rref, aref))
             inv_v = _norm_optional_str(props.get("invocation_ref"))
             if inv_v:
                 context_keys["invocation_ref"].add(inv_v)
@@ -3453,14 +3668,17 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
             if gc:
                 revisions.add(gc)
     elif stype == "dagger_telemetry":
-        bound = src.get("native_correlation_status") == "bound" and not has_conflicts
-        b_verified = bound and src.get("execution_provenance_status") == "verified"
+        bound = (
+            src.get("native_correlation_status") == "bound"
+            and src.get("native_receipt_recognized")
+            and not has_conflicts
+        )
         if bound and src.get("matched_trace_id"):
             tid = src["matched_trace_id"]
             context_keys["matched_trace_id"].add(tid)
             if src.get("anchor_span_id"):
                 context_keys["trace_anchor_span"].add(
-                    pytest_contracts.canonical_tuple_key(
+                    _scope_key(
                         tid,
                         src.get("matched_session_id") or "",
                         src.get("matched_engine_instance_id") or "",
@@ -3469,18 +3687,12 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
                 )
             if src.get("dagql_span_id"):
                 context_keys["trace_dagql_span"].add(
-                    pytest_contracts.canonical_tuple_key(tid, src["dagql_span_id"])
+                    _scope_key(tid, src["dagql_span_id"])
                 )
             if src.get("core_span_id"):
                 context_keys["trace_core_span"].add(
-                    pytest_contracts.canonical_tuple_key(tid, src["core_span_id"])
+                    _scope_key(tid, src["core_span_id"])
                 )
-        if b_verified and src.get("run_ref") and src.get("attempt_ref"):
-            context_keys["run_attempt_pair"].add(
-                pytest_contracts.canonical_tuple_key(src["run_ref"], src["attempt_ref"])
-            )
-        if b_verified and src.get("execution_ref"):
-            concrete_keys["execution_ref"].add(src["execution_ref"])
         if src.get("declared_target_source_ref"):
             # Declared source ref is not verified Tree equivalence until #87 B delivers.
             content_keys["declared_target_source_ref"].add(
@@ -3496,10 +3708,14 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
             and src.get("ci_run_attempt")
         ):
             context_keys["ci_attempt_context"].add(
-                pytest_contracts.canonical_tuple_key(
-                    str(src["ci_run_id"]), str(src["ci_run_attempt"])
-                )
+                _scope_key(str(src["ci_run_id"]), str(src["ci_run_attempt"]))
             )
+            for job_id in src.get("job_ids") or ():
+                scopes["ci_job"].add(
+                    _scope_key(
+                        str(src["ci_run_id"]), str(src["ci_run_attempt"]), job_id
+                    )
+                )
         if (
             src.get("status") == "loaded"
             and not has_conflicts
@@ -3512,6 +3728,7 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         "context": context_keys,
         "content": content_keys,
         "revision": revisions,
+        "scopes": scopes,
     }
 
 
@@ -3537,15 +3754,11 @@ def _check_scoped_cross_conflicts(
                 anchors.setdefault(("execution_ref", src["execution_ref"]), []).append(
                     src
                 )
-            if src.get("bundle_directory"):
-                anchors.setdefault(
-                    ("bundle_directory", src["bundle_directory"]), []
-                ).append(src)
         elif stype == "hook_invocation":
             inv_ref = src.get("invocation_ref")
             stem = Path(src["path"]).stem if isinstance(src.get("path"), str) else None
             for idx_e, ex in enumerate(src.get("executions") or ()):
-                if not ex.get("report_digest_verified", True):
+                if not _hook_unit_is_bound(ex):
                     continue
                 unit_stub = {
                     "execution_index": idx_e,
@@ -3567,17 +3780,11 @@ def _check_scoped_cross_conflicts(
                     anchors.setdefault(
                         ("execution_ref", ex["execution_ref"]), []
                     ).append(hook_exec)
-                if ex.get("bundle_directory"):
-                    anchors.setdefault(
-                        ("bundle_directory", ex["bundle_directory"]), []
-                    ).append(hook_exec)
                 if ex.get("run_ref") and ex.get("attempt_ref"):
                     anchors.setdefault(
                         (
                             "run_attempt_binding",
-                            pytest_contracts.canonical_tuple_key(
-                                ex["run_ref"], ex["attempt_ref"]
-                            ),
+                            _scope_key(ex["run_ref"], ex["attempt_ref"]),
                         ),
                         [],
                     ).append(hook_exec)
@@ -3585,22 +3792,12 @@ def _check_scoped_cross_conflicts(
                         anchors.setdefault(
                             (
                                 "push_ref_target",
-                                pytest_contracts.canonical_tuple_key(
+                                _scope_key(
                                     ex["run_ref"], ex["attempt_ref"], ex["remote_ref"]
                                 ),
                             ),
                             [],
                         ).append(hook_exec)
-        elif (
-            stype == "dagger_telemetry"
-            and src.get("native_correlation_status") == "bound"
-            and src.get("execution_provenance_status") == "verified"
-            and not src_internal
-        ):
-            if src.get("execution_ref"):
-                anchors.setdefault(("execution_ref", src["execution_ref"]), []).append(
-                    src
-                )
         elif (
             stype == "ci_performance"
             and src.get("status") == "loaded"
@@ -3611,9 +3808,7 @@ def _check_scoped_cross_conflicts(
             anchors.setdefault(
                 (
                     "ci_attempt",
-                    pytest_contracts.canonical_tuple_key(
-                        str(src["ci_run_id"]), str(src["ci_run_attempt"])
-                    ),
+                    _scope_key(str(src["ci_run_id"]), str(src["ci_run_attempt"])),
                 ),
                 [],
             ).append(src)
@@ -3622,7 +3817,7 @@ def _check_scoped_cross_conflicts(
                     anchors.setdefault(
                         (
                             "ci_job",
-                            pytest_contracts.canonical_tuple_key(
+                            _scope_key(
                                 str(src["ci_run_id"]),
                                 str(src["ci_run_attempt"]),
                                 job["id"],
@@ -3634,8 +3829,7 @@ def _check_scoped_cross_conflicts(
     # Note: run_attempt does NOT force single commit/tree/plan because one pre-push
     # invocation legitimately targets multiple refs with distinct trees and plans.
     anchor_invariants = {
-        "execution_ref": ("exit_code", "git_commit", "source_tree_id", "report_ref"),
-        "bundle_directory": ("exit_code", "git_commit", "source_tree_id", "report_ref"),
+        "execution_ref": ("exit_code", "git_commit", "source_tree_id"),
         "push_ref_target": ("exit_code", "git_commit", "source_tree_id"),
         "run_attempt_binding": ("invocation_ref",),
         "ci_attempt": ("git_commit", "workflow", "event"),
@@ -3663,7 +3857,7 @@ def _check_scoped_cross_conflicts(
                         "values": _sort_mixed_values(distinct_by_repr.values()),
                     }
                 )
-        if anchor_kind in ("execution_ref", "bundle_directory"):
+        if anchor_kind == "execution_ref":
             plan_scopes = {
                 item.get("plan_scope") for item in group if item.get("plan_scope")
             }
@@ -3771,17 +3965,9 @@ def _concrete_execution_units(
     stem = Path(src["path"]).stem if isinstance(src.get("path"), str) else None
     units: list[dict[str, Any]] = []
     for exec_idx, ex in enumerate(execs):
-        keys: dict[str, set[str]] = {
-            "execution_ref": set(),
-            "report_ref": set(),
-            "bundle_directory": set(),
-        }
+        keys: dict[str, set[str]] = {"execution_ref": set()}
         if ex.get("execution_ref"):
             keys["execution_ref"].add(ex["execution_ref"])
-        if ex.get("report_ref"):
-            keys["report_ref"].add(ex["report_ref"])
-        if ex.get("bundle_directory"):
-            keys["bundle_directory"].add(ex["bundle_directory"])
         unit_stub = {
             "unit_index": -1,
             "src_idx": src_idx,
@@ -3795,15 +3981,11 @@ def _concrete_execution_units(
             for c in src_conflicts
             if _conflict_targets_unit(c, unit_stub, ex, stem=stem)
         ]
-        unit_verified = bool(ex.get("report_digest_verified", True)) and not u_conflicts
+        unit_verified = _hook_unit_is_bound(ex) and not u_conflicts
         unit_stub["verified"] = unit_verified
         unit_stub["declared_keys"] = keys
         if not unit_verified:
-            unit_stub["keys"] = {
-                "execution_ref": set(),
-                "report_ref": set(),
-                "bundle_directory": set(),
-            }
+            unit_stub["keys"] = {"execution_ref": set()}
         units.append(unit_stub)
     return units
 
@@ -3978,7 +4160,7 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             else []
         )
         expected_unit_count = (
-            src.get("expected_unit_count", len(hook_u_idxs))
+            src.get("expected_unit_count")
             if src.get("source_type") == "hook_invocation"
             else 0
         )
@@ -3989,7 +4171,7 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
         )
         is_multi_exec_hook = (
             src.get("source_type") == "hook_invocation"
-            and max(len(hook_u_idxs), expected_unit_count) > 1
+            and max(len(hook_u_idxs), expected_unit_count or 0) > 1
         )
         stem = Path(src["path"]).stem if isinstance(src.get("path"), str) else None
         hook_execs = src.get("executions") or []
@@ -4014,7 +4196,11 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             u_status = (
                 "conflict"
                 if (u_conflicts or not ex_item.get("report_digest_verified", True))
-                else ("matched" if u_matched else "unqueried")
+                else "matched"
+                if u_matched
+                else "unqueried"
+                if units[u_idx]["verified"]
+                else "unbound"
             )
             hook_unit_summaries.append(
                 {
@@ -4208,68 +4394,32 @@ def _anchor_matches_unit(
         "execution_ref", ()
     ):
         return True
-    if "bundle_directory" in anchor and anchor["bundle_directory"] in keys.get(
-        "bundle_directory", ()
-    ):
-        return True
     rref = exec_item.get("run_ref")
     aref = exec_item.get("attempt_ref")
     rem = exec_item.get("remote_ref")
     if "push_ref_target" in anchor and rref and aref and rem:
-        return anchor["push_ref_target"] == pytest_contracts.canonical_tuple_key(
-            rref, aref, rem
-        )
+        return anchor["push_ref_target"] == _scope_key(rref, aref, rem)
     if "run_attempt_binding" in anchor and rref and aref:
-        return anchor["run_attempt_binding"] == pytest_contracts.canonical_tuple_key(
-            rref, aref
-        )
+        return anchor["run_attempt_binding"] == _scope_key(rref, aref)
     return False
 
 
 def _anchor_matches_source(anchor: dict[str, str], ids: dict[str, Any]) -> bool:
-    if (
-        "execution_ref" in anchor
-        and anchor["execution_ref"] in ids["execution"]["execution_ref"]
-    ):
-        return True
-    if (
-        "bundle_directory" in anchor
-        and anchor["bundle_directory"] in ids["execution"]["bundle_directory"]
-    ):
-        return True
-    if (
-        "run_attempt_binding" in anchor
-        and anchor["run_attempt_binding"] in ids["context"]["run_attempt_pair"]
-    ):
-        return True
-    if "push_ref_target" in anchor:
-        try:
-            parts = json.loads(anchor["push_ref_target"])
-        except (TypeError, ValueError, json.JSONDecodeError):
-            parts = None
-        if (
-            isinstance(parts, list)
-            and len(parts) >= 2
-            and pytest_contracts.canonical_tuple_key(parts[0], parts[1])
-            in ids["context"]["run_attempt_pair"]
-        ):
-            return True
-    if (
-        "ci_attempt" in anchor
-        and anchor["ci_attempt"] in ids["context"]["ci_attempt_context"]
-    ):
-        return True
-    if "ci_job" in anchor:
-        try:
-            jparts = json.loads(anchor["ci_job"])
-        except (TypeError, ValueError, json.JSONDecodeError):
-            jparts = None
-        if isinstance(jparts, list) and len(jparts) >= 2:
-            return (
-                pytest_contracts.canonical_tuple_key(jparts[0], jparts[1])
-                in ids["context"]["ci_attempt_context"]
-            )
-    return False
+    return any(
+        value in keys
+        for kind, value in anchor.items()
+        for keys in (
+            ids["execution"].get(kind, ()),
+            ids["scopes"].get(kind, ()),
+            ids["context"].get(
+                {
+                    "run_attempt_binding": "run_attempt_pair",
+                    "ci_attempt": "ci_attempt_context",
+                }.get(kind, kind),
+                (),
+            ),
+        )
+    )
 
 
 def build_verify_report(
@@ -4471,6 +4621,12 @@ def format_report_text(report: dict[str, Any]) -> str:
         ):
             line += f" phase_elapsed={src['cumulative_phase_duration_seconds']}"
         lines.append(line)
+        child = src.get("child_references")
+        if isinstance(child, dict) and child.get("verification") is not None:
+            lines.append(f"  core-tests: {child['verification']}")
+            for artifact in child.get("files", {}).values():
+                if artifact["status"] == "verified":
+                    lines.append(f"    {artifact['resolved_path']}")
     return "\n".join(lines)
 
 

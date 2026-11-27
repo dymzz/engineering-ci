@@ -7457,6 +7457,7 @@ def execute(
             "generator": plan.get("generator"),
             "git": plan.get("git"),
         },
+        "requested_check_names": sorted(requested) if check_names is not None else None,
         "targets": list(tests),
         "framework": framework,
         "checks": [],

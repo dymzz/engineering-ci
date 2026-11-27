@@ -1,5 +1,10 @@
 # 上游库使用观察
 
+## Dagger beta.16：Windows linked worktree 的 Git 扩展警告
+
+- 调用 `dagger --progress=plain api call repository-test-artifacts --help` 时，Windows 客户端报告 `core.repositoryformatversion does not support extension: worktreeconfig`。
+- 同次调用连接到 beta.16 Engine、加载 linked worktree 模块，并列出该函数的参数与导出操作。此观察限于候选模块加载，未据此判断 Git 来源绑定或其他 Dagger 操作失败。
+
 ## Psycopg Binary：Windows free-threaded Python 3.14 分发限制
 
 - 状态：已确认的兼容性限制；不是已确认的上游 Bug，也不是数据库配置或镜像错误。
