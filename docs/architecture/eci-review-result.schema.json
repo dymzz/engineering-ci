@@ -1,18 +1,68 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:eci:review:result:draft:1.1",
-  "title": "ECI Review Result — standalone output contract v1.1",
-  "$comment": "Local draft implementing engineering-review-design.md and eci-review-requirements.md; not a published Knowledge contract. Shape validation does not establish reference integrity, coverage, evidence truth, or authorization.",
+  "$id": "urn:eci:review:result:draft:2.0",
+  "title": "ECI review result — experimental output contract",
   "type": "object",
   "properties": {
     "schema_version": {
-      "const": "1.1"
+      "const": "2.0"
     },
-    "review_id": {
-      "$ref": "#/$defs/reference"
+    "baseline": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "$ref": "#/$defs/text"
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "base": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_kind": {
+          "enum": [
+            "design",
+            "implementation",
+            "acceptance",
+            "audit",
+            "re_review"
+          ]
+        }
+      },
+      "required": [
+        "subject",
+        "head",
+        "base",
+        "task_kind"
+      ],
+      "additionalProperties": false
     },
-    "requested_viewpoints": {
-      "$ref": "#/$defs/viewpoints"
+    "policy": {
+      "type": "object",
+      "properties": {
+        "requirements_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "requirements_sha256",
+        "schema_sha256"
+      ],
+      "additionalProperties": false
     },
     "result_kind": {
       "enum": [
@@ -20,45 +70,149 @@
         "partial_batch"
       ]
     },
-    "batch_ref": {
-      "$ref": "#/$defs/reference"
-    },
-    "assigned_viewpoints": {
-      "$ref": "#/$defs/viewpoints"
-    },
-    "occurrences": {
+    "requested_viewpoints": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/occurrence"
+        "enum": [
+          "specification",
+          "structure",
+          "behavior",
+          "verification"
+        ]
       },
-      "minItems": 1
+      "minItems": 1,
+      "uniqueItems": true
     },
     "centers": {
       "type": "object",
       "properties": {
         "specification": {
-          "$ref": "#/$defs/center_specification"
+          "type": "object",
+          "properties": {
+            "ECI-S01": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S02": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S03": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S04": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S05": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S06": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S07": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S08": {
+              "$ref": "#/$defs/rule"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
         },
         "structure": {
-          "$ref": "#/$defs/center_structure"
+          "type": "object",
+          "properties": {
+            "ECI-T01": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T02": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T03": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T04": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T05": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T06": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T07": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T08": {
+              "$ref": "#/$defs/rule"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
         },
         "behavior": {
-          "$ref": "#/$defs/center_behavior"
+          "type": "object",
+          "properties": {
+            "ECI-B01": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B02": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B03": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B04": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B05": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B06": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B07": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B08": {
+              "$ref": "#/$defs/rule"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
         },
         "verification": {
-          "$ref": "#/$defs/center_verification"
+          "type": "object",
+          "properties": {
+            "ECI-V01": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V02": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V03": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V04": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V05": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V06": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V07": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V08": {
+              "$ref": "#/$defs/rule"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
         }
       },
-      "required": [],
       "additionalProperties": false,
       "minProperties": 1
-    },
-    "discoveries": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/discovery"
-      },
-      "minItems": 0
     },
     "evidence": {
       "type": "array",
@@ -77,981 +231,102 @@
     "unresolved": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/unresolved"
+        "type": "object",
+        "properties": {
+          "rule_id": {
+            "enum": [
+              "ECI-S01",
+              "ECI-S02",
+              "ECI-S03",
+              "ECI-S04",
+              "ECI-S05",
+              "ECI-S06",
+              "ECI-S07",
+              "ECI-S08",
+              "ECI-T01",
+              "ECI-T02",
+              "ECI-T03",
+              "ECI-T04",
+              "ECI-T05",
+              "ECI-T06",
+              "ECI-T07",
+              "ECI-T08",
+              "ECI-B01",
+              "ECI-B02",
+              "ECI-B03",
+              "ECI-B04",
+              "ECI-B05",
+              "ECI-B06",
+              "ECI-B07",
+              "ECI-B08",
+              "ECI-V01",
+              "ECI-V02",
+              "ECI-V03",
+              "ECI-V04",
+              "ECI-V05",
+              "ECI-V06",
+              "ECI-V07",
+              "ECI-V08"
+            ]
+          },
+          "subject_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/text"
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "reason": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "required": [
+          "rule_id",
+          "subject_refs",
+          "reason"
+        ],
+        "additionalProperties": false
       },
       "minItems": 0
     },
     "disposition": {
-      "$ref": "#/$defs/disposition"
-    },
-    "extensions": {
-      "type": "object",
-      "propertyNames": {
-        "pattern": "^[A-Za-z][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9_-]+)+$"
-      },
-      "additionalProperties": true,
-      "description": "Namespaced optional extension data; never substitutes for required core fields."
-    },
-    "task_kind": {
-      "enum": [
-        "design_review",
-        "implementation_review",
-        "acceptance_review",
-        "repository_audit"
-      ]
-    },
-    "baseline": {
-      "$ref": "#/$defs/baseline"
-    },
-    "scopes": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/scope"
-      },
-      "minItems": 1
-    },
-    "objects": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/object"
-      },
-      "minItems": 0,
-      "description": "Local object definitions where needed; native references can be used directly and resolved against authoritative sources."
-    },
-    "relations": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/relation"
-      },
-      "minItems": 0,
-      "description": "Actual reviewed relationship records; shared native references allowed."
-    },
-    "constraints": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/constraint"
-      },
-      "minItems": 0,
-      "description": "Locally recorded constraint definitions; adopted native constraints may be referenced directly."
-    },
-    "rule_family_applicability": {
       "type": "object",
       "properties": {
-        "ECI-S01": {
-          "$ref": "#/$defs/family_applicability"
+        "recommendation": {
+          "enum": [
+            "accept",
+            "revise",
+            "blocked",
+            "needs_evidence",
+            "partial_review"
+          ]
         },
-        "ECI-S02": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-S03": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-S04": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-S05": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-S06": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-S07": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-S08": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-T01": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-T02": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-T03": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-T04": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-T05": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-T06": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-T07": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-T08": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-B01": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-B02": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-B03": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-B04": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-B05": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-B06": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-B07": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-B08": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-V01": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-V02": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-V03": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-V04": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-V05": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-V06": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-V07": {
-          "$ref": "#/$defs/family_applicability"
-        },
-        "ECI-V08": {
-          "$ref": "#/$defs/family_applicability"
+        "rationale": {
+          "$ref": "#/$defs/text"
         }
       },
-      "required": [],
-      "additionalProperties": false,
-      "minProperties": 1
-    },
-    "discovery_obligations": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/discovery_obligation"
-      },
-      "minItems": 0,
-      "description": "Actual discovery obligations identified from adopted rules and scope, including unknown relations."
-    },
-    "required_obligations": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/obligation"
-      },
-      "minItems": 0,
-      "description": "Concrete obligations identified by the review implementation; not a caller-supplied denominator or proof of completeness."
-    },
-    "prior_review_refs": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/reference"
-      },
-      "minItems": 0,
-      "uniqueItems": true
+      "required": [
+        "recommendation",
+        "rationale"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
     "schema_version",
-    "review_id",
-    "requested_viewpoints",
+    "baseline",
+    "policy",
     "result_kind",
-    "occurrences",
+    "requested_viewpoints",
     "centers",
-    "discoveries",
     "evidence",
     "findings",
     "unresolved",
-    "disposition",
-    "task_kind",
-    "baseline",
-    "scopes",
-    "objects",
-    "relations",
-    "constraints",
-    "rule_family_applicability",
-    "discovery_obligations",
-    "required_obligations",
-    "prior_review_refs"
+    "disposition"
   ],
   "additionalProperties": false,
   "allOf": [
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "partial_batch"
-          }
-        },
-        "required": [
-          "result_kind"
-        ]
-      },
-      "then": {
-        "required": [
-          "batch_ref",
-          "assigned_viewpoints"
-        ],
-        "properties": {
-          "disposition": {
-            "properties": {
-              "recommendation": {
-                "enum": [
-                  "partial_review",
-                  "revise",
-                  "blocked",
-                  "needs_evidence"
-                ]
-              }
-            }
-          }
-        }
-      },
-      "else": {
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "batch_ref"
-              ]
-            },
-            {
-              "required": [
-                "assigned_viewpoints"
-              ]
-            }
-          ]
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "complete_request"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "requested_viewpoints": {
-                "contains": {
-                  "const": "specification"
-                }
-              }
-            },
-            "required": [
-              "requested_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "required": [
-              "specification"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "complete_request"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "requested_viewpoints": {
-                "not": {
-                  "contains": {
-                    "const": "specification"
-                  }
-                }
-              }
-            },
-            "required": [
-              "requested_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "not": {
-              "required": [
-                "specification"
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "partial_batch"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "assigned_viewpoints": {
-                "contains": {
-                  "const": "specification"
-                }
-              }
-            },
-            "required": [
-              "assigned_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "required": [
-              "specification"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "partial_batch"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "assigned_viewpoints": {
-                "not": {
-                  "contains": {
-                    "const": "specification"
-                  }
-                }
-              }
-            },
-            "required": [
-              "assigned_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "not": {
-              "required": [
-                "specification"
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "assigned_viewpoints": {
-            "contains": {
-              "const": "specification"
-            }
-          }
-        },
-        "required": [
-          "assigned_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "requested_viewpoints": {
-            "contains": {
-              "const": "specification"
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "complete_request"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "requested_viewpoints": {
-                "contains": {
-                  "const": "structure"
-                }
-              }
-            },
-            "required": [
-              "requested_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "required": [
-              "structure"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "complete_request"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "requested_viewpoints": {
-                "not": {
-                  "contains": {
-                    "const": "structure"
-                  }
-                }
-              }
-            },
-            "required": [
-              "requested_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "not": {
-              "required": [
-                "structure"
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "partial_batch"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "assigned_viewpoints": {
-                "contains": {
-                  "const": "structure"
-                }
-              }
-            },
-            "required": [
-              "assigned_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "required": [
-              "structure"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "partial_batch"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "assigned_viewpoints": {
-                "not": {
-                  "contains": {
-                    "const": "structure"
-                  }
-                }
-              }
-            },
-            "required": [
-              "assigned_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "not": {
-              "required": [
-                "structure"
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "assigned_viewpoints": {
-            "contains": {
-              "const": "structure"
-            }
-          }
-        },
-        "required": [
-          "assigned_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "requested_viewpoints": {
-            "contains": {
-              "const": "structure"
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "complete_request"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "requested_viewpoints": {
-                "contains": {
-                  "const": "behavior"
-                }
-              }
-            },
-            "required": [
-              "requested_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "required": [
-              "behavior"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "complete_request"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "requested_viewpoints": {
-                "not": {
-                  "contains": {
-                    "const": "behavior"
-                  }
-                }
-              }
-            },
-            "required": [
-              "requested_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "not": {
-              "required": [
-                "behavior"
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "partial_batch"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "assigned_viewpoints": {
-                "contains": {
-                  "const": "behavior"
-                }
-              }
-            },
-            "required": [
-              "assigned_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "required": [
-              "behavior"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "partial_batch"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "assigned_viewpoints": {
-                "not": {
-                  "contains": {
-                    "const": "behavior"
-                  }
-                }
-              }
-            },
-            "required": [
-              "assigned_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "not": {
-              "required": [
-                "behavior"
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "assigned_viewpoints": {
-            "contains": {
-              "const": "behavior"
-            }
-          }
-        },
-        "required": [
-          "assigned_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "requested_viewpoints": {
-            "contains": {
-              "const": "behavior"
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "complete_request"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "requested_viewpoints": {
-                "contains": {
-                  "const": "verification"
-                }
-              }
-            },
-            "required": [
-              "requested_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "required": [
-              "verification"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "complete_request"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "requested_viewpoints": {
-                "not": {
-                  "contains": {
-                    "const": "verification"
-                  }
-                }
-              }
-            },
-            "required": [
-              "requested_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "not": {
-              "required": [
-                "verification"
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "partial_batch"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "assigned_viewpoints": {
-                "contains": {
-                  "const": "verification"
-                }
-              }
-            },
-            "required": [
-              "assigned_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "required": [
-              "verification"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "allOf": [
-          {
-            "properties": {
-              "result_kind": {
-                "const": "partial_batch"
-              }
-            },
-            "required": [
-              "result_kind"
-            ]
-          },
-          {
-            "properties": {
-              "assigned_viewpoints": {
-                "not": {
-                  "contains": {
-                    "const": "verification"
-                  }
-                }
-              }
-            },
-            "required": [
-              "assigned_viewpoints"
-            ]
-          }
-        ]
-      },
-      "then": {
-        "properties": {
-          "centers": {
-            "not": {
-              "required": [
-                "verification"
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "assigned_viewpoints": {
-            "contains": {
-              "const": "verification"
-            }
-          }
-        },
-        "required": [
-          "assigned_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "requested_viewpoints": {
-            "contains": {
-              "const": "verification"
-            }
-          }
-        }
-      }
-    },
     {
       "if": {
         "properties": {
@@ -1066,710 +341,122 @@
       },
       "then": {
         "properties": {
-          "disposition": {
+          "result_kind": {
+            "const": "complete_request"
+          },
+          "unresolved": {
+            "maxItems": 0
+          },
+          "findings": {
+            "items": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "nonblocking",
+                    "resolved"
+                  ]
+                }
+              }
+            }
+          },
+          "centers": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "properties": {
+                  "coverage": {
+                    "enum": [
+                      "reviewed",
+                      "not_applicable"
+                    ]
+                  },
+                  "discovery": {
+                    "enum": [
+                      "bounded_complete",
+                      "not_applicable"
+                    ]
+                  },
+                  "checks": {
+                    "items": {
+                      "properties": {
+                        "assessment": {
+                          "enum": [
+                            "satisfied",
+                            "violated"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result_kind": {
+            "const": "complete_request"
+          }
+        },
+        "required": [
+          "result_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "centers": {
             "properties": {
-              "blocking_finding_refs": {
-                "maxItems": 0
+              "specification": {
+                "required": [
+                  "ECI-S01",
+                  "ECI-S02",
+                  "ECI-S03",
+                  "ECI-S04",
+                  "ECI-S05",
+                  "ECI-S06",
+                  "ECI-S07",
+                  "ECI-S08"
+                ]
               },
-              "remaining_obligation_refs": {
-                "maxItems": 0
+              "structure": {
+                "required": [
+                  "ECI-T01",
+                  "ECI-T02",
+                  "ECI-T03",
+                  "ECI-T04",
+                  "ECI-T05",
+                  "ECI-T06",
+                  "ECI-T07",
+                  "ECI-T08"
+                ]
+              },
+              "behavior": {
+                "required": [
+                  "ECI-B01",
+                  "ECI-B02",
+                  "ECI-B03",
+                  "ECI-B04",
+                  "ECI-B05",
+                  "ECI-B06",
+                  "ECI-B07",
+                  "ECI-B08"
+                ]
+              },
+              "verification": {
+                "required": [
+                  "ECI-V01",
+                  "ECI-V02",
+                  "ECI-V03",
+                  "ECI-V04",
+                  "ECI-V05",
+                  "ECI-V06",
+                  "ECI-V07",
+                  "ECI-V08"
+                ]
               }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "complete_request"
-          },
-          "requested_viewpoints": {
-            "contains": {
-              "const": "specification"
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "requested_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "required": [
-              "ECI-S01",
-              "ECI-S02",
-              "ECI-S03",
-              "ECI-S04",
-              "ECI-S05",
-              "ECI-S06",
-              "ECI-S07",
-              "ECI-S08"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "complete_request"
-          },
-          "requested_viewpoints": {
-            "not": {
-              "contains": {
-                "const": "specification"
-              }
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "requested_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "ECI-S01"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S02"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S03"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S04"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S05"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S06"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S07"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S08"
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "partial_batch"
-          },
-          "assigned_viewpoints": {
-            "not": {
-              "contains": {
-                "const": "specification"
-              }
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "assigned_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "ECI-S01"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S02"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S03"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S04"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S05"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S06"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S07"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-S08"
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "complete_request"
-          },
-          "requested_viewpoints": {
-            "contains": {
-              "const": "structure"
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "requested_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "required": [
-              "ECI-T01",
-              "ECI-T02",
-              "ECI-T03",
-              "ECI-T04",
-              "ECI-T05",
-              "ECI-T06",
-              "ECI-T07",
-              "ECI-T08"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "complete_request"
-          },
-          "requested_viewpoints": {
-            "not": {
-              "contains": {
-                "const": "structure"
-              }
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "requested_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "ECI-T01"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T02"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T03"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T04"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T05"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T06"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T07"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T08"
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "partial_batch"
-          },
-          "assigned_viewpoints": {
-            "not": {
-              "contains": {
-                "const": "structure"
-              }
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "assigned_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "ECI-T01"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T02"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T03"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T04"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T05"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T06"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T07"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-T08"
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "complete_request"
-          },
-          "requested_viewpoints": {
-            "contains": {
-              "const": "behavior"
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "requested_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "required": [
-              "ECI-B01",
-              "ECI-B02",
-              "ECI-B03",
-              "ECI-B04",
-              "ECI-B05",
-              "ECI-B06",
-              "ECI-B07",
-              "ECI-B08"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "complete_request"
-          },
-          "requested_viewpoints": {
-            "not": {
-              "contains": {
-                "const": "behavior"
-              }
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "requested_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "ECI-B01"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B02"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B03"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B04"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B05"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B06"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B07"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B08"
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "partial_batch"
-          },
-          "assigned_viewpoints": {
-            "not": {
-              "contains": {
-                "const": "behavior"
-              }
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "assigned_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "ECI-B01"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B02"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B03"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B04"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B05"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B06"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B07"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-B08"
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "complete_request"
-          },
-          "requested_viewpoints": {
-            "contains": {
-              "const": "verification"
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "requested_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "required": [
-              "ECI-V01",
-              "ECI-V02",
-              "ECI-V03",
-              "ECI-V04",
-              "ECI-V05",
-              "ECI-V06",
-              "ECI-V07",
-              "ECI-V08"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "complete_request"
-          },
-          "requested_viewpoints": {
-            "not": {
-              "contains": {
-                "const": "verification"
-              }
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "requested_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "ECI-V01"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V02"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V03"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V04"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V05"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V06"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V07"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V08"
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "result_kind": {
-            "const": "partial_batch"
-          },
-          "assigned_viewpoints": {
-            "not": {
-              "contains": {
-                "const": "verification"
-              }
-            }
-          }
-        },
-        "required": [
-          "result_kind",
-          "assigned_viewpoints"
-        ]
-      },
-      "then": {
-        "properties": {
-          "rule_family_applicability": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "ECI-V01"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V02"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V03"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V04"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V05"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V06"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V07"
-                  ]
-                },
-                {
-                  "required": [
-                    "ECI-V08"
-                  ]
-                }
-              ]
             }
           }
         }
@@ -1777,1027 +464,65 @@
     }
   ],
   "$defs": {
-    "reference": {
+    "text": {
       "type": "string",
       "minLength": 1,
       "pattern": "\\S"
     },
-    "viewpoint": {
-      "enum": [
-        "specification",
-        "structure",
-        "behavior",
-        "verification"
-      ]
-    },
-    "viewpoints": {
-      "type": "array",
-      "items": {
-        "enum": [
-          "specification",
-          "structure",
-          "behavior",
-          "verification"
-        ]
-      },
-      "minItems": 1,
-      "uniqueItems": true,
-      "maxItems": 4
-    },
-    "rule_family": {
-      "enum": [
-        "ECI-S01",
-        "ECI-S02",
-        "ECI-S03",
-        "ECI-S04",
-        "ECI-S05",
-        "ECI-S06",
-        "ECI-S07",
-        "ECI-S08",
-        "ECI-T01",
-        "ECI-T02",
-        "ECI-T03",
-        "ECI-T04",
-        "ECI-T05",
-        "ECI-T06",
-        "ECI-T07",
-        "ECI-T08",
-        "ECI-B01",
-        "ECI-B02",
-        "ECI-B03",
-        "ECI-B04",
-        "ECI-B05",
-        "ECI-B06",
-        "ECI-B07",
-        "ECI-B08",
-        "ECI-V01",
-        "ECI-V02",
-        "ECI-V03",
-        "ECI-V04",
-        "ECI-V05",
-        "ECI-V06",
-        "ECI-V07",
-        "ECI-V08"
-      ]
-    },
-    "applicability": {
-      "enum": [
-        "applicable",
-        "not_applicable",
-        "unknown"
-      ]
-    },
-    "object": {
+    "check": {
       "type": "object",
       "properties": {
-        "object_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "kind": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "native_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "revision_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "description": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "evidence_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "object_ref",
-        "kind",
-        "native_ref",
-        "revision_ref",
-        "description",
-        "evidence_refs"
-      ],
-      "additionalProperties": false
-    },
-    "relation": {
-      "type": "object",
-      "properties": {
-        "relation_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "kind": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "participants": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "role": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "\\S"
-              },
-              "object_ref": {
-                "$ref": "#/$defs/reference"
-              }
-            },
-            "required": [
-              "role",
-              "object_ref"
-            ],
-            "additionalProperties": false
-          },
-          "minItems": 2
-        },
-        "status": {
-          "enum": [
-            "observed",
-            "expected",
-            "inferred",
-            "missing",
-            "unknown"
-          ]
-        },
-        "scope_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "evidence_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "relation_ref",
-        "kind",
-        "participants",
-        "status",
-        "scope_ref",
-        "evidence_refs"
-      ],
-      "additionalProperties": false
-    },
-    "constraint": {
-      "type": "object",
-      "properties": {
-        "constraint_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "source_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "revision_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "requirement": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "normative_strength": {
-          "enum": [
-            "must",
-            "should",
-            "may",
-            "local_required",
-            "informative"
-          ]
-        },
-        "applicability_context": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        }
-      },
-      "required": [
-        "constraint_ref",
-        "source_ref",
-        "revision_ref",
-        "requirement",
-        "normative_strength",
-        "applicability_context"
-      ],
-      "additionalProperties": false
-    },
-    "obligation": {
-      "type": "object",
-      "properties": {
-        "obligation_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "rule_family": {
-          "$ref": "#/$defs/rule_family"
-        },
         "subject_refs": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/reference"
+            "$ref": "#/$defs/text"
           },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "constraint_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "property_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "viewpoint": {
-          "$ref": "#/$defs/viewpoint"
-        },
-        "scope_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "applicability": {
-          "$ref": "#/$defs/applicability"
-        },
-        "applicability_rationale": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "applicability_evidence_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "required_evidence": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
-          "minItems": 0
-        }
-      },
-      "required": [
-        "obligation_ref",
-        "rule_family",
-        "subject_refs",
-        "constraint_refs",
-        "property_ref",
-        "viewpoint",
-        "scope_ref",
-        "applicability",
-        "applicability_rationale",
-        "applicability_evidence_refs",
-        "required_evidence"
-      ],
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "applicability": {
-                "const": "not_applicable"
-              }
-            },
-            "required": [
-              "applicability"
-            ]
-          },
-          "then": {
-            "properties": {
-              "applicability_evidence_refs": {
-                "minItems": 1
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "rule_family": {
-                "enum": [
-                  "ECI-S01",
-                  "ECI-S02",
-                  "ECI-S03",
-                  "ECI-S04",
-                  "ECI-S05",
-                  "ECI-S06",
-                  "ECI-S07",
-                  "ECI-S08"
-                ]
-              }
-            },
-            "required": [
-              "rule_family"
-            ]
-          },
-          "then": {
-            "properties": {
-              "viewpoint": {
-                "const": "specification"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "rule_family": {
-                "enum": [
-                  "ECI-T01",
-                  "ECI-T02",
-                  "ECI-T03",
-                  "ECI-T04",
-                  "ECI-T05",
-                  "ECI-T06",
-                  "ECI-T07",
-                  "ECI-T08"
-                ]
-              }
-            },
-            "required": [
-              "rule_family"
-            ]
-          },
-          "then": {
-            "properties": {
-              "viewpoint": {
-                "const": "structure"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "rule_family": {
-                "enum": [
-                  "ECI-B01",
-                  "ECI-B02",
-                  "ECI-B03",
-                  "ECI-B04",
-                  "ECI-B05",
-                  "ECI-B06",
-                  "ECI-B07",
-                  "ECI-B08"
-                ]
-              }
-            },
-            "required": [
-              "rule_family"
-            ]
-          },
-          "then": {
-            "properties": {
-              "viewpoint": {
-                "const": "behavior"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "rule_family": {
-                "enum": [
-                  "ECI-V01",
-                  "ECI-V02",
-                  "ECI-V03",
-                  "ECI-V04",
-                  "ECI-V05",
-                  "ECI-V06",
-                  "ECI-V07",
-                  "ECI-V08"
-                ]
-              }
-            },
-            "required": [
-              "rule_family"
-            ]
-          },
-          "then": {
-            "properties": {
-              "viewpoint": {
-                "const": "verification"
-              }
-            }
-          }
-        }
-      ]
-    },
-    "discovery_obligation": {
-      "type": "object",
-      "properties": {
-        "discovery_obligation_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "rule_family": {
-          "$ref": "#/$defs/rule_family"
-        },
-        "viewpoint": {
-          "$ref": "#/$defs/viewpoint"
-        },
-        "scope_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "subject_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "relation_kinds": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
+          "uniqueItems": true,
           "minItems": 1
         },
-        "direction": {
-          "enum": [
-            "incoming",
-            "outgoing",
-            "both",
-            "not_applicable"
-          ]
-        },
-        "property_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "constraint_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "applicability": {
-          "$ref": "#/$defs/applicability"
-        },
-        "applicability_rationale": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "applicability_evidence_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "discovery_obligation_ref",
-        "rule_family",
-        "viewpoint",
-        "scope_ref",
-        "subject_refs",
-        "relation_kinds",
-        "direction",
-        "property_ref",
-        "constraint_refs",
-        "applicability",
-        "applicability_rationale",
-        "applicability_evidence_refs"
-      ],
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "applicability": {
-                "const": "not_applicable"
-              }
-            },
-            "required": [
-              "applicability"
-            ]
-          },
-          "then": {
-            "properties": {
-              "applicability_evidence_refs": {
-                "minItems": 1
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "rule_family": {
-                "enum": [
-                  "ECI-S01",
-                  "ECI-S02",
-                  "ECI-S03",
-                  "ECI-S04",
-                  "ECI-S05",
-                  "ECI-S06",
-                  "ECI-S07",
-                  "ECI-S08"
-                ]
-              }
-            },
-            "required": [
-              "rule_family"
-            ]
-          },
-          "then": {
-            "properties": {
-              "viewpoint": {
-                "const": "specification"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "rule_family": {
-                "enum": [
-                  "ECI-T01",
-                  "ECI-T02",
-                  "ECI-T03",
-                  "ECI-T04",
-                  "ECI-T05",
-                  "ECI-T06",
-                  "ECI-T07",
-                  "ECI-T08"
-                ]
-              }
-            },
-            "required": [
-              "rule_family"
-            ]
-          },
-          "then": {
-            "properties": {
-              "viewpoint": {
-                "const": "structure"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "rule_family": {
-                "enum": [
-                  "ECI-B01",
-                  "ECI-B02",
-                  "ECI-B03",
-                  "ECI-B04",
-                  "ECI-B05",
-                  "ECI-B06",
-                  "ECI-B07",
-                  "ECI-B08"
-                ]
-              }
-            },
-            "required": [
-              "rule_family"
-            ]
-          },
-          "then": {
-            "properties": {
-              "viewpoint": {
-                "const": "behavior"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "rule_family": {
-                "enum": [
-                  "ECI-V01",
-                  "ECI-V02",
-                  "ECI-V03",
-                  "ECI-V04",
-                  "ECI-V05",
-                  "ECI-V06",
-                  "ECI-V07",
-                  "ECI-V08"
-                ]
-              }
-            },
-            "required": [
-              "rule_family"
-            ]
-          },
-          "then": {
-            "properties": {
-              "viewpoint": {
-                "const": "verification"
-              }
-            }
-          }
-        }
-      ]
-    },
-    "occurrence": {
-      "type": "object",
-      "properties": {
-        "occurrence_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "reviewer_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "mode": {
-          "enum": [
-            "single_agent",
-            "independent_agent",
-            "human",
-            "native_tool",
-            "mixed"
-          ]
-        },
-        "viewpoints": {
-          "$ref": "#/$defs/viewpoints"
-        },
-        "source_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "limitations": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
-          "minItems": 0
-        },
-        "obligation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "discovery_obligation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "occurrence_ref",
-        "reviewer_ref",
-        "mode",
-        "viewpoints",
-        "obligation_refs",
-        "discovery_obligation_refs",
-        "source_refs",
-        "limitations"
-      ],
-      "additionalProperties": false
-    },
-    "evidence": {
-      "type": "object",
-      "properties": {
-        "evidence_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "source_kind": {
-          "enum": [
-            "source_code",
-            "configuration",
-            "requirement",
-            "design",
-            "issue",
-            "pull_request",
-            "review",
-            "git",
-            "native_result",
-            "artifact",
-            "trace",
-            "observation",
-            "other"
-          ]
-        },
-        "acquisition": {
-          "enum": [
-            "direct_read",
-            "native_execution",
-            "reused",
-            "inference",
-            "unknown"
-          ]
-        },
-        "epistemic_status": {
-          "enum": [
-            "observed",
-            "inferred",
-            "unknown"
-          ]
-        },
-        "source_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "revision_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "locator": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "scope_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "supports_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "refutes_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "description": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "limitations": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
-          "minItems": 0
-        },
-        "origin_evidence_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "reuse_rationale": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "execution_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "artifact_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "evidence_ref",
-        "source_kind",
-        "acquisition",
-        "epistemic_status",
-        "source_ref",
-        "revision_ref",
-        "locator",
-        "scope_ref",
-        "supports_refs",
-        "refutes_refs",
-        "description",
-        "limitations"
-      ],
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "acquisition": {
-                "const": "reused"
-              }
-            },
-            "required": [
-              "acquisition"
-            ]
-          },
-          "then": {
-            "required": [
-              "origin_evidence_ref",
-              "reuse_rationale"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "acquisition": {
-                "const": "native_execution"
-              }
-            },
-            "required": [
-              "acquisition"
-            ]
-          },
-          "then": {
-            "required": [
-              "execution_ref"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "acquisition": {
-                "const": "inference"
-              }
-            },
-            "required": [
-              "acquisition"
-            ]
-          },
-          "then": {
-            "properties": {
-              "epistemic_status": {
-                "enum": [
-                  "inferred",
-                  "unknown"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "acquisition": {
-                "const": "unknown"
-              }
-            },
-            "required": [
-              "acquisition"
-            ]
-          },
-          "then": {
-            "properties": {
-              "epistemic_status": {
-                "const": "unknown"
-              }
-            }
-          }
-        }
-      ]
-    },
-    "assessment": {
-      "type": "object",
-      "properties": {
-        "assessment_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "obligation_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "viewpoint": {
-          "$ref": "#/$defs/viewpoint"
-        },
-        "occurrence_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "applicability": {
-          "$ref": "#/$defs/applicability"
-        },
-        "applicability_rationale": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "review_status": {
-          "enum": [
-            "reviewed",
-            "partial",
-            "not_reviewed"
-          ]
+        "property": {
+          "$ref": "#/$defs/text"
         },
         "assessment": {
           "enum": [
             "satisfied",
             "violated",
-            "unknown",
-            "not_applicable"
+            "unknown"
           ]
-        },
-        "rationale": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
         },
         "evidence_refs": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/reference"
+            "$ref": "#/$defs/text"
           },
-          "minItems": 0,
           "uniqueItems": true
         },
         "finding_refs": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/reference"
+            "$ref": "#/$defs/text"
           },
-          "minItems": 0,
           "uniqueItems": true
         },
-        "limitations": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
-          "minItems": 0
+        "reason": {
+          "$ref": "#/$defs/text"
         }
       },
       "required": [
-        "assessment_ref",
-        "obligation_ref",
-        "viewpoint",
-        "occurrence_ref",
-        "applicability",
-        "applicability_rationale",
-        "review_status",
+        "subject_refs",
+        "property",
         "assessment",
-        "rationale",
         "evidence_refs",
         "finding_refs",
-        "limitations"
+        "reason"
       ],
       "additionalProperties": false,
       "allOf": [
         {
           "if": {
             "properties": {
-              "review_status": {
-                "enum": [
-                  "partial",
-                  "not_reviewed"
-                ]
-              }
-            },
-            "required": [
-              "review_status"
-            ]
-          },
-          "then": {
-            "properties": {
               "assessment": {
-                "const": "unknown"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "assessment": {
-                "enum": [
-                  "satisfied",
-                  "violated"
-                ]
+                "const": "satisfied"
               }
             },
             "required": [
@@ -2806,12 +531,6 @@
           },
           "then": {
             "properties": {
-              "review_status": {
-                "const": "reviewed"
-              },
-              "applicability": {
-                "const": "applicable"
-              },
               "evidence_refs": {
                 "minItems": 1
               }
@@ -2831,98 +550,10 @@
           },
           "then": {
             "properties": {
-              "finding_refs": {
+              "evidence_refs": {
                 "minItems": 1
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "assessment": {
-                "const": "not_applicable"
-              }
-            },
-            "required": [
-              "assessment"
-            ]
-          },
-          "then": {
-            "properties": {
-              "applicability": {
-                "const": "not_applicable"
               },
-              "review_status": {
-                "const": "reviewed"
-              }
-            },
-            "allOf": [
-              {
-                "properties": {
-                  "evidence_refs": {
-                    "minItems": 1
-                  }
-                }
-              }
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "applicability": {
-                "const": "unknown"
-              }
-            },
-            "required": [
-              "applicability"
-            ]
-          },
-          "then": {
-            "properties": {
-              "assessment": {
-                "const": "unknown"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "applicability": {
-                "const": "not_applicable"
-              }
-            },
-            "required": [
-              "applicability"
-            ]
-          },
-          "then": {
-            "properties": {
-              "assessment": {
-                "enum": [
-                  "unknown",
-                  "not_applicable"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "assessment": {
-                "const": "unknown"
-              }
-            },
-            "required": [
-              "assessment"
-            ]
-          },
-          "then": {
-            "properties": {
-              "limitations": {
+              "finding_refs": {
                 "minItems": 1
               }
             }
@@ -2930,156 +561,60 @@
         }
       ]
     },
-    "discovery": {
+    "rule": {
       "type": "object",
       "properties": {
-        "discovery_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "discovery_obligation_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "viewpoint": {
-          "$ref": "#/$defs/viewpoint"
-        },
-        "occurrence_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "scope_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "review_status": {
+        "coverage": {
           "enum": [
             "reviewed",
             "partial",
-            "not_reviewed"
+            "not_reviewed",
+            "not_applicable"
           ]
         },
-        "applicability": {
-          "$ref": "#/$defs/applicability"
-        },
-        "applicability_rationale": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "coverage_status": {
+        "discovery": {
           "enum": [
-            "complete_in_scope",
+            "bounded_complete",
             "partial",
             "unknown",
             "not_applicable"
           ]
         },
-        "actual_search_universe": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
+        "scope": {
+          "$ref": "#/$defs/text"
         },
-        "actual_source_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "collection_method": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "relation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "candidate_objects": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/object"
-          },
-          "minItems": 0
-        },
-        "candidate_relations": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/relation"
-          },
-          "minItems": 0
-        },
-        "candidate_constraints": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/constraint"
-          },
-          "minItems": 0
-        },
-        "proposed_obligations": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/obligation"
-          },
-          "minItems": 0
-        },
-        "proposed_discovery_obligations": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/discovery_obligation"
-          },
-          "minItems": 0
+        "method": {
+          "$ref": "#/$defs/text"
         },
         "evidence_refs": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/reference"
+            "$ref": "#/$defs/text"
           },
-          "minItems": 0,
           "uniqueItems": true
         },
-        "exclusions": {
+        "checks": {
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
+            "$ref": "#/$defs/check"
           },
           "minItems": 0
         },
         "limitations": {
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
+            "$ref": "#/$defs/text"
           },
-          "minItems": 0
+          "uniqueItems": true
         }
       },
       "required": [
-        "discovery_ref",
-        "discovery_obligation_ref",
-        "viewpoint",
-        "occurrence_ref",
-        "scope_ref",
-        "review_status",
-        "applicability",
-        "applicability_rationale",
-        "coverage_status",
-        "actual_search_universe",
-        "actual_source_refs",
-        "collection_method",
-        "relation_refs",
-        "candidate_objects",
-        "candidate_relations",
-        "candidate_constraints",
-        "proposed_obligations",
-        "proposed_discovery_obligations",
+        "coverage",
+        "discovery",
+        "scope",
+        "method",
         "evidence_refs",
-        "exclusions",
+        "checks",
         "limitations"
       ],
       "additionalProperties": false,
@@ -3087,137 +622,174 @@
         {
           "if": {
             "properties": {
-              "coverage_status": {
-                "const": "complete_in_scope"
+              "coverage": {
+                "const": "reviewed"
               }
             },
             "required": [
-              "coverage_status"
+              "coverage"
             ]
           },
           "then": {
             "properties": {
-              "review_status": {
-                "const": "reviewed"
-              },
-              "applicability": {
-                "const": "applicable"
-              },
-              "actual_source_refs": {
+              "checks": {
                 "minItems": 1
               },
               "evidence_refs": {
                 "minItems": 1
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "coverage_status": {
-                "const": "not_applicable"
-              }
-            },
-            "required": [
-              "coverage_status"
-            ]
-          },
-          "then": {
-            "properties": {
-              "applicability": {
-                "const": "not_applicable"
               },
-              "review_status": {
-                "const": "reviewed"
-              },
-              "evidence_refs": {
-                "minItems": 1
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "review_status": {
-                "const": "not_reviewed"
-              }
-            },
-            "required": [
-              "review_status"
-            ]
-          },
-          "then": {
-            "properties": {
-              "coverage_status": {
-                "const": "unknown"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "applicability": {
-                "const": "unknown"
-              }
-            },
-            "required": [
-              "applicability"
-            ]
-          },
-          "then": {
-            "properties": {
-              "coverage_status": {
+              "discovery": {
                 "enum": [
-                  "unknown",
-                  "partial"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "applicability": {
-                "const": "not_applicable"
-              }
-            },
-            "required": [
-              "applicability"
-            ]
-          },
-          "then": {
-            "properties": {
-              "coverage_status": {
-                "enum": [
-                  "not_applicable",
-                  "unknown"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "coverage_status": {
-                "enum": [
+                  "bounded_complete",
                   "partial",
                   "unknown"
                 ]
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "coverage": {
+                "const": "not_applicable"
+              }
             },
             "required": [
-              "coverage_status"
+              "coverage"
+            ]
+          },
+          "then": {
+            "properties": {
+              "discovery": {
+                "const": "not_applicable"
+              },
+              "checks": {
+                "maxItems": 0
+              },
+              "evidence_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "coverage": {
+                "const": "not_reviewed"
+              }
+            },
+            "required": [
+              "coverage"
+            ]
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "maxItems": 0
+              },
+              "limitations": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "coverage": {
+                "const": "partial"
+              }
+            },
+            "required": [
+              "coverage"
             ]
           },
           "then": {
             "properties": {
               "limitations": {
                 "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "discovery": {
+                "const": "bounded_complete"
+              }
+            },
+            "required": [
+              "discovery"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/text"
+        },
+        "kind": {
+          "enum": [
+            "source",
+            "native_execution",
+            "reused",
+            "inference"
+          ]
+        },
+        "source_ref": {
+          "$ref": "#/$defs/text"
+        },
+        "observation": {
+          "$ref": "#/$defs/text"
+        },
+        "scope": {
+          "$ref": "#/$defs/text"
+        },
+        "reuse_basis": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "source_ref",
+        "observation",
+        "scope",
+        "reuse_basis"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "reused"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reuse_basis": {
+                "$ref": "#/$defs/text"
               }
             }
           }
@@ -3227,748 +799,104 @@
     "finding": {
       "type": "object",
       "properties": {
-        "finding_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "prior_finding_ref": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/reference"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "subject_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "constraint_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "assessment_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "expected": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "actual": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "root_cause": {
-          "type": "object",
-          "properties": {
-            "status": {
-              "enum": [
-                "established",
-                "inferred",
-                "unknown"
-              ]
-            },
-            "description": {
-              "type": "string",
-              "minLength": 1,
-              "pattern": "\\S"
-            }
-          },
-          "required": [
-            "status",
-            "description"
-          ],
-          "additionalProperties": false
-        },
-        "impact": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
+        "id": {
+          "$ref": "#/$defs/text"
         },
         "severity": {
           "enum": [
             "P0",
             "P1",
             "P2",
-            "P3",
-            "informational",
-            "unclassified"
+            "P3"
           ]
         },
         "status": {
           "enum": [
-            "open",
-            "resolved",
-            "withdrawn",
-            "needs_review",
-            "candidate"
+            "blocking",
+            "nonblocking",
+            "resolved"
           ]
         },
-        "evidence_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
+        "title": {
+          "$ref": "#/$defs/text"
         },
-        "repair": {
-          "type": "object",
-          "properties": {
-            "owner_ref": {
-              "$ref": "#/$defs/reference"
-            },
-            "location_refs": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/reference"
-              },
-              "minItems": 1,
-              "uniqueItems": true
-            },
-            "method": {
-              "type": "string",
-              "minLength": 1,
-              "pattern": "\\S"
-            },
-            "reuse_refs": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/reference"
-              },
-              "minItems": 0,
-              "uniqueItems": true
-            },
-            "source_evidence_refs": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/reference"
-              },
-              "minItems": 1,
-              "uniqueItems": true
-            }
-          },
-          "required": [
-            "owner_ref",
-            "location_refs",
-            "method",
-            "reuse_refs",
-            "source_evidence_refs"
-          ],
-          "additionalProperties": false
+        "expected": {
+          "$ref": "#/$defs/text"
         },
-        "acceptance_obligation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "finding_ref",
-        "prior_finding_ref",
-        "subject_refs",
-        "constraint_refs",
-        "assessment_refs",
-        "expected",
-        "actual",
-        "root_cause",
-        "impact",
-        "severity",
-        "status",
-        "evidence_refs",
-        "repair",
-        "acceptance_obligation_refs"
-      ],
-      "additionalProperties": false
-    },
-    "unresolved": {
-      "type": "object",
-      "properties": {
-        "unresolved_ref": {
-          "$ref": "#/$defs/reference"
+        "actual": {
+          "$ref": "#/$defs/text"
         },
-        "viewpoint": {
-          "$ref": "#/$defs/viewpoint"
-        },
-        "subject_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "obligation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "discovery_obligation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "reason": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "next_action": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
+        "impact": {
+          "$ref": "#/$defs/text"
         },
         "owner_ref": {
-          "$ref": "#/$defs/reference"
+          "$ref": "#/$defs/text"
+        },
+        "repair": {
+          "$ref": "#/$defs/text"
+        },
+        "acceptance": {
+          "$ref": "#/$defs/text"
         },
         "evidence_refs": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/reference"
+            "$ref": "#/$defs/text"
           },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "unresolved_ref",
-        "viewpoint",
-        "subject_refs",
-        "obligation_refs",
-        "discovery_obligation_refs",
-        "reason",
-        "next_action",
-        "owner_ref",
-        "evidence_refs"
-      ],
-      "additionalProperties": false
-    },
-    "disposition": {
-      "type": "object",
-      "properties": {
-        "recommendation": {
-          "enum": [
-            "accept",
-            "revise",
-            "blocked",
-            "needs_evidence",
-            "partial_review",
-            "not_applicable"
-          ]
-        },
-        "rationale": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "blocking_finding_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "nonblocking_handoffs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "owner_ref": {
-                "$ref": "#/$defs/reference"
-              },
-              "action": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "\\S"
-              },
-              "subject_refs": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/reference"
-                },
-                "minItems": 1,
-                "uniqueItems": true
-              }
-            },
-            "required": [
-              "owner_ref",
-              "action",
-              "subject_refs"
-            ],
-            "additionalProperties": false
-          },
-          "minItems": 0
-        },
-        "remaining_obligation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "limitations": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
-          "minItems": 0
-        }
-      },
-      "required": [
-        "recommendation",
-        "rationale",
-        "blocking_finding_refs",
-        "nonblocking_handoffs",
-        "remaining_obligation_refs",
-        "limitations"
-      ],
-      "additionalProperties": false
-    },
-    "center_specification": {
-      "type": "object",
-      "properties": {
-        "assessments": {
-          "type": "array",
-          "items": {
-            "allOf": [
-              {
-                "$ref": "#/$defs/assessment"
-              },
-              {
-                "properties": {
-                  "viewpoint": {
-                    "const": "specification"
-                  }
-                }
-              }
-            ]
-          },
-          "minItems": 0
-        },
-        "discovery_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "unresolved_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "assessments",
-        "discovery_refs",
-        "unresolved_refs"
-      ],
-      "additionalProperties": false,
-      "anyOf": [
-        {
-          "properties": {
-            "assessments": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "properties": {
-            "discovery_refs": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "properties": {
-            "unresolved_refs": {
-              "minItems": 1
-            }
-          }
-        }
-      ]
-    },
-    "center_structure": {
-      "type": "object",
-      "properties": {
-        "assessments": {
-          "type": "array",
-          "items": {
-            "allOf": [
-              {
-                "$ref": "#/$defs/assessment"
-              },
-              {
-                "properties": {
-                  "viewpoint": {
-                    "const": "structure"
-                  }
-                }
-              }
-            ]
-          },
-          "minItems": 0
-        },
-        "discovery_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "unresolved_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "assessments",
-        "discovery_refs",
-        "unresolved_refs"
-      ],
-      "additionalProperties": false,
-      "anyOf": [
-        {
-          "properties": {
-            "assessments": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "properties": {
-            "discovery_refs": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "properties": {
-            "unresolved_refs": {
-              "minItems": 1
-            }
-          }
-        }
-      ]
-    },
-    "center_behavior": {
-      "type": "object",
-      "properties": {
-        "assessments": {
-          "type": "array",
-          "items": {
-            "allOf": [
-              {
-                "$ref": "#/$defs/assessment"
-              },
-              {
-                "properties": {
-                  "viewpoint": {
-                    "const": "behavior"
-                  }
-                }
-              }
-            ]
-          },
-          "minItems": 0
-        },
-        "discovery_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "unresolved_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "assessments",
-        "discovery_refs",
-        "unresolved_refs"
-      ],
-      "additionalProperties": false,
-      "anyOf": [
-        {
-          "properties": {
-            "assessments": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "properties": {
-            "discovery_refs": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "properties": {
-            "unresolved_refs": {
-              "minItems": 1
-            }
-          }
-        }
-      ]
-    },
-    "center_verification": {
-      "type": "object",
-      "properties": {
-        "assessments": {
-          "type": "array",
-          "items": {
-            "allOf": [
-              {
-                "$ref": "#/$defs/assessment"
-              },
-              {
-                "properties": {
-                  "viewpoint": {
-                    "const": "verification"
-                  }
-                }
-              }
-            ]
-          },
-          "minItems": 0
-        },
-        "discovery_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "unresolved_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "assessments",
-        "discovery_refs",
-        "unresolved_refs"
-      ],
-      "additionalProperties": false,
-      "anyOf": [
-        {
-          "properties": {
-            "assessments": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "properties": {
-            "discovery_refs": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "properties": {
-            "unresolved_refs": {
-              "minItems": 1
-            }
-          }
-        }
-      ]
-    },
-    "scope": {
-      "type": "object",
-      "properties": {
-        "scope_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "subject_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "revision_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "relation_kinds": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
+          "uniqueItems": true,
           "minItems": 1
         },
-        "direction": {
+        "history": {
           "enum": [
-            "incoming",
-            "outgoing",
-            "both",
-            "not_applicable"
+            "new",
+            "existing",
+            "regraded",
+            "resolved"
           ]
         },
-        "search_universe": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "source_refs": {
+        "prior_refs": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/reference"
+            "$ref": "#/$defs/text"
           },
-          "minItems": 1,
           "uniqueItems": true
         },
-        "method": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "exclusions": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
-          "minItems": 0
-        },
-        "known_limitations": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
-          "minItems": 0
+        "change_basis": {
+          "$ref": "#/$defs/text"
         }
       },
       "required": [
-        "scope_ref",
-        "subject_refs",
-        "revision_ref",
-        "relation_kinds",
-        "direction",
-        "search_universe",
-        "source_refs",
-        "method",
-        "exclusions",
-        "known_limitations"
-      ],
-      "additionalProperties": false
-    },
-    "family_applicability": {
-      "type": "object",
-      "properties": {
-        "applicability": {
-          "$ref": "#/$defs/applicability"
-        },
-        "rationale": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "evidence_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "obligation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "discovery_obligation_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        }
-      },
-      "required": [
-        "applicability",
-        "rationale",
+        "id",
+        "severity",
+        "status",
+        "title",
+        "expected",
+        "actual",
+        "impact",
+        "owner_ref",
+        "repair",
+        "acceptance",
         "evidence_refs",
-        "obligation_refs",
-        "discovery_obligation_refs"
+        "history",
+        "prior_refs",
+        "change_basis"
       ],
       "additionalProperties": false,
       "allOf": [
         {
           "if": {
             "properties": {
-              "applicability": {
-                "const": "not_applicable"
+              "history": {
+                "const": "existing"
               }
             },
             "required": [
-              "applicability"
+              "history"
             ]
           },
           "then": {
             "properties": {
-              "evidence_refs": {
+              "prior_refs": {
                 "minItems": 1
               }
             }
@@ -3977,197 +905,42 @@
         {
           "if": {
             "properties": {
-              "applicability": {
-                "enum": [
-                  "applicable",
-                  "unknown"
-                ]
+              "history": {
+                "const": "regraded"
               }
             },
             "required": [
-              "applicability"
+              "history"
             ]
           },
           "then": {
-            "anyOf": [
-              {
-                "properties": {
-                  "obligation_refs": {
-                    "minItems": 1
-                  }
-                }
-              },
-              {
-                "properties": {
-                  "discovery_obligation_refs": {
-                    "minItems": 1
-                  }
-                }
+            "properties": {
+              "prior_refs": {
+                "minItems": 1
               }
-            ]
+            }
           }
-        }
-      ]
-    },
-    "baseline": {
-      "type": "object",
-      "properties": {
-        "repository": {
-          "const": "dymzz/engineering-ci"
         },
-        "subject_kind": {
-          "enum": [
-            "pull_request",
-            "issue",
-            "design",
-            "revision",
-            "acceptance",
-            "repository_audit"
-          ]
-        },
-        "subject_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "subject_state": {
-          "enum": [
-            "open",
-            "draft",
-            "closed",
-            "merged",
-            "active",
-            "not_applicable",
-            "unknown"
-          ]
-        },
-        "revision_ref": {
-          "$ref": "#/$defs/reference"
-        },
-        "main_sha": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{40}$"
-        },
-        "head_sha": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "merge_sha": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "net_diff_ref": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/reference"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "revision_diff_ref": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/reference"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "profile_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "fact_snapshot_ref": {
-          "$ref": "#/$defs/reference",
-          "description": "Optional actual native snapshot reference, not a mandatory new artifact."
-        },
-        "source_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 1,
-          "uniqueItems": true
-        },
-        "environment_refs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/reference"
-          },
-          "minItems": 0,
-          "uniqueItems": true
-        },
-        "limitations": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
-          },
-          "minItems": 0
-        }
-      },
-      "required": [
-        "repository",
-        "subject_kind",
-        "subject_ref",
-        "subject_state",
-        "revision_ref",
-        "main_sha",
-        "profile_refs",
-        "source_refs",
-        "limitations"
-      ],
-      "additionalProperties": false,
-      "allOf": [
         {
           "if": {
             "properties": {
-              "subject_kind": {
-                "const": "pull_request"
+              "history": {
+                "const": "resolved"
               }
             },
             "required": [
-              "subject_kind"
+              "history"
             ]
           },
           "then": {
             "properties": {
-              "head_sha": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{40}$"
-              },
-              "net_diff_ref": {
-                "$ref": "#/$defs/reference"
+              "prior_refs": {
+                "minItems": 1
               }
-            },
-            "required": [
-              "head_sha",
-              "net_diff_ref"
-            ]
+            }
           }
         }
       ]
     }
-  },
-  "description": "Standalone review output. No caller-prepared ReviewInput or input digest required. Review execution discovers facts and obligations; semantic validation independently checks native sources and adopted rules."
+  }
 }
