@@ -5,6 +5,7 @@
 - [仓库介绍](repository-overview.md) — 项目目标、已有能力、入口与依赖，作为 AGENTS 初稿的事实依据。
 
 - [Agent 指令](agent-instructions.md) — 全局、项目及专项指令的作用域、授权与配置边界。
+- [ECI 审阅要求](eci-review-requirements.md) — 四视点、32 类规则、工程关系发现与结构化输出合同；自动校验接线按实际验收。
 
 - [CLI 边界](cli-boundaries.md) — 用户入口、Actions 内部调用及模块职责。
 - [本地检查](local-checks.md) — 原生 Dagger Checks、失败传播与单次执行报告。
