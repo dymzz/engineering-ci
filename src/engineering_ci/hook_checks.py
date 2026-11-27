@@ -441,10 +441,15 @@ def _validate_push_plan_source(binding, prepared, source):
                     "ref_action",
                 )
             )
-            or any(
-                ref.get(key) != raw.get(key)
-                for key in ("local_ref", "remote_ref", "ref_action")
-            )
+            or any(ref.get(key) != raw.get(key) for key in ("local_ref", "remote_ref"))
+        ):
+            raise hooks.HookEventError("hook_push_source_mismatch")
+        # Capture classifies the raw OID pair. Source resolution can then
+        # identify a non-fast-forward update using the actual commit graph.
+        if ref["ref_action"] != raw["ref_action"] and not (
+            raw["ref_action"] == "update"
+            and ref["ref_action"] == "force_update"
+            and ref.get("force_push") is True
         ):
             raise hooks.HookEventError("hook_push_source_mismatch")
         if (ref.get("raw_before"), ref.get("raw_after")) != (
