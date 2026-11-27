@@ -4452,9 +4452,9 @@ def plan(
     # The digest must describe the same inspected configuration the graph and
     # discovery facts come from, not the current checkout.
     if inspected_tree_in_odb:
-        tach_blob = _git(root, '-' + 'cat-file', '-p', f'{inspected_tree}:{tach_rel}')
+        tach_blob = _git(root, "-" + "cat-file", "-p", f"{inspected_tree}:{tach_rel}")
         plan_tach_sha256 = (
-            hashlib.sha256(tach_blob.stdout.encode('utf-8')).hexdigest()
+            hashlib.sha256(tach_blob.stdout.encode("utf-8")).hexdigest()
             if tach_blob.returncode == 0
             else None
         )
