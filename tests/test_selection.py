@@ -2738,11 +2738,21 @@ def test_pytest_lossless_paths_avoid_dotted_dir_collision_and_keep_legacy_aliase
     selection.verify_per_ref_source_snapshot(
         entry, plan_ref=plan_ref, inputs=plan_inputs
     )
-    # P1-13: a dotted base with a native nodeid resolves to the same member as
-    # the path form, instead of being compared as a literal file name.
-    nodeid_entry = {**entry, "tests": ["tests.sub.pkg.test_case::test_nested"]}
+    # P1-13: a dotted base with a native nodeid binds a distinct execution
+    # target, recorded against the Ref's real members.
+    nodeid_targets = ["tests.sub.pkg.test_case::test_nested"]
+    nodeid_member = selection._tree_member(path, plan_ref["tree"])
+    nodeid_bindings = [
+        selection._binding_record(
+            selection._target_binding(target, nodeid_member, framework=cfg.framework)
+        )
+        for target in nodeid_targets
+    ]
+    nodeid_entry = {**entry, "tests": nodeid_targets}
     nodeid_snap_raw = {
         **entry["source_snapshot_ref"],
+        "target_bindings": nodeid_bindings,
+        "bindings_digest": "sha256:" + selection._json_sha256(nodeid_bindings),
         "selection_digest": selection._selection_entry_digest(
             nodeid_entry,
             ref=plan_ref,
@@ -2795,34 +2805,29 @@ def test_pytest_lossless_paths_avoid_dotted_dir_collision_and_keep_legacy_aliase
             plan_ref=plan_ref,
             inputs=plan_inputs,
         )
-    # Historical dotted alias must NOT match tests/sub.pkg/test_case.py when tests/sub/pkg/test_case.py is absent.
-    ambig_entry = {**entry, "tests": ["tests.sub.pkg.test_case"]}
-    dot_mods = ["tests/sub.pkg/test_case.py"]
-    snap_dot_only_raw = {
+    # A recorded binding for the same-name nested module is file-first, so the
+    # historical dotted alias verifies against that real member.
+    alias_entry = {**entry, "tests": ["tests.sub.pkg.test_case"]}
+    alias_snap_raw = {
         **entry["source_snapshot_ref"],
-        "tests_modules": dot_mods,
-        "tests_digest": "sha256:" + selection._json_sha256(dot_mods),
         "selection_digest": selection._selection_entry_digest(
-            ambig_entry,
+            alias_entry,
             ref=plan_ref,
             sources_identity=plan_inputs.get("sources"),
         ),
     }
-    snap_dot_only = {
-        **snap_dot_only_raw,
+    alias_snap = {
+        **alias_snap_raw,
         "snapshot_digest": "sha256:"
         + selection._json_sha256(
-            {k: v for k, v in snap_dot_only_raw.items() if k != "snapshot_digest"}
+            {k: v for k, v in alias_snap_raw.items() if k != "snapshot_digest"}
         ),
     }
-    with pytest.raises(
-        selection.SelectionError, match="expected_per_ref_source_unverifiable"
-    ):
-        selection.verify_per_ref_source_snapshot(
-            {**ambig_entry, "source_snapshot_ref": snap_dot_only},
-            plan_ref=plan_ref,
-            inputs=plan_inputs,
-        )
+    selection.verify_per_ref_source_snapshot(
+        {**alias_entry, "source_snapshot_ref": alias_snap},
+        plan_ref=plan_ref,
+        inputs=plan_inputs,
+    )
 
 
 def test_pytest_norecursedirs_path_patterns_and_non_dict_toml_sections(tmp_path):
@@ -3037,7 +3042,8 @@ def test_pytest_dotted_prerequisites_activate_for_lossless_path_targets(tmp_path
     (path / "ci-selection.toml").write_text(
         'schema_version = 1\nframework = "pytest"\n\n'
         '[module_tests]\n"pkg" = ["tests.test_other"]\n\n'
-        '[prerequisites]\nwheel_smoke = ["tests.test_other"]\n',
+        '[prerequisites]\nwheel_smoke = ["tests.test_other"]\n'
+        'node_case = ["tests/test_other.py::test_only_that_node"]\n',
         encoding="utf-8",
     )
     run(path, "init", "-q", "-b", "main")
@@ -3054,6 +3060,8 @@ def test_pytest_dotted_prerequisites_activate_for_lossless_path_targets(tmp_path
     direct = select(path, base)
     assert direct.tests == ("tests/test_other.py",)
     assert "wheel_smoke" in direct.prerequisites
+    # A nodeid target is a distinct execution target from the whole file.
+    assert "node_case" not in direct.prerequisites
     assert "wheel_smoke" in direct.base_prerequisites
     direct_plan = selection.plan(
         direct,
@@ -3086,35 +3094,41 @@ def test_pytest_dotted_prerequisites_activate_for_lossless_path_targets(tmp_path
 def test_pytest_target_identity_follows_resolver_and_keeps_directories_distinct(
     tmp_path,
 ):
-    # P1-13: identity reproduces the resolver's file-first rule and never
-    # conflates a directory with a same-name file. Member facts come from the
-    # real Source, so explicit non-discovered targets still bind.
-    members = {
+    # P1-13: binding resolution reproduces the resolver's file-first rule and
+    # keeps distinct execution targets distinct (file, directory, nodeid,
+    # unittest method). Member facts come from the real Source.
+    member_kinds = {
         "tests/test_case.py": "file",
         "tests/test_case": "dir",
         "tests/test_case/test_inner.py": "file",
         "tests/test_regular.py": "file",
     }
 
-    def probe(rel):
-        return members.get(rel)
+    def member(rel):
+        return member_kinds.get(rel, "missing")
 
-    file_identity = selection._target_identity("tests.test_case", probe)
+    def identity(target, framework="pytest"):
+        return selection._binding_identity(
+            selection._target_binding(target, member, framework=framework)
+        )
+
+    file_identity = identity("tests.test_case")
     assert file_identity == "file:tests/test_case.py"
-    assert selection._target_identity("tests/test_case.py", probe) == file_identity
-    assert (
-        selection._target_identity("tests/test_case.py::TestX::test_y", probe)
-        == file_identity
-    )
-    dir_identity = selection._target_identity("tests/test_case", probe)
+    assert identity("tests/test_case.py") == file_identity
+    dir_identity = identity("tests/test_case")
     assert dir_identity == "dir:tests/test_case"
     assert dir_identity != file_identity
-    # unittest class/method targets bind their longest existing module prefix.
-    assert (
-        selection._target_identity(
-            "tests.test_regular.TestCase.test_ok", probe, framework="unittest"
-        )
-        == "file:tests/test_regular.py"
+    # A nodeid narrows the execution target; it is not the whole file.
+    assert identity("tests/test_case.py::TestX::test_y") == (
+        "file:tests/test_case.py::TestX::test_y"
+    )
+    assert identity("tests/test_case.py::TestX::test_y") != file_identity
+    # unittest class/method targets stay separate execution targets.
+    assert identity("tests.test_regular.TestCase.test_a", "unittest") == (
+        "unittest:tests.test_regular.TestCase.test_a"
+    )
+    assert identity("tests.test_regular.TestCase.test_a", "unittest") != identity(
+        "tests.test_regular.TestCase.test_b", "unittest"
     )
     for illegal in (
         "/tests/test_case.py",
@@ -3124,7 +3138,7 @@ def test_pytest_target_identity_follows_resolver_and_keeps_directories_distinct(
         "tests/test_case.py::",
         "../tests/test_case.py",
     ):
-        assert selection._target_identity(illegal, probe) is None, illegal
+        assert identity(illegal) is None, illegal
 
     # Native exit codes show the file and the directory really execute differently.
     repo = tmp_path / "same_name"
@@ -3335,8 +3349,9 @@ def test_explicit_source_targets_keep_prerequisites_outside_auto_discovery(tmp_p
     )
 
     # The dotted name binds the same-name module file, not the directory.
-    probe = selection._source_member_probe(path)
-    assert selection._target_identity("tests.checks", probe) == "file:tests/checks.py"
+    member = selection._source_member(path)
+    binding = selection._target_binding("tests.checks", member)
+    assert selection._binding_identity(binding) == "file:tests/checks.py"
 
 
 def test_unittest_method_target_activates_its_prerequisite(tmp_path):
@@ -3364,7 +3379,8 @@ def test_unittest_method_target_activates_its_prerequisite(tmp_path):
         'tests = ["tests.test_regular.TestCase.test_ok"]\n'
         'reason = "method target"\n\n'
         "[prerequisites]\n"
-        'wheel_smoke = ["tests.test_regular.TestCase.test_ok"]\n',
+        'wheel_smoke = ["tests.test_regular.TestCase.test_ok"]\n'
+        'prepare_other = ["tests.test_regular.TestCase.test_skip"]\n',
         encoding="utf-8",
     )
     run(path, "init", "-q", "-b", "main")
@@ -3378,6 +3394,8 @@ def test_unittest_method_target_activates_its_prerequisite(tmp_path):
     method_sel = select(path, base)
     assert method_sel.tests == ("tests.test_regular.TestCase.test_ok",)
     assert "wheel_smoke" in method_sel.prerequisites
+    # A different method in the same module is a different execution target.
+    assert "prepare_other" not in method_sel.prerequisites
     planned = selection.plan(
         method_sel,
         config=config(path),
@@ -3507,6 +3525,20 @@ def test_per_ref_snapshot_distinguishes_not_enumerated_from_empty(tmp_path):
         "tests_state": "enumerated",
         "tests_modules": ["tests/sub/test_x.py"],
         "tests_digest": "sha256:" + selection._json_sha256(["tests/sub/test_x.py"]),
+        "target_bindings": [
+            {"target": "tests/sub", "kind": "dir", "path": "tests/sub", "nodeid": None}
+        ],
+        "bindings_digest": "sha256:"
+        + selection._json_sha256(
+            [
+                {
+                    "target": "tests/sub",
+                    "kind": "dir",
+                    "path": "tests/sub",
+                    "nodeid": None,
+                }
+            ]
+        ),
         "config_binding": {"status": "verified"},
         "selection_digest": selection._selection_entry_digest(entry_core),
     }
@@ -3517,3 +3549,135 @@ def test_per_ref_snapshot_distinguishes_not_enumerated_from_empty(tmp_path):
         selection.SelectionError, match="expected_per_ref_source_unverifiable"
     ):
         selection.verify_per_ref_source_snapshot({**entry, "tests": ["tests/missing"]})
+
+
+def test_per_ref_snapshot_records_real_binding_facts(tmp_path):
+    # P1-13: snapshot bindings come from the real Source, so explicit targets
+    # outside discovery and same-name modules keep their actual binding.
+    path = tmp_path / "binding_facts"
+    (path / "tests/fixtures").mkdir(parents=True)
+    (path / "tests/checks").mkdir(parents=True)
+    (path / "tests/check_special.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "tests/fixtures/test_bad.py").write_text(
+        "def test_bad():\n    assert False\n", encoding="utf-8"
+    )
+    (path / "tests/checks.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "tests/checks/test_inner.py").write_text(
+        "def test_bad():\n    assert False\n", encoding="utf-8"
+    )
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        'norecursedirs = ["fixtures"]\n',
+        encoding="utf-8",
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n', encoding="utf-8"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    cfg = selection.load_config(path / "ci-selection.toml")
+    entry = {
+        "status": "targeted",
+        "tree": tree,
+        "ref_action": "update",
+        "tests": [
+            "tests/check_special.py",
+            "tests/fixtures/test_bad.py",
+            "tests.checks",
+        ],
+        "config_source_binding": {"status": "verified"},
+    }
+    snap = selection._ref_source_snapshot(
+        path, {"tree": tree, "ref_action": "update"}, config=cfg, entry=entry
+    )
+    assert {
+        item["target"]: (item["kind"], item["path"]) for item in snap["target_bindings"]
+    } == {
+        "tests/check_special.py": ("file", "tests/check_special.py"),
+        "tests/fixtures/test_bad.py": ("file", "tests/fixtures/test_bad.py"),
+        # File-first: the same-name module wins over the directory.
+        "tests.checks": ("file", "tests/checks.py"),
+    }
+    selection.verify_per_ref_source_snapshot({**entry, "source_snapshot_ref": snap})
+
+    # A tampered binding kind is rejected once the recorded digests are redone.
+    tampered = [dict(item) for item in snap["target_bindings"]]
+    for item in tampered:
+        if item["target"] == "tests.checks":
+            item["kind"] = "refused"
+    body = {
+        **snap,
+        "target_bindings": tampered,
+        "bindings_digest": "sha256:" + selection._json_sha256(tampered),
+    }
+    body.pop("snapshot_digest")
+    tampered_snap = {
+        **body,
+        "snapshot_digest": "sha256:" + selection._json_sha256(body),
+    }
+    with pytest.raises(
+        selection.SelectionError, match="expected_per_ref_source_unverifiable"
+    ):
+        selection.verify_per_ref_source_snapshot(
+            {**entry, "source_snapshot_ref": tampered_snap}
+        )
+
+
+def test_member_kind_distinguishes_refused_symlink_from_missing(tmp_path):
+    # P1-13: a refused escape is not a missing member and gets no identity.
+    root = tmp_path / "symlink_members"
+    (root / "tests/checks").mkdir(parents=True)
+    outside = tmp_path / "outside.py"
+    outside.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    link = root / "tests/checks.py"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this platform")
+    member = selection._worktree_member(root)
+    assert member("tests/checks.py") == "refused"
+    assert member("tests/missing.py") == "missing"
+    binding = selection._target_binding("tests/checks.py", member)
+    assert binding["kind"] == "refused"
+    assert selection._binding_identity(binding) is None
+
+
+def test_tree_member_kind_distinguishes_refused_symlink_from_missing(tmp_path):
+    # P1-13: a Git Tree symlink (mode 120000) escaping the Source is refused,
+    # not reported as a file; a missing path stays missing.
+    root = tmp_path / "tree_symlink"
+    (root / "tests/checks").mkdir(parents=True)
+    (root / "tests/checks/test_inner.py").write_text(
+        "def test_bad():\n    assert False\n", encoding="utf-8"
+    )
+    run(root, "init", "-q", "-b", "main")
+    run(root, "config", "user.email", "selection@example.invalid")
+    run(root, "config", "user.name", "Selection Test")
+    run(root, "add", "-A")
+    run(root, "commit", "-qm", "init")
+    outside = tmp_path / "outside.py"
+    outside.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", str(outside)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    run(root, "update-index", "--add", "--cacheinfo", f"120000,{blob},tests/checks.py")
+    run(root, "commit", "-qm", "link")
+    tree = run(root, "rev-parse", "HEAD^{tree}").strip()
+    member = selection._tree_member(root, tree)
+    assert member("tests/checks.py") == "refused"
+    assert member("tests/missing.py") == "missing"
+    binding = selection._target_binding("tests.checks", member)
+    assert binding["kind"] == "refused"
+    assert selection._binding_identity(binding) is None

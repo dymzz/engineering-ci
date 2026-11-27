@@ -512,26 +512,29 @@ for actual request/reader counts and failure preservation.
   preventing directory-segment collisions with `tests/sub/pkg/test_case.py`),
   while explicit historical dotted entries in `[module_tests]`,
   `[[non_code_rules]]`, `[prerequisites]`, and per-Ref targets remain accepted
-  alongside explicit path and `::nodeid` entries. `_target_identity` resolves a
+  alongside explicit path and `::nodeid` entries. `_target_binding` resolves a
   target exactly as the runtime binds it, from the active Source's **actual
-  member facts** (the Worktree, the named Git Tree object, or a per-Ref
-  snapshot's recorded members) rather than from auto-discovery, so explicit
-  targets outside discovery - a non `test_*.py` file, a file under an excluded
-  directory, a same-name module - still bind. pytest dotted names follow the
-  file-first rule; unittest module/class/method targets bind their longest
-  existing module prefix; a `::nodeid` base keeps the file identity while
-  narrowing execution; absolute, space-padded, escaping or option-like targets
-  have no identity. Directory coverage and file identity remain different
-  relations: per-Ref verification binds a file target to a recorded member and
-  a directory target by covering at least one recorded member. Prerequisite
-  activation and `verify_per_ref_source_snapshot` compare those identities
-  instead of literal text.
+  member facts** (the Worktree or the named Git Tree object, which answers
+  `file`/`dir`/`missing`/`refused`), so explicit targets outside discovery - a
+  non `test_*.py` file, a file under an excluded directory, a same-name module -
+  still bind. pytest dotted names follow the file-first rule; a refused escape
+  (including a Git Tree mode 120000 symlink leaving the Source) is
+  distinguished from a missing member; absolute, space-padded, escaping or
+  option-like targets have no identity. The Source file identity and the native
+  execution target stay separate: a `::nodeid` narrows execution, every
+  unittest module/class/method target is its own target, and prerequisite
+  applicability compares those execution identities instead of the whole file.
 - Per-Ref source snapshots record `tests_state` (`not_selected`, `enumerated`,
   `unavailable`) alongside `tests_modules`, so an empty list never stands for
-  both "not applicable" and "enumerated empty". Verification requires
-  `enumerated` whenever the Ref binds targets, refuses an `unavailable` claim,
-  and materialized verification re-enumerates exactly in the `enumerated` state
-  while skipping discovery only for a `not_selected` Ref with no bound targets.
+  both "not applicable" and "enumerated empty". The snapshot also records the
+  **actual binding facts** (`target_bindings` with target, kind, path and
+  nodeid) resolved from the Ref's Git Tree; verification checks those facts
+  rather than re-deriving the full Source from the discovery list, and
+  materialized verification re-resolves each bound target against the
+  materialized Source and rejects any recorded mismatch. Verification requires
+  `enumerated` whenever the Ref binds targets and refuses an `unavailable`
+  claim; discovery during materialized verification is decided by the entry's
+  bound targets, not by the snapshot's own claim.
 - Host `run_tests(..., framework="pytest")` and Dagger Plan-selected
   `plan_execution._tests` / `EngineeringCi._run_pytest` resolve Selection targets
   (including historical dotted modules and optional `::nodeid` suffixes)
