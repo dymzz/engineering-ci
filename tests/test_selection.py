@@ -3649,7 +3649,7 @@ def test_member_kind_distinguishes_refused_symlink_from_missing(tmp_path):
         pytest.skip("symlinks unavailable on this platform")
     member = selection._worktree_member(root)
     assert member("tests/checks.py")[0] == "refused"
-    assert member("tests/missing.py") == "missing"
+    assert member("tests/missing.py") == ("missing", None)
     binding = selection._target_binding("tests/checks.py", member)
     assert binding["kind"] == "refused"
     assert selection._binding_identity(binding) is None
@@ -3676,6 +3676,9 @@ def test_member_facts_refuse_escaping_symlink_and_keep_internal_links(tmp_path):
     outside = tmp_path / "outside.py"
     outside.write_text("def test_outside():\n    assert True\n", encoding="utf-8")
     (root / "tests/escaping.py").symlink_to(outside)
+    (root / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n', encoding="utf-8"
+    )
     run(root, "init", "-q", "-b", "main")
     run(root, "config", "user.email", "selection@example.invalid")
     run(root, "config", "user.name", "Selection Test")
