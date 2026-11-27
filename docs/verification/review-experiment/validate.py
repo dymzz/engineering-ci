@@ -3,6 +3,7 @@
 # dependencies = ["jsonschema==4.26.0"]
 # ///
 """Opt-in review experiment consumer; not an ECI check or approval gate."""
+
 import argparse
 import hashlib
 import json
@@ -102,7 +103,9 @@ def validate(result, schema, policy, subject, head, base, views, task_kind):
         if key not in cited_findings:
             errors.append(f"finding not linked to a rule check: {key}")
     if result["disposition"]["recommendation"] == "accept" and (
-        not complete or incomplete or result["unresolved"]
+        not complete
+        or incomplete
+        or result["unresolved"]
         or any(f["status"] == "blocking" for f in findings.values())
     ):
         errors.append("accept requires complete requested coverage without blockers")
@@ -112,11 +115,17 @@ def validate(result, schema, policy, subject, head, base, views, task_kind):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("result", type=Path)
-    parser.add_argument("--subject", required=True, help="actual target, from review host")
+    parser.add_argument(
+        "--subject", required=True, help="actual target, from review host"
+    )
     parser.add_argument("--head", required=True, help="actual target revision")
     parser.add_argument("--base", help="actual base revision for PR review")
     parser.add_argument("--viewpoints", nargs="+", choices=VIEWS, default=list(VIEWS))
-    parser.add_argument("--task-kind", required=True, choices=["design", "implementation", "acceptance", "audit", "re_review"])
+    parser.add_argument(
+        "--task-kind",
+        required=True,
+        choices=["design", "implementation", "acceptance", "audit", "re_review"],
+    )
     args = parser.parse_args()
     try:
         schema_path = POLICY / "eci-review-result.schema.json"
@@ -127,12 +136,30 @@ def main():
             "schema_sha256": digest(schema_path),
         }
         result = read_json(args.result)
-        errors = validate(result, schema, policy, args.subject, args.head, args.base, set(args.viewpoints), args.task_kind)
+        errors = validate(
+            result,
+            schema,
+            policy,
+            args.subject,
+            args.head,
+            args.base,
+            set(args.viewpoints),
+            args.task_kind,
+        )
     except (OSError, ValueError) as error:
         print(f"review validation error: {error}", file=sys.stderr)
         return 2
-    print(json.dumps({"valid": not errors, "policy": policy, "errors": errors,
-                      "scope": "shape, request binding, local references and declared rule coverage only"}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "valid": not errors,
+                "policy": policy,
+                "errors": errors,
+                "scope": "shape, request binding, local references and declared rule coverage only",
+            },
+            ensure_ascii=False,
+        )
+    )
     return int(bool(errors))
 
 
