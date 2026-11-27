@@ -491,9 +491,11 @@ for actual request/reader counts and failure preservation.
   execution platform (case sensitive, `/` separators) rather than the host that
   computes Selection, so a Windows host selects exactly the set the Linux
   containers run and a case-differing directory is over-selected instead of
-  silently skipped. Patterns are not rewritten: `./fixtures`, `tests\fixtures`
-  and `fixtures/` keep their native meaning (no match on POSIX), because
-  normalizing them would exclude directories pytest still collects.
+  silently skipped. Patterns are kept verbatim and never rewritten: native
+  pytest does not trim entries, so `" fixtures "` stays a literal non-matching
+  pattern, and `./fixtures`, `tests\fixtures`, `fixtures/` keep their native
+  meaning (no match on POSIX) - normalizing any of them would exclude
+  directories pytest still collects.
   Patterns anchored to an absolute location (`/...`, drive or UNC paths) are
   refused fail-closed as `pytest_norecursedirs_unsupported`, because native
   pytest compares them against the checkout's absolute path, which no longer
@@ -511,14 +513,25 @@ for actual request/reader counts and failure preservation.
   while explicit historical dotted entries in `[module_tests]`,
   `[[non_code_rules]]`, `[prerequisites]`, and per-Ref targets remain accepted
   alongside explicit path and `::nodeid` entries. `_target_identity` resolves a
-  target exactly as the resolver binds it, using the active source's real
-  member facts (discovered test files at that Worktree, Git Tree, per-Ref or
-  materialized context): dotted names follow the file-first rule, a directory
-  and a same-name file stay different identities, a `::nodeid` base keeps the
-  file identity while narrowing execution, and absolute, space-padded,
-  escaping or option-like targets have no identity. Prerequisite activation
-  and `verify_per_ref_source_snapshot` compare those identities instead of
-  literal text.
+  target exactly as the runtime binds it, from the active Source's **actual
+  member facts** (the Worktree, the named Git Tree object, or a per-Ref
+  snapshot's recorded members) rather than from auto-discovery, so explicit
+  targets outside discovery - a non `test_*.py` file, a file under an excluded
+  directory, a same-name module - still bind. pytest dotted names follow the
+  file-first rule; unittest module/class/method targets bind their longest
+  existing module prefix; a `::nodeid` base keeps the file identity while
+  narrowing execution; absolute, space-padded, escaping or option-like targets
+  have no identity. Directory coverage and file identity remain different
+  relations: per-Ref verification binds a file target to a recorded member and
+  a directory target by covering at least one recorded member. Prerequisite
+  activation and `verify_per_ref_source_snapshot` compare those identities
+  instead of literal text.
+- Per-Ref source snapshots record `tests_state` (`not_selected`, `enumerated`,
+  `unavailable`) alongside `tests_modules`, so an empty list never stands for
+  both "not applicable" and "enumerated empty". Verification requires
+  `enumerated` whenever the Ref binds targets, refuses an `unavailable` claim,
+  and materialized verification re-enumerates exactly in the `enumerated` state
+  while skipping discovery only for a `not_selected` Ref with no bound targets.
 - Host `run_tests(..., framework="pytest")` and Dagger Plan-selected
   `plan_execution._tests` / `EngineeringCi._run_pytest` resolve Selection targets
   (including historical dotted modules and optional `::nodeid` suffixes)

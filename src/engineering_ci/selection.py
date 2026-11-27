@@ -1942,6 +1942,9 @@ def _pytest_norecursedirs_from_text(text):
     Linux execution containers, so matching follows native POSIX
     ``_pytest.pathlib.fnmatch_ex`` semantics (case sensitive, ``/`` separators,
     basename patterns versus anchored ``*``/``?``/``[]`` pattern text).
+    Patterns are kept verbatim: native pytest does not trim whitespace, so
+    ``" fixtures "`` stays a literal non-matching pattern instead of becoming an
+    exclusion the native collector would not apply.
     Patterns anchored to an absolute location are refused fail-closed: native
     pytest matches them against the checkout's absolute path, which no longer
     names the same directory for a per-Ref or materialized snapshot.
@@ -1964,9 +1967,7 @@ def _pytest_norecursedirs_from_text(text):
     raw = ini.get("norecursedirs")
     if not isinstance(raw, list):
         return ()
-    patterns = tuple(
-        item.strip() for item in raw if isinstance(item, str) and item.strip()
-    )
+    patterns = tuple(item for item in raw if isinstance(item, str))
     if any(has_windows_or_absolute_root(pattern) for pattern in patterns):
         raise SelectionError("pytest_norecursedirs_unsupported")
     return patterns
@@ -2033,42 +2034,83 @@ def _is_excluded_test_parts(rel_parts, norecursedirs, *, tests_dir_parts=()):
     return False
 
 
-def _identity_members(module_entries):
-    """Real Source members of one discovery context: test files and their dirs.
+def _source_member_probe(root, *, tree=None):
+    """Return a kind probe over the actual Source members of this context.
 
-    Accepts the representation each framework emits (Source-relative POSIX
-    paths for pytest, dotted modules for unittest) without consulting the
-    worktree, so a Git Tree, per-Ref snapshot or materialized Source supplies
-    its own member facts.
+    ``probe(rel)`` answers ``"file"``, ``"dir"`` or ``None`` from the real
+    Source - the working tree or the named Git Tree object - instead of the
+    auto-discovery result. An explicit target outside discovery (a non
+    ``test_*.py`` file, a file under an excluded directory, a same-name module)
+    therefore binds exactly what the runtime would run.
     """
+    if tree is not None:
+
+        def probe(rel):
+            shown = _git(root, "cat-file", "-t", f"{tree}:{rel}")
+            if shown.returncode != 0:
+                return None
+            kind = shown.stdout.strip()
+            if kind == "blob":
+                return "file"
+            if kind == "tree":
+                return "dir"
+            return None
+
+        return probe
+    resolved_root = Path(root).resolve()
+
+    def probe(rel):
+        exists, refusal = _check_bound_pytest_path(root, resolved_root, rel)
+        if refusal or not exists:
+            return None
+        try:
+            return "dir" if (Path(root) / rel).is_dir() else "file"
+        except OSError:
+            return None
+
+    return probe
+
+
+def _snapshot_member_probe(tests_modules):
+    """Return (probe, framework) over one per-Ref snapshot's recorded members."""
     files = set()
     dirs = set()
-    for entry in module_entries or ():
-        if not isinstance(entry, str) or not entry.strip():
+    dotted = False
+    for item in tests_modules or ():
+        if not isinstance(item, str) or not item.strip():
             continue
-        rel = _normalized(entry.strip()).strip("/")
-        if not rel:
-            continue
-        if "/" not in rel and not rel.endswith(".py"):
-            rel = rel.replace(".", "/") + ".py"
+        rel = _normalized(item.strip()).strip("/")
         if not rel or rel.startswith("../") or "/../" in rel:
             continue
+        if "/" not in rel and not rel.endswith(".py"):
+            dotted = True
+            rel = rel.replace(".", "/") + ".py"
         files.add(rel)
         parts = rel.split("/")
         for depth in range(1, len(parts)):
             dirs.add("/".join(parts[:depth]))
-    return files, dirs
+
+    def probe(rel):
+        if rel in files:
+            return "file"
+        if rel in dirs:
+            return "dir"
+        return None
+
+    return probe, ("unittest" if dotted else "pytest"), files
 
 
-def _target_identity(target, members):
-    """Resolve one target to the identity the pytest resolver would bind.
+def _target_identity(target, probe, *, framework="pytest"):
+    """Resolve one target to the identity the runtime binds in this Source.
 
-    Returns ``"file:<rel>"`` or ``"dir:<rel>"``, or ``None`` when the target is
+    Returns ``"file:<rel>"`` or ``"dir:<rel>``, or ``None`` when the target is
     illegal (absolute, space-padded, escaping, option-like, empty nodeid) or
-    names no Source member. Dotted names follow the resolver's file-first rule,
-    so a directory and a same-name file stay different identities, and a
-    ``::nodeid`` narrows execution without changing the file identity. Legality
-    reuses ``_split_and_check_path_parts``.
+    names no Source member. ``probe`` supplies actual member facts, so explicit
+    targets outside auto-discovery still bind. Path forms and pytest dotted names
+    follow the resolver's file-first rule (a directory and a same-name file stay
+    distinct); unittest dotted module/class/method targets bind their longest
+    existing module prefix; a ``::nodeid`` narrows execution without changing the
+    file identity. Legality reuses ``_split_and_check_path_parts``.
     """
     if not isinstance(target, str):
         return None
@@ -2077,7 +2119,6 @@ def _target_identity(target, members):
         return None
     if any(ch in raw for ch in "\0\r\n") or raw.startswith("-"):
         return None
-    files, dirs = members
     is_path = (
         "/" in raw
         or "\\" in raw
@@ -2089,23 +2130,26 @@ def _target_identity(target, members):
         rel, refusal = _split_and_check_path_parts(raw)
         if refusal:
             return None
-        if rel in files:
-            return "file:" + rel
-        if rel in dirs:
-            return "dir:" + rel
-        return None
+        kind = probe(rel)
+        return f"{kind}:{rel}" if kind else None
     parts = raw.split(".")
     if any(not part or part in {".", ".."} for part in parts):
         return None
     if any(part.lower() == ".git" for part in parts):
         return None
+    if framework == "unittest":
+        for count in range(len(parts), 0, -1):
+            prefix = "/".join(parts[:count])
+            if probe(prefix + ".py") == "file":
+                return "file:" + prefix + ".py"
+            if probe(prefix) == "dir":
+                return "dir:" + prefix
+        return None
     file_rel = "/".join(parts) + ".py"
-    if file_rel in files:
+    if probe(file_rel) == "file":
         return "file:" + file_rel
     dir_rel = "/".join(parts)
-    if dir_rel in dirs:
-        return "dir:" + dir_rel
-    return None
+    return f"dir:{dir_rel}" if probe(dir_rel) == "dir" else None
 
 
 def _test_modules(
@@ -2704,18 +2748,21 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     f"Impacted by Python module: {module}"
                 )
     ordered = tuple(sorted(selected))
-    identity_members = _identity_members(resolved_all_tests)
+    member_probe = _source_member_probe(root, tree=exec_tree if tree_in_odb else None)
     selected_identities = {
         identity
         for target in selected
-        for identity in (_target_identity(target, identity_members),)
+        for identity in (
+            _target_identity(target, member_probe, framework=config.framework),
+        )
         if identity is not None
     }
     base_prereqs = frozenset(
         name
         for name, tests in config.prerequisites.items()
         if any(
-            _target_identity(test, identity_members) in selected_identities
+            _target_identity(test, member_probe, framework=config.framework)
+            in selected_identities
             for test in tests
         )
     )
@@ -3536,6 +3583,7 @@ def _ref_source_snapshot(
     tach_sha256 = None
     tach_graph_digest = None
     tests_modules = []
+    tests_state = "not_selected"
     tests_digest = None
     source_tree_id = None
     if ref_action == "delete":
@@ -3551,10 +3599,9 @@ def _ref_source_snapshot(
                 tach_graph_digest = f"sha256:{_json_sha256({'modules': list(tg[0]), 'reverse': {k: list(v) for k, v in sorted(tg[1].items())}})}"
             except SelectionError:
                 tach_graph_digest = None
-        # Enumerate test modules only for a Ref that actually binds targets.
-        # A Ref selecting no tests keeps an empty list, so an unsupported
-        # exclusion pattern cannot refuse an independent check plan.
-        tests_modules = []
+        # Enumerate test modules only for a Ref that actually binds targets, and
+        # record which state this is: not applicable, enumerated (possibly empty)
+        # or unavailable. An empty list alone must never stand for all three.
         if entry.get("tests"):
             test_prefix = ".".join(Path(config.tests_dir).parts)
             tree_tests = _tree_test_modules(
@@ -3569,6 +3616,7 @@ def _ref_source_snapshot(
                 ),
                 framework=config.framework,
             )
+            tests_state = "enumerated" if tree_tests is not None else "unavailable"
             tests_modules = list(tree_tests) if tree_tests is not None else []
         tests_digest = f"sha256:{_json_sha256(tests_modules)}"
     else:
@@ -3587,6 +3635,7 @@ def _ref_source_snapshot(
         "tach_sha256": tach_sha256,
         "tach_graph_digest": tach_graph_digest,
         "tests_dir": config.tests_dir,
+        "tests_state": tests_state,
         "tests_modules": tests_modules,
         "tests_digest": tests_digest,
         "config_binding": entry.get("config_source_binding"),
@@ -3645,19 +3694,37 @@ def verify_per_ref_source_snapshot(
             or snap.get("tests_digest") != f"sha256:{_json_sha256(tests_modules)}"
         ):
             raise SelectionError("expected_per_ref_source_unverifiable")
+        tests_state = snap.get("tests_state")
+        if tests_state not in {"not_selected", "enumerated", "unavailable"}:
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        # A snapshot that did not enumerate may only cover a Ref binding no
+        # targets; a claim of "not selected" cannot justify bound targets.
+        if tests_state != "enumerated" and sel_entry.get("tests"):
+            raise SelectionError("expected_per_ref_source_unverifiable")
         if sel_entry.get("status") not in {"blocked", "not_applicable"}:
             if config_binding.get("status") not in {"verified", "event_shared"}:
                 raise SelectionError("expected_per_ref_source_unverifiable")
-            identity_members = _identity_members(tests_modules)
-            allowed_identities = {
-                identity
-                for item in tests_modules
-                for identity in (_target_identity(item, identity_members),)
-                if identity is not None
-            }
+            if tests_state == "unavailable":
+                raise SelectionError("expected_per_ref_source_unverifiable")
+            member_probe, member_framework, member_files = _snapshot_member_probe(
+                tests_modules
+            )
+            allowed_files = {"file:" + rel for rel in member_files}
             for target in sel_entry.get("tests") or ():
-                identity = _target_identity(target, identity_members)
-                if identity is None or identity not in allowed_identities:
+                identity = _target_identity(
+                    target, member_probe, framework=member_framework
+                )
+                if identity is None:
+                    raise SelectionError("expected_per_ref_source_unverifiable")
+                kind, _, rel = identity.partition(":")
+                if kind == "file":
+                    if identity not in allowed_files:
+                        raise SelectionError("expected_per_ref_source_unverifiable")
+                elif not any(
+                    item == rel or item.startswith(rel + "/") for item in member_files
+                ):
+                    # Directory coverage: a directory target binds the tests under
+                    # it, so at least one recorded member must be covered.
                     raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
         for key in (
@@ -3803,7 +3870,8 @@ def verify_materialized_source_snapshot(
     ):
         raise SelectionError("expected_per_ref_source_unverifiable")
     test_prefix = ".".join(Path(sel_cfg.tests_dir).parts)
-    if snap.get("tests_modules"):
+    tests_state = snap.get("tests_state")
+    if tests_state == "enumerated":
         mat_tests = list(
             _test_modules(
                 mat_path / sel_cfg.tests_dir,
@@ -3817,10 +3885,12 @@ def verify_materialized_source_snapshot(
                 tests_dir_rel=sel_cfg.tests_dir,
             )
         )
-    else:
+    elif tests_state == "not_selected" and not (sel_entry.get("tests") or ()):
         # Nothing was bound, so no discovery (and no exclusion configuration) is
-        # required to verify this Ref.
+        # required to verify this Ref; an empty enumeration is not claimed here.
         mat_tests = []
+    else:
+        raise SelectionError("expected_per_ref_source_unverifiable")
     if mat_tests != list(snap.get("tests_modules") or ()):
         raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
