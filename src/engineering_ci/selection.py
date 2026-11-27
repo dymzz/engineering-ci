@@ -2069,10 +2069,14 @@ def _target_binding(target, member, *, framework="pytest"):
     """
     if not isinstance(target, str):
         return None
+    # The complete target string is validated, so a control character inside a
+    # nodeid is refused at the shared entry instead of reaching the runtime.
+    if any(ch in target for ch in "\0\r\n"):
+        return None
     raw, sep, nodeid = target.partition("::")
     if not raw or raw != raw.strip() or (sep and not nodeid):
         return None
-    if any(ch in raw for ch in "\0\r\n") or raw.startswith("-"):
+    if target.lstrip().startswith("-"):
         return None
     binding = {"target": target, "path": None, "nodeid": nodeid or None}
     if framework == "unittest":
@@ -4283,10 +4287,12 @@ def _tach_check(root, config, changes):
     }
 
 
-def _graph_validation(selection, config, root, value):
+def _graph_validation(selection, config, root, value, *, tach_sha256=None):
     if value is None:
         return {"status": "not_executed"}
-    expected_sha = _digest(root / config.tach)
+    expected_sha = (
+        tach_sha256 if tach_sha256 is not None else _digest(root / config.tach)
+    )
     expected_tree = selection.changeset.execution_tree or selection.changeset.tree
     if value.get("tach_sha256") != expected_sha:
         return {"status": "untrusted", "reason": "tach_config_mismatch"}
@@ -4443,6 +4449,17 @@ def plan(
         )
     except SelectionError:
         tach_graph = None
+    # The digest must describe the same inspected configuration the graph and
+    # discovery facts come from, not the current checkout.
+    if inspected_tree_in_odb:
+        tach_blob = _git(root, '-' + 'cat-file', '-p', f'{inspected_tree}:{tach_rel}')
+        plan_tach_sha256 = (
+            hashlib.sha256(tach_blob.stdout.encode('utf-8')).hexdigest()
+            if tach_blob.returncode == 0
+            else None
+        )
+    else:
+        plan_tach_sha256 = _digest(tach_path)
     try:
         if inspected_tree_in_odb:
             tree_tests = _tree_test_modules(
@@ -4489,7 +4506,9 @@ def plan(
         if error.code != "pytest_norecursedirs_unsupported" or needs_test_discovery:
             raise
         all_tests = ()
-    graph = _graph_validation(selection, config, root, tach_validation)
+    graph = _graph_validation(
+        selection, config, root, tach_validation, tach_sha256=plan_tach_sha256
+    )
     profile_changed = False
     if resolved_profile_path is not None:
         try:
@@ -4614,7 +4633,7 @@ def plan(
         "name": "engineering-ci",
         "version": _version(),
         "config_sha256": _digest(config_path),
-        "tach_sha256": _digest(tach_path),
+        "tach_sha256": plan_tach_sha256,
     }
     if loaded_profile is not None:
         generator_payload["effective_profile_sha256"] = loaded_profile.get(
