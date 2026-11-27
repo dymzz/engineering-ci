@@ -56,16 +56,24 @@ _configure_worktree_uv_env() {
     fi
   fi
 
-  # 2. Verify locked dependencies natively via read-only `uv sync --check`
-  #    (never auto-sync inside a Hook and never trust a top-level import probe).
-  if [ -z "${UV_PROJECT:-}" ] && [ -f "$worktree_root/pyproject.toml" ] && [ -f "$worktree_root/uv.lock" ]; then
-    check_output=$(uv sync --locked --check --no-install-project --inexact --offline </dev/null 2>&1)
+  # 2. Verify runtime environment readiness natively via read-only
+  #    `uv sync --locked --check --no-install-project --no-dev --inexact --offline`
+  #    without gating Hook runs on inapplicable full dev tools (such as ruff/pytest).
+  if [ -f "$worktree_root/pyproject.toml" ] && [ -f "$worktree_root/uv.lock" ]; then
+    check_output=$(uv sync --locked --check --no-install-project --no-dev --inexact --offline </dev/null 2>&1)
     check_rc=$?
     if [ "$check_rc" -ne 0 ]; then
-      target_env="${UV_PROJECT_ENVIRONMENT:-$worktree_root/.venv}"
+      if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ]; then
+        target_env="$UV_PROJECT_ENVIRONMENT"
+      elif [ -n "${UV_PROJECT:-}" ]; then
+        target_env="$UV_PROJECT/.venv"
+      else
+        target_env="$worktree_root/.venv"
+      fi
       printf '%s\n' "$check_output" >&2
-      printf 'engineering-ci hook: uv environment is missing or does not satisfy %s/uv.lock: %s\n' "$worktree_root" "$target_env" >&2
-      printf 'Prepare or update the shared environment from its managing checkout:\n  uv sync --locked --group dev\n' >&2
+      printf 'engineering-ci hook: uv runtime environment is missing or does not satisfy %s/uv.lock: %s\n' "$worktree_root" "$target_env" >&2
+      printf 'Prepare or update the shared environment from its managing checkout (preserving compatible superset packages):\n  uv sync --locked --inexact --group dev\n' >&2
+      printf 'To update the shared environment for compatible locked dependencies from another worktree without changing its editable binding:\n  UV_PROJECT_ENVIRONMENT=%s uv sync --locked --no-install-project --inexact --group dev\n' "$target_env" >&2
       printf 'For a branch with incompatible locked dependencies, prepare and select a dedicated environment:\n  UV_PROJECT_ENVIRONMENT=<path> uv sync --locked --group dev\n' >&2
       exit "$check_rc"
     fi

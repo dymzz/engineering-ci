@@ -14,37 +14,8 @@ def _enclosing_git_checkout(path: Path) -> Path | None:
     return None
 
 
-def _same_git_common_dir(first: Path, second: Path) -> bool:
-    import os
-    import subprocess
-
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.upper().startswith("GIT_")
-    }
-
-    def resolve_common(root: Path) -> Path | None:
-        result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=root,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-        return Path(result.stdout.strip()).resolve()
-
-    common = resolve_common(first)
-    return common is not None and resolve_common(second) == common
-
-
 def _check_worktree_source_binding() -> str | None:
-    """Fail closed when editable CLI loads from another registered ECI worktree."""
+    """Diagnostic guard when editable CLI loads from another checkout of one repo."""
     package_file = Path(__file__).resolve()
     src_dir = package_file.parents[2]
     if src_dir.name != "src":
@@ -63,16 +34,18 @@ def _check_worktree_source_binding() -> str | None:
         return None
     from engineering_ci import git_source
 
-    if not git_source.registered_worktree(
-        pkg_checkout, cwd_checkout
-    ) and not _same_git_common_dir(pkg_checkout, cwd_checkout):
+    if git_source.registered_worktree(pkg_checkout, cwd_checkout):
+        relation = f"is registered worktree {cwd_checkout}"
+    elif git_source.shared_git_common_dir(pkg_checkout, cwd_checkout):
+        relation = f"shares Git common directory with {pkg_checkout} at {cwd_checkout}"
+    else:
         return None
     candidate_src = cwd_checkout / "src"
     return (
-        f"engineering-ci: loaded from {src_dir} while cwd is registered worktree "
-        f"{cwd_checkout}; refusing to execute another checkout's CLI.\n"
+        f"engineering-ci: loaded from {src_dir} while cwd {relation}; "
+        "refusing to execute another checkout's CLI.\n"
         f"Bind the current worktree source with PYTHONPATH={candidate_src} "
-        f"(e.g. python -P -m engineering_ci.cli ... or engineering-ci ...)."
+        "(e.g. python -P -m engineering_ci.cli ... or engineering-ci ...)."
     )
 
 

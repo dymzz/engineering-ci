@@ -46,39 +46,46 @@ uv run --locked --no-sync lefthook install
 文件保持原字节。普通仓和它的 linked worktree 共享安装的 Git Hook，各次
 调用各自保留 Invocation。
 
-并行开发使用 linked worktree 时，默认统一复用主 checkout 管理的 `.venv`，不在每个
+并行开发使用 linked worktree 时，默认统一复用主管理 checkout 维护的共享 `.venv`，不在每个
 worktree 重复维护环境（支持标准 `.git` 及配置了 `core.worktree` 的 `--separate-git-dir`
 布局；bare 仓或未配置 `core.worktree` 的 `--separate-git-dir` 因 Git 自身不保存指向主
 checkout 的反向路径，不隐式推导 `.venv`，须显式传入 `UV_PROJECT_ENVIRONMENT`）：
-- **Git Hook（自动默认统一环境 + 依赖校验 + 候选源码绑定）**：
+- **共享环境更新责任与 `--inexact` 语义**：
+  - 仅由指定的主管理 checkout（通常为主 checkout `main`）执行
+    `uv sync --locked --inexact --group dev` 维护共享环境及其 editable `.pth` 绑定；
+  - 其他 worktree 新增或需要兼容锁定依赖时，在命令作用域通过
+    `UV_PROJECT_ENVIRONMENT=<共享环境路径> uv sync --locked --no-install-project --inexact --group dev`
+    增量补齐依赖（`--no-install-project` 避免覆盖主管理 checkout 的 editable 绑定，
+    `--inexact` 保留其他并行分支需要的兼容超集包）；
+  - 分支存在不兼容版本冲突时，使用显式独立环境
+    `UV_PROJECT_ENVIRONMENT=<独立环境> uv sync --locked --group dev` 并在运行时显式传入。
+- **Git Hook（自动默认共享环境 + 运行时就绪校验 + 候选源码绑定）**：
   - 未显式设置 `UV_PROJECT` / `UV_PROJECT_ENVIRONMENT` 时，
     [`scripts/lefthook-arguments.sh`](../scripts/lefthook-arguments.sh) 默认将
     linked worktree 的 `UV_PROJECT_ENVIRONMENT` 指向主 checkout 的 `.venv`，不把
     worktree 目录内任意遗留的 `.venv` 当作显式授权；
-  - 调用 Lefthook 前执行一次只读原生
-    `uv sync --locked --check --no-install-project --inexact --offline`，按当前检出
-    的 `pyproject.toml` / `uv.lock` 核对全部锁定依赖（允许共享环境保留其他分支已装
-    的超集包，但缺少任何锁定依赖或版本不兼容时直接阻断并打印原诊断与准备命令，不在
-    Hook 内自动 sync，也不以顶层包可导入冒充依赖就绪）；
+  - 调用 Lefthook 前执行只读原生
+    `uv sync --locked --check --no-install-project --no-dev --inexact --offline`
+    确认运行时环境已准备且满足核心锁定依赖，防止 `uv run --locked --no-sync` 建出空
+    `.venv`，同时避免每次 `git commit` / `git push` 在 Lefthook 调度前把不适用的全开发
+    依赖（如 `ruff`、`pytest`）强加为 Hook 门禁（完整开发依赖校验在环境准备或测试前由
+    `uv sync --locked --check --no-install-project --inexact --offline` 承担；当前工作区
+    lock 校验也不替代受检 Index/逐 Ref Source 的验证）；
   - 在 ECI 自身 checkout 中独立将当前检出的 `src/` 前置到 `PYTHONPATH`（无论使用默认
     主仓 `.venv`、显式外部共享 `UV_PROJECT_ENVIRONMENT` 还是显式 `UV_PROJECT`），确保
-    Hook 执行当前 worktree 的候选源码而非共享环境里另一检出的 editable `.pth`；
-  - 若分支引入与共享环境不兼容的锁定依赖，由操作者显式准备独立环境
-    `UV_PROJECT_ENVIRONMENT=<独立环境> uv sync --locked --group dev`，并在运行命令或
-    Hook 时显式传入该 `UV_PROJECT_ENVIRONMENT`。
+    Hook 执行当前 worktree 的候选源码而非共享环境里另一检出的 editable `.pth`。
 - **Hook 之外的直接命令（`verify` / CLI / `pytest` / `ruff`）**：
-  - `scripts/lefthook-arguments.sh` 仅覆盖 Git Hook；在 linked worktree 直接执行
-    `uv run --locked --no-sync ...` 时，需在当前命令作用域显式传入
+  - `scripts/lefthook-arguments.sh` 仅覆盖 Git Hook；在 linked worktree 开发会话或单次
+    命令直接执行 `uv run --locked --no-sync ...` 时，须显式设置
     `UV_PROJECT_ENVIRONMENT=<共享环境路径>`；
   - 调用 **ECI 自身 CLI / `verify`**（如 `engineering-ci verify --out .artifacts/verify`
     或 `python -P -m engineering_ci.cli ...`）时，**必须同时设置**
-    `PYTHONPATH=<当前检出>/src`，确保执行当前 worktree 的候选 CLI 实现；若遗漏
-    `PYTHONPATH` 导致从同一仓库另一已注册 worktree 的 editable `src/` 加载，
-    `engineering_ci.cli` 会 fail-closed 返回退出码 `2` 并拒绝静默运行错源码；
+    `PYTHONPATH=<当前检出>/src`，确保执行当前 worktree 的候选 CLI 实现；本 PR 版本起的
+    `engineering_ci.cli` 内置辅助诊断守卫，当从同一仓库另一检出的 editable `src/` 加载时
+    返回退出码 `2`（该守卫仅对包含它的 CLI 版本与 editable 形态生效，不能替代显式
+    `PYTHONPATH` 绑定）；
   - 定向 `pytest <target>` 已由 `pyproject.toml` 的 `pythonpath = ["src"]` 优先加载当前
     检出的 `src/`，`ruff` 为独立可执行文件，二者传 `UV_PROJECT_ENVIRONMENT` 即可。
-  - 环境更新统一由负责管理该环境的项目执行原生 `uv sync --locked --group dev`，不同分支
-    不应无协调地覆盖同一共享环境。
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
