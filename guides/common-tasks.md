@@ -1,6 +1,6 @@
 # 常用操作
 
-在 engineering-ci 的原 checkout 操作。环境准备见[开始使用](getting-started.md)，参数见[CLI 参考](cli-reference.md)。
+在实际任务对应的 engineering-ci checkout 或 linked worktree 操作。宿主工具环境准备及共享边界见[开始使用](getting-started.md)，参数见[CLI 参考](cli-reference.md)。
 新消费者使用[新仓库接入](new-repository.md)，不把消费者当成本仓库的发布目标。
 
 ## 开发、审查与合并
