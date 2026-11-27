@@ -479,13 +479,10 @@ class _InvocationReportPlugin:
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_collection(self, session) -> None:
-        try:
-            yield
-        except BaseException as exc:
-            self.collection_hook_exception = type(exc).__name__
-            raise
-        else:
-            self.collection_hook_returned = True
+        outcome = yield
+        self.collection_hook_returned = outcome.excinfo is None
+        if outcome.excinfo is not None:
+            self.collection_hook_exception = outcome.excinfo[0].__name__
 
     def pytest_keyboard_interrupt(self, excinfo) -> None:
         self.keyboard_interrupt = True

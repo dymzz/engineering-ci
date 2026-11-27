@@ -283,6 +283,8 @@ def test_serial_invocation_records_native_reports_and_selection(tmp_path):
     assert summary["selected_items"] == 2
     assert summary["deselected_items"] == 0
     assert summary["collection"]["complete"] is True
+    assert summary["collection"]["hook_returned"] is True
+    assert summary["collection"]["hook_exception"] is None
     execution = summary["execution"]
     assert execution["mode"] == "run"
     assert execution["status"] == "complete"
@@ -542,6 +544,8 @@ def test_collection_interrupt_and_invalid_target_are_incomplete(tmp_path):
     assert interrupted.returncode == 2, interrupted.stdout + interrupted.stderr
     interrupt_summary = _read_json(_report_dir(interrupted) / "summary.json")
     assert interrupt_summary["collection"]["complete"] is False
+    assert interrupt_summary["collection"]["hook_returned"] is False
+    assert interrupt_summary["collection"]["hook_exception"] == "KeyboardInterrupt"
     assert (
         "collection_interrupted_before_execution"
         in interrupt_summary["collection"]["unknown_reasons"]
@@ -556,6 +560,8 @@ def test_collection_interrupt_and_invalid_target_are_incomplete(tmp_path):
     invalid_summary = _read_json(_report_dir(invalid) / "summary.json")
     assert invalid_summary["exitstatus"] == 4
     assert invalid_summary["collection"]["complete"] is False
+    assert invalid_summary["collection"]["hook_returned"] is False
+    assert invalid_summary["collection"]["hook_exception"] == "UsageError"
     assert invalid_summary["collection"]["usage_error"] is True
     assert invalid_summary["execution"]["status"] == "unknown"
 
