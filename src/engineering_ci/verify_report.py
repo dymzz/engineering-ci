@@ -10,6 +10,7 @@ import os
 import re
 import tempfile
 import xml.etree.ElementTree as ET
+from collections import Counter
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -644,27 +645,59 @@ def _norm_optional_str(value: Any) -> str | None:
     return text or None
 
 
-def _load_verify_core_tests(verify_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
+def _load_verify_core_tests(
+    verify_dir: Path, record: dict[str, Any], *, include_test_records: bool = False
+) -> dict[str, Any]:
+    result = {
+        **record,
+        "report_delivery_status": "unknown",
+        "reference_verification": "invalid",
+        "verification": "invalid_references",
+    }
     refs = record.get("references")
     if not isinstance(refs, list) or len(refs) > len(VERIFY_CORE_FILES):
-        return {**record, "verification": "invalid_references"}
-    verified = {}
+        return result
+    files = {}
     paths = {f"core-tests/{name}" for name in VERIFY_CORE_FILES}
     for ref in refs:
         name = ref.get("path") if isinstance(ref, dict) else None
-        if not isinstance(name, str) or name not in paths or name in verified:
-            return {**record, "verification": "invalid_references"}
-        verified[name] = _verify_native_output_entry(verify_dir, ref)
-    result = {**record, "files": verified}
-    if not verified:
-        return {**result, "verification": "not_emitted"}
-    if any(item["status"] != "verified" for item in verified.values()):
-        return {**result, "verification": "file_verification_failed"}
-    exit_file = verified.get("core-tests/exit-code.txt")
-    report_file = verified.get("core-tests/report.json")
-    if exit_file is None or report_file is None:
-        return {**result, "verification": "incomplete"}
-    raw_exit, _, _ = _read_bounded_bytes(Path(exit_file["resolved_path"]), limit=16)
+        if not isinstance(name, str) or name not in paths or name in files:
+            return result
+        files[name] = _verify_native_output_entry(verify_dir, ref)
+    result["files"] = files
+
+    exit_file = files.get("core-tests/exit-code.txt", {})
+    if exit_file.get("status") == "verified":
+        raw, _, _ = _read_bounded_bytes(Path(exit_file["resolved_path"]), limit=16)
+        if (
+            raw is not None
+            and re.fullmatch(rb"[0-9]{1,3}\r?\n?", raw)
+            and int(raw) <= 255
+            and hashlib.sha256(raw).hexdigest() == exit_file["sha256"]
+        ):
+            result["native_exit_code"] = int(raw)
+
+    if not files:
+        return {
+            **result,
+            "reference_verification": "not_emitted",
+            "verification": "not_emitted",
+        }
+    if any(item["status"] != "verified" for item in files.values()):
+        return {
+            **result,
+            "reference_verification": "failed",
+            "verification": "file_verification_failed",
+            "report_delivery_status": "incomplete",
+        }
+    report_file = files.get("core-tests/report.json")
+    if not exit_file or report_file is None:
+        return {
+            **result,
+            "reference_verification": "incomplete",
+            "verification": "incomplete",
+        }
+
     raw_report, _, _ = _read_bounded_bytes(
         Path(report_file["resolved_path"]), limit=MAX_JSON_REPORT_BYTES
     )
@@ -675,24 +708,61 @@ def _load_verify_core_tests(verify_dir: Path, record: dict[str, Any]) -> dict[st
     ):
         with suppress(ValueError, RecursionError):
             payload = json.loads(raw_report)
-    if raw_exit is not None and re.fullmatch(rb"[0-9]{1,3}\r?\n?", raw_exit):
-        exit_code = int(raw_exit)
-        if (
-            exit_code <= 255
-            and hashlib.sha256(raw_exit).hexdigest() == exit_file["sha256"]
-        ):
-            result["native_exit_code"] = exit_code
+    result["reference_verification"] = "verified"
     if (
         not isinstance(payload, dict)
         or not pytest_contracts.is_native_pytest_v1_shape(payload)
         or pytest_contracts.validate_native_pytest_v1(payload) is not None
         or payload["exit_code"] != result.get("native_exit_code")
     ):
-        return {**result, "verification": "native_report_invalid"}
-    return {**result, "verification": "verified", "report": payload}
+        return {
+            **result,
+            "verification": "native_report_invalid",
+            "report_delivery_status": "invalid",
+        }
+
+    result["report"] = payload
+    if not payload["report_available"]:
+        return {
+            **result,
+            "verification": "verified",
+            "report_delivery_status": "unavailable",
+        }
+    junit_file = files.get("core-tests/junit.xml")
+    if junit_file is None:
+        return {
+            **result,
+            "reference_verification": "incomplete",
+            "verification": "missing_junit_reference",
+            "report_delivery_status": "incomplete",
+        }
+    junit = _parse_junit_xml(
+        Path(junit_file["resolved_path"]), include_test_records=include_test_records
+    )
+    if junit["status"] != "loaded" or junit["sha256"] != junit_file["sha256"]:
+        return {
+            **result,
+            "verification": "native_junit_invalid",
+            "report_delivery_status": "invalid",
+        }
+    if junit["counts"] != payload["counts"]:
+        return {
+            **result,
+            "verification": "native_junit_counts_mismatch",
+            "report_delivery_status": "conflict",
+            "junit_counts": junit["counts"],
+        }
+    return {
+        **result,
+        "verification": "verified",
+        "report_delivery_status": "available",
+        "junit": junit,
+    }
 
 
-def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
+def _load_verify_entry(
+    verify_dir: Path, *, include_test_records: bool = False
+) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "source_type": "verify",
         "path": str(verify_dir),
@@ -838,7 +908,9 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
     if not isinstance(child_references, dict):
         child_references = {"status": "not_recorded"}
     elif child_references.get("producer") == "dagger:repository-test-artifacts":
-        child_references = _load_verify_core_tests(verify_dir, child_references)
+        child_references = _load_verify_core_tests(
+            verify_dir, child_references, include_test_records=include_test_records
+        )
         entry["consumed_dirs"] = [str(verify_dir / "core-tests")]
         entry["consumed_files"].extend(
             file["resolved_path"]
@@ -849,6 +921,9 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
             "invalid_references",
             "file_verification_failed",
             "native_report_invalid",
+            "missing_junit_reference",
+            "native_junit_invalid",
+            "native_junit_counts_mismatch",
         ):
             entry["internal_conflicts"].append(
                 {
@@ -857,7 +932,9 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
                 }
             )
         if "core-tests" in (payload.get("declared_verify_jobs") or ()):
-            outputs_complete &= child_references["verification"] == "verified"
+            outputs_complete &= (
+                child_references["report_delivery_status"] == "available"
+            )
 
     entry.update(
         {
@@ -1187,7 +1264,9 @@ def _extract_xml_properties(root: ET.Element) -> dict[str, Any]:
     }
 
 
-def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, Any]:
+def _parse_junit_xml(
+    path: Path, *, max_bytes: int | None = None, include_test_records: bool = False
+) -> dict[str, Any]:
     limit = MAX_XML_REPORT_BYTES if max_bytes is None else max_bytes
     raw, err, size = _read_bounded_bytes(path, limit=limit)
     if err is not None:
@@ -1204,7 +1283,7 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
     assert raw is not None
     raw_sha256 = hashlib.sha256(raw).hexdigest()
     try:
-        raw_text = raw.decode("utf-8", errors="replace")
+        raw_text = raw.decode("utf-8")
     except ValueError as exc:
         return {
             "source_type": "junit_xml",
@@ -1273,6 +1352,8 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
             invalid_durations += 1
 
     numeric_cases: list[dict[str, Any]] = []
+    test_records = []
+    case_counts = Counter()
     for suite in suites:
         for case in suite.findall(".//testcase"):
             parsed_dur, _ = _parse_valid_nonneg_float(case.attrib.get("time"))
@@ -1280,8 +1361,6 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
                 invalid_durations += 1
             elif parsed_dur == "unknown":
                 missing_durations += 1
-            if not isinstance(parsed_dur, float):
-                continue
             outcome = "passed"
             if case.find("failure") is not None:
                 outcome = "failed"
@@ -1289,14 +1368,32 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
                 outcome = "error"
             elif case.find("skipped") is not None:
                 outcome = "skipped"
-            numeric_cases.append(
-                {
-                    "classname": case.attrib.get("classname", ""),
-                    "name": case.attrib.get("name", ""),
-                    "status": outcome,
-                    "duration_seconds": parsed_dur,
-                }
-            )
+            classname, name = case.get("classname", ""), case.get("name", "")
+            if isinstance(parsed_dur, float):
+                numeric_cases.append(
+                    {
+                        "classname": classname,
+                        "name": name,
+                        "status": outcome,
+                        "duration_seconds": parsed_dur,
+                    }
+                )
+            if include_test_records:
+                case_id = "::".join(part for part in (classname, name) if part)
+                case_counts[case_id] += 1
+                test_records.append(
+                    {
+                        "test_id": case_id,
+                        "module": classname,
+                        "phase": "case_total",
+                        "instance": case_counts[case_id],
+                        "outcome": outcome,
+                        "duration_seconds": parsed_dur,
+                        "identity": "junit_classname_and_name",
+                    }
+                )
+    for record in test_records:
+        record["instance_ambiguous"] = case_counts[record["test_id"]] > 1
 
     slowest = sorted(
         numeric_cases, key=lambda item: float(item["duration_seconds"]), reverse=True
@@ -1319,6 +1416,7 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
         "status": "loaded",
         "sha256": raw_sha256,
         "counts": totals,
+        **({"test_records": test_records} if include_test_records else {}),
         "collection_scope": "unverified",
         "total_duration_seconds": total_duration,
         "invalid_duration_count": invalid_durations,
@@ -1447,7 +1545,7 @@ def _partition_node_attempts(
 
 
 def _parse_pytest_reportlog(
-    path: Path, *, max_bytes: int | None = None
+    path: Path, *, max_bytes: int | None = None, include_test_records: bool = False
 ) -> dict[str, Any]:
     if path.is_symlink():
         return {
@@ -1536,7 +1634,15 @@ def _parse_pytest_reportlog(
         elif report_type == "TestReport":
             when = record.get("when", "")
             outcome = record.get("outcome", "")
-            nodeid = str(record.get("nodeid", ""))
+            nodeid = record.get("nodeid")
+            if (
+                not isinstance(when, str)
+                or not isinstance(outcome, str)
+                or not isinstance(nodeid, str)
+                or not nodeid
+            ):
+                malformed_line_count += 1
+                return
             wasxfail = bool(record.get("wasxfail"))
             if when in phase_counts:
                 bucket = (
@@ -1562,6 +1668,7 @@ def _parse_pytest_reportlog(
                         "when": when,
                         "outcome": outcome,
                         "wasxfail": wasxfail,
+                        "duration_seconds": parsed_dur,
                     }
                 )
 
@@ -1624,8 +1731,27 @@ def _parse_pytest_reportlog(
     attempt_verdict_counts: dict[str, int] = {}
     repeated_phases: list[dict[str, Any]] = []
     repeated_phase_record_count = 0
+    observed_instances = {}
+    test_records = []
     for nodeid, records in node_records.items():
         attempts, repeated = _partition_node_attempts(records)
+        observed_instances[nodeid] = len(attempts)
+        if include_test_records:
+            for ordinal, attempt in enumerate(attempts, 1):
+                for record in attempt.values():
+                    test_records.append(
+                        {
+                            "test_id": nodeid,
+                            "module": nodeid.split("::", 1)[0],
+                            "phase": record["when"],
+                            "outcome": record["outcome"],
+                            "duration_seconds": record["duration_seconds"],
+                            "wasxfail": record["wasxfail"],
+                            "instance": ordinal,
+                            "instance_ambiguous": len(attempts) > 1,
+                            "identity": "pytest_nodeid",
+                        }
+                    )
         if repeated:
             for when, outcomes in repeated:
                 repeated_phase_record_count += len(outcomes) - 1
@@ -1750,6 +1876,8 @@ def _parse_pytest_reportlog(
         "sha256": None if truncated else hasher.hexdigest(),
         "report_completeness": completeness,
         "observed_node_count": len(node_records),
+        "observed_node_instances": observed_instances,
+        **({"test_records": test_records} if include_test_records else {}),
         "truncated": truncated,
         "line_count": line_count,
         "bytes_read": bytes_read,
@@ -2004,38 +2132,15 @@ def _validate_execution_report_contract(
             "rejections": {},
             "native_result_count": 0,
         }
-    native_executions = set()
-    identity = payload.get("execution_identity")
-    execution_ref = (
-        identity.get("execution_ref") if isinstance(identity, dict) else None
-    )
-    for result in results:
-        if result["result_id"] in rejections or (
-            type(result.get("native_exit_code")) is not int
-            and result.get("status") not in ("passed", "failed")
-        ):
-            continue
-        observed = (result.get("evidence") or {}).get("execution")
-        if isinstance(observed, dict):
-            if not isinstance(identity, dict) or any(
-                observed.get(key) != identity.get(key)
-                for key in ("run_ref", "attempt_ref")
-            ):
-                continue
-            ref = observed.get("parent_execution_ref") or observed.get("execution_ref")
-            if isinstance(ref, str):
-                native_executions.add(ref)
-        elif isinstance(execution_ref, str) and result["result_instance"].startswith(
-            (execution_ref + ":", execution_ref.removeprefix("execution:") + ":")
-        ):
-            native_executions.add(execution_ref)
     return {
         "report_format": report_format,
         "status": "valid",
         "error": None,
         "rejections": dict(rejections),
         "native_result_count": len(results),
-        "native_executions": native_executions,
+        "observed_execution_ref": reconciliation.observed_execution_ref(
+            payload, results, rejections
+        ),
     }
 
 
@@ -2512,17 +2617,8 @@ def _extract_execution_metadata(
         "native_result_count": contract["native_result_count"],
         "declared_identity": declared_identity,
         "declared_report_plan_ref": declared_plan_ref,
-        "verifiable_execution_proven": bool(
-            contract_valid
-            and execution_ref
-            and payload.get("status") in ("passed", "failed", "error")
-            and type(payload.get("exit_code")) is int
-            and any(
-                occurrence == execution_ref
-                or occurrence == execution_ref.removeprefix("execution:")
-                for occurrence in contract.get("native_executions", ())
-            )
-        ),
+        "verifiable_execution_proven": contract.get("observed_execution_ref")
+        is not None,
         "requested_check_names": payload.get("requested_check_names"),
         "admission_authority_63": "not_evaluated",
         "run_ref": run_ref if contract_valid else None,
@@ -2538,7 +2634,91 @@ def _extract_execution_metadata(
     return out
 
 
-def _load_pytest_invocation_entry(path: Path) -> list[dict[str, Any]]:
+def _pytest_producer_observations(primary: dict[str, Any]) -> dict[str, Any]:
+    """Project #168 facts without replacing them with local inference."""
+    return {
+        name: primary.get(name) if isinstance(primary.get(name), dict) else None
+        for name in (
+            "selection",
+            "collection",
+            "execution",
+            "report_delivery",
+            "native_exit_observation",
+            "source_observation",
+            "invocation_binding",
+        )
+    } | {
+        name: primary.get(name)
+        for name in (
+            "phase",
+            "report_complete",
+            "report_sealed",
+            "exitstatus_scope",
+            "session_exitstatus",
+            "writer_exception",
+        )
+    }
+
+
+def _pytest_node_binding(observations, parsed, exitstatus):
+    selection = observations["selection"] or {}
+    collection = observations["collection"] or {}
+    execution = observations["execution"] or {}
+    delivery = observations["report_delivery"] or {}
+    selected = selection.get("selected_node_ids")
+    started = execution.get("started_node_ids")
+    completed = execution.get("completed_node_ids")
+    if not all(
+        isinstance(nodes, list)
+        and all(isinstance(node, str) and node for node in nodes)
+        for nodes in (selected, started, completed)
+    ):
+        return {"status": "unknown", "reason": "producer_node_instances_unknown"}
+    if (
+        selection.get("mode") != "serial"
+        or selection.get("complete") is not True
+        or collection.get("complete") is not True
+        or execution.get("complete") is not True
+        or delivery.get("status") not in ("complete", "limited")
+        or observations["writer_exception"] is not None
+    ):
+        return {"status": "unknown", "reason": "producer_scope_or_delivery_incomplete"}
+    artifacts = delivery.get("artifacts")
+    artifact = artifacts.get("report_log") if isinstance(artifacts, dict) else None
+    if (
+        not isinstance(artifact, dict)
+        or artifact.get("attribution") != "colocated_invocation_dir"
+    ):
+        return {"status": "unknown", "reason": "reportlog_attribution_unproven"}
+    if (
+        parsed.get("report_completeness") != "unverified_collection"
+        or type(exitstatus) is not int
+        or parsed.get("exit_status") != exitstatus
+        or parsed.get("collection_failed_count") != 0
+    ):
+        return {"status": "unknown", "reason": "independent_reportlog_incomplete"}
+    expected = Counter(selected)
+    observed = Counter(parsed["observed_node_instances"])
+    if (
+        expected != Counter(started)
+        or expected != Counter(completed)
+        or expected != observed
+    ):
+        return {
+            "status": "mismatch",
+            "reason": "node_instance_multiset_mismatch",
+            "missing": dict(expected - observed),
+            "unexpected": dict(observed - expected),
+        }
+    return {
+        "status": "matched",
+        "basis": "producer_selection_lifecycle_and_reportlog_node_multisets",
+    }
+
+
+def _load_pytest_invocation_entry(
+    path: Path, *, include_test_records: bool = False
+) -> list[dict[str, Any]]:
     """Read-only loader for an explicit #168 pytest invocation directory (no latest scan)."""
     if path.is_symlink():
         return [
@@ -2648,8 +2828,16 @@ def _load_pytest_invocation_entry(path: Path) -> list[dict[str, Any]]:
                 }
             )
 
-    primary = meta_records.get("summary.json") or meta_records["metadata.json"]
-    secondary = meta_records.get("metadata.json") or {}
+    metadata = meta_records.get("metadata.json") or {}
+    summary = meta_records.get("summary.json") or {}
+    # A failed finalization may leave an earlier summary behind.
+    if metadata.get("phase") == "delivery_failed" or not summary:
+        primary, secondary = metadata, summary
+        producer_record = "metadata.json"
+    else:
+        primary, secondary = summary, metadata
+        producer_record = "summary.json"
+    observations = _pytest_producer_observations(primary)
     inv_id = primary["invocation_id"]
     exitstatus = (
         primary.get("exitstatus")
@@ -2714,26 +2902,46 @@ def _load_pytest_invocation_entry(path: Path) -> list[dict[str, Any]]:
         if child is None:
             child_status[field] = "path_unsafe"
             continue
-        parsed = parser(child)
+        parsed = parser(child, include_test_records=include_test_records)
         consumed_files.append(str(child))
         child_status[field] = parsed["status"]
         parsed["bundle_binding"] = "declared_by_pytest_metadata"
         parsed["bundle_relative_path"] = rel_name
         parsed["pytest_invocation_id"] = inv_id
-        selected = primary.get("selected_items")
-        if (
-            field == "report_log"
-            and parsed.get("report_completeness") == "unverified_collection"
-            and type(selected) is int
-            and selected > 0
-            and parsed.get("observed_node_count") == selected
-            and parsed.get("exit_status") == exitstatus
-            and exitstatus in (0, 1)
-            and primary.get("session_finished") is True
-            and primary.get("collect_only") is False
-            and len(parsed.get("collection_errors") or ()) == 0
-        ):
-            parsed["report_completeness"] = "complete"
+        if field == "report_log" and parsed["status"] == "loaded":
+            parsed["node_binding"] = _pytest_node_binding(
+                observations, parsed, exitstatus
+            )
+            if parsed["node_binding"]["status"] == "matched" and not internal_conflicts:
+                argv = primary.get("argv")
+                environment = {
+                    field: primary.get(field)
+                    for field in (
+                        "pytest_version",
+                        "python_version",
+                        "platform",
+                        "rootpath",
+                    )
+                }
+                plugins = primary.get("plugin_versions")
+                if (
+                    isinstance(argv, list)
+                    and all(isinstance(arg, str) for arg in argv)
+                    and all(
+                        isinstance(value, str) and value
+                        for value in environment.values()
+                    )
+                    and isinstance(plugins, dict)
+                ):
+                    parsed["history_scope"] = {
+                        **environment,
+                        "plugin_versions": plugins,
+                        "mode": "serial",
+                        "argv": argv,
+                        "selected_instances": dict(
+                            Counter(observations["selection"]["selected_node_ids"])
+                        ),
+                    }
         if (
             parsed.get("source_type") == "pytest_reportlog"
             and parsed.get("status") == "loaded"
@@ -2787,6 +2995,8 @@ def _load_pytest_invocation_entry(path: Path) -> list[dict[str, Any]]:
         "elapsed_seconds": wall_time,
         "exitstatus": exitstatus,
         "declared_artifact_status": child_status,
+        "producer_record": producer_record,
+        **observations,
         "session_finished": (
             primary["session_finished"]
             if "session_finished" in primary
@@ -2806,10 +3016,15 @@ def _load_pytest_invocation_entry(path: Path) -> list[dict[str, Any]]:
         "consumed_files": list(dict.fromkeys(consumed_files)),
         "consumed_dirs": consumed_dirs,
     }
+    if internal_conflicts:
+        for child in child_entries:
+            child.pop("history_scope", None)
     return [entry, *child_entries]
 
 
-def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
+def _load_execution_entries(
+    path: Path, *, include_test_records: bool = False
+) -> list[dict[str, Any]]:
     if path.is_symlink():
         return [
             {
@@ -3126,7 +3341,9 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                     ) == "loaded" and pytest_contracts.is_pytest_invocation_metadata(
                         mload["payload"]
                     ):
-                        return _load_pytest_invocation_entry(bundle_dir)
+                        return _load_pytest_invocation_entry(
+                            bundle_dir, include_test_records=include_test_records
+                        )
             entries.append(
                 {
                     "source_type": "execution_bundle",
@@ -3161,7 +3378,7 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
             child = _safe_child_path(bundle_dir, rel_name)
             if child is None or not child.is_file():
                 continue
-            parsed = parser(child)
+            parsed = parser(child, include_test_records=include_test_records)
             sha = parsed.get("sha256")
             manifest_rec = manifest_index.get(rel_name)
             digest_verified = False
@@ -3311,15 +3528,14 @@ def _load_dagger_telemetry(path: Path) -> dict[str, Any]:
         if isinstance(native_corr, dict)
         else None
     )
-    lineage_span_ids = (
-        [
-            str(s)
-            for s in native_corr.get("lineage_span_ids") or ()
-            if _norm_optional_str(s)
-        ]
-        if isinstance(native_corr, dict)
-        else []
+    lineage = (
+        native_corr.get("lineage_span_ids") if isinstance(native_corr, dict) else None
     )
+    malformed_lineage = lineage is not None and (
+        not isinstance(lineage, list)
+        or any(not isinstance(span, str) for span in lineage)
+    )
+    lineage_span_ids = lineage if lineage is not None and not malformed_lineage else []
     declared_source_ref = (
         _norm_optional_str(native_sb.get("declared_target_source_ref"))
         if isinstance(native_sb, dict)
@@ -3376,6 +3592,11 @@ def _load_dagger_telemetry(path: Path) -> dict[str, Any]:
         "lineage_span_ids": lineage_span_ids,
         "native_correlation_status": corr_status,
         "native_receipt_recognized": is_native_receipt,
+        "lineage_status": "invalid"
+        if malformed_lineage
+        else "observed"
+        if lineage_span_ids
+        else "unknown",
         "isolated_capture": isolated_capture
         if type(isolated_capture) is bool
         else None,
@@ -3395,7 +3616,9 @@ def _load_dagger_telemetry(path: Path) -> dict[str, Any]:
         "git_commit": _norm_optional_str(
             payload.get("git_commit") or payload.get("sha")
         ),
-        "internal_conflicts": [],
+        "internal_conflicts": (
+            [{"reason": "dagger_trace_lineage_invalid"}] if malformed_lineage else []
+        ),
         "consumed_files": [str(path)],
     }
 
@@ -3554,6 +3777,7 @@ def _hook_unit_is_bound(unit: dict[str, Any]) -> bool:
     return (
         bool(unit.get("report_digest_verified"))
         and unit.get("execution_binding_status") == "verified"
+        and unit.get("execution_occurrence_status") == "observed"
     )
 
 
@@ -4422,6 +4646,142 @@ def _anchor_matches_source(anchor: dict[str, str], ids: dict[str, Any]) -> bool:
     )
 
 
+def _test_record_aggregates(records):
+    groups = {}
+    for record in records:
+        key = (record["module"], record["phase"])
+        group = groups.setdefault(
+            key,
+            {
+                "module": key[0],
+                "phase": key[1],
+                "observed_records": 0,
+                "timed_records": 0,
+                "untimed_records": 0,
+                "observed_duration_seconds": 0.0,
+                "outcomes": {},
+            },
+        )
+        duration = record["duration_seconds"]
+        group["observed_records"] += 1
+        if isinstance(duration, float):
+            group["observed_duration_seconds"] += duration
+            group["timed_records"] += 1
+        else:
+            group["untimed_records"] += 1
+        outcome = record["outcome"]
+        group["outcomes"][outcome] = group["outcomes"].get(outcome, 0) + 1
+    return [groups[key] for key in sorted(groups)]
+
+
+def _compare_test_samples(samples):
+    if len(samples) < 2:
+        return []
+    baseline = samples[0]
+    comparisons = []
+    for candidate in samples[1:]:
+        comparison = {"baseline": baseline["path"], "candidate": candidate["path"]}
+        comparisons.append(comparison)
+        if not baseline.get("history_scope") or not candidate.get("history_scope"):
+            comparison.update(status="incomparable", reason="execution_scope_unproven")
+            continue
+        if baseline["history_scope"] != candidate["history_scope"]:
+            comparison.update(
+                status="incomparable",
+                reason="pytest_selection_or_execution_scope_differs",
+            )
+            continue
+        if baseline["invocation_id"] == candidate["invocation_id"]:
+            comparison.update(status="incomparable", reason="same_invocation")
+            continue
+        base_records = {(r["test_id"], r["phase"]): r for r in baseline["records"]}
+        next_records = {(r["test_id"], r["phase"]): r for r in candidate["records"]}
+        if any(
+            r["instance_ambiguous"]
+            for sample in (baseline, candidate)
+            for r in sample["records"]
+        ):
+            comparison.update(
+                status="incomparable", reason="repeated_test_instances_unpaired"
+            )
+            continue
+        changes = []
+        for test_id, phase in sorted(base_records.keys() | next_records.keys()):
+            old = base_records.get((test_id, phase))
+            new = next_records.get((test_id, phase))
+            old_time = old["duration_seconds"] if old else None
+            new_time = new["duration_seconds"] if new else None
+            changes.append(
+                {
+                    "test_id": test_id,
+                    "phase": phase,
+                    "baseline_outcome": old["outcome"] if old else None,
+                    "candidate_outcome": new["outcome"] if new else None,
+                    "baseline_seconds": old_time,
+                    "candidate_seconds": new_time,
+                    "delta_seconds": (
+                        new_time - old_time
+                        if isinstance(old_time, float) and isinstance(new_time, float)
+                        else None
+                    ),
+                    "status": "comparable"
+                    if old is not None and new is not None
+                    else "phase_not_observed_in_both",
+                }
+            )
+        comparison.update(status="comparable", records=changes)
+    return comparisons
+
+
+def _query_test_records(sources, *, nodes, modules, phases, compare):
+    samples = []
+    for source in sources:
+        item = source
+        if source["source_type"] == "verify":
+            item = (source.get("child_references") or {}).get("junit") or {}
+        if item.get("source_type") not in ("junit_xml", "pytest_reportlog"):
+            continue
+        records = [
+            record
+            for record in item.pop("test_records", [])
+            if (not nodes or record["test_id"] in nodes)
+            and (not modules or record["module"] in modules)
+            and (not phases or record["phase"] in phases)
+        ]
+        samples.append(
+            {
+                "path": item["path"],
+                "source_type": item["source_type"],
+                "status": item["status"],
+                "record_scope": "partial"
+                if item.get("truncated") or item.get("malformed_line_count")
+                else "observed"
+                if item["status"] == "loaded"
+                else "unavailable",
+                "invocation_id": item.get("pytest_invocation_id"),
+                "history_scope": item.get("history_scope"),
+                "records": records,
+                "aggregates": _test_record_aggregates(records),
+            }
+        )
+    query = {
+        "filters": {
+            "nodes": sorted(nodes),
+            "modules": sorted(modules),
+            "phases": sorted(phases),
+        },
+        "samples": samples,
+    }
+    if compare:
+        # ReportLog and JUnit measure different things. Where both are
+        # present, compare the phase records and leave case totals inspectable.
+        logs = [
+            sample for sample in samples if sample["source_type"] == "pytest_reportlog"
+        ]
+        query["comparisons"] = _compare_test_samples(logs or samples)
+    return query
+
+
 def build_verify_report(
     *,
     verify_dir: Path | None = None,
@@ -4434,11 +4794,21 @@ def build_verify_report(
     pytest_reportlogs: tuple[Path, ...] | list[Path] = (),
     dagger_telemetries: tuple[Path, ...] | list[Path] = (),
     ci_performances: tuple[Path, ...] | list[Path] = (),
+    test_records: bool = False,
+    test_nodes: tuple[str, ...] | list[str] = (),
+    test_modules: tuple[str, ...] | list[str] = (),
+    test_phases: tuple[str, ...] | list[str] = (),
+    compare_tests: bool = False,
 ) -> dict[str, Any]:
     """Build a strictly read-only timing & correlation report across supplied artifacts."""
     sources: list[dict[str, Any]] = []
+    query_requested = bool(
+        test_records or test_nodes or test_modules or test_phases or compare_tests
+    )
     if verify_dir is not None:
-        sources.append(_load_verify_entry(verify_dir))
+        sources.append(
+            _load_verify_entry(verify_dir, include_test_records=query_requested)
+        )
     if (
         hook_invocation is not None
         or hook_root is not None
@@ -4452,20 +4822,26 @@ def build_verify_report(
             )
         )
     for item in execution_reports:
-        sources.extend(_load_execution_entries(item))
+        sources.extend(
+            _load_execution_entries(item, include_test_records=query_requested)
+        )
     for item in pytest_invocations:
-        sources.extend(_load_pytest_invocation_entry(item))
+        sources.extend(
+            _load_pytest_invocation_entry(item, include_test_records=query_requested)
+        )
     for item in junit_xmls:
-        sources.append(_parse_junit_xml(item))
+        sources.append(_parse_junit_xml(item, include_test_records=query_requested))
     for item in pytest_reportlogs:
-        sources.append(_parse_pytest_reportlog(item))
+        sources.append(
+            _parse_pytest_reportlog(item, include_test_records=query_requested)
+        )
     for item in dagger_telemetries:
         sources.append(_load_dagger_telemetry(item))
     for item in ci_performances:
         sources.append(_load_ci_performance(item))
 
     correlation = _evaluate_correlations(sources)
-    return {
+    report = {
         "schema_version": 2,
         "read_only": True,
         "commands_executed": [],
@@ -4481,6 +4857,15 @@ def build_verify_report(
         "correlation": correlation,
         "sources": sources,
     }
+    if query_requested:
+        report["test_query"] = _query_test_records(
+            sources,
+            nodes=set(test_nodes),
+            modules=set(test_modules),
+            phases=set(test_phases),
+            compare=compare_tests,
+        )
+    return report
 
 
 def _collect_protected_paths(
@@ -4627,6 +5012,30 @@ def format_report_text(report: dict[str, Any]) -> str:
             for artifact in child.get("files", {}).values():
                 if artifact["status"] == "verified":
                     lines.append(f"    {artifact['resolved_path']}")
+    query = report.get("test_query") or {}
+    for sample in query.get("samples", ()):
+        lines.append(f"test records: {sample['path']} ({sample['record_scope']})")
+        for record in sample["records"]:
+            lines.append(
+                f"  {record['test_id']} #{record['instance']} {record['phase']}: "
+                f"{record['outcome']} {record['duration_seconds']}"
+            )
+        for group in sample["aggregates"]:
+            lines.append(
+                f"  {group['module']} {group['phase']}: "
+                f"{group['timed_records']}/{group['observed_records']} timed, "
+                f"{group['observed_duration_seconds']:.6g}s observed"
+            )
+    for row in query.get("comparisons", ()):
+        lines.append(
+            f"compare {row['baseline']} -> {row['candidate']}: {row['status']}"
+        )
+        if row.get("reason"):
+            lines.append(f"  {row['reason']}")
+        for result in row.get("records", ()):
+            lines.append(
+                f"  {result['test_id']} {result['phase']}: delta={result['delta_seconds']}"
+            )
     return "\n".join(lines)
 
 
@@ -4699,6 +5108,35 @@ def run_report_cli(argv: list[str] | None = None) -> int:
         default="json",
         help="Stdout output format (default: json)",
     )
+    parser.add_argument(
+        "--test-records",
+        action="store_true",
+        help="Return all observed test records within input limits",
+    )
+    parser.add_argument(
+        "--test-node",
+        action="append",
+        default=[],
+        help="Exact node ID or JUnit classname::name",
+    )
+    parser.add_argument(
+        "--test-module",
+        action="append",
+        default=[],
+        help="Exact ReportLog module path or JUnit classname",
+    )
+    parser.add_argument(
+        "--test-phase",
+        action="append",
+        default=[],
+        choices=("setup", "call", "teardown", "case_total"),
+        help="Filter a recorded phase",
+    )
+    parser.add_argument(
+        "--compare-tests",
+        action="store_true",
+        help="Compare compatible pytest invocation samples against the first",
+    )
     args = parser.parse_args(argv)
     if (args.hook_root is None) != (args.invocation_ref is None):
         parser.error("--hook-root and --invocation-ref must be provided together")
@@ -4735,6 +5173,11 @@ def run_report_cli(argv: list[str] | None = None) -> int:
         pytest_reportlogs=args.pytest_reportlog,
         dagger_telemetries=args.dagger_telemetry,
         ci_performances=args.ci_performance,
+        test_records=args.test_records,
+        test_nodes=args.test_node,
+        test_modules=args.test_module,
+        test_phases=args.test_phase,
+        compare_tests=args.compare_tests,
     )
     encoded = json.dumps(report, indent=2) + "\n"
     if args.out is not None:

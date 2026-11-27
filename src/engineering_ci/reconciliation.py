@@ -207,6 +207,40 @@ def verify_execution_report(report, report_ref=None):
     return results, rejections, actual
 
 
+def observed_execution_ref(report, results, rejections):
+    """Qualify an occurrence using the already validated Native Results."""
+    if (
+        report.get("status") in ("not_executed", "rejected")
+        or type(report.get("exit_code")) is not int
+    ):
+        return None
+    identity = report.get("execution_identity")
+    ref = identity.get("execution_ref") if isinstance(identity, dict) else None
+    if not isinstance(ref, str) or not ref.strip():
+        return None
+    for result in results:
+        if result["result_id"] in rejections or (
+            type(result.get("native_exit_code")) is not int
+            and result.get("status") not in ("passed", "failed")
+        ):
+            continue
+        observed = (result.get("evidence") or {}).get("execution")
+        if isinstance(observed, dict):
+            if (
+                observed.get("parent_execution_ref") or observed.get("execution_ref")
+            ) == ref and all(
+                observed.get(key) == identity.get(key)
+                for key in ("run_ref", "attempt_ref")
+            ):
+                return ref
+        elif result["result_instance"].startswith(
+            (ref + ":", ref.removeprefix("execution:") + ":")
+        ):
+            # Host Native Results use the original run_instance as their prefix.
+            return ref
+    return None
+
+
 def _optional_scope_id(value, code):
     if value is None:
         return None

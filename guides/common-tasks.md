@@ -267,7 +267,8 @@ format、version/lock、核心测试四组。前三组运行原生 Dagger Check�
 随后运行导出产物的原生 `ci.py gate`。裸 Lefthook 调用仍使用 `tests` Check。
 本次 Invocation 目录保存 `lefthook.stdout`、`lefthook.stderr` 和 `verify-timing.json`。
 `child_references` 记录 `core-tests/` 中实际导出的相对路径与 SHA-256。查询从回执直接定位，
-并对账原始退出和报告。导出失败、部分交付与未产生的 Trace 保留未知或缺失状态。
+并分别核验原始退出、引用和报告交付。报告声明 JUnit 可用时，必须存在实际引用，且
+JUnit 的摘要、格式和计数与原生 JSON 一致。报告不可用时仍可查看已核验的原始退出。
 `verify-timing.json` 同时记录过程内 `perf_counter` 单调耗时
 （按 `cli_preflight`、`lefthook_native`、`report_preparation` 拆分，显式标注排除
 `seal` 后写盘与外层 `uv`/Shell 启动耗时）、有界解析得到的 Lefthook Job/嵌套 Group
@@ -295,11 +296,14 @@ Hook 支持 `--hook-root` 与 `--invocation-ref` 成对使用，或单独使用 
 Plan 预期单元、观察单元、缺失单元和未封存观察。Git 实时 Source 检验由 Hook 自身完成。
 
 报告分别显示具体执行身份、Artifact 成员关系、内容等价和 Run/Attempt/Trace 上下文。
+Hook 和独立 Report 共用原生结果发生判定。封存的报告仍保留未执行状态和结果拒绝原因。
 Plan 范围声明与观察到的兼容投影分别记录。#87 A.1 保留原 Trace 和 isolation，
 B 执行绑定保持未知。GitHub 性能汇总保留原始指标，固定 Attempt 的 Job 清册由 #131/#75 提供。
-Dagger 和查询共用标准库 pytest/JUnit 计数规则。ReportLog 要证明已选用例覆盖才显示完整。
-`--pytest-invocation` 从 #168 原 metadata 读取声明的文件。Invocation 外的文件由调用者
-显式传 `--junit-xml` 或 `--pytest-reportlog`。查询保留原始文件，冲突或输出路径覆盖输入时退出 2。
+Dagger 和查询共用标准库 pytest/JUnit 计数规则。`--pytest-invocation` 读取 #168 声明
+的文件，并保留其 selection、collection、execution、report_delivery 和封存状态。
+生产者的 Hook 阶段退出与外层进程退出分别记录。ReportLog 的独立解析状态和节点
+实例对账分别可查。查阅 Invocation 外的文件时，显式传 `--junit-xml` 或
+`--pytest-reportlog`。查询保留原始文件，完整性冲突或输出路径覆盖输入时退出 2。
 
 ```powershell
 uv run --locked --no-sync engineering-ci verify report `
@@ -316,6 +320,22 @@ uv run --locked --no-sync engineering-ci verify report `
 
 验证范围、证据复用和各入口的区别见[工程验证入口与选择](#工程验证入口与选择)。
 裸 `lefthook run verify --no-auto-install` 可用于原生诊断，不代替 ECI verify 的同次输出记录。
+
+可对已保存的产物使用 `--test-records`、`--test-node`、`--test-module` 和
+`--test-phase setup|call|teardown|case_total`。记录受原始读取上限约束，结果保留
+重复实例的观察顺序、阶段结果及未知耗时。ReportLog 用 pytest node ID 和模块路径，
+JUnit 用 `classname::name` 和 `case_total`。模块/阶段的统计为实际可见记录累计。
+
+```powershell
+uv run --locked --no-sync engineering-ci verify report `
+  --pytest-invocation <baseline-invocation-dir> `
+  --pytest-invocation <candidate-invocation-dir> `
+  --test-node 'tests/test_sample.py::test_case' --test-phase call --compare-tests
+```
+
+`--compare-tests` 以第一份 ReportLog 样本为基线。比较要求不同 Invocation、相同的
+经对账选中实例范围，以及一致的 pytest/Python/插件版本、平台、根目录和调用参数。
+范围未知、记录不完整或实例无法配对时会说明不可比原因。查询不启动测试。
 
 Windows 终端下若遇到 Dagger 非交互调用无输出挂起（历史观察与诊断见
 [上游观察](../.agent/upstream-observations.md#dagger-beta-windows-非交互版本探测挂起)），

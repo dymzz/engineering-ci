@@ -1387,6 +1387,8 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
                 )
             report = exec_data.get("report")
             report_ref_val = None
+            occurred = False
+            rejections = {}
             report_digest_verified = False
             run_ref = None
             attempt_ref = None
@@ -1417,10 +1419,16 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
                     )
                 if report.get("kind") == execution.REPORT_KIND:
                     try:
-                        _res, _rej, verified_ref = (
+                        results, rejections, verified_ref = (
                             reconciliation.verify_execution_report(report)
                         )
                         report_ref_val = _report_ref_canonical(verified_ref)
+                        occurred = (
+                            reconciliation.observed_execution_ref(
+                                report, results, rejections
+                            )
+                            is not None
+                        )
                     except (
                         reconciliation.ReconciliationError,
                         TypeError,
@@ -1512,6 +1520,10 @@ def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
                     "report_digest_verified": bool(report_digest_verified and act_ok),
                     "source_rejection": source_rejection_reason,
                     "execution_binding_status": binding_status,
+                    "execution_occurrence_status": "observed"
+                    if occurred
+                    else "unproven",
+                    "report_contract_rejections": rejections,
                     "bundle_directory": bundle_dir,
                     "git_commit": git_commit,
                     "source_tree_id": source_tree_id,

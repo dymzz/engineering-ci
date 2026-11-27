@@ -33,6 +33,8 @@ def _create_split_precommit_repo(
     *,
     checks: tuple[str, ...] = ("whitespace", "forwarding"),
     init_repo: bool = True,
+    source_text: str = "VALUE = 1\n",
+    expect_failure: bool = False,
 ):
     from test_native_hooks import INDEX_SELECTION, _approve_profiles, _source
 
@@ -45,7 +47,7 @@ def _create_split_precommit_repo(
         ).strip()
     (root / "lefthook.yml").write_text("min_version: '2.2.2'\n", encoding="utf-8")
     mod_file = _source(root, "mod", checks)
-    mod_file.write_text("VALUE = 1\n", encoding="utf-8")
+    mod_file.write_text(source_text, encoding="utf-8")
     _approve_profiles(
         root,
         INDEX_SELECTION,
@@ -71,12 +73,12 @@ def _create_split_precommit_repo(
     binding = hooks.load_invocation_binding(inv_file)
     assert hook_checks.prepare(root, binding, split_checks=True)["exit_code"] == 0
     for chk in checks:
-        assert (
-            hook_checks.run_checks(root, binding, job_ref=f"check-{chk}")["exit_code"]
-            == 0
-        )
-    assert hook_checks.reconcile(root, binding)["exit_code"] == 0
-    assert hook_checks.consume_index_result(root, binding)["exit_code"] == 0
+        report = hook_checks.run_checks(root, binding, job_ref=f"check-{chk}")
+        assert (report["exit_code"] != 0) is (expect_failure and chk == "whitespace")
+    assert (hook_checks.reconcile(root, binding)["exit_code"] != 0) is expect_failure
+    assert (
+        hook_checks.consume_index_result(root, binding)["exit_code"] != 0
+    ) is expect_failure
     return head, inv_file, binding
 
 
@@ -3845,3 +3847,297 @@ def test_verify_report_round6_lifecycle_lefthook_pytest_contracts_168_and_cli(
         with pytest.raises(SystemExit) as exc_info:
             verify_report.run_report_cli(bad_argv)
         assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("xml_case", "verification", "delivery"),
+    [
+        ("normal", "verified", "available"),
+        ("missing_file", "file_verification_failed", "incomplete"),
+        ("missing_ref", "missing_junit_reference", "incomplete"),
+        ("bad_digest", "file_verification_failed", "incomplete"),
+        ("invalid_xml", "native_junit_invalid", "invalid"),
+        ("different_counts", "native_junit_counts_mismatch", "conflict"),
+        ("unavailable", "verified", "unavailable"),
+    ],
+)
+def test_core_report_delivery_requires_native_junit(
+    tmp_path, xml_case, verification, delivery
+):
+    from test_pytest_report import report as producer
+
+    from engineering_ci.cli import verify
+
+    core = tmp_path / "core-tests"
+    core.mkdir()
+    xml = '<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase name="sample"/></testsuite>'
+    payload = producer.summarize_pytest("" if xml_case == "unavailable" else xml, 0, "")
+    (core / "exit-code.txt").write_bytes(b"0\n")
+    (core / "report.json").write_text(json.dumps(payload), encoding="utf-8")
+    junit = core / "junit.xml"
+    if xml_case not in ("unavailable", "missing_ref"):
+        observed = {
+            "invalid_xml": "not XML",
+            "different_counts": xml.replace('tests="1"', 'tests="99"'),
+        }.get(xml_case, xml)
+        junit.write_text(observed, encoding="utf-8")
+    references = verify._core_test_references(tmp_path)
+    if xml_case == "missing_file":
+        junit.unlink()
+    elif xml_case == "bad_digest":
+        junit.write_bytes(b"modified after recording")
+    elif xml_case == "missing_ref":
+        junit.write_text(xml, encoding="utf-8")
+    streams = {}
+    for name in ("stdout", "stderr"):
+        stream = tmp_path / f"lefthook.{name}"
+        stream.write_bytes(b"")
+        streams[name] = verify._native_output(stream)
+    (tmp_path / "verify-timing.json").write_text(
+        json.dumps(
+            {
+                "native_started": True,
+                "native_exit_code": 0,
+                "native_outputs": streams,
+                "declared_verify_jobs": ["core-tests"],
+                "child_references": references,
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = verify_report.build_verify_report(verify_dir=tmp_path)["sources"][0]
+    child = source["child_references"]
+    assert child["verification"] == verification
+    assert child["report_delivery_status"] == delivery
+    assert child["native_exit_code"] == 0
+    assert source["native_exit_code"] == 0
+    assert source["evidence_complete"] is (delivery == "available")
+
+
+def test_hook_and_standalone_reuse_native_occurrence_qualification(tmp_path):
+    repo = tmp_path / "repo"
+    _head, invocation, _binding = _create_split_precommit_repo(
+        repo, source_text="VALUE = 1 \n", expect_failure=True
+    )
+    invocation.with_suffix(".receipt").unlink()
+    whitespace_path = invocation.with_suffix(".execution-check-whitespace")
+    forwarding_path = invocation.with_suffix(".execution-check-forwarding")
+    failed = json.loads(whitespace_path.read_bytes())
+    passed = json.loads(forwarding_path.read_bytes())
+    assert failed["report"]["exit_code"] != 0
+    good = passed["report"]
+    cases = (
+        (whitespace_path, failed, failed["report"], True),
+        (forwarding_path, passed, good, True),
+        (
+            forwarding_path,
+            passed,
+            {**good, "status": "not_executed", "exit_code": 3},
+            False,
+        ),
+        (
+            forwarding_path,
+            passed,
+            {
+                **good,
+                "checks": [{**c, "plan_authorized": False} for c in good["checks"]],
+            },
+            False,
+        ),
+    )
+    for path, envelope, original, expected in cases:
+        path.write_bytes(
+            hooks.canonical_event_bytes(
+                {
+                    **envelope,
+                    "report": original,
+                    "report_digest": hooks._digest_bytes(
+                        hooks.canonical_event_bytes(original)
+                    ),
+                }
+            )
+        )
+        report_file = tmp_path / "report.json"
+        report_file.write_bytes(hooks.canonical_event_bytes(original))
+        report = verify_report.build_verify_report(
+            hook_invocation=invocation, execution_reports=[report_file]
+        )
+        item = next(
+            ex
+            for ex in report["sources"][0]["executions"]
+            if ex["artifact"] == path.name
+        )
+        assert item["execution_binding_status"] == "verified"
+        assert (item["execution_occurrence_status"] == "observed") is expected
+        assert report["sources"][1]["verifiable_execution_proven"] is expected
+        assert (
+            item["report_contract_rejections"]
+            == report["sources"][1]["report_contract_rejections"]
+        )
+        assert bool(report["correlation"]["execution_groups"]) is expected
+    # The unchanged failed sibling has its own observed result throughout.
+    assert (
+        report["sources"][0]["executions"][-1]["execution_occurrence_status"]
+        == "observed"
+    )
+
+
+def _write_node_history_sample(
+    directory, *, nodes, selected=None, phase_duration=1.0, delivery="limited"
+):
+    directory.mkdir()
+    path = directory / "pytest-reportlog.jsonl"
+    observed = [{"$report_type": "SessionStart"}]
+    for number, node in enumerate(nodes):
+        for phase in ("setup", "call", "teardown"):
+            observed.append(
+                {
+                    "$report_type": "TestReport",
+                    "nodeid": node,
+                    "when": phase,
+                    "outcome": "passed",
+                    "duration": phase_duration if number == 0 else phase_duration + 1,
+                }
+            )
+    observed.append({"$report_type": "SessionFinish", "exitstatus": 0})
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in observed), encoding="utf-8"
+    )
+    selected = nodes if selected is None else selected
+    observations = {
+        "kind": "engineering-ci-pytest-invocation",
+        "schema_version": 1,
+        "phase": "delivery_failed" if delivery == "failed" else "finished",
+        "invocation_id": directory.name,
+        "report_log": str(path),
+        "rootpath": str(directory.parent),
+        "exitstatus": 0,
+        "session_finished": True,
+        "report_sealed": delivery != "failed",
+        "pytest_version": "9.0.3",
+        "python_version": "3.14.8",
+        "platform": "win32",
+        "plugin_versions": {"pytest-reportlog": "1.0"},
+        "argv": ["tests/test_example.py"],
+        "selection": {
+            "mode": "serial",
+            "selected_node_ids": selected,
+            "complete": True,
+        },
+        "collection": {"complete": True, "errors": []},
+        "execution": {
+            "complete": True,
+            "started_node_ids": selected,
+            "completed_node_ids": selected,
+        },
+        "report_delivery": {
+            "status": delivery,
+            "content_completeness": "unverified",
+            "artifacts": {"report_log": {"attribution": "colocated_invocation_dir"}},
+        },
+        "native_exit_observation": {"stage_exitstatus": 0, "outer_process_exit": None},
+    }
+    (directory / "metadata.json").write_text(json.dumps(observations), encoding="utf-8")
+    return observations
+
+
+def test_report_query_filters_outside_top25_and_compares_only_supported_history(
+    tmp_path, capsys
+):
+    nodes = [f"tests/test_example.py::test_{i}" for i in range(30)]
+    baseline, later, different, wrong, repeated, failed = (
+        tmp_path / name
+        for name in ("baseline", "later", "different", "wrong", "repeated", "failed")
+    )
+    _write_node_history_sample(baseline, nodes=nodes)
+    _write_node_history_sample(later, nodes=nodes, phase_duration=1.5)
+    other_nodes = [*nodes[1:], "tests/test_example.py::test_other"]
+    _write_node_history_sample(different, nodes=other_nodes)
+    _write_node_history_sample(wrong, nodes=other_nodes, selected=nodes)
+    _write_node_history_sample(repeated, nodes=[nodes[0], *nodes])
+    failed_meta = _write_node_history_sample(failed, nodes=nodes, delivery="failed")
+    (failed / "summary.json").write_text(
+        json.dumps({**failed_meta, "phase": "finished", "report_sealed": True}),
+        encoding="utf-8",
+    )
+
+    args = ["verify", "report"]
+    for directory in (baseline, later, different, wrong, repeated, failed):
+        args += ["--pytest-invocation", str(directory)]
+    args += ["--test-node", nodes[0], "--test-phase", "call", "--compare-tests"]
+    assert main(args) == 0
+    report = json.loads(capsys.readouterr().out)
+    logs = [s for s in report["sources"] if s["source_type"] == "pytest_reportlog"]
+    assert nodes[0] not in {r["nodeid"] for r in logs[0]["slowest_phases"]}
+    assert logs[0]["node_binding"]["status"] == "matched"
+    assert logs[0]["report_completeness"] == "unverified_collection"
+    assert logs[3]["node_binding"]["status"] == "mismatch"
+    samples = report["test_query"]["samples"]
+    assert len(samples[0]["records"]) == 1
+    assert samples[4]["aggregates"][0]["observed_records"] == 2
+    assert [r["instance_ambiguous"] for r in samples[4]["records"]] == [True, True]
+    comparisons = report["test_query"]["comparisons"]
+    assert comparisons[0]["records"][0]["delta_seconds"] == 0.5
+    assert comparisons[1]["reason"] == "pytest_selection_or_execution_scope_differs"
+    assert all(row["status"] == "incomparable" for row in comparisons[2:])
+    failed_entry = next(
+        s for s in report["sources"] if s.get("invocation_id") == "failed"
+    )
+    assert failed_entry["producer_record"] == "metadata.json"
+    assert failed_entry["report_sealed"] is False
+    assert failed_entry["report_delivery"]["status"] == "failed"
+    assert failed_entry["native_exit_observation"]["outer_process_exit"] is None
+    all_records = verify_report.build_verify_report(
+        pytest_invocations=[baseline], test_records=True
+    )
+    assert len(all_records["test_query"]["samples"][0]["records"]) == 90
+
+
+def test_malformed_phase_and_lineage_do_not_hide_other_sources(tmp_path, capsys):
+    invalid_log = tmp_path / "test-reportlog.jsonl"
+    invalid_log.write_text(
+        json.dumps(
+            {
+                "$report_type": "TestReport",
+                "nodeid": "test_demo.py::test_one",
+                "when": [],
+                "outcome": "passed",
+                "duration": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    invalid_trace = tmp_path / "trace.json"
+    invalid_trace.write_text(
+        json.dumps(
+            {
+                "correlation": {"status": "bound", "lineage_span_ids": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase classname="test_ok" name="test_one" time="0.1"/></testsuite>',
+        encoding="utf-8",
+    )
+    assert (
+        main(
+            [
+                "verify",
+                "report",
+                "--pytest-reportlog",
+                str(invalid_log),
+                "--dagger-telemetry",
+                str(invalid_trace),
+                "--junit-xml",
+                str(junit),
+                "--test-records",
+            ]
+        )
+        == 2
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["sources"][0]["counts"]["passed"] == 1
+    assert report["sources"][1]["malformed_line_count"] == 1
+    assert report["sources"][2]["lineage_status"] == "invalid"
