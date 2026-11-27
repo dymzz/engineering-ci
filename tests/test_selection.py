@@ -3648,7 +3648,7 @@ def test_member_kind_distinguishes_refused_symlink_from_missing(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable on this platform")
     member = selection._worktree_member(root)
-    assert member("tests/checks.py") == "refused"
+    assert member("tests/checks.py")[0] == "refused"
     assert member("tests/missing.py") == "missing"
     binding = selection._target_binding("tests/checks.py", member)
     assert binding["kind"] == "refused"
@@ -3685,7 +3685,7 @@ def test_member_facts_refuse_escaping_symlink_and_keep_internal_links(tmp_path):
 
     from engineering_ci import git_source
 
-    with git_source.materialized_tree(root, tree) as (checkout, _env):
+    with git_source.raw_checkout(root, tree) as (checkout, _env, _fmt):
         member = selection._worktree_member(checkout)
         # A relative ../ link binds the file it resolves to.
         assert selection._binding_record(

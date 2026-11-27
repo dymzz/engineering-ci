@@ -2797,9 +2797,10 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
 
         if tree_in_odb:
             try:
-                with git_source.materialized_tree(root, exec_tree) as (
+                with git_source.raw_checkout(root, exec_tree) as (
                     checkout,
                     _env,
+                    _fmt,
                 ):
                     base_prereqs = _activated(_worktree_member(checkout))
             except (git_source.GitSourceError, OSError) as error:
@@ -3646,7 +3647,7 @@ def _ref_source_snapshot(
         from engineering_ci import git_source
 
         try:
-            with git_source.materialized_tree(root, tree) as (checkout, _env):
+            with git_source.raw_checkout(root, tree) as (checkout, _env, _fmt):
                 member = _worktree_member(checkout)
                 target_bindings = [
                     _binding_record(
