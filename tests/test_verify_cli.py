@@ -995,3 +995,54 @@ def test_verify_report_projects_native_exit_source_and_started(tmp_path):
         assert src["outer_exit_code"] == status_payload["outer_exit_code"], label
         assert src.get("signal") == status_payload["signal"], label
         assert src.get("error") == status_payload["error"], label
+
+
+def test_verify_records_explicit_native_exit_fields_and_non_emission_child_refs(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"parallel":true,"jobs":[{"name":"lint","run":"dagger check --check=lint"}]}}\n'
+        ),
+    )
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
+    )
+
+    def popen_ok(cmd, *, stdout, stderr):
+        stdout.write(
+            b"summary: (done in 0.10 seconds)\n\xe2\x9c\x93 lint (0.10 seconds)\n"
+        )
+        return 0
+
+    monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_ok))
+    out = tmp_path / "native-refs"
+    assert main(["verify", "--out", str(out)]) == 0
+    (inv_dir,) = [p for p in out.iterdir() if p.is_dir()]
+    timing = json.loads((inv_dir / "verify-timing.json").read_text(encoding="utf-8"))
+    assert timing["native_started"] is True
+    assert timing["native_exit_source"] == "natural_exit"
+    assert timing["outer_exit_code"] == 0
+    assert timing["declared_verify_jobs"] == ["lint"]
+    assert timing["child_references"]["status"] == "none_emitted_by_native_dagger_check"
+    assert (
+        timing["child_references"]["reason"]
+        == "lefthook_verify_invokes_raw_dagger_check_without_bundle_export"
+    )
+    assert timing["child_references"]["references"] == []
+
+    rep = verify_report.build_verify_report(verify_dir=inv_dir)
+    vsrc = rep["sources"][0]
+    assert vsrc["native_started"] is True
+    assert vsrc["native_exit_source"] == "natural_exit"
+    assert vsrc["outer_exit_code"] == 0
+    assert vsrc["timing_receipt_present"] is True
+    assert vsrc["status_receipt_present"] is False
+    assert vsrc["child_references"]["status"] == "none_emitted_by_native_dagger_check"

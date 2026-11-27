@@ -1268,16 +1268,25 @@ def test_index_lock_fallback_closure_and_fail_closed_cases(repo, tmp_path, monke
         assert hook_checks.prepare(repo, binding)["exit_code"] == 0
         assert hook_checks.run_checks(repo, binding)["exit_code"] == 0
         assert hook_checks.reconcile(repo, binding)["exit_code"] == 0
-        # Mutating Index under index.lock must still fail verification.
-        (repo / "extra.txt").write_text("mutated\n", encoding="utf-8")
-        git_env = {**os.environ, "GIT_INDEX_FILE": str(tmp_path / "other.idx")}
-        subprocess.run(["git", "read-tree", "HEAD"], cwd=repo, env=git_env, check=True)
-        assert (
-            hooks._active_index_matches(
-                repo, (repo / ".git" / "index").resolve(), event["index"]
+        # Mutating active Index under index.lock must still fail verification.
+        active_index = (repo / ".git" / "index").resolve()
+        orig_index_bytes = active_index.read_bytes()
+        extra_file = repo / "extra.txt"
+        try:
+            extra_file.write_text("mutated\n", encoding="utf-8")
+            mutated_idx = tmp_path / "mutated.idx"
+            mutated_idx.write_bytes(orig_index_bytes)
+            git_env = {**os.environ, "GIT_INDEX_FILE": str(mutated_idx)}
+            subprocess.run(
+                ["git", "add", "extra.txt"], cwd=repo, env=git_env, check=True
             )
-            is True
-        )
+            active_index.write_bytes(mutated_idx.read_bytes())
+            assert (
+                hooks._active_index_matches(repo, active_index, event["index"]) is False
+            )
+        finally:
+            active_index.write_bytes(orig_index_bytes)
+            extra_file.unlink(missing_ok=True)
     finally:
         lock_file.unlink(missing_ok=True)
 

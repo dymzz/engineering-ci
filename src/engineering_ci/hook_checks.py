@@ -470,22 +470,49 @@ def run_checks(root, binding, *, job_ref=_JOB_REF):
         suffix = _index_execution_suffix(job_ref)
         if prepared["plan"] is None:
             report = hooks.check_pre_commit(root, invocation_ref=binding.invocation_ref)
-        else:
-            report = _invoke_worker(
-                root,
-                binding,
-                "execute",
-                {
-                    **prepared,
-                    "dagger_bundle": str(_dagger_bundle(binding, suffix)),
-                    "job_ref": job_ref,
-                    "check_names": jobs[job_ref],
-                },
+            _record_execution(binding, prepared, report, suffix=suffix)
+            timing["extra"].update(
+                plan_ref=prepared["plan_ref"], exit_code=report["exit_code"]
             )
+            return report
+        head = _index_source(root, binding)
+        report = _source_worker(
+            root,
+            binding.event["index"]["tree"],
+            head,
+            "execute",
+            {
+                **prepared,
+                "dagger_bundle": str(_dagger_bundle(binding, suffix)),
+                "job_ref": job_ref,
+                "check_names": jobs[job_ref],
+            },
+        )
+        # Record the actually observed check execution before verifying live Source
+        # immutability so a late Index mutation cannot erase execution facts.
         _record_execution(binding, prepared, report, suffix=suffix)
         timing["extra"].update(
             plan_ref=prepared["plan_ref"], exit_code=report["exit_code"]
         )
+        try:
+            _index_source(root, binding)
+        except hooks.HookEventError as exc:
+            timing["extra"]["source_rejection"] = exc.code
+            with suppress(OSError, hooks.HookEventError):
+                _artifact(
+                    binding,
+                    suffix.replace(".execution", ".source-rejection"),
+                    {
+                        **_identity(binding),
+                        "job_ref": job_ref,
+                        "reason": exc.code,
+                        "report_digest": hooks._digest_bytes(
+                            hooks.canonical_event_bytes(report)
+                        ),
+                        "exit_code": report["exit_code"],
+                    },
+                )
+            raise
         return report
 
 
@@ -879,6 +906,944 @@ def verify_push_receipt_binding(
     for extra_index in reports_by_index:
         if extra_index < 0 or extra_index >= len(plans):
             raise hooks.HookEventError("hook_final_report_mismatch")
+
+
+def _read_bounded_hook_json(path, *, limit):
+    """Read and parse one hook artifact strictly within ``limit`` bytes."""
+    if path.is_symlink():
+        return None, "symlink_rejected"
+    if not path.is_file():
+        return None, "missing"
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(limit + 1)
+    except OSError:
+        return None, "unreadable"
+    if len(raw) > limit:
+        return None, "oversized"
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, "invalid"
+    if not isinstance(parsed, dict):
+        return None, "invalid"
+    return parsed, "loaded"
+
+
+def _report_ref_canonical(report_ref):
+    if isinstance(report_ref, dict):
+        try:
+            normalized = reconciliation._report_ref(report_ref, "invalid_report_ref")
+            return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+        except (reconciliation.ReconciliationError, TypeError, ValueError):
+            return json.dumps(report_ref, sort_keys=True, separators=(",", ":"))
+    if isinstance(report_ref, str) and report_ref.strip():
+        return report_ref.strip()
+    return None
+
+
+def _scan_receipt_report_refs(obj, out_refs):
+    direct_rref = _report_ref_canonical(obj.get("report_ref"))
+    if direct_rref:
+        out_refs.append(direct_rref)
+    for seq_key in ("entries", "results", "references"):
+        seq = obj.get(seq_key)
+        if not isinstance(seq, list):
+            continue
+        for item in seq:
+            if not isinstance(item, dict):
+                continue
+            rr = _report_ref_canonical(item.get("report_ref"))
+            if rr:
+                out_refs.append(rr)
+            for sub_key in ("evidence", "job_instances", "rejected_observations"):
+                sub = item.get(sub_key)
+                if not isinstance(sub, list):
+                    continue
+                for sub_item in sub:
+                    if isinstance(sub_item, dict):
+                        srr = _report_ref_canonical(sub_item.get("report_ref"))
+                        if srr:
+                            out_refs.append(srr)
+    sub_receipts = obj.get("receipts")
+    if isinstance(sub_receipts, list):
+        for sub_rec in sub_receipts:
+            if isinstance(sub_rec, dict):
+                _scan_receipt_report_refs(sub_rec, out_refs)
+
+
+def inspect_invocation_offline(binding, *, max_bytes=16 * 1024 * 1024):
+    """Pure read-only owner inspection of Hook Plan, Activation, Executions, Receipt, and Timings.
+
+    Separates offline artifact/identity/binding verification from live Git
+    Source checks (``_index_source`` / ``_planned``). Never spawns subprocesses.
+    """
+    invocations_dir = binding.invocation_path.parent
+    stem = binding.invocation_path.stem
+    event = binding.event
+    identity = _identity(binding)
+    expected_run = identity["run_ref"]
+    expected_att = identity["attempt_ref"]
+    conflicts = []
+    consumed_files = []
+
+    def _load_sidecar(sidecar_path):
+        if (
+            sidecar_path.is_symlink()
+            or sidecar_path.resolve().parent != invocations_dir
+        ):
+            conflicts.append(
+                {"reason": "hook_sidecar_outside_store", "artifact": sidecar_path.name}
+            )
+            return None
+        payload, load_status = _read_bounded_hook_json(sidecar_path, limit=max_bytes)
+        consumed_files.append(str(sidecar_path))
+        if load_status != "loaded" or payload is None:
+            conflicts.append(
+                {
+                    "reason": "hook_sidecar_invalid",
+                    "artifact": sidecar_path.name,
+                    "detail": load_status,
+                }
+            )
+            return None
+        for key in ("invocation_ref", "event_payload_ref"):
+            if key in payload and payload[key] != identity[key]:
+                conflicts.append(
+                    {
+                        "reason": f"hook_sidecar_{key}_mismatch",
+                        "artifact": sidecar_path.name,
+                        "expected": identity[key],
+                        "observed": payload[key],
+                    }
+                )
+        return payload
+
+    plan_ref = None
+    plan_data_obj = None
+    plan_payload_obj = None
+    has_plan_key = False
+    plan_path = invocations_dir / f"{stem}.plan"
+    if plan_path.exists():
+        plan_data = _load_sidecar(plan_path)
+        plan_data_obj = plan_data
+        if plan_data is not None:
+            raw_pr = plan_data.get("plan_ref")
+            plan_ref = (
+                raw_pr.strip() if isinstance(raw_pr, str) and raw_pr.strip() else None
+            )
+            plan_payload_obj = plan_data.get("plan")
+            has_plan_key = "plan" in plan_data or plan_payload_obj is not None
+            if has_plan_key:
+                expected_plan_ref = hooks._digest_bytes(
+                    hooks.canonical_event_bytes(plan_payload_obj)
+                )
+                if plan_ref != expected_plan_ref:
+                    conflicts.append(
+                        {
+                            "reason": "hook_plan_digest_mismatch",
+                            "expected": expected_plan_ref,
+                            "observed": plan_ref,
+                        }
+                    )
+    plan_scope = (
+        "push_multi_ref_aggregate"
+        if isinstance(plan_payload_obj, list)
+        else ("single_plan" if isinstance(plan_payload_obj, dict) else "none")
+    )
+
+    push_refs = []
+    push_source_path = invocations_dir / f"{stem}.push-source"
+    if push_source_path.exists():
+        ps = _load_sidecar(push_source_path)
+        if ps is not None and isinstance(ps.get("references"), list):
+            push_refs = list(ps["references"])
+
+    expected_jobs_map = None
+    expected_exec_to_remote = {}
+    expected_unit_artifacts = []
+    if binding.hook == "pre-commit" and isinstance(plan_data_obj, dict):
+        expected_jobs_map = _index_jobs(plan_data_obj)
+        for job_key in sorted(expected_jobs_map):
+            expected_unit_artifacts.append(f"{stem}{_index_execution_suffix(job_key)}")
+    elif binding.hook == "pre-push" and isinstance(plan_payload_obj, list):
+        for idx, p_item in enumerate(plan_payload_obj):
+            ref_item = push_refs[idx] if idx < len(push_refs) else None
+            rref = None
+            raction = None
+            if isinstance(ref_item, dict):
+                raw_rr = ref_item.get("remote_ref")
+                if isinstance(raw_rr, str) and raw_rr.strip():
+                    rref = raw_rr.strip()
+                raction = ref_item.get("ref_action")
+            if rref is None and isinstance(p_item, dict):
+                pg = p_item.get("git")
+                if isinstance(pg, dict) and isinstance(pg.get("remote_ref"), str):
+                    rref = pg["remote_ref"].strip() or None
+                if raction is None and isinstance(pg, dict):
+                    raction = pg.get("ref_action")
+            needs_exec = (
+                raction != "delete"
+                and isinstance(p_item, dict)
+                and isinstance(p_item.get("expected_checks"), dict)
+                and _push_needs_execution(p_item)
+            )
+            art_name = f"{stem}.execution-{idx}"
+            if rref is not None:
+                expected_exec_to_remote[art_name] = rref
+            if needs_exec:
+                expected_unit_artifacts.append(art_name)
+
+    executions = []
+    raw_reports_by_artifact = {}
+    seen_exec_paths = set()
+    activation_cache = {}
+    activation_owners = {}
+    is_split_commit = bool(expected_jobs_map and set(expected_jobs_map) != {_JOB_REF})
+
+    def _expected_activation_name(exec_name):
+        prefix = f"{stem}.execution-"
+        if exec_name.startswith(prefix):
+            suffix_part = exec_name[len(prefix) :]
+            if suffix_part.startswith("check-"):
+                return f"{stem}.activation-{suffix_part}"
+        return f"{stem}.activation"
+
+    def _verify_activation(exec_name):
+        act_name = _expected_activation_name(exec_name)
+        if is_split_commit and act_name == f"{stem}.activation":
+            conflicts.append(
+                {
+                    "reason": "hook_shared_activation_conflict",
+                    "artifact": exec_name,
+                    "expected_activation": act_name,
+                }
+            )
+            return False
+        if (
+            exec_name.startswith(f"{stem}.execution-check-")
+            and (invocations_dir / f"{stem}.activation").exists()
+        ):
+            conflicts.append(
+                {
+                    "reason": "hook_shared_activation_conflict",
+                    "artifact": f"{stem}.activation",
+                    "exec_artifact": exec_name,
+                }
+            )
+        prev_owner = activation_owners.get(act_name)
+        if prev_owner is not None and prev_owner != exec_name and is_split_commit:
+            conflicts.append(
+                {
+                    "reason": "hook_shared_activation_conflict",
+                    "artifact": act_name,
+                    "affected_artifacts": sorted({prev_owner, exec_name}),
+                }
+            )
+            return False
+        activation_owners.setdefault(act_name, exec_name)
+        if act_name in activation_cache:
+            return activation_cache[act_name]
+        act_path = invocations_dir / act_name
+        if not act_path.exists():
+            conflicts.append(
+                {
+                    "reason": "hook_execution_activation_missing",
+                    "artifact": exec_name,
+                    "expected_activation": act_name,
+                }
+            )
+            activation_cache[act_name] = False
+            return False
+        act_data = _load_sidecar(act_path)
+        if act_data is None:
+            activation_cache[act_name] = False
+            return False
+        ok = (
+            act_data.get("run_ref") == expected_run
+            and act_data.get("attempt_ref") == expected_att
+        )
+        if not ok:
+            conflicts.append(
+                {
+                    "reason": "hook_activation_identity_mismatch",
+                    "artifact": act_name,
+                    "exec_artifact": exec_name,
+                    "expected_run_ref": expected_run,
+                    "expected_attempt_ref": expected_att,
+                }
+            )
+        activation_cache[act_name] = ok
+        return ok
+
+    for pattern in (
+        f"{stem}.execution",
+        f"{stem}.execution-[0-9]*",
+        f"{stem}.execution-check-*",
+    ):
+        for exec_path in sorted(invocations_dir.glob(pattern)):
+            resolved_exec = exec_path.resolve()
+            if resolved_exec in seen_exec_paths:
+                continue
+            seen_exec_paths.add(resolved_exec)
+            exec_data = _load_sidecar(exec_path)
+            if exec_data is None:
+                continue
+            act_ok = _verify_activation(exec_path.name)
+            rej_path = invocations_dir / exec_path.name.replace(
+                ".execution", ".source-rejection", 1
+            )
+            source_rejection_reason = None
+            if rej_path.exists():
+                rej_data = _load_sidecar(rej_path)
+                if isinstance(rej_data, dict):
+                    raw_rej = rej_data.get("reason")
+                    source_rejection_reason = (
+                        raw_rej
+                        if isinstance(raw_rej, str) and raw_rej
+                        else "source_rejected"
+                    )
+                    conflicts.append(
+                        {
+                            "reason": "hook_source_rejected_after_execution",
+                            "artifact": exec_path.name,
+                            "detail": source_rejection_reason,
+                        }
+                    )
+            raw_epr = exec_data.get("plan_ref")
+            exec_plan_ref = (
+                raw_epr.strip()
+                if isinstance(raw_epr, str) and raw_epr.strip()
+                else None
+            )
+            if plan_ref is not None and exec_plan_ref != plan_ref:
+                conflicts.append(
+                    {
+                        "reason": "hook_execution_plan_ref_mismatch",
+                        "artifact": exec_path.name,
+                        "expected": plan_ref,
+                        "observed": exec_plan_ref,
+                    }
+                )
+            report = exec_data.get("report")
+            report_ref_val = None
+            report_digest_verified = False
+            run_ref = None
+            attempt_ref = None
+            execution_ref = None
+            bundle_dir = None
+            git_commit = None
+            source_tree_id = None
+            remote_ref = expected_exec_to_remote.get(exec_path.name)
+            if isinstance(report, dict):
+                raw_reports_by_artifact[exec_path.name] = report
+                actual_digest = hooks._digest_bytes(hooks.canonical_event_bytes(report))
+                raw_dd = exec_data.get("report_digest")
+                declared_digest = (
+                    raw_dd.strip()
+                    if isinstance(raw_dd, str) and raw_dd.strip()
+                    else None
+                )
+                if declared_digest == actual_digest:
+                    report_digest_verified = True
+                else:
+                    conflicts.append(
+                        {
+                            "reason": "hook_execution_report_digest_mismatch",
+                            "artifact": exec_path.name,
+                            "expected": declared_digest,
+                            "observed": actual_digest,
+                        }
+                    )
+                if report.get("kind") == execution.REPORT_KIND:
+                    try:
+                        _res, _rej, verified_ref = (
+                            reconciliation.verify_execution_report(report)
+                        )
+                        report_ref_val = _report_ref_canonical(verified_ref)
+                    except (
+                        reconciliation.ReconciliationError,
+                        TypeError,
+                        ValueError,
+                    ) as exc:
+                        report_digest_verified = False
+                        conflicts.append(
+                            {
+                                "reason": "hook_execution_report_invalid",
+                                "artifact": exec_path.name,
+                                "error": str(exc),
+                            }
+                        )
+                ident = report.get("execution_identity")
+                if isinstance(ident, dict):
+                    for ikey, dst in (
+                        ("run_ref", "run_ref"),
+                        ("attempt_ref", "attempt_ref"),
+                        ("execution_ref", "execution_ref"),
+                    ):
+                        iv = ident.get(ikey)
+                        norm_iv = (
+                            iv.strip() if isinstance(iv, str) and iv.strip() else None
+                        )
+                        if dst == "run_ref":
+                            run_ref = norm_iv
+                        elif dst == "attempt_ref":
+                            attempt_ref = norm_iv
+                        else:
+                            execution_ref = norm_iv
+                    if run_ref is not None and run_ref != expected_run:
+                        conflicts.append(
+                            {
+                                "reason": "hook_execution_run_ref_mismatch",
+                                "artifact": exec_path.name,
+                                "expected": expected_run,
+                                "observed": run_ref,
+                            }
+                        )
+                    if attempt_ref is not None and attempt_ref != expected_att:
+                        conflicts.append(
+                            {
+                                "reason": "hook_execution_attempt_ref_mismatch",
+                                "artifact": exec_path.name,
+                                "expected": expected_att,
+                                "observed": attempt_ref,
+                            }
+                        )
+                plan_git = (report.get("plan") or {}).get("git")
+                if isinstance(plan_git, dict):
+                    hc = plan_git.get("head_commit")
+                    git_commit = (
+                        hc.strip() if isinstance(hc, str) and hc.strip() else None
+                    )
+                    st = plan_git.get("source_tree_id")
+                    source_tree_id = (
+                        st.strip() if isinstance(st, str) and st.strip() else None
+                    )
+                    if remote_ref is None:
+                        rr = plan_git.get("remote_ref")
+                        remote_ref = (
+                            rr.strip() if isinstance(rr, str) and rr.strip() else None
+                        )
+                raw_dagger_dir = report.get("dagger_bundle")
+                if isinstance(raw_dagger_dir, str) and raw_dagger_dir.strip():
+                    with suppress(OSError):
+                        bundle_dir = Path(raw_dagger_dir.strip()).resolve().as_posix()
+            else:
+                conflicts.append(
+                    {
+                        "reason": "hook_execution_report_missing",
+                        "artifact": exec_path.name,
+                    }
+                )
+            executions.append(
+                {
+                    "artifact": exec_path.name,
+                    "scope": exec_path.suffix.lstrip("."),
+                    "plan_ref": exec_plan_ref,
+                    "plan_scope": plan_scope,
+                    "remote_ref": remote_ref,
+                    "run_ref": run_ref,
+                    "attempt_ref": attempt_ref,
+                    "execution_ref": execution_ref,
+                    "report_ref": report_ref_val,
+                    "report_digest_verified": bool(report_digest_verified and act_ok),
+                    "source_rejection": source_rejection_reason,
+                    "bundle_directory": bundle_dir,
+                    "git_commit": git_commit,
+                    "source_tree_id": source_tree_id,
+                    "exit_code": report.get("exit_code")
+                    if isinstance(report, dict)
+                    else None,
+                }
+            )
+
+    loaded_arts = {ex["artifact"] for ex in executions}
+    missing_expected_executions = [
+        art for art in expected_unit_artifacts if art not in loaded_arts
+    ]
+    receipt_path = invocations_dir / f"{stem}.receipt"
+    receipt_summary = None
+    if receipt_path.exists():
+        receipt_data = _load_sidecar(receipt_path)
+        if receipt_data is not None:
+            raw_rpr = receipt_data.get("plan_ref")
+            receipt_plan_ref = (
+                raw_rpr.strip()
+                if isinstance(raw_rpr, str) and raw_rpr.strip()
+                else None
+            )
+            if (
+                receipt_plan_ref is not None
+                and plan_ref is not None
+                and receipt_plan_ref != plan_ref
+            ):
+                conflicts.append(
+                    {
+                        "reason": "hook_receipt_plan_ref_mismatch",
+                        "expected": plan_ref,
+                        "observed": receipt_plan_ref,
+                    }
+                )
+            receipt_report_refs = []
+            validation_status = "valid"
+            native_receipt_status = None
+
+            def _scan_inv_refs(obj):
+                exp_inv = obj.get("expected_invocation_ref")
+                if (
+                    isinstance(exp_inv, str)
+                    and exp_inv.strip() != binding.invocation_ref
+                ):
+                    conflicts.append(
+                        {
+                            "reason": "hook_receipt_invocation_ref_mismatch",
+                            "expected": binding.invocation_ref,
+                            "observed": exp_inv.strip(),
+                        }
+                    )
+                for sr in obj.get("receipts") or ():
+                    if isinstance(sr, dict):
+                        _scan_inv_refs(sr)
+
+            def _validate_rec(rec_obj):
+                try:
+                    reconciliation.validate_receipt(rec_obj)
+                    return True
+                except reconciliation.ReconciliationError as exc:
+                    conflicts.append(
+                        {"reason": "hook_receipt_validation_failed", "error": str(exc)}
+                    )
+                    return False
+
+            is_fallback_exit_only = (
+                plan_payload_obj is None
+                and has_plan_key
+                and "kind" not in receipt_data
+                and "receipts" not in receipt_data
+                and "status" not in receipt_data
+                and "exit_code" in receipt_data
+            )
+            if is_fallback_exit_only:
+                validation_status = "fallback"
+                native_receipt_status = "fallback_exit_only"
+                if (
+                    receipt_data.get("run_ref") != expected_run
+                    or receipt_data.get("attempt_ref") != expected_att
+                ):
+                    conflicts.append(
+                        {
+                            "reason": "hook_receipt_fallback_identity_mismatch",
+                            "expected_run_ref": expected_run,
+                            "expected_attempt_ref": expected_att,
+                        }
+                    )
+                if not executions:
+                    conflicts.append({"reason": "hook_receipt_executions_missing"})
+                elif receipt_data.get("exit_code") != executions[0].get("exit_code"):
+                    conflicts.append(
+                        {
+                            "reason": "hook_receipt_fallback_exit_mismatch",
+                            "expected": executions[0].get("exit_code"),
+                            "observed": receipt_data.get("exit_code"),
+                        }
+                    )
+            elif "receipts" in receipt_data:
+                sub_receipts = receipt_data.get("receipts")
+                if not isinstance(sub_receipts, list):
+                    validation_status = "invalid"
+                    conflicts.append({"reason": "hook_receipt_wrapper_invalid"})
+                else:
+                    if isinstance(plan_payload_obj, list) and len(sub_receipts) != len(
+                        plan_payload_obj
+                    ):
+                        validation_status = "invalid"
+                        conflicts.append(
+                            {
+                                "reason": "hook_receipt_ref_count_mismatch",
+                                "expected": len(plan_payload_obj),
+                                "observed": len(sub_receipts),
+                            }
+                        )
+                    sub_statuses = []
+                    for sub_rec in sub_receipts:
+                        if not _validate_rec(sub_rec):
+                            validation_status = "invalid"
+                        if isinstance(sub_rec, dict) and isinstance(
+                            sub_rec.get("status"), str
+                        ):
+                            sub_statuses.append(sub_rec["status"])
+                    if not sub_receipts and binding.hook == "pre-push":
+                        native_receipt_status = (
+                            "matched" if not push_refs else "partial"
+                        )
+                    elif sub_statuses and all(s == "matched" for s in sub_statuses):
+                        native_receipt_status = "matched"
+                    elif sub_statuses and len(set(sub_statuses)) == 1:
+                        native_receipt_status = sub_statuses[0]
+                    else:
+                        native_receipt_status = "partial"
+            else:
+                if not _validate_rec(receipt_data):
+                    validation_status = "invalid"
+                native_receipt_status = (
+                    str(receipt_data.get("status"))
+                    if receipt_data.get("status") is not None
+                    else None
+                )
+
+            _scan_inv_refs(receipt_data)
+            _scan_receipt_report_refs(receipt_data, receipt_report_refs)
+            valid_exec_report_refs = {
+                ex["report_ref"]
+                for ex in executions
+                if ex.get("report_ref") and ex.get("report_digest_verified")
+            }
+            job_to_exec_art = {}
+            for ex in executions:
+                jkey = (
+                    _JOB_REF
+                    if ex["scope"] == "execution"
+                    else ex["scope"].removeprefix("execution-")
+                )
+                job_to_exec_art[jkey] = ex["artifact"]
+
+            ref_owner_artifacts = {}
+
+            def _collect_owners(obj, *, push_idx=None):
+                top_job = (
+                    obj.get("job_ref").strip()
+                    if isinstance(obj.get("job_ref"), str) and obj["job_ref"].strip()
+                    else None
+                )
+                top_rr = _report_ref_canonical(obj.get("report_ref"))
+                if top_rr:
+                    if push_idx is not None:
+                        ref_owner_artifacts.setdefault(top_rr, []).append(
+                            f"{stem}.execution-{push_idx}"
+                        )
+                    elif top_job and top_job in job_to_exec_art:
+                        ref_owner_artifacts.setdefault(top_rr, []).append(
+                            job_to_exec_art[top_job]
+                        )
+                for seq_key in ("entries", "results", "references"):
+                    for item in obj.get(seq_key) or ():
+                        if not isinstance(item, dict):
+                            continue
+                        raw_ijob = item.get("job_ref")
+                        ijob = (
+                            raw_ijob.strip()
+                            if isinstance(raw_ijob, str) and raw_ijob.strip()
+                            else top_job
+                        )
+                        irr = _report_ref_canonical(item.get("report_ref"))
+                        if irr:
+                            if push_idx is not None:
+                                ref_owner_artifacts.setdefault(irr, []).append(
+                                    f"{stem}.execution-{push_idx}"
+                                )
+                            elif ijob and ijob in job_to_exec_art:
+                                ref_owner_artifacts.setdefault(irr, []).append(
+                                    job_to_exec_art[ijob]
+                                )
+                        for sub_key in (
+                            "evidence",
+                            "job_instances",
+                            "rejected_observations",
+                            "observed_results",
+                        ):
+                            for sub_item in item.get(sub_key) or ():
+                                if not isinstance(sub_item, dict):
+                                    continue
+                                raw_sj = sub_item.get("job_ref")
+                                sjob = (
+                                    raw_sj.strip()
+                                    if isinstance(raw_sj, str) and raw_sj.strip()
+                                    else ijob
+                                )
+                                srr = _report_ref_canonical(sub_item.get("report_ref"))
+                                if srr:
+                                    if push_idx is not None:
+                                        ref_owner_artifacts.setdefault(srr, []).append(
+                                            f"{stem}.execution-{push_idx}"
+                                        )
+                                    elif sjob and sjob in job_to_exec_art:
+                                        ref_owner_artifacts.setdefault(srr, []).append(
+                                            job_to_exec_art[sjob]
+                                        )
+                for idx_r, sub_rec in enumerate(obj.get("receipts") or ()):
+                    if isinstance(sub_rec, dict):
+                        _collect_owners(sub_rec, push_idx=idx_r)
+
+            _collect_owners(receipt_data)
+            missing_exec_for_receipt = False
+            for rr in receipt_report_refs:
+                if rr not in valid_exec_report_refs:
+                    missing_exec_for_receipt = True
+                    owners = sorted(set(ref_owner_artifacts.get(rr, ())))
+                    conflict_rec = {
+                        "reason": "hook_receipt_report_ref_not_in_executions",
+                        "observed": rr,
+                    }
+                    if owners:
+                        conflict_rec["affected_artifacts"] = owners
+                    conflicts.append(conflict_rec)
+
+            if not is_fallback_exit_only and validation_status == "valid":
+                if plan_data_obj is None or not has_plan_key:
+                    conflicts.append({"reason": "hook_receipt_plan_missing"})
+                elif "receipts" in receipt_data:
+                    sub_receipts = receipt_data.get("receipts") or []
+                    reports_by_index = {}
+                    exec_prefix = f"{stem}.execution-"
+                    for ex in executions:
+                        art = ex["artifact"]
+                        if art.startswith(exec_prefix):
+                            suffix_idx = art[len(exec_prefix) :]
+                            if suffix_idx.isdigit():
+                                rep_obj = raw_reports_by_artifact.get(art)
+                                if rep_obj is not None:
+                                    reports_by_index[int(suffix_idx)] = rep_obj
+                            else:
+                                conflicts.append(
+                                    {
+                                        "reason": "hook_execution_unexpected_for_plan",
+                                        "artifact": art,
+                                    }
+                                )
+                        else:
+                            conflicts.append(
+                                {
+                                    "reason": "hook_execution_unexpected_for_plan",
+                                    "artifact": art,
+                                }
+                            )
+                    try:
+                        verify_push_receipt_binding(
+                            binding,
+                            plan_payload_obj,
+                            sub_receipts,
+                            reports_by_index,
+                            refs=push_refs or None,
+                        )
+                    except hooks.HookEventError as exc:
+                        if exc.code == "hook_report_missing":
+                            missing_exec_for_receipt = True
+                            conflicts.append(
+                                {
+                                    "reason": "hook_receipt_executions_missing",
+                                    "error": exc.code,
+                                }
+                            )
+                        else:
+                            conflicts.append(
+                                {
+                                    "reason": "hook_receipt_scope_or_report_mismatch",
+                                    "error": exc.code,
+                                }
+                            )
+                else:
+                    expected_jobs = set(expected_jobs_map or _index_jobs(plan_data_obj))
+                    reports_by_job = {job: None for job in expected_jobs}
+                    for ex in executions:
+                        job_key = (
+                            _JOB_REF
+                            if ex["scope"] == "execution"
+                            else ex["scope"].removeprefix("execution-")
+                        )
+                        if job_key not in expected_jobs:
+                            conflicts.append(
+                                {
+                                    "reason": "hook_execution_unexpected_for_plan",
+                                    "artifact": ex["artifact"],
+                                    "job_ref": job_key,
+                                }
+                            )
+                        reports_by_job[job_key] = raw_reports_by_artifact.get(
+                            ex["artifact"]
+                        )
+                    try:
+                        verify_index_receipt_binding(
+                            binding, plan_payload_obj, receipt_data, reports_by_job
+                        )
+                    except hooks.HookEventError as exc:
+                        if exc.code == "hook_report_missing":
+                            missing_exec_for_receipt = True
+                            conflicts.append(
+                                {
+                                    "reason": "hook_receipt_executions_missing",
+                                    "error": exc.code,
+                                }
+                            )
+                        else:
+                            conflict_item = {
+                                "reason": "hook_receipt_scope_or_report_mismatch",
+                                "error": exc.code,
+                            }
+                            if exc.code == "hook_final_report_mismatch":
+                                failing_arts = []
+                                for j_name, j_rep in reports_by_job.items():
+                                    j_art = job_to_exec_art.get(j_name)
+                                    if not j_art:
+                                        continue
+                                    j_ex = next(
+                                        (
+                                            e
+                                            for e in executions
+                                            if e["artifact"] == j_art
+                                        ),
+                                        None,
+                                    )
+                                    if j_ex and not j_ex.get("report_digest_verified"):
+                                        failing_arts.append(j_art)
+                                    elif isinstance(j_rep, dict):
+                                        try:
+                                            j_rref = _report_ref_canonical(
+                                                reconciliation.execution_report_ref(
+                                                    j_rep
+                                                )
+                                            )
+                                        except (
+                                            reconciliation.ReconciliationError,
+                                            TypeError,
+                                            ValueError,
+                                        ):
+                                            j_rref = None
+                                        if j_rref and j_rref not in receipt_report_refs:
+                                            failing_arts.append(j_art)
+                                if failing_arts:
+                                    conflict_item["affected_artifacts"] = sorted(
+                                        set(failing_arts)
+                                    )
+                            conflicts.append(conflict_item)
+
+            has_integrity_conflict = any(
+                c.get("reason", "").startswith(
+                    (
+                        "hook_execution_",
+                        "hook_activation_",
+                        "hook_shared_activation_",
+                        "hook_receipt_",
+                        "hook_plan_",
+                        "hook_sidecar_",
+                        "hook_source_",
+                    )
+                )
+                for c in conflicts
+            )
+            if missing_exec_for_receipt:
+                verifiable_evidence_status = "missing_executions"
+            elif validation_status == "invalid" or has_integrity_conflict:
+                verifiable_evidence_status = "mismatch_or_invalid"
+            elif native_receipt_status in ("matched", "fallback_exit_only"):
+                verifiable_evidence_status = "verified"
+            else:
+                verifiable_evidence_status = "partial_or_unverified"
+
+            receipt_summary = {
+                "status": native_receipt_status,
+                "native_status": native_receipt_status,
+                "validation_status": validation_status,
+                "verifiable_evidence_status": verifiable_evidence_status,
+                "receipt_ref": receipt_data.get("receipt_ref"),
+                "plan_ref": receipt_plan_ref,
+                "report_refs": sorted(set(receipt_report_refs)),
+                "exit_code": receipt_data.get("exit_code"),
+            }
+    if missing_expected_executions and executions:
+        conflicts.append(
+            {
+                "reason": "hook_expected_execution_missing",
+                "missing_artifacts": missing_expected_executions,
+                "affected_artifacts": missing_expected_executions,
+            }
+        )
+
+    stage_timings = []
+    for sidecar in sorted(invocations_dir.glob(f"{stem}.timing-*")):
+        stage_data = _load_sidecar(sidecar)
+        if stage_data is None:
+            continue
+        raw_spr = stage_data.get("plan_ref")
+        stage_plan_ref = (
+            raw_spr.strip() if isinstance(raw_spr, str) and raw_spr.strip() else None
+        )
+        if (
+            stage_plan_ref is not None
+            and plan_ref is not None
+            and stage_plan_ref != plan_ref
+        ):
+            conflicts.append(
+                {
+                    "reason": "hook_timing_plan_ref_mismatch",
+                    "artifact": sidecar.name,
+                    "expected": plan_ref,
+                    "observed": stage_plan_ref,
+                }
+            )
+        stage_timings.append(
+            {
+                "artifact": sidecar.name,
+                "hook": stage_data.get("hook") or stage_data.get("hook_name"),
+                "stage": stage_data.get("stage"),
+                "job_ref": stage_data.get("job_ref"),
+                "status": stage_data.get("status"),
+                "elapsed_seconds": stage_data.get("elapsed_seconds"),
+                "started_at_ns": stage_data.get("started_at_ns"),
+                "completed_at_ns": stage_data.get("completed_at_ns"),
+                "attempt_count": stage_data.get("attempt_count"),
+                "duplicate_attempts": stage_data.get("duplicate_attempts"),
+                "primary_record_policy": stage_data.get("primary_record_policy"),
+                "per_ref": stage_data.get("per_ref"),
+            }
+        )
+
+    git_commits = []
+    if binding.hook == "pre-commit":
+        hc = event.get("head_commit")
+        if isinstance(hc, str) and hc.strip():
+            git_commits.append(hc.strip())
+    elif binding.hook == "pre-push":
+        for ref_item in event.get("refs") or ():
+            if isinstance(ref_item, dict):
+                after = ref_item.get("after")
+                if (
+                    isinstance(after, str)
+                    and after.strip()
+                    and after.strip() not in git_commits
+                ):
+                    git_commits.append(after.strip())
+
+    source_tree_ids = []
+    if isinstance(plan_payload_obj, dict):
+        st = (plan_payload_obj.get("git") or {}).get("source_tree_id")
+        if isinstance(st, str) and st.strip():
+            source_tree_ids.append(st.strip())
+    elif isinstance(plan_payload_obj, list):
+        for p_item in plan_payload_obj:
+            if isinstance(p_item, dict):
+                st = (p_item.get("git") or {}).get("source_tree_id")
+                if (
+                    isinstance(st, str)
+                    and st.strip()
+                    and st.strip() not in source_tree_ids
+                ):
+                    source_tree_ids.append(st.strip())
+
+    return {
+        "plan_ref": plan_ref,
+        "plan_scope": plan_scope,
+        "expected_unit_count": max(len(expected_unit_artifacts), len(executions)),
+        "expected_execution_artifacts": expected_unit_artifacts,
+        "missing_expected_executions": missing_expected_executions,
+        "git_commits": git_commits,
+        "source_tree_ids": source_tree_ids,
+        "push_references": push_refs,
+        "executions": executions,
+        "receipt": receipt_summary,
+        "stage_timings": stage_timings,
+        "internal_conflicts": conflicts,
+        "consumed_files": consumed_files,
+    }
 
 
 def _run_push_plan(root, plan, source, prepared, job_ref, operation):

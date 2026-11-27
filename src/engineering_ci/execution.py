@@ -2527,10 +2527,8 @@ def _validate_producer_execution_claim(plan, edge, record, handoff):
     return p_exec, prereq_sha, closure_sha
 
 
-def verify_retained_artifact_record(
-    record, *, bundle_root, output_ref=None, producer_ref=None
-):
-    """Verify one #86 retained artifact record against files under ``produced/``."""
+def _validate_retained_record_metadata(record, *, output_ref=None, producer_ref=None):
+    """Validate common retention, output identity, digest, and bundle path metadata."""
     if not isinstance(record, dict):
         raise ExecutionError("producer_handoff_invalid")
     p_ref = producer_ref if producer_ref is not None else record.get("producer_ref")
@@ -2567,6 +2565,18 @@ def verify_retained_artifact_record(
     )
     if record.get("bundle_path") != expected_bundle_path:
         raise ExecutionError("producer_artifact_path_invalid")
+    return p_ref, o_ref, kind, rel, norm_rel, expected_sha, expected_bundle_path
+
+
+def verify_retained_artifact_record(
+    record, *, bundle_root, output_ref=None, producer_ref=None
+):
+    """Verify one #86 retained artifact record against files under ``produced/``."""
+    p_ref, o_ref, kind, rel, norm_rel, expected_sha, expected_bundle_path = (
+        _validate_retained_record_metadata(
+            record, output_ref=output_ref, producer_ref=producer_ref
+        )
+    )
 
     bundle_path = Path(bundle_root)
     if not bundle_path.exists():
@@ -2837,6 +2847,7 @@ def verify_producer_handoff_bundle(
 
     matched_records = []
     non_produced_edges = []
+    data_edge_keys = set()
     if isinstance(plan, dict):
         _validate_handoff_envelope(
             plan,
@@ -2847,6 +2858,13 @@ def verify_producer_handoff_bundle(
         for edge in (plan.get("dependency_contract") or {}).get("edges") or ():
             if not (isinstance(edge, dict) and edge.get("dependency_kind") == "data"):
                 continue
+            data_edge_keys.add(
+                _edge_retention_key(
+                    edge.get("producer_ref"),
+                    edge.get("consumer_ref"),
+                    edge.get("output_ref"),
+                )
+            )
             try:
                 rec = _match_handoff_record(edge, handoff)
             except ExecutionError as exc:
@@ -2866,6 +2884,7 @@ def verify_producer_handoff_bundle(
         raise ExecutionError("producer_handoff_invalid")
 
     verified = []
+    seen_artifact_keys = set()
     for rec in handoff.get("artifacts") or ():
         if not isinstance(rec, dict):
             raise ExecutionError("producer_handoff_invalid")
@@ -2878,6 +2897,12 @@ def verify_producer_handoff_bundle(
             or not isinstance(o_ref, dict)
         ):
             raise ExecutionError("producer_handoff_invalid")
+        rec_key = _edge_retention_key(p_ref, c_ref, o_ref)
+        if rec_key in seen_artifact_keys:
+            raise ExecutionError("producer_handoff_duplicate_artifact")
+        seen_artifact_keys.add(rec_key)
+        if isinstance(plan, dict) and rec_key not in data_edge_keys:
+            raise ExecutionError("producer_handoff_unexpected_artifact")
         edge = {"producer_ref": p_ref, "consumer_ref": c_ref, "output_ref": o_ref}
         _validate_producer_execution_claim(plan, edge, rec, handoff)
         retained = verify_retained_artifact_record(
@@ -3025,35 +3050,11 @@ def _verify_retained_bundle_artifact(
     p_exec, prereq_sha, closure_sha = _validate_producer_execution_claim(
         plan, edge, record, handoff
     )
-
-    retention = record.get("retention")
-    if not isinstance(retention, dict):
-        raise ExecutionError("producer_artifact_retention_invalid")
-    r_status = retention.get("status")
-    if r_status == "expired":
-        raise ExecutionError("producer_artifact_expired")
-    if r_status != "retained" or retention.get("valid") is False:
-        raise ExecutionError("producer_artifact_retention_invalid")
-
-    o_ref = edge["output_ref"]
-    kind = o_ref.get("kind")
-    rel = o_ref.get("path")
-    if record.get("kind") != kind:
-        raise ExecutionError("producer_artifact_type_mismatch")
-    if record.get("path") != rel:
-        raise ExecutionError("producer_handoff_output_ref_mismatch")
-
-    expected_sha = record.get("sha256")
-    edge_sha = o_ref.get("sha256")
-    if not isinstance(expected_sha, str) or not _is_hex64(expected_sha):
-        raise ExecutionError("producer_handoff_invalid")
-    if edge_sha is not None and expected_sha != edge_sha:
-        raise ExecutionError("producer_handoff_output_ref_mismatch")
-
-    norm_rel = _normalize_rel_artifact_path(rel)
-    expected_bundle_path = f"produced/{edge['producer_ref']['kind']}/{edge['producer_ref']['name']}/{norm_rel}"
-    if record.get("bundle_path") != expected_bundle_path:
-        raise ExecutionError("producer_artifact_path_invalid")
+    _, o_ref, kind, rel, norm_rel, expected_sha, expected_bundle_path = (
+        _validate_retained_record_metadata(
+            record, output_ref=edge["output_ref"], producer_ref=edge["producer_ref"]
+        )
+    )
 
     if authority is None:
         raise ExecutionError("producer_artifact_authority_unverified")

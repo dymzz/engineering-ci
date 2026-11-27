@@ -14,7 +14,15 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from engineering_ci import execution, hook_checks, hooks, plan_contract, reconciliation
+from engineering_ci import (
+    cicd_telemetry,
+    execution,
+    hook_checks,
+    hooks,
+    plan_contract,
+    pytest_contracts,
+    reconciliation,
+)
 
 MAX_OUTPUT_PARSE_BYTES = 8 * 1024 * 1024
 MAX_JSON_REPORT_BYTES = 16 * 1024 * 1024
@@ -173,20 +181,33 @@ def _make_node(
     precision_seconds: float | None = None,
     skip_reason: str | None = None,
     source: str | None = None,
+    identity_source: str | None = None,
 ) -> dict[str, Any]:
     cfg = cfg or {}
+    is_group = bool(cfg.get("is_group"))
+    if duration_seconds == "unknown":
+        duration_semantics = "unknown"
+    elif is_group:
+        duration_semantics = "cumulative_child_durations"
+    else:
+        duration_semantics = "job_result_duration"
     node: dict[str, Any] = {
         "name": name,
         "path": path,
         "status": status,
-        "kind": "group" if cfg.get("is_group") else "job",
+        "kind": "group" if is_group else "job",
         "parallel": cfg.get("parallel"),
         "duration_seconds": duration_seconds,
         "duration_raw": duration_raw,
         "duration_precision_seconds": precision_seconds,
+        "duration_semantics": duration_semantics,
         "skip_reason": skip_reason,
         "children": [],
     }
+    if is_group:
+        node["wall_clock_seconds"] = "unknown"
+    if identity_source is not None:
+        node["identity_source"] = identity_source
     if source is not None:
         node["source"] = source
     return node
@@ -209,7 +230,11 @@ def _find_or_create_path(
         prefix.append(part)
         is_last = idx == len(parts) - 1
         existing = next((item for item in siblings if item["name"] == part), None)
-        cfg = config_map.get(tuple(prefix), {})
+        tprefix = tuple(prefix)
+        cfg = config_map.get(tprefix, {})
+        id_src = (
+            "declared_config_name" if tprefix in config_map else "stream_display_label"
+        )
         if existing is None:
             existing = _make_node(
                 part,
@@ -218,10 +243,17 @@ def _find_or_create_path(
                 cfg=cfg if is_last else {**cfg, "is_group": True},
                 skip_reason=skip_reason if is_last else None,
                 source=source if is_last else None,
+                identity_source=id_src,
             )
             siblings.append(existing)
         if not is_last:
             existing["kind"] = "group"
+            existing["duration_semantics"] = (
+                "cumulative_child_durations"
+                if existing["duration_seconds"] != "unknown"
+                else "unknown"
+            )
+            existing["wall_clock_seconds"] = "unknown"
             if existing["parallel"] is None and "parallel" in cfg:
                 existing["parallel"] = cfg["parallel"]
         node = existing
@@ -256,9 +288,15 @@ def _parse_summary_block(
         if item_match:
             indent_len = len(item_match.group("indent"))
             icon = item_match.group("icon")
-            name = item_match.group("name").strip()
-            dur_raw = item_match.group("dur").strip()
-            dur_val, precision = _parse_seconds_label(dur_raw)
+            candidate_dur = item_match.group("dur").strip()
+            dur_val, precision = _parse_seconds_label(candidate_dur)
+            if dur_val != "unknown":
+                name = item_match.group("name").strip()
+                dur_raw = candidate_dur
+            else:
+                # Non-duration parenthesized suffix belongs to display label, not duration.
+                name = f"{item_match.group('name').strip()} ({candidate_dur})"
+                dur_raw = None
         else:
             no_dur_match = _SUMMARY_ITEM_NO_DUR_RE.match(line)
             if not no_dur_match:
@@ -280,7 +318,8 @@ def _parse_summary_block(
             stack.pop()
         parent = stack[-1][1] if stack else None
         path = [*parent["path"], name] if parent else [name]
-        cfg = config_map.get(tuple(path), {})
+        tpath = tuple(path)
+        cfg = config_map.get(tpath, {})
         node = _make_node(
             name,
             path,
@@ -289,11 +328,23 @@ def _parse_summary_block(
             duration_seconds=dur_val,
             duration_raw=dur_raw,
             precision_seconds=precision,
+            identity_source=(
+                "declared_config_name"
+                if tpath in config_map
+                else "summary_display_label"
+            ),
         )
         if parent is None:
             items.append(node)
         else:
             parent["kind"] = "group"
+            # Lefthook v2.2.2 Group.Duration sums child Result durations rather than measuring group wall clock.
+            parent["duration_semantics"] = (
+                "cumulative_child_durations"
+                if parent["duration_seconds"] != "unknown"
+                else "unknown"
+            )
+            parent["wall_clock_seconds"] = "unknown"
             if parent["parallel"] is None:
                 parent_cfg = config_map.get(tuple(parent["path"]), {})
                 parent["parallel"] = parent_cfg.get("parallel")
@@ -321,8 +372,11 @@ def _flatten_leaf_jobs(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "status": node["status"],
                 "duration_seconds": node["duration_seconds"],
                 "duration_precision_seconds": node["duration_precision_seconds"],
+                "duration_semantics": node.get("duration_semantics", "unknown"),
                 "skip_reason": node["skip_reason"],
             }
+            if "identity_source" in node:
+                entry["identity_source"] = node["identity_source"]
             if "source" in node:
                 entry["source"] = node["source"]
             leaves.append(entry)
@@ -339,6 +393,12 @@ def parse_lefthook_output(
     """Parse bounded Lefthook v2.2.2 output into diagnostic hierarchical job timings."""
     stdout_text, stdout_truncated, stdout_bytes = _read_bounded_text(stdout_path)
     stderr_text, stderr_truncated, stderr_bytes = _read_bounded_text(stderr_path)
+    stdout_bytes_parsed = (
+        stdout_bytes if not stdout_truncated else len(stdout_text.encode("utf-8"))
+    )
+    stderr_bytes_parsed = (
+        stderr_bytes if not stderr_truncated else len(stderr_text.encode("utf-8"))
+    )
     output_truncated = stdout_truncated or stderr_truncated
 
     clean_stdout = _ANSI_ESCAPE_RE.sub("", stdout_text)
@@ -461,8 +521,18 @@ def parse_lefthook_output(
         "total_duration_seconds": total_duration_seconds,
         "total_duration_raw": total_duration_raw,
         "total_duration_precision_seconds": total_precision,
+        "total_duration_semantics": (
+            "lefthook_reported_wall_seconds"
+            if summary_present and total_duration_seconds != "unknown"
+            else "unknown"
+        ),
         "output_truncated": output_truncated,
         "stream_bytes_observed": {"stdout": stdout_bytes, "stderr": stderr_bytes},
+        "bytes_parsed": {
+            "stdout": stdout_bytes_parsed,
+            "stderr": stderr_bytes_parsed,
+            "limit": MAX_OUTPUT_PARSE_BYTES,
+        },
         "counts": counts,
         "items": items,
         "jobs": flat_jobs,
@@ -573,19 +643,67 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
         return entry
     timing_path = verify_dir / "verify-timing.json"
     status_path = verify_dir / "verify-status.json"
-    timing = _load_bounded_json(timing_path) if timing_path.exists() else None
-    status = _load_bounded_json(status_path) if status_path.exists() else None
-    chosen = timing if timing and timing.get("status") == "loaded" else status
+    timing = (
+        _load_bounded_json(timing_path)
+        if (timing_path.exists() or timing_path.is_symlink())
+        else None
+    )
+    status = (
+        _load_bounded_json(status_path)
+        if (status_path.exists() or status_path.is_symlink())
+        else None
+    )
+    if timing is not None:
+        entry["consumed_files"].append(timing["path"])
+        if timing.get("status") != "loaded":
+            t_conflict: dict[str, Any] = {
+                "reason": "verify_timing_invalid",
+                "artifact": "verify-timing.json",
+                "detail": timing.get("status"),
+            }
+            if "error" in timing:
+                t_conflict["error"] = timing["error"]
+            entry["internal_conflicts"].append(t_conflict)
+    if status is not None:
+        entry["consumed_files"].append(status["path"])
+        if status.get("status") != "loaded":
+            s_conflict: dict[str, Any] = {
+                "reason": "verify_status_invalid",
+                "artifact": "verify-status.json",
+                "detail": status.get("status"),
+            }
+            if "error" in status:
+                s_conflict["error"] = status["error"]
+            entry["internal_conflicts"].append(s_conflict)
+    if timing is not None and status is not None:
+        status_state = (
+            status["payload"].get("status")
+            if status.get("status") == "loaded"
+            and isinstance(status.get("payload"), dict)
+            else status.get("status")
+        )
+        entry["internal_conflicts"].append(
+            {
+                "reason": "verify_timing_status_conflict",
+                "artifacts": ["verify-timing.json", "verify-status.json"],
+                "status_receipt_state": status_state,
+            }
+        )
+
+    chosen = (
+        timing
+        if timing is not None and timing.get("status") == "loaded"
+        else (
+            status if status is not None and status.get("status") == "loaded" else None
+        )
+    )
     if chosen is None:
         missing = timing or status or {"status": "missing", "path": str(timing_path)}
         entry["status"] = missing["status"]
         if "error" in missing:
             entry["error"] = missing["error"]
-        return entry
-    entry["consumed_files"].append(chosen["path"])
-    if chosen.get("status") != "loaded":
-        entry["status"] = chosen["status"]
-        entry["artifact"] = chosen["path"]
+        if missing is not timing and missing.get("path"):
+            entry["artifact"] = missing["path"]
         return entry
 
     payload = chosen["payload"]
@@ -655,6 +773,10 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
     if native_started_val is None and chosen is timing:
         native_started_val = True
 
+    child_references = payload.get("child_references")
+    if not isinstance(child_references, dict):
+        child_references = {"status": "not_recorded"}
+
     entry.update(
         {
             "status": (
@@ -683,6 +805,9 @@ def _load_verify_entry(verify_dir: Path) -> dict[str, Any]:
             "native_outputs_verification": verified_outputs,
             "missing_native_streams": missing_streams,
             "evidence_complete": outputs_complete,
+            "timing_receipt_present": timing is not None,
+            "status_receipt_present": status is not None,
+            "child_references": child_references,
             "lefthook_summary": payload.get("lefthook_summary"),
         }
     )
@@ -837,753 +962,13 @@ def _load_hook_entry(
     entry["consumed_files"].extend(
         [str(binding.invocation_path), str(binding.event_path)]
     )
-    stem = binding.invocation_path.stem
-    invocations_dir = binding.invocation_path.parent
-    event = binding.event
-    identity = {
-        "invocation_ref": binding.invocation_ref,
-        "event_payload_ref": binding.event_payload_ref,
-    }
-    expected_run = f"hook-run:{binding.invocation_ref}"
-    expected_att = f"hook-attempt:{binding.invocation_ref}"
-
-    def _load_sidecar(sidecar_path: Path) -> dict[str, Any] | None:
-        if (
-            sidecar_path.is_symlink()
-            or sidecar_path.resolve().parent != invocations_dir
-        ):
-            entry["internal_conflicts"].append(
-                {"reason": "hook_sidecar_outside_store", "artifact": sidecar_path.name}
-            )
-            return None
-        loaded = _load_bounded_json(sidecar_path)
-        entry["consumed_files"].append(str(sidecar_path))
-        if loaded.get("status") != "loaded":
-            entry["internal_conflicts"].append(
-                {
-                    "reason": "hook_sidecar_invalid",
-                    "artifact": sidecar_path.name,
-                    "detail": loaded.get("status"),
-                }
-            )
-            return None
-        payload = loaded["payload"]
-        for key in ("invocation_ref", "event_payload_ref"):
-            if key in payload and payload[key] != identity[key]:
-                entry["internal_conflicts"].append(
-                    {
-                        "reason": f"hook_sidecar_{key}_mismatch",
-                        "artifact": sidecar_path.name,
-                        "expected": identity[key],
-                        "observed": payload[key],
-                    }
-                )
-        return payload
-
-    plan_ref: str | None = None
-    plan_data_obj: dict[str, Any] | None = None
-    plan_payload_obj = None
-    has_plan_key = False
-    plan_path = invocations_dir / f"{stem}.plan"
-    if plan_path.exists():
-        plan_data = _load_sidecar(plan_path)
-        plan_data_obj = plan_data
-        if plan_data is not None:
-            plan_ref = _norm_optional_str(plan_data.get("plan_ref"))
-            plan_payload_obj = plan_data.get("plan")
-            has_plan_key = "plan" in plan_data or plan_payload_obj is not None
-            if has_plan_key:
-                expected_plan_ref = hooks._digest_bytes(
-                    hooks.canonical_event_bytes(plan_payload_obj)
-                )
-                if plan_ref != expected_plan_ref:
-                    entry["internal_conflicts"].append(
-                        {
-                            "reason": "hook_plan_digest_mismatch",
-                            "expected": expected_plan_ref,
-                            "observed": plan_ref,
-                        }
-                    )
-    plan_scope = (
-        "push_multi_ref_aggregate"
-        if isinstance(plan_payload_obj, list)
-        else ("single_plan" if isinstance(plan_payload_obj, dict) else "none")
+    inspected = hook_checks.inspect_invocation_offline(
+        binding, max_bytes=MAX_JSON_REPORT_BYTES
     )
-
-    push_refs: list[dict[str, Any]] = []
-    push_source_path = invocations_dir / f"{stem}.push-source"
-    if push_source_path.exists():
-        ps = _load_sidecar(push_source_path)
-        if ps is not None and isinstance(ps.get("references"), list):
-            push_refs = list(ps["references"])
-
-    # Load one-to-many execution artifacts with digest, activation, and report verification.
-    executions: list[dict[str, Any]] = []
-    raw_reports_by_artifact: dict[str, dict[str, Any]] = {}
-    seen_exec_paths: set[Path] = set()
-    activation_cache: dict[str, bool] = {}
-
-    def _expected_activation_name(exec_name: str) -> str:
-        prefix = f"{stem}.execution-"
-        if exec_name.startswith(prefix):
-            suffix_part = exec_name[len(prefix) :]
-            if suffix_part.startswith("check-"):
-                return f"{stem}.activation-{suffix_part}"
-        return f"{stem}.activation"
-
-    def _verify_activation(exec_name: str) -> bool:
-        act_name = _expected_activation_name(exec_name)
-        if act_name in activation_cache:
-            return activation_cache[act_name]
-        act_path = invocations_dir / act_name
-        if not act_path.exists():
-            entry["internal_conflicts"].append(
-                {
-                    "reason": "hook_execution_activation_missing",
-                    "artifact": exec_name,
-                    "expected_activation": act_name,
-                }
-            )
-            activation_cache[act_name] = False
-            return False
-        act_data = _load_sidecar(act_path)
-        if act_data is None:
-            activation_cache[act_name] = False
-            return False
-        ok = (
-            act_data.get("run_ref") == expected_run
-            and act_data.get("attempt_ref") == expected_att
-        )
-        if not ok:
-            entry["internal_conflicts"].append(
-                {
-                    "reason": "hook_activation_identity_mismatch",
-                    "artifact": act_name,
-                    "exec_artifact": exec_name,
-                    "expected_run_ref": expected_run,
-                    "expected_attempt_ref": expected_att,
-                }
-            )
-        activation_cache[act_name] = ok
-        return ok
-
-    for pattern in (
-        f"{stem}.execution",
-        f"{stem}.execution-[0-9]*",
-        f"{stem}.execution-check-*",
-    ):
-        for exec_path in sorted(invocations_dir.glob(pattern)):
-            resolved_exec = exec_path.resolve()
-            if resolved_exec in seen_exec_paths:
-                continue
-            seen_exec_paths.add(resolved_exec)
-            exec_data = _load_sidecar(exec_path)
-            if exec_data is None:
-                continue
-            _verify_activation(exec_path.name)
-            exec_plan_ref = _norm_optional_str(exec_data.get("plan_ref"))
-            if plan_ref is not None and exec_plan_ref != plan_ref:
-                entry["internal_conflicts"].append(
-                    {
-                        "reason": "hook_execution_plan_ref_mismatch",
-                        "artifact": exec_path.name,
-                        "expected": plan_ref,
-                        "observed": exec_plan_ref,
-                    }
-                )
-            report = exec_data.get("report")
-            report_ref_val: str | None = None
-            report_digest_verified = False
-            run_ref: str | None = None
-            attempt_ref: str | None = None
-            execution_ref: str | None = None
-            bundle_dir: str | None = None
-            git_commit: str | None = None
-            source_tree_id: str | None = None
-            remote_ref: str | None = None
-            if isinstance(report, dict):
-                raw_reports_by_artifact[exec_path.name] = report
-                actual_digest = hooks._digest_bytes(hooks.canonical_event_bytes(report))
-                declared_digest = _norm_optional_str(exec_data.get("report_digest"))
-                if declared_digest == actual_digest:
-                    report_digest_verified = True
-                else:
-                    entry["internal_conflicts"].append(
-                        {
-                            "reason": "hook_execution_report_digest_mismatch",
-                            "artifact": exec_path.name,
-                            "expected": declared_digest,
-                            "observed": actual_digest,
-                        }
-                    )
-                if report.get("kind") == execution.REPORT_KIND:
-                    try:
-                        _res, _rej, verified_ref = (
-                            reconciliation.verify_execution_report(report)
-                        )
-                        report_ref_val = _report_ref_key(verified_ref)
-                    except (
-                        reconciliation.ReconciliationError,
-                        TypeError,
-                        ValueError,
-                    ) as exc:
-                        report_digest_verified = False
-                        entry["internal_conflicts"].append(
-                            {
-                                "reason": "hook_execution_report_invalid",
-                                "artifact": exec_path.name,
-                                "error": str(exc),
-                            }
-                        )
-                ident = report.get("execution_identity")
-                if isinstance(ident, dict):
-                    run_ref = _norm_optional_str(ident.get("run_ref"))
-                    attempt_ref = _norm_optional_str(ident.get("attempt_ref"))
-                    execution_ref = _norm_optional_str(ident.get("execution_ref"))
-                    if run_ref is not None and run_ref != expected_run:
-                        entry["internal_conflicts"].append(
-                            {
-                                "reason": "hook_execution_run_ref_mismatch",
-                                "artifact": exec_path.name,
-                                "expected": expected_run,
-                                "observed": run_ref,
-                            }
-                        )
-                    if attempt_ref is not None and attempt_ref != expected_att:
-                        entry["internal_conflicts"].append(
-                            {
-                                "reason": "hook_execution_attempt_ref_mismatch",
-                                "artifact": exec_path.name,
-                                "expected": expected_att,
-                                "observed": attempt_ref,
-                            }
-                        )
-                plan_git = (report.get("plan") or {}).get("git")
-                if isinstance(plan_git, dict):
-                    git_commit = _norm_optional_str(plan_git.get("head_commit"))
-                    source_tree_id = _norm_optional_str(plan_git.get("source_tree_id"))
-                    remote_ref = _norm_optional_str(plan_git.get("remote_ref"))
-                raw_dagger_dir = _norm_optional_str(report.get("dagger_bundle"))
-                if raw_dagger_dir is not None:
-                    with suppress(OSError):
-                        bundle_dir = Path(raw_dagger_dir).resolve().as_posix()
-            else:
-                entry["internal_conflicts"].append(
-                    {
-                        "reason": "hook_execution_report_missing",
-                        "artifact": exec_path.name,
-                    }
-                )
-            executions.append(
-                {
-                    "artifact": exec_path.name,
-                    "scope": exec_path.suffix.lstrip("."),
-                    "plan_ref": exec_plan_ref,
-                    "plan_scope": plan_scope,
-                    "remote_ref": remote_ref,
-                    "run_ref": run_ref,
-                    "attempt_ref": attempt_ref,
-                    "execution_ref": execution_ref,
-                    "report_ref": report_ref_val,
-                    "report_digest_verified": report_digest_verified,
-                    "bundle_directory": bundle_dir,
-                    "git_commit": git_commit,
-                    "source_tree_id": source_tree_id,
-                    "exit_code": report.get("exit_code")
-                    if isinstance(report, dict)
-                    else None,
-                }
-            )
-
-    receipt_path = invocations_dir / f"{stem}.receipt"
-    receipt_summary: dict[str, Any] | None = None
-    if receipt_path.exists():
-        receipt_data = _load_sidecar(receipt_path)
-        if receipt_data is not None:
-            receipt_plan_ref = _norm_optional_str(receipt_data.get("plan_ref"))
-            if (
-                receipt_plan_ref is not None
-                and plan_ref is not None
-                and receipt_plan_ref != plan_ref
-            ):
-                entry["internal_conflicts"].append(
-                    {
-                        "reason": "hook_receipt_plan_ref_mismatch",
-                        "expected": plan_ref,
-                        "observed": receipt_plan_ref,
-                    }
-                )
-            receipt_report_refs: list[str] = []
-            validation_status = "valid"
-            native_receipt_status: str | None = None
-
-            def _scan_receipt_obj(obj: dict[str, Any]) -> None:
-                exp_inv = _norm_optional_str(obj.get("expected_invocation_ref"))
-                if exp_inv is not None and exp_inv != binding.invocation_ref:
-                    entry["internal_conflicts"].append(
-                        {
-                            "reason": "hook_receipt_invocation_ref_mismatch",
-                            "expected": binding.invocation_ref,
-                            "observed": exp_inv,
-                        }
-                    )
-                direct_rref = _report_ref_key(obj.get("report_ref"))
-                if direct_rref:
-                    receipt_report_refs.append(direct_rref)
-                for seq_key in ("entries", "results", "references"):
-                    seq = obj.get(seq_key)
-                    if not isinstance(seq, list):
-                        continue
-                    for item in seq:
-                        if not isinstance(item, dict):
-                            continue
-                        rr = _report_ref_key(item.get("report_ref"))
-                        if rr:
-                            receipt_report_refs.append(rr)
-                        for sub_key in (
-                            "evidence",
-                            "job_instances",
-                            "rejected_observations",
-                        ):
-                            sub = item.get(sub_key)
-                            if isinstance(sub, list):
-                                for sub_item in sub:
-                                    if isinstance(sub_item, dict):
-                                        srr = _report_ref_key(
-                                            sub_item.get("report_ref")
-                                        )
-                                        if srr:
-                                            receipt_report_refs.append(srr)
-                sub_receipts = obj.get("receipts")
-                if isinstance(sub_receipts, list):
-                    for sub_rec in sub_receipts:
-                        if isinstance(sub_rec, dict):
-                            _scan_receipt_obj(sub_rec)
-
-            def _validate_reconciliation_receipt(rec_obj: dict[str, Any]) -> bool:
-                try:
-                    reconciliation.validate_receipt(rec_obj)
-                    return True
-                except reconciliation.ReconciliationError as exc:
-                    entry["internal_conflicts"].append(
-                        {
-                            "reason": "hook_receipt_validation_failed",
-                            "error": str(exc),
-                        }
-                    )
-                    return False
-
-            is_fallback_exit_only = (
-                plan_payload_obj is None
-                and has_plan_key
-                and "kind" not in receipt_data
-                and "receipts" not in receipt_data
-                and "status" not in receipt_data
-                and "exit_code" in receipt_data
-            )
-            if is_fallback_exit_only:
-                validation_status = "fallback"
-                native_receipt_status = "fallback_exit_only"
-                if (
-                    receipt_data.get("run_ref") != expected_run
-                    or receipt_data.get("attempt_ref") != expected_att
-                ):
-                    entry["internal_conflicts"].append(
-                        {
-                            "reason": "hook_receipt_fallback_identity_mismatch",
-                            "expected_run_ref": expected_run,
-                            "expected_attempt_ref": expected_att,
-                        }
-                    )
-                if not executions:
-                    entry["internal_conflicts"].append(
-                        {"reason": "hook_receipt_executions_missing"}
-                    )
-                elif receipt_data.get("exit_code") != executions[0].get("exit_code"):
-                    entry["internal_conflicts"].append(
-                        {
-                            "reason": "hook_receipt_fallback_exit_mismatch",
-                            "expected": executions[0].get("exit_code"),
-                            "observed": receipt_data.get("exit_code"),
-                        }
-                    )
-            elif "receipts" in receipt_data:
-                sub_receipts = receipt_data.get("receipts")
-                if not isinstance(sub_receipts, list):
-                    validation_status = "invalid"
-                    entry["internal_conflicts"].append(
-                        {"reason": "hook_receipt_wrapper_invalid"}
-                    )
-                else:
-                    if isinstance(plan_payload_obj, list) and len(sub_receipts) != len(
-                        plan_payload_obj
-                    ):
-                        validation_status = "invalid"
-                        entry["internal_conflicts"].append(
-                            {
-                                "reason": "hook_receipt_ref_count_mismatch",
-                                "expected": len(plan_payload_obj),
-                                "observed": len(sub_receipts),
-                            }
-                        )
-                    sub_statuses: list[str] = []
-                    for sub_rec in sub_receipts:
-                        if not _validate_reconciliation_receipt(sub_rec):
-                            validation_status = "invalid"
-                        if isinstance(sub_rec, dict) and isinstance(
-                            sub_rec.get("status"), str
-                        ):
-                            sub_statuses.append(sub_rec["status"])
-                    if not sub_receipts and binding.hook == "pre-push":
-                        native_receipt_status = (
-                            "matched" if not push_refs else "partial"
-                        )
-                    elif sub_statuses and all(s == "matched" for s in sub_statuses):
-                        native_receipt_status = "matched"
-                    elif sub_statuses and len(set(sub_statuses)) == 1:
-                        native_receipt_status = sub_statuses[0]
-                    else:
-                        native_receipt_status = "partial"
-            else:
-                if not _validate_reconciliation_receipt(receipt_data):
-                    validation_status = "invalid"
-                native_receipt_status = (
-                    str(receipt_data.get("status"))
-                    if receipt_data.get("status") is not None
-                    else None
-                )
-
-            _scan_receipt_obj(receipt_data)
-            valid_exec_report_refs = {
-                ex["report_ref"]
-                for ex in executions
-                if ex.get("report_ref") and ex.get("report_digest_verified")
-            }
-            all_exec_report_ref_to_arts: dict[str, list[str]] = {}
-            for ex in executions:
-                rep_obj = raw_reports_by_artifact.get(ex["artifact"])
-                if ex.get("report_ref"):
-                    all_exec_report_ref_to_arts.setdefault(ex["report_ref"], []).append(
-                        ex["artifact"]
-                    )
-                elif (
-                    isinstance(rep_obj, dict)
-                    and rep_obj.get("kind") == execution.REPORT_KIND
-                ):
-                    computed_rref = _compute_execution_report_ref_key(rep_obj)
-                    if computed_rref:
-                        all_exec_report_ref_to_arts.setdefault(
-                            computed_rref, []
-                        ).append(ex["artifact"])
-            job_to_exec_art: dict[str, str] = {}
-            for ex in executions:
-                jkey = (
-                    hook_checks._JOB_REF
-                    if ex["scope"] == "execution"
-                    else ex["scope"].removeprefix("execution-")
-                )
-                job_to_exec_art[jkey] = ex["artifact"]
-
-            # Map receipt report_ref occurrences to candidate execution artifacts when known.
-            ref_owner_artifacts: dict[str, list[str]] = {}
-
-            def _collect_ref_owners(
-                obj: dict[str, Any], *, push_idx: int | None = None
-            ) -> None:
-                top_job = _norm_optional_str(obj.get("job_ref"))
-                top_rr = _report_ref_key(obj.get("report_ref"))
-                if top_rr:
-                    if push_idx is not None:
-                        ref_owner_artifacts.setdefault(top_rr, []).append(
-                            f"{stem}.execution-{push_idx}"
-                        )
-                    elif top_job and top_job in job_to_exec_art:
-                        ref_owner_artifacts.setdefault(top_rr, []).append(
-                            job_to_exec_art[top_job]
-                        )
-                for seq_key in ("entries", "results", "references"):
-                    seq = obj.get(seq_key)
-                    if not isinstance(seq, list):
-                        continue
-                    for item in seq:
-                        if not isinstance(item, dict):
-                            continue
-                        ijob = _norm_optional_str(item.get("job_ref")) or top_job
-                        irr = _report_ref_key(item.get("report_ref"))
-                        if irr:
-                            if push_idx is not None:
-                                ref_owner_artifacts.setdefault(irr, []).append(
-                                    f"{stem}.execution-{push_idx}"
-                                )
-                            elif ijob and ijob in job_to_exec_art:
-                                ref_owner_artifacts.setdefault(irr, []).append(
-                                    job_to_exec_art[ijob]
-                                )
-                        for sub_key in (
-                            "evidence",
-                            "job_instances",
-                            "rejected_observations",
-                            "observed_results",
-                        ):
-                            sub = item.get(sub_key)
-                            if not isinstance(sub, list):
-                                continue
-                            for sub_item in sub:
-                                if not isinstance(sub_item, dict):
-                                    continue
-                                sjob = (
-                                    _norm_optional_str(sub_item.get("job_ref")) or ijob
-                                )
-                                srr = _report_ref_key(sub_item.get("report_ref"))
-                                if srr:
-                                    if push_idx is not None:
-                                        ref_owner_artifacts.setdefault(srr, []).append(
-                                            f"{stem}.execution-{push_idx}"
-                                        )
-                                    elif sjob and sjob in job_to_exec_art:
-                                        ref_owner_artifacts.setdefault(srr, []).append(
-                                            job_to_exec_art[sjob]
-                                        )
-                if isinstance(obj.get("receipts"), list):
-                    for idx_r, sub_rec in enumerate(obj["receipts"]):
-                        if isinstance(sub_rec, dict):
-                            _collect_ref_owners(sub_rec, push_idx=idx_r)
-
-            _collect_ref_owners(receipt_data)
-            missing_exec_for_receipt = False
-            # Always verify receipt report_refs against verified loaded executions.
-            for rr in receipt_report_refs:
-                if rr not in valid_exec_report_refs:
-                    missing_exec_for_receipt = True
-                    owners = sorted(set(ref_owner_artifacts.get(rr, ())))
-                    conflict_rec: dict[str, Any] = {
-                        "reason": "hook_receipt_report_ref_not_in_executions",
-                        "observed": rr,
-                    }
-                    if owners:
-                        conflict_rec["affected_artifacts"] = owners
-                    entry["internal_conflicts"].append(conflict_rec)
-
-            if not is_fallback_exit_only and validation_status == "valid":
-                if plan_data_obj is None or not has_plan_key:
-                    entry["internal_conflicts"].append(
-                        {"reason": "hook_receipt_plan_missing"}
-                    )
-                elif "receipts" in receipt_data:
-                    sub_receipts = receipt_data.get("receipts") or []
-                    reports_by_index: dict[int, dict[str, Any]] = {}
-                    exec_prefix = f"{stem}.execution-"
-                    for ex in executions:
-                        art = ex["artifact"]
-                        if art.startswith(exec_prefix):
-                            suffix_idx = art[len(exec_prefix) :]
-                            if suffix_idx.isdigit():
-                                rep_obj = raw_reports_by_artifact.get(art)
-                                if rep_obj is not None:
-                                    reports_by_index[int(suffix_idx)] = rep_obj
-                            else:
-                                entry["internal_conflicts"].append(
-                                    {
-                                        "reason": "hook_execution_unexpected_for_plan",
-                                        "artifact": art,
-                                    }
-                                )
-                        else:
-                            entry["internal_conflicts"].append(
-                                {
-                                    "reason": "hook_execution_unexpected_for_plan",
-                                    "artifact": art,
-                                }
-                            )
-                    try:
-                        hook_checks.verify_push_receipt_binding(
-                            binding,
-                            plan_payload_obj,
-                            sub_receipts,
-                            reports_by_index,
-                            refs=push_refs or None,
-                        )
-                    except hooks.HookEventError as exc:
-                        if exc.code == "hook_report_missing":
-                            missing_exec_for_receipt = True
-                            entry["internal_conflicts"].append(
-                                {
-                                    "reason": "hook_receipt_executions_missing",
-                                    "error": exc.code,
-                                }
-                            )
-                        else:
-                            entry["internal_conflicts"].append(
-                                {
-                                    "reason": "hook_receipt_scope_or_report_mismatch",
-                                    "error": exc.code,
-                                }
-                            )
-                else:
-                    expected_jobs = set(hook_checks._index_jobs(plan_data_obj))
-                    reports_by_job: dict[str, dict[str, Any] | None] = {
-                        job: None for job in expected_jobs
-                    }
-                    for ex in executions:
-                        job_key = (
-                            hook_checks._JOB_REF
-                            if ex["scope"] == "execution"
-                            else ex["scope"].removeprefix("execution-")
-                        )
-                        if job_key not in expected_jobs:
-                            entry["internal_conflicts"].append(
-                                {
-                                    "reason": "hook_execution_unexpected_for_plan",
-                                    "artifact": ex["artifact"],
-                                    "job_ref": job_key,
-                                }
-                            )
-                        reports_by_job[job_key] = raw_reports_by_artifact.get(
-                            ex["artifact"]
-                        )
-                    try:
-                        hook_checks.verify_index_receipt_binding(
-                            binding,
-                            plan_payload_obj,
-                            receipt_data,
-                            reports_by_job,
-                        )
-                    except hooks.HookEventError as exc:
-                        if exc.code == "hook_report_missing":
-                            missing_exec_for_receipt = True
-                            entry["internal_conflicts"].append(
-                                {
-                                    "reason": "hook_receipt_executions_missing",
-                                    "error": exc.code,
-                                }
-                            )
-                        else:
-                            conflict_item: dict[str, Any] = {
-                                "reason": "hook_receipt_scope_or_report_mismatch",
-                                "error": exc.code,
-                            }
-                            if exc.code == "hook_final_report_mismatch":
-                                failing_arts: list[str] = []
-                                for j_name, j_rep in reports_by_job.items():
-                                    j_art = job_to_exec_art.get(j_name)
-                                    if not j_art:
-                                        continue
-                                    j_ex = next(
-                                        (
-                                            e
-                                            for e in executions
-                                            if e["artifact"] == j_art
-                                        ),
-                                        None,
-                                    )
-                                    if j_ex and not j_ex.get("report_digest_verified"):
-                                        failing_arts.append(j_art)
-                                    elif isinstance(j_rep, dict):
-                                        j_rref = _compute_execution_report_ref_key(
-                                            j_rep
-                                        )
-                                        if j_rref and j_rref not in receipt_report_refs:
-                                            failing_arts.append(j_art)
-                                if failing_arts:
-                                    conflict_item["affected_artifacts"] = sorted(
-                                        set(failing_arts)
-                                    )
-                            entry["internal_conflicts"].append(conflict_item)
-
-            has_integrity_conflict = any(
-                c.get("reason", "").startswith(
-                    (
-                        "hook_execution_",
-                        "hook_activation_",
-                        "hook_receipt_",
-                        "hook_plan_",
-                        "hook_sidecar_",
-                    )
-                )
-                for c in entry["internal_conflicts"]
-            )
-            if missing_exec_for_receipt:
-                verifiable_evidence_status = "missing_executions"
-            elif validation_status == "invalid" or has_integrity_conflict:
-                verifiable_evidence_status = "mismatch_or_invalid"
-            elif native_receipt_status in ("matched", "fallback_exit_only"):
-                verifiable_evidence_status = "verified"
-            else:
-                verifiable_evidence_status = "partial_or_unverified"
-
-            receipt_summary = {
-                "status": native_receipt_status,
-                "native_status": native_receipt_status,
-                "validation_status": validation_status,
-                "verifiable_evidence_status": verifiable_evidence_status,
-                "receipt_ref": receipt_data.get("receipt_ref"),
-                "plan_ref": receipt_plan_ref,
-                "report_refs": sorted(set(receipt_report_refs)),
-                "exit_code": receipt_data.get("exit_code"),
-            }
-
-    sidecar_stages: list[dict[str, Any]] = []
-    for sidecar in sorted(invocations_dir.glob(f"{stem}.timing-*")):
-        stage_data = _load_sidecar(sidecar)
-        if stage_data is None:
-            continue
-        stage_plan_ref = _norm_optional_str(stage_data.get("plan_ref"))
-        if (
-            stage_plan_ref is not None
-            and plan_ref is not None
-            and stage_plan_ref != plan_ref
-        ):
-            entry["internal_conflicts"].append(
-                {
-                    "reason": "hook_timing_plan_ref_mismatch",
-                    "artifact": sidecar.name,
-                    "expected": plan_ref,
-                    "observed": stage_plan_ref,
-                }
-            )
-        sidecar_stages.append(
-            {
-                "artifact": sidecar.name,
-                "hook": stage_data.get("hook") or stage_data.get("hook_name"),
-                "stage": stage_data.get("stage"),
-                "job_ref": stage_data.get("job_ref"),
-                "status": stage_data.get("status"),
-                "elapsed_seconds": stage_data.get("elapsed_seconds"),
-                "started_at_ns": stage_data.get("started_at_ns"),
-                "completed_at_ns": stage_data.get("completed_at_ns"),
-                "attempt_count": stage_data.get("attempt_count"),
-                "duplicate_attempts": stage_data.get("duplicate_attempts"),
-                "primary_record_policy": stage_data.get("primary_record_policy"),
-                "per_ref": stage_data.get("per_ref"),
-            }
-        )
-
-    git_commits: list[str] = []
-    if binding.hook == "pre-commit":
-        hc = _norm_optional_str(event.get("head_commit"))
-        if hc:
-            git_commits.append(hc)
-    elif binding.hook == "pre-push":
-        for ref_item in event.get("refs") or ():
-            if isinstance(ref_item, dict):
-                after = _norm_optional_str(ref_item.get("after"))
-                if after and after not in git_commits:
-                    git_commits.append(after)
-
-    source_tree_ids: list[str] = []
-    if isinstance(plan_payload_obj, dict):
-        st = _norm_optional_str(
-            (plan_payload_obj.get("git") or {}).get("source_tree_id")
-        )
-        if st:
-            source_tree_ids.append(st)
-    elif isinstance(plan_payload_obj, list):
-        for p_item in plan_payload_obj:
-            if isinstance(p_item, dict):
-                st = _norm_optional_str((p_item.get("git") or {}).get("source_tree_id"))
-                if st and st not in source_tree_ids:
-                    source_tree_ids.append(st)
-
+    entry["consumed_files"] = list(
+        dict.fromkeys([*entry["consumed_files"], *inspected["consumed_files"]])
+    )
+    entry["internal_conflicts"].extend(inspected["internal_conflicts"])
     entry.update(
         {
             "status": "loaded",
@@ -1591,13 +976,17 @@ def _load_hook_entry(
             "event_payload_ref": binding.event_payload_ref,
             "hook": binding.hook,
             "event_file": str(binding.event_path),
-            "plan_ref": plan_ref,
-            "git_commits": git_commits,
-            "source_tree_ids": source_tree_ids,
-            "push_references": push_refs,
-            "executions": executions,
-            "receipt": receipt_summary,
-            "stage_timings": sidecar_stages,
+            "plan_ref": inspected["plan_ref"],
+            "plan_scope": inspected["plan_scope"],
+            "expected_unit_count": inspected["expected_unit_count"],
+            "expected_execution_artifacts": inspected["expected_execution_artifacts"],
+            "missing_expected_executions": inspected["missing_expected_executions"],
+            "git_commits": inspected["git_commits"],
+            "source_tree_ids": inspected["source_tree_ids"],
+            "push_references": inspected["push_references"],
+            "executions": inspected["executions"],
+            "receipt": inspected["receipt"],
+            "stage_timings": inspected["stage_timings"],
         }
     )
     return entry
@@ -1762,18 +1151,23 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
             "consumed_files": [str(path)],
         }
 
-    suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
-    totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    try:
+        suites, totals = pytest_contracts.parse_junit_suites_and_counts(root)
+    except ValueError as exc:
+        return {
+            "source_type": "junit_xml",
+            "path": str(path),
+            "status": "invalid",
+            "error": str(exc),
+            "internal_conflicts": [],
+            "consumed_files": [str(path)],
+        }
     total_time = 0.0
     has_valid_suite_time = False
     invalid_durations = 0
     missing_durations = 0
 
     for suite in suites:
-        for attr in ("tests", "failures", "errors", "skipped"):
-            raw_num = suite.attrib.get(attr)
-            if raw_num is not None and raw_num.isdigit():
-                totals[attr] += int(raw_num)
         raw_time = suite.attrib.get("time")
         if raw_time is None:
             continue
@@ -1794,30 +1188,31 @@ def _parse_junit_xml(path: Path, *, max_bytes: int | None = None) -> dict[str, A
         elif parsed_root == "invalid":
             invalid_durations += 1
 
-    cases: list[dict[str, Any]] = []
     numeric_cases: list[dict[str, Any]] = []
-    for case in root.findall(".//testcase"):
-        parsed_dur, _ = _parse_valid_nonneg_float(case.attrib.get("time"))
-        if parsed_dur == "invalid":
-            invalid_durations += 1
-        elif parsed_dur == "unknown":
-            missing_durations += 1
-        outcome = "passed"
-        if case.find("failure") is not None:
-            outcome = "failed"
-        elif case.find("error") is not None:
-            outcome = "error"
-        elif case.find("skipped") is not None:
-            outcome = "skipped"
-        item = {
-            "classname": case.attrib.get("classname", ""),
-            "name": case.attrib.get("name", ""),
-            "status": outcome,
-            "duration_seconds": parsed_dur,
-        }
-        cases.append(item)
-        if isinstance(parsed_dur, float):
-            numeric_cases.append(item)
+    for suite in suites:
+        for case in suite.findall(".//testcase"):
+            parsed_dur, _ = _parse_valid_nonneg_float(case.attrib.get("time"))
+            if parsed_dur == "invalid":
+                invalid_durations += 1
+            elif parsed_dur == "unknown":
+                missing_durations += 1
+            if not isinstance(parsed_dur, float):
+                continue
+            outcome = "passed"
+            if case.find("failure") is not None:
+                outcome = "failed"
+            elif case.find("error") is not None:
+                outcome = "error"
+            elif case.find("skipped") is not None:
+                outcome = "skipped"
+            numeric_cases.append(
+                {
+                    "classname": case.attrib.get("classname", ""),
+                    "name": case.attrib.get("name", ""),
+                    "status": outcome,
+                    "duration_seconds": parsed_dur,
+                }
+            )
 
     slowest = sorted(
         numeric_cases, key=lambda item: float(item["duration_seconds"]), reverse=True
@@ -2003,6 +1398,9 @@ def _parse_pytest_reportlog(
     cumulative_phase_seconds = 0.0
     has_session_start = False
     has_session_finish = False
+    has_collection = False
+    collection_failed_count = 0
+    collection_errors: list[dict[str, Any]] = []
     session_start_ts: float | None = None
     session_finish_ts: float | None = None
     exit_status: int | None = None
@@ -2010,7 +1408,8 @@ def _parse_pytest_reportlog(
 
     def _consume_line(raw_line: bytes) -> None:
         nonlocal malformed_line_count, invalid_duration_count, cumulative_phase_seconds
-        nonlocal has_session_start, has_session_finish, session_start_ts
+        nonlocal has_session_start, has_session_finish, has_collection
+        nonlocal collection_failed_count, session_start_ts
         nonlocal session_finish_ts, exit_status
         line = raw_line.decode("utf-8", errors="replace").strip()
         if not line:
@@ -2038,6 +1437,17 @@ def _parse_pytest_reportlog(
             finished = record.get("created_at") or record.get("stop")
             if isinstance(finished, (int, float)) and math.isfinite(float(finished)):
                 session_finish_ts = float(finished)
+        elif report_type == "CollectReport":
+            has_collection = True
+            if record.get("outcome") == "failed":
+                collection_failed_count += 1
+                if len(collection_errors) < MAX_SLOW_ITEMS:
+                    collection_errors.append(
+                        {
+                            "nodeid": str(record.get("nodeid", "")),
+                            "when": record.get("when"),
+                        }
+                    )
         elif report_type == "TestReport":
             when = record.get("when", "")
             outcome = record.get("outcome", "")
@@ -2225,16 +1635,21 @@ def _parse_pytest_reportlog(
             "repeated_phase_records_observed_without_retry_or_subtest_contract"
         )
 
+    has_meaningful_pytest_evidence = (
+        bool(node_records) or has_collection or exit_status == 5
+    )
     if malformed_line_count and not (has_session_finish or testcase_counts["passed"]):
         completeness = "corrupted"
     elif (
-        has_session_finish
+        has_session_start
+        and has_session_finish
         and exit_status is not None
         and not truncated
         and malformed_line_count == 0
         and invalid_duration_count == 0
         and testcase_counts["incomplete"] == 0
         and testcase_counts["repeated_ambiguous"] == 0
+        and has_meaningful_pytest_evidence
     ):
         completeness = "complete"
     else:
@@ -2254,6 +1669,9 @@ def _parse_pytest_reportlog(
         "bytes_read": bytes_read,
         "has_session_start": has_session_start,
         "has_session_finish": has_session_finish,
+        "has_collection": has_collection,
+        "collection_failed_count": collection_failed_count,
+        "collection_errors": collection_errors,
         "exit_status": exit_status,
         "malformed_line_count": malformed_line_count,
         "invalid_duration_count": invalid_duration_count,
@@ -2266,6 +1684,7 @@ def _parse_pytest_reportlog(
         "phase_counts": phase_counts,
         "cumulative_phase_duration_seconds": cumulative_phase_seconds,
         "session_wall_seconds": session_wall_seconds,
+        "slowest_phases_scope": "top_25_phases_not_exhaustive",
         "slowest_phases": slowest,
         "properties": prop_values,
         "testcase_properties_summary": {
@@ -2391,54 +1810,12 @@ def _build_bundle_manifest_index(
 
 def _is_native_pytest_v1_shape(payload: dict[str, Any]) -> bool:
     """Return True when payload matches Dagger python_test_artifacts schema v1 JSON."""
-    if "kind" in payload or "checks" in payload or "execution_identity" in payload:
-        return False
-    return {"report_available", "failures", "omitted_failures"}.issubset(payload)
+    return pytest_contracts.is_native_pytest_v1_shape(payload)
 
 
 def _validate_native_pytest_v1(payload: dict[str, Any]) -> str | None:
     """Validate native Dagger pytest schema v1 contract per docs/architecture/testing/pytest-reporting.md."""
-    if payload.get("schema_version") != 1:
-        return "native_pytest_schema_unsupported"
-    exit_code = payload.get("exit_code")
-    if type(exit_code) is not int or not 0 <= exit_code <= 255:
-        return "native_pytest_exit_code_invalid"
-    reason = payload.get("reason")
-    if not isinstance(reason, str) or not reason:
-        return "native_pytest_reason_invalid"
-    status = payload.get("status")
-    if status not in {"passed", "failed", "error"}:
-        return "native_pytest_status_invalid"
-    report_available = payload.get("report_available")
-    if type(report_available) is not bool:
-        return "native_pytest_report_available_invalid"
-    failures = payload.get("failures")
-    omitted = payload.get("omitted_failures")
-    if not isinstance(failures, list) or type(omitted) is not int or omitted < 0:
-        return "native_pytest_failures_invalid"
-    counts = payload.get("counts")
-    if report_available:
-        if not isinstance(counts, dict):
-            return "native_pytest_counts_missing"
-        for field in ("tests", "failures", "errors", "skipped", "passed"):
-            val = counts.get(field)
-            if type(val) is not int or val < 0:
-                return "native_pytest_counts_invalid"
-        if exit_code == 0 and counts["failures"] == 0 and counts["errors"] == 0:
-            expected_status = "passed"
-        elif exit_code == 1:
-            expected_status = "failed"
-        else:
-            expected_status = "error"
-        if status != expected_status:
-            return "native_pytest_status_mismatch"
-    else:
-        if counts is not None or status != "error":
-            return "native_pytest_unavailable_status_invalid"
-        diag = payload.get("diagnostic")
-        if not isinstance(diag, str) or not diag:
-            return "native_pytest_diagnostic_missing"
-    return None
+    return pytest_contracts.validate_native_pytest_v1(payload)
 
 
 def _validate_execution_report_contract(
@@ -3018,6 +2395,237 @@ def _extract_execution_metadata(
     return out
 
 
+def _load_pytest_invocation_entry(path: Path) -> list[dict[str, Any]]:
+    """Read-only loader for an explicit #168 pytest invocation directory (no latest scan)."""
+    if path.is_symlink():
+        return [
+            {
+                "source_type": "pytest_invocation",
+                "path": str(path),
+                "status": "symlink_rejected",
+                "internal_conflicts": [],
+                "consumed_files": [],
+            }
+        ]
+    if not path.exists():
+        return [
+            {
+                "source_type": "pytest_invocation",
+                "path": str(path),
+                "status": "missing",
+                "internal_conflicts": [],
+                "consumed_files": [],
+            }
+        ]
+    if not path.is_dir():
+        return [
+            {
+                "source_type": "pytest_invocation",
+                "path": str(path),
+                "status": "invalid",
+                "error": "expected_pytest_invocation_directory",
+                "internal_conflicts": [],
+                "consumed_files": [],
+            }
+        ]
+
+    inv_dir = path.resolve()
+    consumed_dirs = [str(inv_dir)]
+    consumed_files: list[str] = []
+    internal_conflicts: list[dict[str, Any]] = []
+    meta_records: dict[str, dict[str, Any]] = {}
+
+    for fname in ("metadata.json", "summary.json"):
+        candidate = _safe_child_path(inv_dir, fname)
+        if candidate is None or not (candidate.exists() or candidate.is_symlink()):
+            continue
+        consumed_files.append(str(candidate))
+        loaded = _load_bounded_json(candidate)
+        if loaded.get("status") != "loaded":
+            internal_conflicts.append(
+                {
+                    "reason": "pytest_invocation_metadata_invalid",
+                    "artifact": fname,
+                    "detail": loaded.get("status"),
+                }
+            )
+            continue
+        payload = loaded["payload"]
+        if not pytest_contracts.is_pytest_invocation_metadata(payload):
+            internal_conflicts.append(
+                {
+                    "reason": "pytest_invocation_metadata_contract_invalid",
+                    "artifact": fname,
+                }
+            )
+            continue
+        meta_records[fname] = payload
+
+    if not meta_records:
+        return [
+            {
+                "source_type": "pytest_invocation",
+                "path": str(inv_dir),
+                "status": (
+                    "invalid" if internal_conflicts else "missing_invocation_metadata"
+                ),
+                "note": "directory_scan_for_latest_forbidden_pass_explicit_invocation_dir",
+                "internal_conflicts": internal_conflicts,
+                "consumed_files": list(dict.fromkeys(consumed_files)),
+                "consumed_dirs": consumed_dirs,
+            }
+        ]
+
+    if "metadata.json" in meta_records and "summary.json" in meta_records:
+        m_doc = meta_records["metadata.json"]
+        s_doc = meta_records["summary.json"]
+        for field in ("invocation_id", "pytest_version"):
+            mv = m_doc.get(field)
+            sv = s_doc.get(field)
+            if mv is not None and sv is not None and mv != sv:
+                internal_conflicts.append(
+                    {
+                        "reason": f"pytest_invocation_{field}_conflict",
+                        "metadata": mv,
+                        "summary": sv,
+                    }
+                )
+        m_exit = (
+            m_doc.get("exitstatus") if "exitstatus" in m_doc else m_doc.get("exit_code")
+        )
+        s_exit = (
+            s_doc.get("exitstatus") if "exitstatus" in s_doc else s_doc.get("exit_code")
+        )
+        if m_exit is not None and s_exit is not None and m_exit != s_exit:
+            internal_conflicts.append(
+                {
+                    "reason": "pytest_invocation_exitstatus_conflict",
+                    "metadata": m_exit,
+                    "summary": s_exit,
+                }
+            )
+
+    primary = meta_records.get("summary.json") or meta_records["metadata.json"]
+    secondary = meta_records.get("metadata.json") or {}
+    inv_id = primary["invocation_id"]
+    exitstatus = (
+        primary.get("exitstatus")
+        if "exitstatus" in primary
+        else (
+            primary.get("exit_code")
+            if "exit_code" in primary
+            else (
+                secondary.get("exitstatus")
+                if "exitstatus" in secondary
+                else secondary.get("exit_code")
+            )
+        )
+    )
+    wall_time = (
+        primary.get("wall_time_seconds")
+        if primary.get("wall_time_seconds") is not None
+        else (
+            primary.get("elapsed_seconds")
+            if primary.get("elapsed_seconds") is not None
+            else secondary.get("wall_time_seconds")
+        )
+    )
+    git_commit = _norm_optional_str(
+        primary.get("git_commit")
+        or primary.get("sha")
+        or secondary.get("git_commit")
+        or secondary.get("sha")
+    )
+
+    child_entries: list[dict[str, Any]] = []
+    for rel_name, parser in (
+        ("report.jsonl", _parse_pytest_reportlog),
+        ("pytest-reportlog.jsonl", _parse_pytest_reportlog),
+        ("junit.xml", _parse_junit_xml),
+    ):
+        child = _safe_child_path(inv_dir, rel_name)
+        if child is None or not (child.exists() or child.is_symlink()):
+            continue
+        parsed = parser(child)
+        consumed_files.append(str(child))
+        parsed["bundle_binding"] = "colocated_unverified"
+        parsed["colocated_directory"] = inv_dir.as_posix()
+        parsed["bundle_relative_path"] = rel_name
+        parsed["pytest_invocation_id"] = inv_id
+        if (
+            parsed.get("source_type") == "pytest_reportlog"
+            and parsed.get("status") == "loaded"
+            and type(exitstatus) is int
+            and type(parsed.get("exit_status")) is int
+            and parsed["exit_status"] != exitstatus
+        ):
+            internal_conflicts.append(
+                {
+                    "reason": "pytest_invocation_exit_mismatch",
+                    "metadata_exitstatus": exitstatus,
+                    "reportlog_exit_status": parsed["exit_status"],
+                    "artifact": rel_name,
+                }
+            )
+        child_entries.append(parsed)
+
+    entry: dict[str, Any] = {
+        "source_type": "pytest_invocation",
+        "path": str(inv_dir),
+        "status": "loaded",
+        "invocation_id": inv_id,
+        "kind": primary.get("kind"),
+        "schema_version": primary.get("schema_version"),
+        "pytest_version": primary.get("pytest_version")
+        or secondary.get("pytest_version"),
+        "collect_only": (
+            primary["collect_only"]
+            if "collect_only" in primary
+            else secondary.get("collect_only")
+        ),
+        "selected_items": (
+            primary.get("selected_items")
+            if primary.get("selected_items") is not None
+            else (
+                primary.get("selected_count")
+                if primary.get("selected_count") is not None
+                else secondary.get("selected_items")
+            )
+        ),
+        "deselected_items": (
+            primary.get("deselected_items")
+            if primary.get("deselected_items") is not None
+            else (
+                primary.get("deselected_count")
+                if primary.get("deselected_count") is not None
+                else secondary.get("deselected_items")
+            )
+        ),
+        "wall_time_seconds": wall_time,
+        "elapsed_seconds": wall_time,
+        "exitstatus": exitstatus,
+        "session_finished": (
+            primary["session_finished"]
+            if "session_finished" in primary
+            else secondary.get("session_finished")
+        ),
+        "argv": (
+            primary.get("argv")[:MAX_SLOW_ITEMS]
+            if isinstance(primary.get("argv"), list)
+            else (
+                secondary.get("argv")[:MAX_SLOW_ITEMS]
+                if isinstance(secondary.get("argv"), list)
+                else None
+            )
+        ),
+        "git_commit": git_commit,
+        "internal_conflicts": internal_conflicts,
+        "consumed_files": list(dict.fromkeys(consumed_files)),
+        "consumed_dirs": consumed_dirs,
+    }
+    return [entry, *child_entries]
+
+
 def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
     if path.is_symlink():
         return [
@@ -3303,6 +2911,16 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                 }
             )
         else:
+            for meta_name in ("summary.json", "metadata.json"):
+                mcand = _safe_child_path(bundle_dir, meta_name)
+                if mcand is not None and mcand.is_file():
+                    mload = _load_bounded_json(mcand)
+                    if mload.get(
+                        "status"
+                    ) == "loaded" and pytest_contracts.is_pytest_invocation_metadata(
+                        mload["payload"]
+                    ):
+                        return _load_pytest_invocation_entry(bundle_dir)
             entries.append(
                 {
                     "source_type": "execution_bundle",
@@ -3314,6 +2932,16 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                     "consumed_dirs": list(consumed_dirs),
                 }
             )
+
+        parent_integrity_ok = (
+            bool(entries)
+            and entries[0].get("source_type") == "execution_bundle"
+            and entries[0].get("status") == "loaded"
+            and meta.get("report_contract_status") == "valid"
+            and bool(meta.get("verifiable_execution_proven"))
+            and not internal_conflicts
+            and meta.get("plan_binding_status") not in ("mismatch", "invalid_plan")
+        )
 
         # Support standalone root pytest bundles and #86 PlanExecution tests/ bundles.
         seen_test_shas: dict[str, dict[str, Any]] = {}
@@ -3330,22 +2958,15 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                 continue
             parsed = parser(child)
             sha = parsed.get("sha256")
-            if (
-                rel_name.endswith("core-junit.xml")
-                and isinstance(sha, str)
-                and sha in seen_test_shas
-            ):
-                seen_test_shas[sha].setdefault("alias_paths", []).append(rel_name)
-                if entries and str(child) not in entries[0]["consumed_files"]:
-                    entries[0]["consumed_files"].append(str(child))
-                continue
             manifest_rec = manifest_index.get(rel_name)
             digest_verified = False
+            manifest_mismatch = False
             if manifest_rec is not None:
                 expected_sha = manifest_rec.get("sha256")
                 if isinstance(sha, str) and sha == expected_sha:
                     digest_verified = True
                 else:
+                    manifest_mismatch = True
                     parsed["internal_conflicts"].append(
                         {
                             "reason": "bundle_artifact_sha256_mismatch",
@@ -3354,14 +2975,37 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                             "observed": sha,
                         }
                     )
-            if digest_verified and meta.get("report_contract_status") == "valid":
-                # Only concrete native digest bindings on contract-valid bundles prove bundle membership.
+            if (
+                not manifest_mismatch
+                and rel_name.endswith("core-junit.xml")
+                and isinstance(sha, str)
+                and sha in seen_test_shas
+                and (
+                    manifest_rec is None
+                    or seen_test_shas[sha].get("bundle_binding")
+                    == "verified_manifest_digest"
+                )
+            ):
+                target_rec = seen_test_shas[sha]
+                target_rec.setdefault("alias_paths", []).append(rel_name)
+                target_rec.setdefault("alias_manifest_verifications", {})[rel_name] = (
+                    digest_verified and parent_integrity_ok
+                )
+                if entries and str(child) not in entries[0]["consumed_files"]:
+                    entries[0]["consumed_files"].append(str(child))
+                continue
+            if digest_verified and parent_integrity_ok:
+                # Only concrete native digest bindings on unconflicted, contract-valid bundles prove membership.
                 parsed["bundle_binding"] = "verified_manifest_digest"
                 parsed["bound_bundle_directory"] = bundle_dir.as_posix()
                 parsed["bound_artifact_digest"] = sha
             else:
                 parsed["bundle_binding"] = "colocated_unverified"
                 parsed["colocated_directory"] = bundle_dir.as_posix()
+                if digest_verified and not parent_integrity_ok:
+                    parsed["revoked_manifest_binding_reason"] = (
+                        "parent_bundle_integrity_conflict"
+                    )
             parsed["bundle_relative_path"] = rel_name
             if isinstance(sha, str):
                 seen_test_shas[sha] = parsed
@@ -3475,14 +3119,44 @@ def _load_dagger_telemetry(path: Path) -> dict[str, Any]:
         if isinstance(native_sb, dict)
         else None
     )
+    origin_exec = payload.get("origin_execution")
+    origin_status = (
+        _norm_optional_str(origin_exec.get("status"))
+        if isinstance(origin_exec, dict)
+        else None
+    )
+    cache_obs = payload.get("cache_observation")
+    isolated_capture = (
+        cache_obs.get("isolated_capture") if isinstance(cache_obs, dict) else None
+    )
+    declared_run_ref = _norm_optional_str(payload.get("run_ref"))
+    declared_attempt_ref = _norm_optional_str(payload.get("attempt_ref"))
+    declared_exec_ref = _norm_optional_str(payload.get("execution_ref"))
+
+    # #87 A.1 bound only links trace <-> invocation; proving ECI execution requires verified #87 B source & origin bindings.
+    proven_b_binding = (
+        corr_status == "bound"
+        and source_binding_status == "verified"
+        and origin_status == "verified"
+        and isolated_capture is not False
+    )
+    if proven_b_binding:
+        exec_prov_status = "verified"
+    elif isolated_capture is False:
+        exec_prov_status = "cache_not_isolated"
+    elif declared_exec_ref is not None:
+        exec_prov_status = "unverified_self_reported_execution_ref_without_b_proof"
+    else:
+        exec_prov_status = "trace_context_only_no_b_execution_binding"
+
     return {
         "source_type": "dagger_telemetry",
         "path": str(path),
         "status": "loaded",
         "correlation": native_corr,
         "source_binding": native_sb,
-        "cache_observation": payload.get("cache_observation"),
-        "origin_execution": payload.get("origin_execution"),
+        "cache_observation": cache_obs,
+        "origin_execution": origin_exec,
         "observability_gate": payload.get("observability_gate"),
         "matched_trace_id": matched_trace_id,
         "matched_session_id": matched_session_id,
@@ -3493,10 +3167,18 @@ def _load_dagger_telemetry(path: Path) -> dict[str, Any]:
         "lineage_span_ids": lineage_span_ids,
         "native_correlation_status": corr_status,
         "source_binding_status": source_binding_status,
+        "origin_execution_status": origin_status,
+        "execution_provenance_status": exec_prov_status,
         "declared_target_source_ref": declared_source_ref,
-        "run_ref": _norm_optional_str(payload.get("run_ref")),
-        "attempt_ref": _norm_optional_str(payload.get("attempt_ref")),
-        "execution_ref": _norm_optional_str(payload.get("execution_ref")),
+        "declared_identity": {
+            "run_ref": declared_run_ref,
+            "attempt_ref": declared_attempt_ref,
+            "execution_ref": declared_exec_ref,
+            "target_source_ref": declared_source_ref,
+        },
+        "run_ref": declared_run_ref if proven_b_binding else None,
+        "attempt_ref": declared_attempt_ref if proven_b_binding else None,
+        "execution_ref": declared_exec_ref if proven_b_binding else None,
         "git_commit": _norm_optional_str(
             payload.get("git_commit") or payload.get("sha")
         ),
@@ -3517,21 +3199,112 @@ def _load_ci_performance(path: Path) -> dict[str, Any]:
             "consumed_files": [str(path)] if path.exists() else [],
         }
     payload = loaded["payload"]
+    internal_conflicts: list[dict[str, Any]] = []
     run_id = payload.get("run_id")
     run_attempt = payload.get("run_attempt")
+    valid_run_id = type(run_id) is int and run_id >= 1
+    valid_attempt = run_attempt is None or (
+        type(run_attempt) is int and run_attempt >= 1
+    )
+    if not valid_run_id:
+        internal_conflicts.append(
+            {"reason": "ci_performance_invalid_run_id", "observed": run_id}
+        )
+    if not valid_attempt:
+        internal_conflicts.append(
+            {"reason": "ci_performance_invalid_run_attempt", "observed": run_attempt}
+        )
+
+    raw_jobs = payload.get("jobs")
+    job_ids: list[int] = []
+    seen_job_ids: set[int] = set()
+    if raw_jobs is not None and not isinstance(raw_jobs, list):
+        internal_conflicts.append(
+            {
+                "reason": "ci_performance_jobs_invalid_type",
+                "observed": type(raw_jobs).__name__,
+            }
+        )
+    elif isinstance(raw_jobs, list):
+        for j_idx, job in enumerate(raw_jobs):
+            if not isinstance(job, dict):
+                internal_conflicts.append(
+                    {"reason": "ci_performance_job_entry_invalid", "index": j_idx}
+                )
+                continue
+            jid = job.get("id")
+            if jid is not None:
+                if type(jid) is not int or jid <= 0:
+                    internal_conflicts.append(
+                        {
+                            "reason": "ci_performance_invalid_job_id",
+                            "index": j_idx,
+                            "observed": jid,
+                        }
+                    )
+                elif jid in seen_job_ids:
+                    internal_conflicts.append(
+                        {"reason": "ci_performance_duplicate_job_id", "job_id": jid}
+                    )
+                else:
+                    seen_job_ids.add(jid)
+                    job_ids.append(jid)
+            if valid_run_id and (run_attempt is None or valid_attempt):
+                try:
+                    cicd_telemetry._validate_job_membership(
+                        job,
+                        run_id=run_id,
+                        run_attempt=run_attempt if run_attempt is not None else 1,
+                    )
+                except cicd_telemetry.TelemetryError as exc:
+                    if not (run_attempt is None and exc.code == "job_attempt_mismatch"):
+                        internal_conflicts.append(
+                            {
+                                "reason": f"ci_performance_{exc.code}",
+                                "index": j_idx,
+                                "job_id": jid if type(jid) is int else None,
+                            }
+                        )
+
     attempt_int = run_attempt if type(run_attempt) is int else None
     rerun_attribution = (
         "unpartitioned_attempt_jobs_snapshot"
         if attempt_int is not None and attempt_int > 1
         else "attempt_1_or_unverified"
     )
+    has_conflict = bool(internal_conflicts)
+    window_sec = payload.get("checks_execution_window_seconds")
+    sub_complete_sec = payload.get("submission_to_checks_complete_seconds")
+    elapsed_proj = (
+        window_sec
+        if isinstance(window_sec, (int, float))
+        else (sub_complete_sec if isinstance(sub_complete_sec, (int, float)) else None)
+    )
     return {
         "source_type": "ci_performance",
         "path": str(path),
-        "status": "loaded",
-        "ci_run_id": _norm_optional_str(run_id),
-        "ci_run_attempt": _norm_optional_str(run_attempt),
+        "status": "invalid" if has_conflict else "loaded",
+        "ci_run_id": None if has_conflict else _norm_optional_str(run_id),
+        "ci_run_attempt": None if has_conflict else _norm_optional_str(run_attempt),
+        "job_ids": [] if has_conflict else sorted(job_ids),
+        "declared_identity": {"run_id": run_id, "run_attempt": run_attempt},
         "git_commit": _norm_optional_str(payload.get("sha")),
+        "conclusion": _norm_optional_str(payload.get("conclusion")),
+        "event": _norm_optional_str(payload.get("event")),
+        "workflow": _norm_optional_str(payload.get("workflow")),
+        "url": _norm_optional_str(payload.get("url")),
+        "queued_before_first_job_seconds": payload.get(
+            "queued_before_first_job_seconds"
+        ),
+        "checks_execution_window_seconds": window_sec,
+        "submission_to_checks_complete_seconds": sub_complete_sec,
+        "elapsed_seconds": elapsed_proj,
+        "critical_finishing_job": payload.get("critical_finishing_job"),
+        "parallel_runner_seconds": payload.get("parallel_runner_seconds"),
+        "first_failed_step_completion_seconds": payload.get(
+            "first_failed_step_completion_seconds"
+        ),
+        "limitations": payload.get("limitations"),
         "ci_provider_provenance": {
             "provider": "github_actions",
             "run_id": run_id,
@@ -3542,11 +3315,21 @@ def _load_ci_performance(path: Path) -> dict[str, Any]:
             "authoritative_ci_end_state": False,
             "rerun_witness_attribution": rerun_attribution,
         },
-        "jobs": payload.get("jobs"),
+        "jobs": raw_jobs,
         "dagger": payload.get("dagger"),
-        "internal_conflicts": [],
+        "internal_conflicts": internal_conflicts,
         "consumed_files": [str(path)],
     }
+
+
+def _sort_mixed_values(vals: Any) -> list[Any]:
+    return sorted(
+        vals,
+        key=lambda v: (
+            type(v).__name__,
+            json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else str(v),
+        ),
+    )
 
 
 def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
@@ -3556,11 +3339,12 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         "execution_ref": set(),
         "report_ref": set(),
         "bundle_directory": set(),
-        "ci_attempt_pair": set(),
     }
     context_keys: dict[str, set[str]] = {
         "invocation_ref": set(),
         "run_attempt_pair": set(),
+        "ci_attempt_context": set(),
+        "pytest_invocation_id": set(),
         "matched_trace_id": set(),
         "trace_anchor_span": set(),
         "trace_dagql_span": set(),
@@ -3574,10 +3358,17 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         "artifact_sha256": set(),
     }
     revisions: set[str] = set()
+    has_conflicts = bool(src.get("internal_conflicts"))
 
     if stype == "verify":
-        if src.get("git_commit"):
+        if src.get("git_commit") and not has_conflicts:
             revisions.add(src["git_commit"])
+    elif stype == "pytest_invocation":
+        if src.get("status") == "loaded" and not has_conflicts:
+            if src.get("invocation_id"):
+                context_keys["pytest_invocation_id"].add(src["invocation_id"])
+            if src.get("git_commit"):
+                revisions.add(src["git_commit"])
     elif stype == "hook_invocation":
         if src.get("invocation_ref"):
             context_keys["invocation_ref"].add(src["invocation_ref"])
@@ -3590,9 +3381,13 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
         for gc in src.get("git_commits") or ():
             revisions.add(gc)
         for ex in src.get("executions") or ():
+            if not ex.get("report_digest_verified", True):
+                continue
             if ex.get("run_ref") and ex.get("attempt_ref"):
                 context_keys["run_attempt_pair"].add(
-                    f"{ex['run_ref']}|{ex['attempt_ref']}"
+                    pytest_contracts.canonical_tuple_key(
+                        ex["run_ref"], ex["attempt_ref"]
+                    )
                 )
             if ex.get("execution_ref"):
                 concrete_keys["execution_ref"].add(ex["execution_ref"])
@@ -3605,10 +3400,16 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
             if ex.get("source_tree_id"):
                 content_keys["source_tree_id"].add(ex["source_tree_id"])
     elif stype in ("execution_bundle", "execution_report"):
-        if src.get("report_contract_status") == "valid":
+        if (
+            src.get("report_contract_status") == "valid"
+            and src.get("verifiable_execution_proven")
+            and not has_conflicts
+        ):
             if src.get("run_ref") and src.get("attempt_ref"):
                 context_keys["run_attempt_pair"].add(
-                    f"{src['run_ref']}|{src['attempt_ref']}"
+                    pytest_contracts.canonical_tuple_key(
+                        src["run_ref"], src["attempt_ref"]
+                    )
                 )
             if src.get("execution_ref"):
                 concrete_keys["execution_ref"].add(src["execution_ref"])
@@ -3620,62 +3421,90 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
                 content_keys["plan_ref"].add(src["plan_ref"])
             if src.get("source_tree_id"):
                 content_keys["source_tree_id"].add(src["source_tree_id"])
-        if src.get("git_commit"):
+        if src.get("git_commit") and not has_conflicts:
             revisions.add(src["git_commit"])
     elif stype in ("junit_xml", "pytest_reportlog"):
-        props = src.get("properties") or {}
-        if src.get("bundle_binding") == "verified_manifest_digest" and src.get(
-            "bound_bundle_directory"
+        if src.get("pytest_invocation_id") and not has_conflicts:
+            context_keys["pytest_invocation_id"].add(src["pytest_invocation_id"])
+        if (
+            src.get("bundle_binding") == "verified_manifest_digest"
+            and src.get("bound_bundle_directory")
+            and not has_conflicts
         ):
             concrete_keys["bundle_directory"].add(src["bound_bundle_directory"])
         if src.get("sha256"):
             # Identical JUnit/reportlog bytes across distinct bundles are content equivalence only.
             content_keys["artifact_sha256"].add(src["sha256"])
-        rref = _norm_optional_str(props.get("run_ref"))
-        aref = _norm_optional_str(props.get("attempt_ref"))
-        if rref and aref:
-            context_keys["run_attempt_pair"].add(f"{rref}|{aref}")
-        inv_v = _norm_optional_str(props.get("invocation_ref"))
-        if inv_v:
-            context_keys["invocation_ref"].add(inv_v)
-        pref = _norm_optional_str(props.get("plan_ref"))
-        if pref:
-            content_keys["plan_ref"].add(pref)
-        gc = _norm_optional_str(props.get("git_commit") or props.get("sha"))
-        if gc:
-            revisions.add(gc)
+        if not has_conflicts:
+            props = src.get("properties") or {}
+            rref = _norm_optional_str(props.get("run_ref"))
+            aref = _norm_optional_str(props.get("attempt_ref"))
+            if rref and aref:
+                context_keys["run_attempt_pair"].add(
+                    pytest_contracts.canonical_tuple_key(rref, aref)
+                )
+            inv_v = _norm_optional_str(props.get("invocation_ref"))
+            if inv_v:
+                context_keys["invocation_ref"].add(inv_v)
+            pref = _norm_optional_str(props.get("plan_ref"))
+            if pref:
+                content_keys["plan_ref"].add(pref)
+            gc = _norm_optional_str(props.get("git_commit") or props.get("sha"))
+            if gc:
+                revisions.add(gc)
     elif stype == "dagger_telemetry":
-        bound = src.get("native_correlation_status") == "bound"
+        bound = src.get("native_correlation_status") == "bound" and not has_conflicts
+        b_verified = bound and src.get("execution_provenance_status") == "verified"
         if bound and src.get("matched_trace_id"):
             tid = src["matched_trace_id"]
             context_keys["matched_trace_id"].add(tid)
             if src.get("anchor_span_id"):
                 context_keys["trace_anchor_span"].add(
-                    f"{tid}|{src.get('matched_session_id') or ''}|{src.get('matched_engine_instance_id') or ''}|{src['anchor_span_id']}"
+                    pytest_contracts.canonical_tuple_key(
+                        tid,
+                        src.get("matched_session_id") or "",
+                        src.get("matched_engine_instance_id") or "",
+                        src["anchor_span_id"],
+                    )
                 )
             if src.get("dagql_span_id"):
-                context_keys["trace_dagql_span"].add(f"{tid}|{src['dagql_span_id']}")
+                context_keys["trace_dagql_span"].add(
+                    pytest_contracts.canonical_tuple_key(tid, src["dagql_span_id"])
+                )
             if src.get("core_span_id"):
-                context_keys["trace_core_span"].add(f"{tid}|{src['core_span_id']}")
-        if bound and src.get("run_ref") and src.get("attempt_ref"):
+                context_keys["trace_core_span"].add(
+                    pytest_contracts.canonical_tuple_key(tid, src["core_span_id"])
+                )
+        if b_verified and src.get("run_ref") and src.get("attempt_ref"):
             context_keys["run_attempt_pair"].add(
-                f"{src['run_ref']}|{src['attempt_ref']}"
+                pytest_contracts.canonical_tuple_key(src["run_ref"], src["attempt_ref"])
             )
-        if bound and src.get("execution_ref"):
+        if b_verified and src.get("execution_ref"):
             concrete_keys["execution_ref"].add(src["execution_ref"])
         if src.get("declared_target_source_ref"):
             # Declared source ref is not verified Tree equivalence until #87 B delivers.
             content_keys["declared_target_source_ref"].add(
                 src["declared_target_source_ref"]
             )
-        if src.get("git_commit"):
+        if src.get("git_commit") and not has_conflicts:
             revisions.add(src["git_commit"])
     elif stype == "ci_performance":
-        if src.get("ci_run_id") and src.get("ci_run_attempt"):
-            concrete_keys["ci_attempt_pair"].add(
-                f"{src['ci_run_id']}|{src['ci_run_attempt']}"
+        if (
+            src.get("status") == "loaded"
+            and not has_conflicts
+            and src.get("ci_run_id")
+            and src.get("ci_run_attempt")
+        ):
+            context_keys["ci_attempt_context"].add(
+                pytest_contracts.canonical_tuple_key(
+                    str(src["ci_run_id"]), str(src["ci_run_attempt"])
+                )
             )
-        if src.get("git_commit"):
+        if (
+            src.get("status") == "loaded"
+            and not has_conflicts
+            and src.get("git_commit")
+        ):
             revisions.add(src["git_commit"])
 
     return {
@@ -3689,15 +3518,20 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
 def _check_scoped_cross_conflicts(
     sources: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Detect conflicts only within the exact matching object/target scope."""
+    """Detect conflicts only within the exact verified object/target scope."""
     conflicts: list[dict[str, Any]] = []
     anchors: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for src in sources:
         if src.get("status") not in ("loaded", "completed"):
             continue
+        src_internal = list(src.get("internal_conflicts") or ())
         stype = src["source_type"]
         if stype in ("execution_bundle", "execution_report"):
-            if src.get("report_contract_status") != "valid":
+            if (
+                src.get("report_contract_status") != "valid"
+                or not src.get("verifiable_execution_proven")
+                or src_internal
+            ):
                 continue
             if src.get("execution_ref"):
                 anchors.setdefault(("execution_ref", src["execution_ref"]), []).append(
@@ -3709,7 +3543,21 @@ def _check_scoped_cross_conflicts(
                 ).append(src)
         elif stype == "hook_invocation":
             inv_ref = src.get("invocation_ref")
-            for ex in src.get("executions") or ():
+            stem = Path(src["path"]).stem if isinstance(src.get("path"), str) else None
+            for idx_e, ex in enumerate(src.get("executions") or ()):
+                if not ex.get("report_digest_verified", True):
+                    continue
+                unit_stub = {
+                    "execution_index": idx_e,
+                    "artifact": ex.get("artifact"),
+                    "scope": ex.get("scope"),
+                    "keys": {},
+                }
+                if any(
+                    _conflict_targets_unit(c, unit_stub, ex, stem=stem)
+                    for c in src_internal
+                ):
+                    continue
                 hook_exec = {
                     "source_type": "hook_execution",
                     "invocation_ref": inv_ref,
@@ -3725,20 +3573,29 @@ def _check_scoped_cross_conflicts(
                     ).append(hook_exec)
                 if ex.get("run_ref") and ex.get("attempt_ref"):
                     anchors.setdefault(
-                        ("run_attempt_binding", f"{ex['run_ref']}|{ex['attempt_ref']}"),
+                        (
+                            "run_attempt_binding",
+                            pytest_contracts.canonical_tuple_key(
+                                ex["run_ref"], ex["attempt_ref"]
+                            ),
+                        ),
                         [],
                     ).append(hook_exec)
                     if ex.get("remote_ref"):
                         anchors.setdefault(
                             (
                                 "push_ref_target",
-                                f"{ex['run_ref']}|{ex['attempt_ref']}|{ex['remote_ref']}",
+                                pytest_contracts.canonical_tuple_key(
+                                    ex["run_ref"], ex["attempt_ref"], ex["remote_ref"]
+                                ),
                             ),
                             [],
                         ).append(hook_exec)
         elif (
             stype == "dagger_telemetry"
             and src.get("native_correlation_status") == "bound"
+            and src.get("execution_provenance_status") == "verified"
+            and not src_internal
         ):
             if src.get("execution_ref"):
                 anchors.setdefault(("execution_ref", src["execution_ref"]), []).append(
@@ -3746,12 +3603,33 @@ def _check_scoped_cross_conflicts(
                 )
         elif (
             stype == "ci_performance"
+            and src.get("status") == "loaded"
+            and not src_internal
             and src.get("ci_run_id")
             and src.get("ci_run_attempt")
         ):
             anchors.setdefault(
-                ("ci_attempt", f"{src['ci_run_id']}|{src['ci_run_attempt']}"), []
+                (
+                    "ci_attempt",
+                    pytest_contracts.canonical_tuple_key(
+                        str(src["ci_run_id"]), str(src["ci_run_attempt"])
+                    ),
+                ),
+                [],
             ).append(src)
+            for job in src.get("jobs") or ():
+                if isinstance(job, dict) and type(job.get("id")) is int:
+                    anchors.setdefault(
+                        (
+                            "ci_job",
+                            pytest_contracts.canonical_tuple_key(
+                                str(src["ci_run_id"]),
+                                str(src["ci_run_attempt"]),
+                                job["id"],
+                            ),
+                        ),
+                        [],
+                    ).append(job)
 
     # Note: run_attempt does NOT force single commit/tree/plan because one pre-push
     # invocation legitimately targets multiple refs with distinct trees and plans.
@@ -3760,23 +3638,29 @@ def _check_scoped_cross_conflicts(
         "bundle_directory": ("exit_code", "git_commit", "source_tree_id", "report_ref"),
         "push_ref_target": ("exit_code", "git_commit", "source_tree_id"),
         "run_attempt_binding": ("invocation_ref",),
-        "ci_attempt": ("git_commit",),
+        "ci_attempt": ("git_commit", "workflow", "event"),
+        "ci_job": ("name", "status", "conclusion", "started_at", "completed_at"),
     }
     for (anchor_kind, anchor_val), group in anchors.items():
         if len(group) < 2:
             continue
         for field in anchor_invariants.get(anchor_kind, ()):
-            vals = {
+            raw_vals = [
                 item[field]
                 for item in group
                 if field in item and item[field] is not None
-            }
-            if len(vals) > 1:
+            ]
+            # Deduplicate with canonical representation since values may be unhashable or mixed types.
+            distinct_by_repr: dict[str, Any] = {}
+            for val in raw_vals:
+                rkey = json.dumps([type(val).__name__, val], sort_keys=True)
+                distinct_by_repr.setdefault(rkey, val)
+            if len(distinct_by_repr) > 1:
                 conflicts.append(
                     {
                         "anchor": {anchor_kind: anchor_val},
                         "field": field,
-                        "values": sorted(vals),
+                        "values": _sort_mixed_values(distinct_by_repr.values()),
                     }
                 )
         if anchor_kind in ("execution_ref", "bundle_directory"):
@@ -3794,7 +3678,7 @@ def _check_scoped_cross_conflicts(
                         {
                             "anchor": {anchor_kind: anchor_val},
                             "field": "plan_ref",
-                            "values": sorted(pvals),
+                            "values": _sort_mixed_values(pvals),
                         }
                     )
     return conflicts
@@ -3891,7 +3775,6 @@ def _concrete_execution_units(
             "execution_ref": set(),
             "report_ref": set(),
             "bundle_directory": set(),
-            "ci_attempt_pair": set(),
         }
         if ex.get("execution_ref"):
             keys["execution_ref"].add(ex["execution_ref"])
@@ -3920,10 +3803,41 @@ def _concrete_execution_units(
                 "execution_ref": set(),
                 "report_ref": set(),
                 "bundle_directory": set(),
-                "ci_attempt_pair": set(),
             }
         units.append(unit_stub)
     return units
+
+
+def _pairwise_shared_tier_edges(
+    items: list[dict[str, Any]],
+    *,
+    tier: str,
+    verified_only: bool = False,
+    src_index_fn: Any = None,
+) -> dict[tuple[int, int], dict[str, list[str]]]:
+    """Build deterministic undirected shared-key edges using an inverted key index."""
+    buckets: dict[tuple[str, str], list[int]] = {}
+    for idx, entry in enumerate(items):
+        if verified_only and not entry.get("verified", True):
+            continue
+        key_map = entry[tier]
+        for k_name, vals in key_map.items():
+            for val in vals:
+                buckets.setdefault((k_name, val), []).append(idx)
+    raw_edges: dict[tuple[int, int], dict[str, set[str]]] = {}
+    for (k_name, val), idxs in buckets.items():
+        if len(idxs) < 2:
+            continue
+        for pos_a, u in enumerate(idxs):
+            for v in idxs[pos_a + 1 :]:
+                if src_index_fn is not None and src_index_fn(u) == src_index_fn(v):
+                    continue
+                pair = (u, v) if u < v else (v, u)
+                raw_edges.setdefault(pair, {}).setdefault(k_name, set()).add(val)
+    return {
+        pair: {k: sorted(vs) for k, vs in sorted(kmap.items())}
+        for pair, kmap in sorted(raw_edges.items())
+    }
 
 
 def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3942,35 +3856,13 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             src_unit_indices.setdefault(idx, []).append(u["unit_index"])
             units.append(u)
 
-    unit_edges: dict[tuple[int, int], dict[str, list[str]]] = {}
-    for u_idx in range(len(units)):
-        unit_u = units[u_idx]
-        if not unit_u.get("verified", True):
-            continue
-        for v_idx in range(u_idx + 1, len(units)):
-            unit_v = units[v_idx]
-            if unit_u["src_idx"] == unit_v["src_idx"] or not unit_v.get(
-                "verified", True
-            ):
-                continue
-            eshared: dict[str, list[str]] = {}
-            for key, vals in unit_u["keys"].items():
-                inter = sorted(vals & unit_v["keys"][key])
-                if inter:
-                    eshared[key] = inter
-            if eshared:
-                unit_edges[(u_idx, v_idx)] = eshared
-
-    ctx_edges: dict[tuple[int, int], dict[str, list[str]]] = {}
-    for i in range(len(sources)):
-        for j in range(i + 1, len(sources)):
-            cshared: dict[str, list[str]] = {}
-            for key, vals in identities[i]["context"].items():
-                inter = sorted(vals & identities[j]["context"][key])
-                if inter:
-                    cshared[key] = inter
-            if cshared:
-                ctx_edges[(i, j)] = cshared
+    unit_edges = _pairwise_shared_tier_edges(
+        units,
+        tier="keys",
+        verified_only=True,
+        src_index_fn=lambda u_idx: units[u_idx]["src_idx"],
+    )
+    ctx_edges = _pairwise_shared_tier_edges(identities, tier="context")
 
     raw_unit_components = _connected_components(len(units), unit_edges)
     execution_groups: list[dict[str, Any]] = []
@@ -4039,6 +3931,12 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
 
+    content_edges = _pairwise_shared_tier_edges(identities, tier="content")
+    rev_buckets: dict[str, list[int]] = {}
+    for idx, entry in enumerate(identities):
+        for rval in entry["revision"]:
+            rev_buckets.setdefault(rval, []).append(idx)
+
     for idx, src in enumerate(sources):
         mine = identities[idx]
         internal_conflicts = list(src.get("internal_conflicts") or ())
@@ -4054,34 +3952,44 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
         exec_matches: dict[str, list[str]] = {
             k: sorted(v) for k, v in sorted(exec_agg.items())
         }
-        ctx_matches: dict[str, list[str]] = {}
-        content_matches: dict[str, list[str]] = {}
-        rev_matches: set[str] = set()
-
-        for jdx, other_ids in enumerate(identities):
-            if jdx == idx:
-                continue
-            for key, vals in mine["context"].items():
-                shared = vals & other_ids["context"][key]
-                if shared:
-                    ctx_matches.setdefault(key, []).extend(sorted(shared))
-            for key, vals in mine["content"].items():
-                shared = vals & other_ids["content"][key]
-                if shared:
-                    content_matches.setdefault(key, []).extend(sorted(shared))
-            rev_matches.update(mine["revision"] & other_ids["revision"])
-
-        ctx_matches = {k: sorted(set(v)) for k, v in ctx_matches.items()}
-        content_matches = {k: sorted(set(v)) for k, v in content_matches.items()}
-        rev_list = sorted(rev_matches)
+        ctx_agg: dict[str, set[str]] = {}
+        for (a, b), cshared in ctx_edges.items():
+            if a == idx or b == idx:
+                for key, vals in cshared.items():
+                    ctx_agg.setdefault(key, set()).update(vals)
+        ctx_matches: dict[str, list[str]] = {
+            k: sorted(v) for k, v in sorted(ctx_agg.items())
+        }
+        content_agg: dict[str, set[str]] = {}
+        for (a, b), kshared in content_edges.items():
+            if a == idx or b == idx:
+                for key, vals in kshared.items():
+                    content_agg.setdefault(key, set()).update(vals)
+        content_matches: dict[str, list[str]] = {
+            k: sorted(v) for k, v in sorted(content_agg.items())
+        }
+        rev_list = sorted(
+            rval for rval in mine["revision"] if len(rev_buckets.get(rval, ())) >= 2
+        )
 
         hook_u_idxs = (
             src_unit_indices.get(idx, [])
             if src.get("source_type") == "hook_invocation"
             else []
         )
+        expected_unit_count = (
+            src.get("expected_unit_count", len(hook_u_idxs))
+            if src.get("source_type") == "hook_invocation"
+            else 0
+        )
+        missing_expected = (
+            list(src.get("missing_expected_executions") or ())
+            if src.get("source_type") == "hook_invocation"
+            else []
+        )
         is_multi_exec_hook = (
-            src.get("source_type") == "hook_invocation" and len(hook_u_idxs) > 1
+            src.get("source_type") == "hook_invocation"
+            and max(len(hook_u_idxs), expected_unit_count) > 1
         )
         stem = Path(src["path"]).stem if isinstance(src.get("path"), str) else None
         hook_execs = src.get("executions") or []
@@ -4143,12 +4051,16 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             if is_multi_exec_hook:
                 verdict["container_kind"] = "multi_execution_hook"
                 verdict["execution_group_indices"] = group_indices
+                verdict["expected_unit_count"] = expected_unit_count
                 verdict["matched_unit_count"] = matched_unit_count
                 verdict["conflict_unit_count"] = conflict_unit_count
                 verdict["unqueried_unit_count"] = unqueried_unit_count
+                verdict["missing_unit_count"] = len(missing_expected)
                 verdict["execution_units"] = hook_unit_summaries
             elif hook_unit_summaries:
+                verdict["expected_unit_count"] = expected_unit_count
                 verdict["conflict_unit_count"] = conflict_unit_count
+                verdict["missing_unit_count"] = len(missing_expected)
                 verdict["execution_units"] = hook_unit_summaries
         elif src.get("bundle_binding") == "colocated_unverified":
             verdict = {
@@ -4168,11 +4080,26 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
                 "same_execution_proven": False,
                 "reason": "hook_invocation_contains_multiple_independent_executions",
                 "execution_group_indices": group_indices,
+                "expected_unit_count": expected_unit_count,
                 "matched_unit_count": matched_unit_count,
                 "conflict_unit_count": conflict_unit_count,
                 "unqueried_unit_count": unqueried_unit_count,
+                "missing_unit_count": len(missing_expected),
                 "execution_units": hook_unit_summaries,
                 "execution_keys": exec_matches,
+                "context_keys": ctx_matches,
+                "content_keys": content_matches,
+                "revision_keys": rev_list,
+            }
+        elif missing_expected:
+            verdict = {
+                "strength": "standalone_uncorrelated",
+                "same_execution_proven": False,
+                "reason": "expected_hook_execution_missing_from_invocation",
+                "expected_unit_count": expected_unit_count,
+                "missing_unit_count": len(missing_expected),
+                "missing_expected_executions": missing_expected,
+                "execution_keys": {},
                 "context_keys": ctx_matches,
                 "content_keys": content_matches,
                 "revision_keys": rev_list,
@@ -4201,9 +4128,9 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             }
         elif content_matches:
             verdict = {
-                "strength": "content_shared_distinct_execution",
+                "strength": "content_equivalent",
                 "same_execution_proven": False,
-                "reason": "content_identity_reusable_across_independent_executions",
+                "reason": "shared_content_identity_does_not_prove_same_or_distinct_execution",
                 "execution_keys": {},
                 "context_keys": {},
                 "content_keys": content_matches,
@@ -4255,8 +4182,8 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             overall_reason = "multi_execution_container_partially_matched"
     elif any(s == "shared_context_only" for s in strengths):
         overall = "shared_context_only"
-    elif any(s == "content_shared_distinct_execution" for s in strengths):
-        overall = "content_shared_distinct_execution"
+    elif any(s == "content_equivalent" for s in strengths):
+        overall = "content_equivalent"
     elif any(s == "revision_only" for s in strengths):
         overall = "revision_only"
     else:
@@ -4289,9 +4216,13 @@ def _anchor_matches_unit(
     aref = exec_item.get("attempt_ref")
     rem = exec_item.get("remote_ref")
     if "push_ref_target" in anchor and rref and aref and rem:
-        return anchor["push_ref_target"] == f"{rref}|{aref}|{rem}"
+        return anchor["push_ref_target"] == pytest_contracts.canonical_tuple_key(
+            rref, aref, rem
+        )
     if "run_attempt_binding" in anchor and rref and aref:
-        return anchor["run_attempt_binding"] == f"{rref}|{aref}"
+        return anchor["run_attempt_binding"] == pytest_contracts.canonical_tuple_key(
+            rref, aref
+        )
     return False
 
 
@@ -4311,16 +4242,34 @@ def _anchor_matches_source(anchor: dict[str, str], ids: dict[str, Any]) -> bool:
         and anchor["run_attempt_binding"] in ids["context"]["run_attempt_pair"]
     ):
         return True
+    if "push_ref_target" in anchor:
+        try:
+            parts = json.loads(anchor["push_ref_target"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parts = None
+        if (
+            isinstance(parts, list)
+            and len(parts) >= 2
+            and pytest_contracts.canonical_tuple_key(parts[0], parts[1])
+            in ids["context"]["run_attempt_pair"]
+        ):
+            return True
     if (
-        "push_ref_target" in anchor
-        and anchor["push_ref_target"].rsplit("|", 1)[0]
-        in ids["context"]["run_attempt_pair"]
+        "ci_attempt" in anchor
+        and anchor["ci_attempt"] in ids["context"]["ci_attempt_context"]
     ):
         return True
-    return (
-        "ci_attempt" in anchor
-        and anchor["ci_attempt"] in ids["execution"]["ci_attempt_pair"]
-    )
+    if "ci_job" in anchor:
+        try:
+            jparts = json.loads(anchor["ci_job"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            jparts = None
+        if isinstance(jparts, list) and len(jparts) >= 2:
+            return (
+                pytest_contracts.canonical_tuple_key(jparts[0], jparts[1])
+                in ids["context"]["ci_attempt_context"]
+            )
+    return False
 
 
 def build_verify_report(
@@ -4330,6 +4279,7 @@ def build_verify_report(
     invocation_ref: str | None = None,
     hook_invocation: Path | None = None,
     execution_reports: tuple[Path, ...] | list[Path] = (),
+    pytest_invocations: tuple[Path, ...] | list[Path] = (),
     junit_xmls: tuple[Path, ...] | list[Path] = (),
     pytest_reportlogs: tuple[Path, ...] | list[Path] = (),
     dagger_telemetries: tuple[Path, ...] | list[Path] = (),
@@ -4353,6 +4303,8 @@ def build_verify_report(
         )
     for item in execution_reports:
         sources.extend(_load_execution_entries(item))
+    for item in pytest_invocations:
+        sources.extend(_load_pytest_invocation_entry(item))
     for item in junit_xmls:
         sources.append(_parse_junit_xml(item))
     for item in pytest_reportlogs:
@@ -4388,6 +4340,7 @@ def _collect_protected_paths(
     hook_root: Path | None,
     hook_invocation: Path | None,
     execution_reports: tuple[Path, ...] | list[Path],
+    pytest_invocations: tuple[Path, ...] | list[Path],
     junit_xmls: tuple[Path, ...] | list[Path],
     pytest_reportlogs: tuple[Path, ...] | list[Path],
     dagger_telemetries: tuple[Path, ...] | list[Path],
@@ -4417,6 +4370,7 @@ def _collect_protected_paths(
             protected_dirs.add((gd / "eci-hooks").resolve())
     for group in (
         execution_reports,
+        pytest_invocations,
         junit_xmls,
         pytest_reportlogs,
         dagger_telemetries,
@@ -4458,7 +4412,8 @@ def _validate_output_destination(
             )
 
 
-def _write_report_atomic(out: Path, encoded: str) -> None:
+def write_text_atomic(out: Path, encoded: str) -> None:
+    """Atomically write UTF-8 LF text via a sibling temporary file and fsync."""
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
     try:
@@ -4481,6 +4436,10 @@ def _write_report_atomic(out: Path, encoded: str) -> None:
         if tmp_path is not None:
             with suppress(OSError):
                 tmp_path.unlink(missing_ok=True)
+
+
+def _write_report_atomic(out: Path, encoded: str) -> None:
+    write_text_atomic(out, encoded)
 
 
 def format_report_text(report: dict[str, Any]) -> str:
@@ -4541,6 +4500,13 @@ def run_report_cli(argv: list[str] | None = None) -> int:
         help="Execution JSON report or #86 artifact bundle directory (repeatable)",
     )
     parser.add_argument(
+        "--pytest-invocation",
+        type=Path,
+        action="append",
+        default=[],
+        help="Explicit #168 pytest invocation artifact directory (repeatable; no latest scan)",
+    )
+    parser.add_argument(
         "--junit-xml",
         type=Path,
         action="append",
@@ -4578,6 +4544,14 @@ def run_report_cli(argv: list[str] | None = None) -> int:
         help="Stdout output format (default: json)",
     )
     args = parser.parse_args(argv)
+    if (args.hook_root is None) != (args.invocation_ref is None):
+        parser.error("--hook-root and --invocation-ref must be provided together")
+    if args.hook_invocation is not None and (
+        args.hook_root is not None or args.invocation_ref is not None
+    ):
+        parser.error(
+            "--hook-invocation cannot be combined with --hook-root / --invocation-ref"
+        )
     if not any(
         (
             args.verify_dir,
@@ -4585,6 +4559,7 @@ def run_report_cli(argv: list[str] | None = None) -> int:
             args.hook_root,
             args.invocation_ref,
             args.execution_report,
+            args.pytest_invocation,
             args.junit_xml,
             args.pytest_reportlog,
             args.dagger_telemetry,
@@ -4599,6 +4574,7 @@ def run_report_cli(argv: list[str] | None = None) -> int:
         invocation_ref=args.invocation_ref,
         hook_invocation=args.hook_invocation,
         execution_reports=args.execution_report,
+        pytest_invocations=args.pytest_invocation,
         junit_xmls=args.junit_xml,
         pytest_reportlogs=args.pytest_reportlog,
         dagger_telemetries=args.dagger_telemetry,
@@ -4612,6 +4588,7 @@ def run_report_cli(argv: list[str] | None = None) -> int:
             hook_root=args.hook_root,
             hook_invocation=args.hook_invocation,
             execution_reports=args.execution_report,
+            pytest_invocations=args.pytest_invocation,
             junit_xmls=args.junit_xml,
             pytest_reportlogs=args.pytest_reportlog,
             dagger_telemetries=args.dagger_telemetry,

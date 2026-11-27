@@ -26,6 +26,58 @@ def _init_git_repo(root: Path) -> str:
     ).strip()
 
 
+def _create_split_precommit_repo(
+    root: Path,
+    *,
+    checks: tuple[str, ...] = ("whitespace", "forwarding"),
+    init_repo: bool = True,
+):
+    from test_native_hooks import INDEX_SELECTION, _approve_profiles, _source
+
+    if init_repo:
+        root.mkdir(parents=True, exist_ok=True)
+        head = _init_git_repo(root)
+    else:
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip()
+    (root / "lefthook.yml").write_text("min_version: '2.2.2'\n", encoding="utf-8")
+    mod_file = _source(root, "mod", checks)
+    mod_file.write_text("VALUE = 1\n", encoding="utf-8")
+    _approve_profiles(
+        root,
+        INDEX_SELECTION,
+        [("ci-effective-profile.json", "index", "index", "HEAD", checks)],
+    )
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "ci-effective-profile.json",
+            "ci-hygiene.toml",
+            "ci-selection.toml",
+            "lefthook.yml",
+            "src",
+            "tach.toml",
+        ],
+        cwd=root,
+        check=True,
+    )
+    assert hooks.main(["capture", "pre-commit", "--root", str(root)]) == 0
+    inv_dir = root / ".git" / "eci-hooks" / "invocations"
+    inv_file = max(inv_dir.glob("*.json"), key=lambda p: p.stat().st_mtime_ns)
+    binding = hooks.load_invocation_binding(inv_file)
+    assert hook_checks.prepare(root, binding, split_checks=True)["exit_code"] == 0
+    for chk in checks:
+        assert (
+            hook_checks.run_checks(root, binding, job_ref=f"check-{chk}")["exit_code"]
+            == 0
+        )
+    assert hook_checks.reconcile(root, binding)["exit_code"] == 0
+    assert hook_checks.consume_index_result(root, binding)["exit_code"] == 0
+    return head, inv_file, binding
+
+
 def test_parse_lefthook_missing_partial_and_truncated_summary_marks_unknown(tmp_path):
     stdout = tmp_path / "lefthook.stdout"
     stdout.write_text(
@@ -121,8 +173,6 @@ def test_verify_report_real_hook_linked_worktree_and_negative_paths(
     (worktree / "wt.txt").write_text("wt change\n", encoding="utf-8")
     subprocess.run(["git", "add", "wt.txt"], cwd=worktree, check=True)
 
-    capsys_disabled = None
-    _ = capsys_disabled
     assert hooks.main(["capture", "pre-commit", "--root", str(worktree)]) == 0
     inv_dir = (
         main_repo / ".git" / "worktrees" / "linked-wt" / "eci-hooks" / "invocations"
@@ -304,7 +354,7 @@ def test_verify_report_correlation_tiers_bundle_and_onetomany(tmp_path):
             verify_report._load_hook_entry(hook_invocation=inv_b.invocation_path),
         ]
     )
-    assert two_hooks["overall_status"] == "content_shared_distinct_execution"
+    assert two_hooks["overall_status"] == "content_equivalent"
 
     # #86 bundle dir with colocated unverified junit.xml & host/report.json digest check
     bundle_dir = tmp_path / "bundle-86"
@@ -603,57 +653,9 @@ def test_verify_report_out_refuses_to_overwrite_inputs_or_aliases(tmp_path, caps
 def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bound_telemetry(
     tmp_path,
 ):
-    from test_native_hooks import INDEX_SELECTION, _approve_profiles, _source
-
     repo = tmp_path / "repo"
-    repo.mkdir()
-    head = _init_git_repo(repo)
-    (repo / "lefthook.yml").write_text("min_version: '2.2.2'\n", encoding="utf-8")
-    mod_file = _source(repo, "mod", ("whitespace", "forwarding"))
-    mod_file.write_text("VALUE = 1\n", encoding="utf-8")
-    _approve_profiles(
-        repo,
-        INDEX_SELECTION,
-        [
-            (
-                "ci-effective-profile.json",
-                "index",
-                "index",
-                "HEAD",
-                ("whitespace", "forwarding"),
-            )
-        ],
-    )
-    subprocess.run(
-        [
-            "git",
-            "add",
-            "ci-effective-profile.json",
-            "ci-hygiene.toml",
-            "ci-selection.toml",
-            "lefthook.yml",
-            "src",
-            "tach.toml",
-        ],
-        cwd=repo,
-        check=True,
-    )
-
-    assert hooks.main(["capture", "pre-commit", "--root", str(repo)]) == 0
-    inv_dir = repo / ".git" / "eci-hooks" / "invocations"
-    (inv_file,) = inv_dir.glob("*.json")
-    binding = hooks.load_invocation_binding(inv_file)
-    assert hook_checks.prepare(repo, binding, split_checks=True)["exit_code"] == 0
-    assert (
-        hook_checks.run_checks(repo, binding, job_ref="check-whitespace")["exit_code"]
-        == 0
-    )
-    assert (
-        hook_checks.run_checks(repo, binding, job_ref="check-forwarding")["exit_code"]
-        == 0
-    )
-    assert hook_checks.reconcile(repo, binding)["exit_code"] == 0
-    assert hook_checks.consume_index_result(repo, binding)["exit_code"] == 0
+    head, inv_file, binding = _create_split_precommit_repo(repo)
+    inv_dir = inv_file.parent
 
     exec_data = json.loads(
         inv_file.with_suffix(".execution-check-whitespace").read_text(encoding="utf-8")
@@ -1042,8 +1044,7 @@ def test_verify_report_full_execution_matched_across_hook_bundle_manifest_and_bo
         junit_xmls=[b_sha1 / "tests" / "junit.xml", b_sha2 / "tests" / "junit.xml"]
     )
     assert (
-        standalone_same_junit["correlation"]["overall_status"]
-        == "content_shared_distinct_execution"
+        standalone_same_junit["correlation"]["overall_status"] == "content_equivalent"
     )
     assert all(
         s["query_correlation"]["same_execution_proven"] is False
@@ -2600,8 +2601,6 @@ def test_verify_report_round5_native_pytest_subset_handoff_binding_and_unit_disq
         assert bad_out["sources"][0]["report_contract_status"] == "invalid"
 
     # Valid standalone check-result.json passes contract validation.
-    from test_native_hooks import INDEX_SELECTION, _approve_profiles, _source
-
     repo = tmp_path / "repo-r5"
     repo.mkdir()
     head = _init_git_repo(repo)
@@ -2638,51 +2637,7 @@ def test_verify_report_round5_native_pytest_subset_handoff_binding_and_unit_disq
     assert cr_res["sources"][0]["report_contract_status"] == "valid"
 
     # --- Section B: P1-04 real hook_checks split-job subset vs shared Plan ---
-    (repo / "lefthook.yml").write_text("min_version: '2.2.2'\n", encoding="utf-8")
-    mod_file = _source(repo, "mod", ("whitespace", "forwarding"))
-    mod_file.write_text("VALUE = 1\n", encoding="utf-8")
-    _approve_profiles(
-        repo,
-        INDEX_SELECTION,
-        [
-            (
-                "ci-effective-profile.json",
-                "index",
-                "index",
-                "HEAD",
-                ("whitespace", "forwarding"),
-            )
-        ],
-    )
-    subprocess.run(
-        [
-            "git",
-            "add",
-            "ci-effective-profile.json",
-            "ci-hygiene.toml",
-            "ci-selection.toml",
-            "lefthook.yml",
-            "src",
-            "tach.toml",
-        ],
-        cwd=repo,
-        check=True,
-    )
-    assert hooks.main(["capture", "pre-commit", "--root", str(repo)]) == 0
-    inv_dir = repo / ".git" / "eci-hooks" / "invocations"
-    inv_file = max(inv_dir.glob("*.json"), key=lambda p: p.stat().st_mtime_ns)
-    binding = hooks.load_invocation_binding(inv_file)
-    assert hook_checks.prepare(repo, binding, split_checks=True)["exit_code"] == 0
-    assert (
-        hook_checks.run_checks(repo, binding, job_ref="check-whitespace")["exit_code"]
-        == 0
-    )
-    assert (
-        hook_checks.run_checks(repo, binding, job_ref="check-forwarding")["exit_code"]
-        == 0
-    )
-    assert hook_checks.reconcile(repo, binding)["exit_code"] == 0
-    assert hook_checks.consume_index_result(repo, binding)["exit_code"] == 0
+    _head_b, inv_file, binding = _create_split_precommit_repo(repo, init_repo=False)
 
     ws_exec = json.loads(
         inv_file.with_suffix(".execution-check-whitespace").read_text(encoding="utf-8")
@@ -2963,11 +2918,53 @@ def test_verify_report_round5_native_pytest_subset_handoff_binding_and_unit_disq
     assert ok_p103b["sources"][0]["internal_conflicts"] == []
     assert ok_p103b["sources"][0]["producer_artifact_handoff_status"] == "verified"
 
+    def _rehash_handoff(h):
+        body = {k: v for k, v in h.items() if k != "handoff_digest"}
+        return {**body, "handoff_digest": eci_execution._canonical_sha256(body)}
+
+    dup_handoff = _rehash_handoff(
+        {
+            **handoff_1,
+            "artifacts": [handoff_1["artifacts"][0], handoff_1["artifacts"][0]],
+        }
+    )
+    unexp_closure = {
+        **closure_ok[0],
+        "consumer_ref": {"kind": "check", "name": "forwarding"},
+    }
+    unexp_handoff = _rehash_handoff(
+        {
+            **handoff_1,
+            "artifacts": [
+                *handoff_1["artifacts"],
+                {
+                    **handoff_1["artifacts"][0],
+                    "consumer_ref": {"kind": "check", "name": "forwarding"},
+                    "closure_sha256": eci_execution._canonical_sha256(unexp_closure),
+                },
+            ],
+        }
+    )
+
     for label, mutated_rep, expected_detail in (
         (
             "swapped_handoff",
             {**base_rep_p103b, "producer_artifact_handoff": handoff_2},
             "producer_handoff_execution_mismatch",
+        ),
+        (
+            "duplicate_handoff_artifact",
+            {**base_rep_p103b, "producer_artifact_handoff": dup_handoff},
+            "producer_handoff_duplicate_artifact",
+        ),
+        (
+            "unexpected_handoff_artifact",
+            {
+                **base_rep_p103b,
+                "artifact_closure": [*closure_ok, unexp_closure],
+                "producer_artifact_handoff": unexp_handoff,
+            },
+            "producer_handoff_unexpected_artifact",
         ),
         (
             "mutated_prereq",
@@ -3044,3 +3041,787 @@ def test_verify_report_round5_native_pytest_subset_handoff_binding_and_unit_disq
     groups = p105_res["correlation"]["execution_groups"]
     assert len(groups) == 1
     assert sorted(groups[0]["source_indices"]) == [0, 2]
+
+
+def test_verify_report_round6_il01_il02_il03_and_ci_performance_metrics(tmp_path):
+    # I-L01: Same run_id & run_attempt across disjoint jobs stays shared_context_only (NEVER execution_matched).
+    ci_j1 = tmp_path / "ci-j1.json"
+    ci_j2 = tmp_path / "ci-j2.json"
+    sha_hex = "a" * 40
+    ci_j1.write_text(
+        json.dumps(
+            {
+                "run_id": 500,
+                "run_attempt": 2,
+                "sha": sha_hex,
+                "workflow": "CI",
+                "event": "push",
+                "conclusion": "success",
+                "queued_before_first_job_seconds": 3.5,
+                "checks_execution_window_seconds": 12.25,
+                "submission_to_checks_complete_seconds": 15.75,
+                "critical_finishing_job": "checks",
+                "parallel_runner_seconds": 24.0,
+                "first_failed_step_completion_seconds": None,
+                "limitations": ["attempt_jobs_snapshot"],
+                "jobs": [
+                    {
+                        "id": 1,
+                        "run_id": 500,
+                        "run_attempt": 2,
+                        "name": "checks",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ci_j2.write_text(
+        json.dumps(
+            {
+                "run_id": 500,
+                "run_attempt": 2,
+                "sha": sha_hex,
+                "workflow": "CI",
+                "event": "push",
+                "jobs": [{"id": 2, "run_id": 500, "run_attempt": 2}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    il01_res = verify_report.build_verify_report(ci_performances=[ci_j1, ci_j2])
+    assert il01_res["correlation"]["overall_status"] == "shared_context_only"
+    assert il01_res["correlation"]["execution_groups"] == []
+    assert len(il01_res["correlation"]["context_groups"]) == 1
+    assert all(
+        s["query_correlation"]["same_execution_proven"] is False
+        for s in il01_res["sources"]
+    )
+    c1_src = il01_res["sources"][0]
+    assert c1_src["queued_before_first_job_seconds"] == 3.5
+    assert c1_src["checks_execution_window_seconds"] == 12.25
+    assert c1_src["submission_to_checks_complete_seconds"] == 15.75
+    assert c1_src["critical_finishing_job"] == "checks"
+    assert c1_src["parallel_runner_seconds"] == 24.0
+    assert c1_src["first_failed_step_completion_seconds"] is None
+    assert c1_src["limitations"] == ["attempt_jobs_snapshot"]
+    assert c1_src["conclusion"] == "success"
+    assert c1_src["job_ids"] == [1]
+
+    # Same job id with conflicting conclusions triggers ci_job scoped conflict; invalid membership rejected.
+    ci_bad = tmp_path / "ci-bad-jobs.json"
+    ci_bad.write_text(
+        json.dumps(
+            {
+                "run_id": 500,
+                "run_attempt": 2,
+                "jobs": [
+                    {"id": 10, "run_id": 999, "run_attempt": 2},
+                    {"id": 10, "run_id": 500, "run_attempt": 2},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    bad_job_res = verify_report.build_verify_report(ci_performances=[ci_bad])
+    assert bad_job_res["correlation"]["overall_status"] == "mismatch_detected"
+    bad_reasons = {c["reason"] for c in bad_job_res["sources"][0]["internal_conflicts"]}
+    assert "ci_performance_duplicate_job_id" in bad_reasons
+    assert "ci_performance_job_run_mismatch" in bad_reasons
+
+    # I-L02: Non-int run_id / run_attempt must be invalid and never produce execution_matched.
+    ci_str1 = tmp_path / "ci-str1.json"
+    ci_str2 = tmp_path / "ci-str2.json"
+    ci_str1.write_text('{"run_id": "x", "run_attempt": "y"}', encoding="utf-8")
+    ci_str2.write_text('{"run_id": "x", "run_attempt": "y"}', encoding="utf-8")
+    il02_res = verify_report.build_verify_report(ci_performances=[ci_str1, ci_str2])
+    assert il02_res["correlation"]["overall_status"] == "mismatch_detected"
+    for src in il02_res["sources"]:
+        assert src["status"] == "invalid"
+        assert src["ci_run_id"] is None
+        assert src["ci_run_attempt"] is None
+        assert src["query_correlation"]["same_execution_proven"] is False
+        assert src["query_correlation"]["strength"] == "conflict"
+
+    # I-L03: #87 A.1 bound receipts with self-reported execution_ref (no #87 B proof) never yield execution_matched.
+    t1 = tmp_path / "trace-one.json"
+    t2 = tmp_path / "trace-two.json"
+    t1.write_text(
+        json.dumps(
+            {
+                "correlation": {"status": "bound", "matched_trace_id": "trace-one"},
+                "execution_ref": "execution:e",
+            }
+        ),
+        encoding="utf-8",
+    )
+    t2.write_text(
+        json.dumps(
+            {
+                "correlation": {"status": "bound", "matched_trace_id": "trace-two"},
+                "execution_ref": "execution:e",
+            }
+        ),
+        encoding="utf-8",
+    )
+    il03_res = verify_report.build_verify_report(dagger_telemetries=[t1, t2])
+    assert il03_res["correlation"]["overall_status"] == "uncorrelated"
+    for src in il03_res["sources"]:
+        assert src["status"] == "loaded"
+        assert src["execution_ref"] is None
+        assert src["declared_identity"]["execution_ref"] == "execution:e"
+        assert (
+            src["execution_provenance_status"]
+            == "unverified_self_reported_execution_ref_without_b_proof"
+        )
+        assert src["query_correlation"]["same_execution_proven"] is False
+
+    # Verified #87 B proves execution_ref unless isolated_capture is False.
+    t_b_ok = tmp_path / "trace-b-ok.json"
+    t_b_non_iso = tmp_path / "trace-b-non-iso.json"
+    rep_b = tmp_path / "exec-b.json"
+    rep_b.write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                "kind": "engineering-ci-execution-report",
+                "schema_version": 1,
+                "status": "passed",
+                "exit_code": 0,
+                "checks": [],
+                "execution_identity": {
+                    "run_ref": "run:b",
+                    "attempt_ref": "att:1",
+                    "execution_ref": "exec:b",
+                },
+            }
+        )
+    )
+    t_b_ok.write_text(
+        json.dumps(
+            {
+                "correlation": {"status": "bound", "matched_trace_id": "trace-b"},
+                "source_binding": {"source_binding_status": "verified"},
+                "origin_execution": {"status": "verified"},
+                "cache_observation": {"isolated_capture": True},
+                "execution_ref": "exec:b",
+            }
+        ),
+        encoding="utf-8",
+    )
+    t_b_non_iso.write_text(
+        json.dumps(
+            {
+                "correlation": {"status": "bound", "matched_trace_id": "trace-c"},
+                "source_binding": {"source_binding_status": "verified"},
+                "origin_execution": {"status": "verified"},
+                "cache_observation": {"isolated_capture": False},
+                "execution_ref": "exec:b",
+            }
+        ),
+        encoding="utf-8",
+    )
+    b_match = verify_report.build_verify_report(
+        execution_reports=[rep_b], dagger_telemetries=[t_b_ok, t_b_non_iso]
+    )
+    assert b_match["correlation"]["overall_status"] == "partial_execution_matched"
+    assert b_match["sources"][0]["query_correlation"]["strength"] == "execution_matched"
+    assert b_match["sources"][1]["query_correlation"]["strength"] == "execution_matched"
+    assert b_match["sources"][2]["execution_provenance_status"] == "cache_not_isolated"
+    assert b_match["sources"][2]["execution_ref"] is None
+
+
+def test_verify_report_round6_q14_keys_missing_siblings_parent_conflict_and_activation(
+    tmp_path,
+):
+    # Canonical tuple key collision guard: 'a|b'+'c' != 'a'+'b|c'.
+    col_1 = tmp_path / "col1.json"
+    col_2 = tmp_path / "col2.json"
+    for target, rref, aref, eref in (
+        (col_1, "run:a|b", "att:c", "exec:c1"),
+        (col_2, "run:a", "att:b|c", "exec:c2"),
+    ):
+        target.write_bytes(
+            hooks.canonical_event_bytes(
+                {
+                    "kind": "engineering-ci-execution-report",
+                    "schema_version": 1,
+                    "status": "passed",
+                    "exit_code": 0,
+                    "checks": [],
+                    "execution_identity": {
+                        "run_ref": rref,
+                        "attempt_ref": aref,
+                        "execution_ref": eref,
+                    },
+                }
+            )
+        )
+    assert (
+        verify_report.build_verify_report(execution_reports=[col_1, col_2])[
+            "correlation"
+        ]["overall_status"]
+        == "uncorrelated"
+    )
+
+    # Mixed int vs str field values in scoped conflicts never raise TypeError.
+    mix_1 = tmp_path / "mix1.json"
+    mix_2 = tmp_path / "mix2.json"
+    mix_1.write_bytes(col_1.read_bytes())
+    mix_2.write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                "kind": "engineering-ci-execution-report",
+                "schema_version": 1,
+                "status": "failed",
+                "exit_code": "1",
+                "checks": [],
+                "execution_identity": {
+                    "run_ref": "run:a|b",
+                    "attempt_ref": "att:c",
+                    "execution_ref": "exec:c1",
+                },
+            }
+        )
+    )
+    mix_res = verify_report.build_verify_report(execution_reports=[mix_1, mix_2])
+    assert mix_res["correlation"]["overall_status"] == "mismatch_detected"
+    assert any(
+        c["field"] == "exit_code" and set(map(repr, c["values"])) == {"0", "'1'"}
+        for c in mix_res["correlation"]["scoped_conflicts"]
+    )
+
+    # Split pre-commit missing sibling preserves multi_execution_hook & catches shared activation conflict.
+    repo = tmp_path / "split-miss"
+    _head, inv_file, binding = _create_split_precommit_repo(repo)
+    ws_exec = json.loads(
+        inv_file.with_suffix(".execution-check-whitespace").read_text(encoding="utf-8")
+    )
+    ws_bundle = tmp_path / "ws-miss-bundle"
+    ws_bundle.mkdir()
+    (ws_bundle / "report.json").write_bytes(
+        hooks.canonical_event_bytes(ws_exec["report"])
+    )
+    fwd_sidecar = inv_file.with_suffix(".execution-check-forwarding")
+    fwd_bytes = fwd_sidecar.read_bytes()
+    fwd_sidecar.unlink()
+    shared_act = inv_file.with_suffix(".activation")
+    shared_act.write_bytes(
+        inv_file.with_suffix(".activation-check-whitespace").read_bytes()
+    )
+    miss_res = verify_report.build_verify_report(
+        hook_root=repo,
+        invocation_ref=binding.invocation_ref,
+        execution_reports=[ws_bundle],
+    )
+    assert miss_res["correlation"]["overall_status"] == "mismatch_detected"
+    h_src = miss_res["sources"][0]
+    assert h_src["expected_unit_count"] == 2
+    assert h_src["query_correlation"]["container_kind"] == "multi_execution_hook"
+    assert h_src["query_correlation"]["same_execution_proven"] is False
+    h_reasons = {c["reason"] for c in h_src["internal_conflicts"]}
+    assert "hook_expected_execution_missing" in h_reasons
+    assert "hook_shared_activation_conflict" in h_reasons
+    fwd_sidecar.write_bytes(fwd_bytes)
+    shared_act.unlink()
+
+    # Unverified tampered hook claiming healthy bundle execution_ref must NOT inject scoped_conflict onto healthy bundle.
+    ws_sidecar = inv_file.with_suffix(".execution-check-whitespace")
+    tampered_ws = json.loads(ws_sidecar.read_text(encoding="utf-8"))
+    tampered_ws["report"]["exit_code"] = 77
+    ws_sidecar.write_bytes(hooks.canonical_event_bytes(tampered_ws))
+    iso_res = verify_report.build_verify_report(
+        hook_root=repo,
+        invocation_ref=binding.invocation_ref,
+        execution_reports=[ws_bundle],
+    )
+    assert iso_res["correlation"]["scoped_conflicts"] == []
+    assert (
+        iso_res["sources"][1]["query_correlation"]["strength"] == "shared_context_only"
+    )
+    assert iso_res["sources"][1]["query_correlation"]["same_execution_proven"] is False
+
+    # Parent execution_bundle integrity conflict revokes child verified_manifest_digest.
+    bad_parent = tmp_path / "parent-conflict-bundle"
+    bad_parent.mkdir()
+    j_xml = (
+        b'<testsuite tests="1" time="0.1"><testcase name="t" time="0.1"/></testsuite>'
+    )
+    (bad_parent / "junit.xml").write_bytes(j_xml)
+    (bad_parent / "exit-code.txt").write_text("99\n", encoding="utf-8")
+    (bad_parent / "report.json").write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                "kind": "engineering-ci-execution-report",
+                "schema_version": 1,
+                "status": "passed",
+                "exit_code": 0,
+                "checks": [],
+                "junit": j_xml.decode("utf-8"),
+                "execution_identity": {
+                    "run_ref": "run:pc",
+                    "attempt_ref": "att:1",
+                    "execution_ref": "exec:pc",
+                },
+            }
+        )
+    )
+    pc_res = verify_report.build_verify_report(execution_reports=[bad_parent])
+    assert pc_res["correlation"]["overall_status"] == "mismatch_detected"
+    child_j = next(s for s in pc_res["sources"] if s["source_type"] == "junit_xml")
+    assert child_j["bundle_binding"] == "colocated_unverified"
+    assert (
+        child_j["revoked_manifest_binding_reason"] == "parent_bundle_integrity_conflict"
+    )
+    assert child_j["query_correlation"]["same_execution_proven"] is False
+
+
+def test_verify_report_round6_core_junit_manifest_and_post_check_source_rejection(
+    tmp_path, monkeypatch
+):
+    # core-junit.xml matching junit.xml bytes MUST still fail if manifest expects different sha256.
+    b_core = tmp_path / "core-alias-mismatch"
+    b_core.mkdir()
+    j_bytes = (
+        b'<testsuite tests="1" time="0.1"><testcase name="t" time="0.1"/></testsuite>'
+    )
+    j_sha = hashlib.sha256(j_bytes).hexdigest()
+    (b_core / "junit.xml").write_bytes(j_bytes)
+    (b_core / "core-junit.xml").write_bytes(j_bytes)
+    (b_core / "report.json").write_bytes(
+        hooks.canonical_event_bytes(
+            {
+                "kind": "engineering-ci-execution-report",
+                "schema_version": 1,
+                "status": "passed",
+                "exit_code": 0,
+                "checks": [],
+                "execution_identity": {
+                    "run_ref": "run:ca",
+                    "attempt_ref": "att:1",
+                    "execution_ref": "exec:ca",
+                },
+                "artifacts_manifest": [
+                    {"path": "junit.xml", "sha256": j_sha},
+                    {"path": "core-junit.xml", "sha256": "0" * 64},
+                ],
+            }
+        )
+    )
+    core_res = verify_report.build_verify_report(execution_reports=[b_core])
+    assert core_res["correlation"]["overall_status"] == "mismatch_detected"
+    assert any(
+        s.get("bundle_relative_path") == "core-junit.xml"
+        and any(
+            c["reason"] == "bundle_artifact_sha256_mismatch"
+            for c in s["internal_conflicts"]
+        )
+        for s in core_res["sources"]
+    )
+
+    # hook_checks.run_checks retains .execution, .source-rejection, and .timing-run when post-check _index_source fails.
+    import pytest
+    from test_native_hooks import INDEX_SELECTION, _approve_profiles, _source
+
+    repo = tmp_path / "post-rej-repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / "lefthook.yml").write_text("min_version: '2.2.2'\n", encoding="utf-8")
+    mod = _source(repo, "mod", ("whitespace",))
+    mod.write_text("VALUE = 1\n", encoding="utf-8")
+    _approve_profiles(
+        repo,
+        INDEX_SELECTION,
+        [("ci-effective-profile.json", "index", "index", "HEAD", ("whitespace",))],
+    )
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "ci-effective-profile.json",
+            "ci-hygiene.toml",
+            "ci-selection.toml",
+            "lefthook.yml",
+            "src",
+            "tach.toml",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    assert hooks.main(["capture", "pre-commit", "--root", str(repo)]) == 0
+    inv_dir = repo / ".git" / "eci-hooks" / "invocations"
+    (inv_file,) = inv_dir.glob("*.json")
+    binding = hooks.load_invocation_binding(inv_file)
+    assert hook_checks.prepare(repo, binding)["exit_code"] == 0
+
+    orig_worker = hook_checks._source_worker
+
+    def mutating_worker(root, tree, head, op, payload):
+        res = orig_worker(root, tree, head, op, payload)
+        (root / "drifted.txt").write_text("drift\n", encoding="utf-8")
+        subprocess.run(["git", "add", "drifted.txt"], cwd=root, check=True)
+        return res
+
+    monkeypatch.setattr(hook_checks, "_source_worker", mutating_worker)
+    with pytest.raises(hooks.HookEventError, match="index_changed_during_check"):
+        hook_checks.run_checks(repo, binding)
+
+    assert inv_file.with_suffix(".execution").is_file()
+    rej_data = json.loads(
+        inv_file.with_suffix(".source-rejection").read_text(encoding="utf-8")
+    )
+    assert rej_data["reason"] == "index_changed_during_check"
+    timing_run = json.loads(
+        inv_file.with_suffix(".timing-run").read_text(encoding="utf-8")
+    )
+    assert timing_run["status"] == "failed"
+    assert timing_run["source_rejection"] == "index_changed_during_check"
+
+    post_rep = verify_report.build_verify_report(
+        hook_root=repo, invocation_ref=binding.invocation_ref
+    )
+    assert post_rep["correlation"]["overall_status"] == "mismatch_detected"
+    assert any(
+        c["reason"] == "hook_source_rejected_after_execution"
+        and c["detail"] == "index_changed_during_check"
+        for c in post_rep["sources"][0]["internal_conflicts"]
+    )
+    assert (
+        post_rep["sources"][0]["executions"][0]["source_rejection"]
+        == "index_changed_during_check"
+    )
+
+
+def test_verify_report_round6_lifecycle_lefthook_pytest_contracts_168_and_cli(
+    tmp_path,
+):
+    import importlib.util
+    import sys
+
+    import pytest
+
+    from engineering_ci import pytest_contracts
+
+    # 1. verify-timing.json + verify-status.json coexistence & corrupt-timing fallback.
+    coexist = tmp_path / "coexist"
+    coexist.mkdir()
+    out_b = b"summary: (done in 0.10 seconds)\n"
+    err_b = b""
+    (coexist / "lefthook.stdout").write_bytes(out_b)
+    (coexist / "lefthook.stderr").write_bytes(err_b)
+    (coexist / "verify-timing.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "invocation_id": "v-co",
+                "observed_git_head": "a" * 40,
+                "native_started": True,
+                "native_exit_code": 0,
+                "native_exit_source": "natural_exit",
+                "outer_exit_code": 0,
+                "elapsed_seconds": 0.1,
+                "time_source_verified": False,
+                "native_outputs": {
+                    "stdout": {
+                        "path": "lefthook.stdout",
+                        "sha256": hashlib.sha256(out_b).hexdigest(),
+                    },
+                    "stderr": {
+                        "path": "lefthook.stderr",
+                        "sha256": hashlib.sha256(err_b).hexdigest(),
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (coexist / "verify-status.json").write_text(
+        json.dumps({"status": "seal_failed", "native_exit_code": 0}), encoding="utf-8"
+    )
+    co_rep = verify_report.build_verify_report(verify_dir=coexist)
+    assert co_rep["correlation"]["overall_status"] == "mismatch_detected"
+    assert co_rep["sources"][0]["evidence_complete"] is False
+    assert co_rep["sources"][0]["timing_receipt_present"] is True
+    assert co_rep["sources"][0]["status_receipt_present"] is True
+    assert any(
+        c["reason"] == "verify_timing_status_conflict"
+        for c in co_rep["sources"][0]["internal_conflicts"]
+    )
+
+    corrupt_v = tmp_path / "corrupt-v"
+    corrupt_v.mkdir()
+    (corrupt_v / "verify-timing.json").write_text("{corrupt", encoding="utf-8")
+    (corrupt_v / "verify-status.json").write_text(
+        json.dumps(
+            {
+                "status": "seal_failed",
+                "native_started": True,
+                "native_exit_code": 2,
+                "native_exit_source": "natural_exit",
+                "outer_exit_code": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cor_rep = verify_report.build_verify_report(verify_dir=corrupt_v)
+    c_reasons = {c["reason"] for c in cor_rep["sources"][0]["internal_conflicts"]}
+    assert "verify_timing_invalid" in c_reasons
+    assert "verify_timing_status_conflict" in c_reasons
+    assert cor_rep["sources"][0]["status"] == "seal_failed"
+    assert cor_rep["sources"][0]["native_exit_code"] == 2
+
+    # 2. Lefthook Group.Duration cumulative_child_durations, paren job name, and bytes_parsed.
+    lh_log = tmp_path / "lh.stdout"
+    lh_text = (
+        "summary: (done in 1.50 seconds)\n"
+        "✔️ grp (2.20 seconds)\n"
+        "  ✔️ lint (ruff) (1.20 seconds)\n"
+        "  ✔️ test (1.00 seconds)\n"
+    )
+    lh_log.write_text(lh_text, encoding="utf-8", newline="\n")
+    lh_parsed = verify_report.parse_lefthook_output(
+        lh_log,
+        verify_config={
+            "parallel": True,
+            "jobs": [
+                {
+                    "name": "grp",
+                    "group": {
+                        "parallel": True,
+                        "jobs": [{"name": "lint (ruff)"}, {"name": "test"}],
+                    },
+                }
+            ],
+        },
+    )
+    assert lh_parsed["total_duration_semantics"] == "lefthook_reported_wall_seconds"
+    assert lh_parsed["bytes_parsed"]["stdout"] == len(lh_text.encode("utf-8"))
+    grp_node = lh_parsed["items"][0]
+    assert grp_node["kind"] == "group"
+    assert grp_node["duration_semantics"] == "cumulative_child_durations"
+    assert grp_node["wall_clock_seconds"] == "unknown"
+    assert grp_node["children"][0]["name"] == "lint (ruff)"
+
+    # 3. Strict JUnit + ReportLog completeness + pytest_contracts parity with Dagger pytest_report.py.
+    for fname, bad_xml in (
+        ("nonjunit.xml", "<foo/>"),
+        ("negcount.xml", '<testsuite tests="-5"/>'),
+    ):
+        xp = tmp_path / fname
+        xp.write_text(bad_xml, encoding="utf-8")
+        assert verify_report._parse_junit_xml(xp)["status"] == "invalid"
+
+    nested_xml = tmp_path / "nested.xml"
+    nested_xml.write_text(
+        '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="0">'
+        '<testsuite tests="1" failures="1" errors="0" skipped="0"/>'
+        "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    assert verify_report._parse_junit_xml(nested_xml)["counts"]["tests"] == 2
+    assert verify_report._parse_junit_xml(nested_xml)["counts"]["failures"] == 0
+
+    fin_only = tmp_path / "fin-only.jsonl"
+    fin_only.write_text(
+        json.dumps({"$report_type": "SessionFinish", "exitstatus": 0}) + "\n",
+        encoding="utf-8",
+    )
+    assert (
+        verify_report._parse_pytest_reportlog(fin_only)["report_completeness"]
+        == "partial"
+    )
+
+    empty_session = tmp_path / "empty-session.jsonl"
+    empty_session.write_text(
+        json.dumps({"$report_type": "SessionStart"})
+        + "\n"
+        + json.dumps({"$report_type": "SessionFinish", "exitstatus": 0})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert (
+        verify_report._parse_pytest_reportlog(empty_session)["report_completeness"]
+        == "partial"
+    )
+
+    collect_err = tmp_path / "collect-err.jsonl"
+    collect_err.write_text(
+        "\n".join(
+            [
+                json.dumps({"$report_type": "SessionStart", "created_at": 1.0}),
+                json.dumps(
+                    {
+                        "$report_type": "CollectReport",
+                        "nodeid": "tests/test_bad.py",
+                        "when": "collect",
+                        "outcome": "failed",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "$report_type": "SessionFinish",
+                        "exitstatus": 2,
+                        "created_at": 2.0,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ce_parsed = verify_report._parse_pytest_reportlog(collect_err)
+    assert ce_parsed["report_completeness"] == "complete"
+    assert ce_parsed["has_collection"] is True
+    assert ce_parsed["collection_failed_count"] == 1
+    assert ce_parsed["slowest_phases_scope"] == "top_25_phases_not_exhaustive"
+
+    parser_path = (
+        Path(__file__).resolve().parents[1]
+        / ".dagger"
+        / "src"
+        / "engineering_ci_module"
+        / "pytest_report.py"
+    )
+    spec = importlib.util.spec_from_file_location("pytest_report_parity", parser_path)
+    assert spec is not None and spec.loader is not None
+    pr_mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = pr_mod
+    spec.loader.exec_module(pr_mod)
+    for xml_in, code_in, out_in in (
+        ('<testsuite tests="1" failures="0" errors="0" skipped="0"/>', 0, "ok"),
+        (
+            '<testsuite tests="1" failures="1" errors="0" skipped="0"><testcase classname="a" name="b"><failure>assert 1 == 2</failure></testcase></testsuite>',
+            1,
+            "fail",
+        ),
+        ("", 2, "crash"),
+        ('<testsuite tests="0" failures="0" errors="0" skipped="0"/>', 5, "empty"),
+    ):
+        dagger_payload = pr_mod.summarize_pytest(xml_in, code_in, out_in)
+        assert pytest_contracts.is_native_pytest_v1_shape(dagger_payload) is True
+        assert pytest_contracts.validate_native_pytest_v1(dagger_payload) is None
+
+    # 4. #168 explicit pytest invocation directory + no latest scan + CLI arg checks.
+    p168_parent = tmp_path / "artifacts-pytest"
+    p168_inv = p168_parent / "pytest-inv-1"
+    p168_inv.mkdir(parents=True)
+    meta_168 = {
+        "kind": "engineering-ci-pytest-invocation",
+        "schema_version": 1,
+        "invocation_id": "pytest-inv-1",
+        "pytest_version": "9.0.3",
+        "collect_only": False,
+        "selected_items": 4,
+        "deselected_items": 1,
+        "wall_time_seconds": 0.42,
+        "exitstatus": 0,
+        "session_finished": True,
+        "argv": ["-q"],
+    }
+    (p168_inv / "metadata.json").write_text(json.dumps(meta_168), encoding="utf-8")
+    (p168_inv / "summary.json").write_text(json.dumps(meta_168), encoding="utf-8")
+    (p168_inv / "report.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"$report_type": "SessionStart", "created_at": 1.0}),
+                json.dumps(
+                    {
+                        "$report_type": "TestReport",
+                        "nodeid": "tests/a.py::t1",
+                        "when": "setup",
+                        "outcome": "passed",
+                        "duration": 0.01,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "$report_type": "TestReport",
+                        "nodeid": "tests/a.py::t1",
+                        "when": "call",
+                        "outcome": "passed",
+                        "duration": 0.02,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "$report_type": "TestReport",
+                        "nodeid": "tests/a.py::t1",
+                        "when": "teardown",
+                        "outcome": "passed",
+                        "duration": 0.01,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "$report_type": "SessionFinish",
+                        "exitstatus": 0,
+                        "created_at": 1.5,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parent_scan = verify_report.build_verify_report(pytest_invocations=[p168_parent])
+    assert parent_scan["sources"][0]["status"] == "missing_invocation_metadata"
+    assert (
+        parent_scan["sources"][0]["note"]
+        == "directory_scan_for_latest_forbidden_pass_explicit_invocation_dir"
+    )
+
+    out_168 = tmp_path / "out-168.json"
+    assert (
+        main(
+            [
+                "verify",
+                "report",
+                "--pytest-invocation",
+                str(p168_inv),
+                "--out",
+                str(out_168),
+            ]
+        )
+        == 0
+    )
+    loaded_168 = json.loads(out_168.read_text(encoding="utf-8"))
+    assert loaded_168["correlation"]["overall_status"] == "shared_context_only"
+    inv_src = next(
+        s for s in loaded_168["sources"] if s["source_type"] == "pytest_invocation"
+    )
+    assert inv_src["selected_items"] == 4
+    assert inv_src["deselected_items"] == 1
+    assert inv_src["wall_time_seconds"] == 0.42
+
+    # Refuse overwriting files inside --pytest-invocation store.
+    assert (
+        main(
+            [
+                "verify",
+                "report",
+                "--pytest-invocation",
+                str(p168_inv),
+                "--out",
+                str(p168_inv / "derived.json"),
+            ]
+        )
+        == 2
+    )
+
+    # CLI argument pairing / mutual-exclusion validation.
+    for bad_argv in (
+        ["--hook-root", str(tmp_path)],
+        ["--invocation-ref", "invocation:" + ("0" * 32)],
+        [
+            "--hook-invocation",
+            str(tmp_path / "inv.json"),
+            "--hook-root",
+            str(tmp_path),
+            "--invocation-ref",
+            "invocation:" + ("0" * 32),
+        ],
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            verify_report.run_report_cli(bad_argv)
+        assert exc_info.value.code == 2

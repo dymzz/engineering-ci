@@ -8,13 +8,17 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 from contextlib import suppress
 from pathlib import Path
 from time import perf_counter, time_ns
 from uuid import uuid4
 
-from engineering_ci.verify_report import parse_lefthook_output, run_report_cli
+from engineering_ci.verify_report import (
+    _collect_config_tree,
+    parse_lefthook_output,
+    run_report_cli,
+    write_text_atomic,
+)
 
 _TIMING_BOUNDARIES = {
     "post_seal_io_excluded": True,
@@ -60,29 +64,30 @@ def _safe_native_outputs(stdout_path, stderr_path):
     return outputs
 
 
-def _write_json_atomic(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = None
+def _safe_lefthook_summary(
+    stdout_path, stderr_path, *, verify_config=None, native_exit_code=None
+):
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_path = Path(handle.name)
-            handle.write(json.dumps(payload, indent=2) + "\n")
-            handle.flush()
-            with suppress(OSError):
-                os.fsync(handle.fileno())
-        tmp_path.replace(path)
-    finally:
-        if tmp_path is not None:
-            with suppress(OSError):
-                tmp_path.unlink(missing_ok=True)
+        return parse_lefthook_output(
+            stdout_path,
+            stderr_path,
+            verify_config=verify_config,
+            native_exit_code=native_exit_code,
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "parser": "lefthook-v2.2.2-bounded",
+            "authority": "diagnostic_only",
+            "summary_present": False,
+            "parse_error": {"type": type(exc).__name__, "message": str(exc)},
+            "counts": {"passed": 0, "failed": 0, "skipped": 0, "unknown": 0},
+            "items": [],
+            "jobs": [],
+        }
+
+
+def _write_json_atomic(path, payload):
+    write_text_atomic(path, json.dumps(payload, indent=2) + "\n")
 
 
 def _write_status_best_effort(invocation, payload):
@@ -393,7 +398,7 @@ def _verify(out):
                         started_at_ns=started_at_ns,
                         completed_at_ns=None,
                         native_outputs=_safe_native_outputs(stdout_path, stderr_path),
-                        lefthook_summary=parse_lefthook_output(
+                        lefthook_summary=_safe_lefthook_summary(
                             stdout_path,
                             stderr_path,
                             verify_config=parsed_verify_config,
@@ -457,7 +462,7 @@ def _verify(out):
             interrupt_exit_code = None
             interrupt_exit_source = "unknown_spawn"
         lefthook_summary = (
-            parse_lefthook_output(
+            _safe_lefthook_summary(
                 stdout_path,
                 stderr_path,
                 verify_config=parsed_verify_config,
@@ -539,6 +544,7 @@ def _verify(out):
             "elapsed_seconds": report_prep_seconds,
             "status": "ok",
         }
+        _, declared_leaf_paths = _collect_config_tree(parsed_verify_config)
         receipt = {
             "schema_version": 2,
             "invocation_id": invocation.name,
@@ -559,9 +565,18 @@ def _verify(out):
                     ended_at_ns - started_at_ns if wall_clock_monotonic else None
                 ),
             },
+            "native_started": True,
             "native_exit_code": native_exit,
+            "native_exit_source": "natural_exit",
+            "outer_exit_code": exit_code,
             "native_outputs": native_outputs,
             "lefthook_summary": lefthook_summary,
+            "declared_verify_jobs": ["/".join(p) for p in declared_leaf_paths],
+            "child_references": {
+                "status": "none_emitted_by_native_dagger_check",
+                "reason": "lefthook_verify_invokes_raw_dagger_check_without_bundle_export",
+                "references": [],
+            },
         }
         receipt_path = invocation / "verify-timing.json"
         _write_json_atomic(receipt_path, receipt)
@@ -606,6 +621,13 @@ def _verify(out):
         }
         if native_outputs is None:
             native_outputs = _safe_native_outputs(stdout_path, stderr_path)
+        if lefthook_summary is None:
+            lefthook_summary = _safe_lefthook_summary(
+                stdout_path,
+                stderr_path,
+                verify_config=parsed_verify_config,
+                native_exit_code=native_exit,
+            )
         _write_status_best_effort(
             invocation,
             _status_payload(
