@@ -56,6 +56,7 @@ depends_on = [
     "engineering_ci.cli.verify",
     "engineering_ci.dagger_telemetry",
     "engineering_ci.execution",
+    "engineering_ci.git_source",
     "engineering_ci.hooks",
     "engineering_ci.hygiene",
     "engineering_ci.release.version",
@@ -347,6 +348,7 @@ depends_on = []
 path = "engineering_ci.tools.consumer"
 depends_on = [
     "engineering_ci._paths",
+    "engineering_ci.git_source",
 ]
 
 [[modules]]

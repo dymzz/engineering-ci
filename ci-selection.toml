@@ -193,6 +193,7 @@ declared_checks = [
 ]
 "engineering_ci.cli" = [
     "tests.test_github_runs",
+    "tests.test_native_hooks",
     "tests.test_release_verification",
     "tests.test_unified_cli",
     "tests.test_verify_cli",
@@ -235,7 +236,7 @@ declared_checks = [
     "tests.test_terminal_expected",
     "tests.test_workflow_security_checks",
 ]
-"engineering_ci.git_source" = ["tests.test_execution"]
+"engineering_ci.git_source" = ["tests.test_execution", "tests.test_native_hooks"]
 "engineering_ci.github_cli" = [
     "tests.test_github_runs",
     "tests.test_release_verification",
