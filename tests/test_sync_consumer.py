@@ -312,6 +312,44 @@ class VersionSyncTests(unittest.TestCase):
                 Path(sanitized_target["PYTHONPATH"]).resolve(), custom_lib.resolve()
             )
 
+            # 3. Implicit `uv run` VIRTUAL_ENV matching active non-consumer sys.prefix (even out-of-repo)
+            #    is stripped while preserving explicit external UV_PROJECT_ENVIRONMENT.
+            out_of_repo_eci_venv = tmp / "out-of-repo-eci-venv"
+            (out_of_repo_eci_venv / "Scripts").mkdir(parents=True)
+            orig_prefix = sys.prefix
+            orig_base_prefix = getattr(sys, "base_prefix", sys.prefix)
+            try:
+                sys.prefix = str(out_of_repo_eci_venv)
+                sys.base_prefix = str(tmp / "system-python")
+                implicit_env = clean_git_env()
+                implicit_env["UV_PROJECT_ENVIRONMENT"] = str(custom_venv)
+                implicit_env["VIRTUAL_ENV"] = str(out_of_repo_eci_venv)
+                implicit_env["PATH"] = os.pathsep.join(
+                    [
+                        str(out_of_repo_eci_venv / "Scripts"),
+                        implicit_env.get("PATH", ""),
+                    ]
+                )
+                sanitized_implicit = sync.consumer_subprocess_env(
+                    eci_linked, consumer, base_env=implicit_env
+                )
+            finally:
+                sys.prefix = orig_prefix
+                sys.base_prefix = orig_base_prefix
+            self.assertEqual(
+                Path(sanitized_implicit["UV_PROJECT_ENVIRONMENT"]).resolve(),
+                custom_venv.resolve(),
+            )
+            self.assertNotIn("VIRTUAL_ENV", sanitized_implicit)
+            implicit_path_parts = {
+                Path(p).resolve()
+                for p in sanitized_implicit["PATH"].split(os.pathsep)
+                if p
+            }
+            self.assertNotIn(
+                (out_of_repo_eci_venv / "Scripts").resolve(), implicit_path_parts
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,12 @@ def consumer_subprocess_env(
     src_root = source.resolve()
     cons_root = consumer.resolve()
     stripped_envs: list[Path] = []
+    kept_uv_env: Path | None = None
+    active_prefix = (
+        _resolved_optional_path(sys.prefix)
+        if sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+        else None
+    )
 
     for target in ("UV_PROJECT", "UV_PROJECT_ENVIRONMENT"):
         for key in _matching_env_keys(env, target):
@@ -80,14 +86,27 @@ def consumer_subprocess_env(
                     resolved_env = _resolved_optional_path(val)
                     if resolved_env is not None and resolved_env not in stripped_envs:
                         stripped_envs.append(resolved_env)
+            elif target == "UV_PROJECT_ENVIRONMENT" and val:
+                kept_uv_env = _resolved_optional_path(val)
 
     for key in _matching_env_keys(env, "VIRTUAL_ENV"):
         venv_val = env.get(key)
         if not venv_val:
             continue
         resolved_venv = _resolved_optional_path(venv_val)
-        if _is_eci_owned_path(venv_val, source=src_root, consumer=cons_root) or (
-            resolved_venv is not None and resolved_venv in stripped_envs
+        implicit_out_of_repo_eci = (
+            active_prefix is not None
+            and resolved_venv is not None
+            and resolved_venv == active_prefix
+            and not (
+                resolved_venv == cons_root or resolved_venv.is_relative_to(cons_root)
+            )
+            and resolved_venv != kept_uv_env
+        )
+        if (
+            _is_eci_owned_path(venv_val, source=src_root, consumer=cons_root)
+            or (resolved_venv is not None and resolved_venv in stripped_envs)
+            or implicit_out_of_repo_eci
         ):
             env.pop(key, None)
             if resolved_venv is not None and resolved_venv not in stripped_envs:

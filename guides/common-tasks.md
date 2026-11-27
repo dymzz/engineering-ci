@@ -23,7 +23,7 @@ export PYTHONPATH="<当前检出>/src"
 仅切换目录（`cd` / `Set-Location`）**不会**自动重绑环境变量，会话作用域变量会随子进程继承传播：
 - 在同一 Shell 切换至另一个 ECI worktree 时，必须重设 `PYTHONPATH="<新检出>/src"`；切回主管理 checkout 时应移除 `PYTHONPATH`（含守卫的新版 editable CLI 在同仓另一检出触发 `PYTHONPATH` 错配时会以退出码 `2` 阻断提示，直接 Python 调用仍依赖正确的会话绑定）。
 - 进入独立消费者项目（如 `cd ../consumer`）执行消费者 `git` / `uv` / `dagger` 时，必须先清除 `UV_PROJECT_ENVIRONMENT`、`UV_PROJECT`、`VIRTUAL_ENV`、`PYTHONPATH`（PowerShell：`Remove-Item Env:UV_PROJECT_ENVIRONMENT, Env:UV_PROJECT, Env:VIRTUAL_ENV, Env:PYTHONPATH -ErrorAction SilentlyContinue`；sh：`unset UV_PROJECT_ENVIRONMENT UV_PROJECT VIRTUAL_ENV PYTHONPATH`）或显式指向消费者自身环境，避免继续继承 ECI 的共享 `.venv` 与 `src/`。
-- 从 ECI 会话调用 `python -P -m engineering_ci.tools.consumer --consumer <目录>` 跨仓同步时，工具会在向 `cwd=consumer` 拉起 `dagger develop`/`check` 与 `git add`/`commit`/`push` 前自动剥离归属 ECI 检出的 `UV_PROJECT*`/`VIRTUAL_ENV`/`PYTHONPATH`（及对应 `.venv/{Scripts,bin}` `PATH` 项），同时保留调用方显式指定给消费者的非 ECI 目标环境。
+- 从 ECI 会话调用 `python -P -m engineering_ci.tools.consumer --consumer <目录>` 跨仓同步时，工具会在向 `cwd=consumer` 拉起 `dagger develop`/`check` 与 `git add`/`commit`/`push` 前自动剥离归属 ECI 检出的 `UV_PROJECT*`/`VIRTUAL_ENV`/`PYTHONPATH`（及对应 `.venv/{Scripts,bin}` `PATH` 项，含未显式指向消费端且等于当前激活解释器前缀的隐式 `VIRTUAL_ENV`），同时保留调用方显式指定给消费者的非 ECI 目标环境。
 
 查看状态并核对或准备版本（消费端始终携带 `--no-sync`，避免触发隐式同步改写共享环境的 editable `.pth` 或误删超集包）；例如准备 v0.7.0：
 
