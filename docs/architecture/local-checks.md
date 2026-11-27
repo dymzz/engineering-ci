@@ -52,5 +52,7 @@ Coverage 是显式开关，根仓没有额外增加覆盖率阈值。
 [Python 静态分析](testing/python-static-analysis.md)。
 公共消费者继续调用既有 `python-*` Functions，见[公共接口](../delivery/public-components.md)。
 
-PR CI 的三个现有 Job 调用以上原生定义；YAML 管远端依赖与权限，Python 不再镜像整份 Workflow。
+PR CI 的四个现有 Job 调用以上原生定义，并按 [CI 检查适用性](ci-applicability.md)
+从实际累积变更集决定是否执行对应 Check；不适用时只记录 `not_applicable`，不伪造原生
+结果。YAML 管远端依赖与权限，Python 不再镜像整份 Workflow。
 依赖安全扫描、Python Matrix 和四个静态分析检查仍由正式发布的显式策略调用，未在默认检查中暗中增加。

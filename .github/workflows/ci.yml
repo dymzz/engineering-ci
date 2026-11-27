@@ -31,8 +31,76 @@ permissions:
   contents: read
 
 jobs:
+  change-applicability:
+    name: change-applicability / candidate scope
+    outputs:
+      lint: ${{ steps.decide.outputs.lint }}
+      format_check: ${{ steps.decide.outputs.format_check }}
+      tests: ${{ steps.decide.outputs.tests }}
+      version: ${{ steps.decide.outputs.version }}
+      lock: ${{ steps.decide.outputs.lock }}
+      candidate_status: ${{ steps.decide.outputs.candidate_status }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+          python-version: '3.14'
+      - name: Sync locked host dependencies
+        run: uv sync --locked
+      - name: Decide applicable checks for the cumulative candidate
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            python -m engineering_ci.cli ci-applicability
+            --root .
+            --config ci-applicability.toml
+            --event "$EVENT_NAME"
+            --output "$RUNNER_TEMP/ci-applicability.json"
+            --github-output "$GITHUB_OUTPUT"
+            --summary "$GITHUB_STEP_SUMMARY"
+          )
+          case "$EVENT_NAME" in
+            pull_request)
+              test -n "$PR_BASE_SHA"
+              args+=(--snapshot commit --base "$PR_BASE_SHA" --head "$HEAD_SHA")
+              ;;
+            push)
+              args+=(--snapshot push --before "$PUSH_BEFORE_SHA"
+                    --after "$HEAD_SHA" --previous-commit "$PUSH_BEFORE_SHA")
+              ;;
+            workflow_call|workflow_dispatch)
+              args+=(--full --full-reason "explicit_${EVENT_NAME}")
+              ;;
+            *)
+              args+=(--full --full-reason "unsupported_event_${EVENT_NAME}")
+              ;;
+          esac
+          uv run --locked --no-sync "${args[@]}"
+      - name: Upload applicability decision
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-applicability
+          path: ${{ runner.temp }}/ci-applicability.json
+          if-no-files-found: ignore
+          retention-days: 7
+
   python-ci:
     name: python-ci / checks
+    needs: [change-applicability]
     outputs:
       artifact_id: ${{ steps.ruff_artifact.outputs.artifact-id }}
     runs-on: ubuntu-24.04
@@ -50,8 +118,10 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Ruff Lint
+        if: ${{ !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.lint != 'false') }}
         run: dagger check --engineering-ci --check=lint
       - name: Ruff Format Check
+        if: ${{ !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.format_check != 'false') }}
         run: dagger check --engineering-ci --check=format-check
       - name: Record release Ruff tool versions
         if: ${{ inputs.coverage }}
@@ -66,6 +136,7 @@ jobs:
           retention-days: 7
 
   sync-tool-tests:
+    needs: [change-applicability]
     outputs:
       artifact_id: ${{ steps.core_artifact.outputs.artifact-id }}
     runs-on: ubuntu-24.04
@@ -83,6 +154,7 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Run all core unit and process tests
+        if: ${{ !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.tests != 'false') }}
         env:
           EXPORT_COVERAGE: ${{ inputs.coverage }}
         shell: bash
@@ -109,6 +181,7 @@ jobs:
           retention-days: 7
 
   version-metadata:
+    needs: [change-applicability]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -124,10 +197,12 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Validate release metadata and root lock consistency
+        if: ${{ !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.version != 'false' || needs.change-applicability.outputs.lock != 'false') }}
         run: dagger check --engineering-ci --check=version --check=lock
 
   dagger-native-telemetry:
     name: dagger-native-telemetry / a1-gate
+    needs: [change-applicability]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -185,7 +260,8 @@ jobs:
             --github-output "$GITHUB_OUTPUT" \
             --output "$RUNNER_TEMP/a1-scope-decision.json"
       - name: Run offline A.1 contract regression when live inputs are unchanged
-        if: ${{ steps.scope.outputs.run_live_capture != 'true' }}
+        id: offline
+        if: ${{ !cancelled() && steps.scope.outputs.run_live_capture != 'true' && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.tests != 'false') }}
         env:
           SCOPE_REASON: ${{ steps.scope.outputs.reason }}
         shell: bash
@@ -216,8 +292,17 @@ jobs:
           out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
           echo "Skipped live 3-Engine capture (${SCOPE_REASON}); offline synthetic contract passed (evidence_level=offline_contract_pass)."
+      - name: Record not-applicable offline A.1 regression
+        if: ${{ !cancelled() && steps.scope.outputs.run_live_capture != 'true' && needs.change-applicability.result == 'success' && needs.change-applicability.outputs.tests == 'false' }}
+        env:
+          SCOPE_REASON: ${{ steps.scope.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::notice::A.1 offline contract regression not_applicable: no repository-source test inputs changed (${SCOPE_REASON})."
+          echo "A.1 offline contract regression: not_applicable (no repository-source test inputs)" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload offline A.1 contract report
-        if: ${{ always() && !cancelled() && steps.scope.outputs.run_live_capture != 'true' }}
+        if: ${{ always() && !cancelled() && steps.scope.outputs.run_live_capture != 'true' && steps.offline.outcome == 'success' }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: dagger-native-telemetry-a1-offline
