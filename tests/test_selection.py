@@ -3220,6 +3220,7 @@ def test_absolute_norecursedirs_refuses_only_test_discovery(tmp_path):
     assert {"whitespace", "forwarding", "docs"} <= {
         item["name"] for item in planned["check_scope"]
     }
+    execution.validate_plan(planned)
 
     # A policy-disabled selection (no tests bound) behaves the same.
     disabled = dataclasses.replace(no_change, status="no_tests")
@@ -3232,6 +3233,7 @@ def test_absolute_norecursedirs_refuses_only_test_discovery(tmp_path):
     assert {"whitespace", "forwarding", "docs"} <= {
         item["name"] for item in planned_disabled["check_scope"]
     }
+    execution.validate_plan(planned_disabled)
 
     # Selecting tests must still refuse the unsupported pattern.
     (path / "tests/test_keep.py").write_text(
