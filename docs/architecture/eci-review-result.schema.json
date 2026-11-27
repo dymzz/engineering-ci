@@ -1,0 +1,946 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:eci:review:result:draft:2.0",
+  "title": "ECI review result — experimental output contract",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "2.0"
+    },
+    "baseline": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "$ref": "#/$defs/text"
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "base": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_kind": {
+          "enum": [
+            "design",
+            "implementation",
+            "acceptance",
+            "audit",
+            "re_review"
+          ]
+        }
+      },
+      "required": [
+        "subject",
+        "head",
+        "base",
+        "task_kind"
+      ],
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "requirements_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "requirements_sha256",
+        "schema_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "result_kind": {
+      "enum": [
+        "complete_request",
+        "partial_batch"
+      ]
+    },
+    "requested_viewpoints": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "specification",
+          "structure",
+          "behavior",
+          "verification"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "centers": {
+      "type": "object",
+      "properties": {
+        "specification": {
+          "type": "object",
+          "properties": {
+            "ECI-S01": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S02": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S03": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S04": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S05": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S06": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S07": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-S08": {
+              "$ref": "#/$defs/rule"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
+        },
+        "structure": {
+          "type": "object",
+          "properties": {
+            "ECI-T01": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T02": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T03": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T04": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T05": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T06": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T07": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-T08": {
+              "$ref": "#/$defs/rule"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
+        },
+        "behavior": {
+          "type": "object",
+          "properties": {
+            "ECI-B01": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B02": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B03": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B04": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B05": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B06": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B07": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-B08": {
+              "$ref": "#/$defs/rule"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
+        },
+        "verification": {
+          "type": "object",
+          "properties": {
+            "ECI-V01": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V02": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V03": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V04": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V05": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V06": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V07": {
+              "$ref": "#/$defs/rule"
+            },
+            "ECI-V08": {
+              "$ref": "#/$defs/rule"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      },
+      "minItems": 0
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      },
+      "minItems": 0
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rule_id": {
+            "enum": [
+              "ECI-S01",
+              "ECI-S02",
+              "ECI-S03",
+              "ECI-S04",
+              "ECI-S05",
+              "ECI-S06",
+              "ECI-S07",
+              "ECI-S08",
+              "ECI-T01",
+              "ECI-T02",
+              "ECI-T03",
+              "ECI-T04",
+              "ECI-T05",
+              "ECI-T06",
+              "ECI-T07",
+              "ECI-T08",
+              "ECI-B01",
+              "ECI-B02",
+              "ECI-B03",
+              "ECI-B04",
+              "ECI-B05",
+              "ECI-B06",
+              "ECI-B07",
+              "ECI-B08",
+              "ECI-V01",
+              "ECI-V02",
+              "ECI-V03",
+              "ECI-V04",
+              "ECI-V05",
+              "ECI-V06",
+              "ECI-V07",
+              "ECI-V08"
+            ]
+          },
+          "subject_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/text"
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "reason": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "required": [
+          "rule_id",
+          "subject_refs",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "disposition": {
+      "type": "object",
+      "properties": {
+        "recommendation": {
+          "enum": [
+            "accept",
+            "revise",
+            "blocked",
+            "needs_evidence",
+            "partial_review"
+          ]
+        },
+        "rationale": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "recommendation",
+        "rationale"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "baseline",
+    "policy",
+    "result_kind",
+    "requested_viewpoints",
+    "centers",
+    "evidence",
+    "findings",
+    "unresolved",
+    "disposition"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "disposition": {
+            "properties": {
+              "recommendation": {
+                "const": "accept"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "result_kind": {
+            "const": "complete_request"
+          },
+          "unresolved": {
+            "maxItems": 0
+          },
+          "findings": {
+            "items": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "nonblocking",
+                    "resolved"
+                  ]
+                }
+              }
+            }
+          },
+          "centers": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "properties": {
+                  "coverage": {
+                    "enum": [
+                      "reviewed",
+                      "not_applicable"
+                    ]
+                  },
+                  "discovery": {
+                    "enum": [
+                      "bounded_complete",
+                      "not_applicable"
+                    ]
+                  },
+                  "checks": {
+                    "items": {
+                      "properties": {
+                        "assessment": {
+                          "enum": [
+                            "satisfied",
+                            "violated"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result_kind": {
+            "const": "complete_request"
+          }
+        },
+        "required": [
+          "result_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "centers": {
+            "properties": {
+              "specification": {
+                "required": [
+                  "ECI-S01",
+                  "ECI-S02",
+                  "ECI-S03",
+                  "ECI-S04",
+                  "ECI-S05",
+                  "ECI-S06",
+                  "ECI-S07",
+                  "ECI-S08"
+                ]
+              },
+              "structure": {
+                "required": [
+                  "ECI-T01",
+                  "ECI-T02",
+                  "ECI-T03",
+                  "ECI-T04",
+                  "ECI-T05",
+                  "ECI-T06",
+                  "ECI-T07",
+                  "ECI-T08"
+                ]
+              },
+              "behavior": {
+                "required": [
+                  "ECI-B01",
+                  "ECI-B02",
+                  "ECI-B03",
+                  "ECI-B04",
+                  "ECI-B05",
+                  "ECI-B06",
+                  "ECI-B07",
+                  "ECI-B08"
+                ]
+              },
+              "verification": {
+                "required": [
+                  "ECI-V01",
+                  "ECI-V02",
+                  "ECI-V03",
+                  "ECI-V04",
+                  "ECI-V05",
+                  "ECI-V06",
+                  "ECI-V07",
+                  "ECI-V08"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "check": {
+      "type": "object",
+      "properties": {
+        "subject_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "property": {
+          "$ref": "#/$defs/text"
+        },
+        "assessment": {
+          "enum": [
+            "satisfied",
+            "violated",
+            "unknown"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true
+        },
+        "finding_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "subject_refs",
+        "property",
+        "assessment",
+        "evidence_refs",
+        "finding_refs",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "assessment": {
+                "const": "satisfied"
+              }
+            },
+            "required": [
+              "assessment"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "assessment": {
+                "const": "violated"
+              }
+            },
+            "required": [
+              "assessment"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_refs": {
+                "minItems": 1
+              },
+              "finding_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "rule": {
+      "type": "object",
+      "properties": {
+        "coverage": {
+          "enum": [
+            "reviewed",
+            "partial",
+            "not_reviewed",
+            "not_applicable"
+          ]
+        },
+        "discovery": {
+          "enum": [
+            "bounded_complete",
+            "partial",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/text"
+        },
+        "method": {
+          "$ref": "#/$defs/text"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check"
+          },
+          "minItems": 0
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "coverage",
+        "discovery",
+        "scope",
+        "method",
+        "evidence_refs",
+        "checks",
+        "limitations"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "coverage": {
+                "const": "reviewed"
+              }
+            },
+            "required": [
+              "coverage"
+            ]
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "minItems": 1
+              },
+              "evidence_refs": {
+                "minItems": 1
+              },
+              "discovery": {
+                "enum": [
+                  "bounded_complete",
+                  "partial",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "coverage": {
+                "const": "not_applicable"
+              }
+            },
+            "required": [
+              "coverage"
+            ]
+          },
+          "then": {
+            "properties": {
+              "discovery": {
+                "const": "not_applicable"
+              },
+              "checks": {
+                "maxItems": 0
+              },
+              "evidence_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "coverage": {
+                "const": "not_reviewed"
+              }
+            },
+            "required": [
+              "coverage"
+            ]
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "maxItems": 0
+              },
+              "limitations": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "coverage": {
+                "const": "partial"
+              }
+            },
+            "required": [
+              "coverage"
+            ]
+          },
+          "then": {
+            "properties": {
+              "limitations": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "discovery": {
+                "const": "bounded_complete"
+              }
+            },
+            "required": [
+              "discovery"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/text"
+        },
+        "kind": {
+          "enum": [
+            "source",
+            "native_execution",
+            "reused",
+            "inference"
+          ]
+        },
+        "source_ref": {
+          "$ref": "#/$defs/text"
+        },
+        "observation": {
+          "$ref": "#/$defs/text"
+        },
+        "scope": {
+          "$ref": "#/$defs/text"
+        },
+        "reuse_basis": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "source_ref",
+        "observation",
+        "scope",
+        "reuse_basis"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "reused"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reuse_basis": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/text"
+        },
+        "severity": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        },
+        "status": {
+          "enum": [
+            "blocking",
+            "nonblocking",
+            "resolved"
+          ]
+        },
+        "title": {
+          "$ref": "#/$defs/text"
+        },
+        "expected": {
+          "$ref": "#/$defs/text"
+        },
+        "actual": {
+          "$ref": "#/$defs/text"
+        },
+        "impact": {
+          "$ref": "#/$defs/text"
+        },
+        "owner_ref": {
+          "$ref": "#/$defs/text"
+        },
+        "repair": {
+          "$ref": "#/$defs/text"
+        },
+        "acceptance": {
+          "$ref": "#/$defs/text"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "history": {
+          "enum": [
+            "new",
+            "existing",
+            "regraded",
+            "resolved"
+          ]
+        },
+        "prior_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true
+        },
+        "change_basis": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "status",
+        "title",
+        "expected",
+        "actual",
+        "impact",
+        "owner_ref",
+        "repair",
+        "acceptance",
+        "evidence_refs",
+        "history",
+        "prior_refs",
+        "change_basis"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "history": {
+                "const": "existing"
+              }
+            },
+            "required": [
+              "history"
+            ]
+          },
+          "then": {
+            "properties": {
+              "prior_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "history": {
+                "const": "regraded"
+              }
+            },
+            "required": [
+              "history"
+            ]
+          },
+          "then": {
+            "properties": {
+              "prior_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "history": {
+                "const": "resolved"
+              }
+            },
+            "required": [
+              "history"
+            ]
+          },
+          "then": {
+            "properties": {
+              "prior_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
