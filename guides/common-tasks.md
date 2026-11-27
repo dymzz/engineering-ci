@@ -46,6 +46,23 @@ uv run --locked --no-sync lefthook install
 文件保持原字节。普通仓和它的 linked worktree 共享安装的 Git Hook，各次
 调用各自保留 Invocation。
 
+并行开发使用 linked worktree 时，统一复用主 checkout 已同步的 `.venv`，不在每个
+worktree 单独维护重复环境：
+- **Git Hook 自动复用与候选源码绑定**：未显式设置 `UV_PROJECT` / `UV_PROJECT_ENVIRONMENT`
+  且当前 linked worktree 自身 `.venv` 不存在或缺少 `engineering_ci` 时，
+  [`scripts/lefthook-arguments.sh`](../scripts/lefthook-arguments.sh) 自动将
+  `UV_PROJECT_ENVIRONMENT` 指向主 checkout 的 `.venv`，防止 `uv run --locked --no-sync`
+  在 worktree 内建出空 `.venv`；在 ECI 自身 linked worktree 中（包含用户显式将
+  `UV_PROJECT_ENVIRONMENT` 指向主仓 `.venv` 的情况），还会将当前 worktree 的 `src/`
+  前置到 `PYTHONPATH`，确保 Hook 运行当前 worktree 的候选源码而非主仓 editable `.pth`
+  指向的旧源码。若某个 worktree 显式同步了自己的独立 `.venv`，则优先保留该环境。
+- **Hook 之外的直接命令**：在 linked worktree 直接运行 `uv run --locked --no-sync ...`
+  （如 `pytest`、`ruff`、`engineering-ci verify`）时，在当前命令作用域设置
+  `UV_PROJECT_ENVIRONMENT=<主仓>/.venv` 即可复用统一环境（`pytest` 已通过
+  `pyproject.toml` 的 `pythonpath = ["src"]` 优先加载当前 worktree 的 `src/`；直接调用
+  `python -P -m engineering_ci...` 时同时设置 `PYTHONPATH=<当前worktree>/src`）。
+  仅在分支变更 `pyproject.toml` / `uv.lock` 依赖时再显式同步环境。
+
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
 本仓根目录已提供 `ci-effective-profile.json`（Index `whitespace` / `forwarding`

@@ -2,7 +2,10 @@
 
 import json
 import os
+import shutil
 import subprocess
+import sysconfig
+import venv
 from pathlib import Path
 
 import pytest
@@ -849,3 +852,235 @@ def test_pre_push_and_pre_commit_reconcile_deleted_paths(tmp_path, hook_env):
     force_receipt = _artifact(push_force, ".receipt")["receipts"][0]
     assert force_receipt["status"] == "matched"
     assert git(remote, "rev-parse", "refs/heads/feature", env=hook_env) == rebased_oid
+
+
+def _create_test_venv(path, *pth_entries):
+    venv.create(path, with_pip=False)
+    if os.name == "nt":
+        site_packages = path / "Lib" / "site-packages"
+    else:
+        candidates = sorted((path / "lib").glob("python*/site-packages"))
+        assert candidates, f"site-packages missing under {path}"
+        site_packages = candidates[0]
+    if pth_entries:
+        (site_packages / "engineering_ci_test.pth").write_text(
+            "\n".join(str(entry) for entry in pth_entries) + "\n",
+            encoding="utf-8",
+        )
+    return site_packages
+
+
+def _clean_uv_env(hook_env, *, extra_path=None):
+    env = {
+        key: value
+        for key, value in hook_env.items()
+        if key.upper() not in {"UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "PYTHONPATH"}
+    }
+    if extra_path is not None:
+        env["PATH"] = os.pathsep.join([str(extra_path), env.get("PATH", "")])
+    return env
+
+
+def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
+    tmp_path, hook_env
+):
+    primary = tmp_path / "primary repo"
+    linked = tmp_path / "linked worktree"
+    _init(primary, hook_env)
+    (primary / "src/engineering_ci/cli").mkdir(parents=True)
+    (primary / "src/engineering_ci/__init__.py").write_bytes(b'MARKER = "primary"\n')
+    (primary / "src/engineering_ci/cli/__init__.py").write_bytes(b"")
+    git(primary, "add", "--all", env=hook_env)
+    git(primary, "commit", "-qm", "baseline", env=hook_env)
+    _create_test_venv(primary / ".venv", primary / "src")
+
+    git(primary, "worktree", "add", "-qb", "linked", str(linked), "HEAD", env=hook_env)
+    (linked / "src/engineering_ci/__init__.py").write_bytes(b'MARKER = "linked"\n')
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv_stub = bin_dir / "uv"
+    uv_stub.write_bytes(
+        b"#!/bin/sh\n"
+        b'printf "UV_PROJECT_ENVIRONMENT=%s\\n" "${UV_PROJECT_ENVIRONMENT:-}"\n'
+        b'printf "PYTHONPATH=%s\\n" "${PYTHONPATH:-}"\n'
+        b'if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ]; then\n'
+        b'  if [ -x "$UV_PROJECT_ENVIRONMENT/Scripts/python.exe" ]; then\n'
+        b'    py="$UV_PROJECT_ENVIRONMENT/Scripts/python.exe"\n'
+        b"  else\n"
+        b'    py="$UV_PROJECT_ENVIRONMENT/bin/python"\n'
+        b"  fi\n"
+        b'  marker=$("$py" -P -c "import engineering_ci; print(engineering_ci.MARKER)" </dev/null)\n'
+        b'  printf "MARKER=%s\\n" "$marker"\n'
+        b"fi\n"
+        b'if [ "$6" = "pre-push" ]; then\n'
+        b'  printf "STDIN=%s\\n" "$(cat)"\n'
+        b"fi\n"
+    )
+    uv_stub.chmod(0o755)
+    base_env = _clean_uv_env(hook_env, extra_path=bin_dir)
+
+    def invoke(cwd, env, *args, stdin_text=None):
+        sh_bin = shutil.which("sh", path=env.get("PATH"))
+        assert sh_bin, "POSIX sh executable not found in hook PATH"
+        result = subprocess.run(
+            [sh_bin, "scripts/lefthook-arguments.sh", *args],
+            cwd=cwd,
+            env=env,
+            input=stdin_text,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=60,
+        )
+        assert result.returncode == 0, _diagnostic(result)
+        return dict(
+            line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+        )
+
+    # 1. Fresh linked worktree without .venv: reuses primary/.venv, binds linked/src, preserves pre-push stdin.
+    push_stdin = "refs/heads/main aaaa refs/heads/main bbbb\n"
+    fresh = invoke(
+        linked,
+        base_env,
+        "run",
+        "pre-push",
+        "origin",
+        "https://example.invalid/repo.git",
+        stdin_text=push_stdin,
+    )
+    assert (
+        Path(fresh["UV_PROJECT_ENVIRONMENT"]).resolve() == (primary / ".venv").resolve()
+    )
+    assert Path(fresh["PYTHONPATH"]).resolve() == (linked / "src").resolve()
+    assert fresh["MARKER"] == "linked"
+    assert fresh["STDIN"].startswith("ECI-PRE-PUSH:")
+    assert push_stdin.strip() in fresh["STDIN"]
+    assert not (linked / ".venv").exists()
+
+    # 2. Empty linked/.venv (e.g. left by an earlier --no-sync): still falls back to primary/.venv + linked/src.
+    _create_test_venv(linked / ".venv")
+    empty_fallback = invoke(linked, base_env, "run", "pre-commit")
+    assert (
+        Path(empty_fallback["UV_PROJECT_ENVIRONMENT"]).resolve()
+        == (primary / ".venv").resolve()
+    )
+    assert Path(empty_fallback["PYTHONPATH"]).resolve() == (linked / "src").resolve()
+    assert empty_fallback["MARKER"] == "linked"
+
+    # 3. Pre-existing PYTHONPATH is preserved behind linked/src using platform path separator.
+    extra_py = str((tmp_path / "extra_py").resolve())
+    with_pypath = invoke(
+        linked, {**base_env, "PYTHONPATH": extra_py}, "run", "pre-commit"
+    )
+    entries = with_pypath["PYTHONPATH"].split(os.pathsep)
+    assert Path(entries[0]).resolve() == (linked / "src").resolve()
+    assert Path(entries[1]).resolve() == Path(extra_py).resolve()
+    assert with_pypath["MARKER"] == "linked"
+
+    # 4. Explicit UV_PROJECT_ENVIRONMENT pointing at primary/.venv still binds linked/src.
+    explicit_shared = invoke(
+        linked,
+        {**base_env, "UV_PROJECT_ENVIRONMENT": str(primary / ".venv")},
+        "run",
+        "pre-commit",
+    )
+    assert Path(explicit_shared["PYTHONPATH"]).resolve() == (linked / "src").resolve()
+    assert explicit_shared["MARKER"] == "linked"
+
+    # 5. Explicit UV_PROJECT is respected without rewriting UV_PROJECT_ENVIRONMENT or PYTHONPATH.
+    explicit_project = invoke(
+        linked, {**base_env, "UV_PROJECT": str(primary)}, "run", "pre-commit"
+    )
+    assert explicit_project["UV_PROJECT_ENVIRONMENT"] == ""
+    assert explicit_project["PYTHONPATH"] == ""
+
+    # 6. A linked worktree with its own populated .venv keeps using it.
+    _create_test_venv(linked / ".venv", linked / "src")
+    own_venv = invoke(linked, base_env, "run", "pre-commit")
+    assert own_venv["UV_PROJECT_ENVIRONMENT"] == ""
+    assert own_venv["PYTHONPATH"] == ""
+
+    # 7. Consumer linked worktree (no src/engineering_ci/cli) reuses primary/.venv without setting PYTHONPATH.
+    consumer = tmp_path / "consumer primary"
+    consumer_linked = tmp_path / "consumer linked"
+    _init(consumer, hook_env)
+    (consumer / "app.py").write_bytes(b"VALUE = 1\n")
+    git(consumer, "add", "--all", env=hook_env)
+    git(consumer, "commit", "-qm", "consumer baseline", env=hook_env)
+    _create_test_venv(consumer / ".venv", primary / "src")
+    git(
+        consumer,
+        "worktree",
+        "add",
+        "-qb",
+        "consumer-wt",
+        str(consumer_linked),
+        "HEAD",
+        env=hook_env,
+    )
+    consumer_out = invoke(consumer_linked, base_env, "run", "pre-commit")
+    assert (
+        Path(consumer_out["UV_PROJECT_ENVIRONMENT"]).resolve()
+        == (consumer / ".venv").resolve()
+    )
+    assert consumer_out["PYTHONPATH"] == ""
+    assert consumer_out["MARKER"] == "primary"
+
+
+def test_linked_worktree_hooks_succeed_without_local_venv_or_uv_env(tmp_path, hook_env):
+    root = tmp_path / "primary"
+    linked = tmp_path / "linked eci"
+    remote = tmp_path / "remote.git"
+    _init(root, hook_env)
+    for relative in ("pyproject.toml", "uv.lock", ".python-version", "README.md"):
+        (root / relative).write_bytes((ROOT / relative).read_bytes())
+    checks = ("whitespace",)
+    source = _source(root, "sample", checks)
+    source.write_bytes(b"VALUE = 1\n")
+    _approve_profiles(
+        root,
+        INDEX_SELECTION + '\n[push]\nnew_ref_baseline = "refs/heads/baseline"\n'
+        'effective_profiles = ["push-topic.json"]\n',
+        [
+            ("ci-effective-profile.json", "index", "index", "HEAD", checks),
+            ("push-topic.json", "push", "create", "refs/heads/topic", checks),
+        ],
+    )
+    git(root, "add", "--all", env=hook_env)
+    git(root, "commit", "-qm", "baseline", env=hook_env)
+    git(root, "branch", "baseline", env=hook_env)
+    git(root, "init", "--bare", "-q", "--template=", str(remote), env=hook_env)
+    git(root, "remote", "add", "origin", str(remote), env=hook_env)
+
+    # Build a primary .venv linked to the active environment's installed packages + ROOT/src.
+    paths = sysconfig.get_paths()
+    _create_test_venv(
+        root / ".venv",
+        ROOT / "src",
+        *dict.fromkeys(
+            Path(paths[key]).resolve()
+            for key in ("purelib", "platlib")
+            if paths.get(key)
+        ),
+    )
+    git(root, "worktree", "add", "-qb", "topic", str(linked), "baseline", env=hook_env)
+    _run(root, hook_env, *LEFTHOOK, "install")
+
+    # Strip UV_PROJECT, UV_PROJECT_ENVIRONMENT, and PYTHONPATH to match a fresh terminal in a linked worktree.
+    clean_env = _clean_uv_env(hook_env)
+    linked_source = linked / source.relative_to(root)
+    linked_source.write_bytes(b"VALUE = 2\n")
+    git(linked, "add", "src/sample.py", env=clean_env)
+
+    commit = _run(linked, clean_env, "git", "commit", "-m", "linked commit")
+    directory = _invocations(linked, clean_env)
+    index = _new_invocation(directory, commit)
+    assert _artifact(index, ".receipt")["status"] == "matched"
+    assert not (linked / ".venv").exists()
+
+    push = _run(linked, clean_env, "git", "push", "origin", "topic:topic")
+    binding = _new_invocation(directory, push, [index.invocation_path])
+    assert _artifact(binding, ".receipt")["receipts"][0]["status"] == "matched"
+    assert not (linked / ".venv").exists()

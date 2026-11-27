@@ -7,7 +7,9 @@
 
 ## 环境与目录
 
-在 `D:\workspace\engineering-ci` 使用当前分支开发，不需要额外 worktree。
+在主 checkout（`D:\workspace\engineering-ci`）安装一份统一的锁定环境；并行开发使用
+linked worktree（如 `.work/<task>`）时统一复用主 checkout 的 `.venv`，不需要在每个
+worktree 重复创建虚拟环境（详见[常用操作](common-tasks.md#lefthook-本地入口)）。
 根项目要求 Python 3.14、uv。安装项目锁定环境、GitHub CLI，并确认 `gh auth status` 和目标仓库权限：
 
 ```powershell
