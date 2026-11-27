@@ -20,7 +20,7 @@ import sys
 import tomllib
 from dataclasses import dataclass, field, replace
 from importlib import metadata
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from engineering_ci import (
     check_contract,
@@ -2035,106 +2035,37 @@ def _is_excluded_test_parts(rel_parts, norecursedirs, *, tests_dir_parts=()):
 
 
 def _worktree_member(root):
-    """Return a member-kind probe over one working tree.
+    """Member facts over a real checkout: kind plus refusal code.
 
-    Answers ``file``, ``dir``, ``missing`` or ``refused`` from the real
-    filesystem, reusing the resolver's symlink/escape safety, so a refused
-    escape is never mistaken for a missing member.
+    Reuses the resolver's own path check, so a legal internal link, a directory
+    named like a module, a recursive escape and a missing path are reported
+    exactly as the native runtime treats them.
     """
     resolved_root = Path(root).resolve()
 
     def member(rel):
-        current = Path(root)
-        parts = rel.split("/")
-        for index, part in enumerate(parts, start=1):
-            current /= part
-            try:
-                info = current.lstat()
-            except (FileNotFoundError, NotADirectoryError):
-                return "missing"
-            except OSError:
-                return "refused"
-            if _is_link_stat(info):
-                _, refusal = _check_resolved_in_source(current, resolved_root)
-                if refusal:
-                    return "refused"
-                try:
-                    resolved = current.resolve()
-                except OSError:
-                    return "refused"
-                if index == len(parts):
-                    return "dir" if resolved.is_dir() else "file"
-                if not resolved.is_dir():
-                    return "missing"
-                continue
-            if index == len(parts):
-                if current.is_dir():
-                    _, refusal = _check_resolved_in_source(current, resolved_root)
-                    if refusal:
-                        return "refused"
-                    dir_refusal = _check_bound_pytest_directory(
-                        current, resolved_root, current.resolve()
-                    )
-                    return "refused" if dir_refusal else "dir"
-                return "file"
-        return "missing"
+        exists, refusal = _check_bound_pytest_path(root, resolved_root, rel)
+        if refusal:
+            return "refused", refusal
+        if not exists:
+            return "missing", None
+        try:
+            return ("dir" if (Path(root) / rel).is_dir() else "file"), None
+        except OSError:
+            return "refused", "pytest_target_unreadable"
 
     return member
-
-
-def _tree_member(root, tree):
-    """Return a member-kind probe over one Git Tree object.
-
-    Git records a symlink as mode 120000; it is resolved against its parent so
-    an escaping link is ``refused`` instead of being reported as a file.
-    """
-
-    def member(rel, _depth=0):
-        if _depth > 8:
-            return "refused"
-        shown = _git(root, "ls-tree", "-z", tree, "--", rel)
-        if shown.returncode != 0:
-            return "refused"
-        entry = shown.stdout.split("\0")[0]
-        if not entry:
-            return "missing"
-        meta, _, name = entry.partition("\t")
-        if name != rel:
-            return "refused"
-        mode = meta.split(" ")[0] if meta else ""
-        if mode == "040000":
-            return "dir"
-        if mode == "120000":
-            link = _git(root, "cat-file", "-p", f"{tree}:{rel}")
-            if link.returncode != 0:
-                return "refused"
-            target = link.stdout.strip()
-            if not target or target.startswith("/") or ":" in target:
-                return "refused"
-            normalized = (PurePosixPath(rel).parent / target).as_posix()
-            while normalized.startswith("./"):
-                normalized = normalized[2:]
-            if normalized.startswith("../") or normalized == "..":
-                return "refused"
-            return member(normalized, _depth + 1)
-        return "file"
-
-    return member
-
-
-def _source_member(root, *, tree=None):
-    """Member-kind probe over the actual Source of this context."""
-    return _tree_member(root, tree) if tree is not None else _worktree_member(root)
 
 
 def _target_binding(target, member, *, framework="pytest"):
-    """Resolve one target to the execution binding the runtime would use.
+    """Resolve one target exactly as the runtime binds it in this Source.
 
-    Returns a dict with ``target``, ``kind`` (``file``/``dir``/``missing``/
-    ``refused``/``unittest``), ``path`` and ``nodeid``. Legality reuses
-    ``_split_and_check_path_parts``; pytest dotted names follow the resolver's
-    file-first rule; unittest module/class/method targets stay separate
-    execution targets instead of collapsing onto their module file.
+    The candidate order, existence test and refusal codes mirror
+    ``_resolve_pytest_target``: a first ``.py`` candidate that exists is bound
+    whether it is a file or a directory, a missing candidate falls through to
+    the directory spelling and then to a bound missing path. Legality reuses
+    ``_split_and_check_path_parts``; unittest targets stay separate execution
+    targets.
     """
     if not isinstance(target, str):
         return None
@@ -2149,7 +2080,11 @@ def _target_binding(target, member, *, framework="pytest"):
         if any(not part or part in {".", ".."} for part in parts):
             return None
         if any(part.lower() == ".git" for part in parts):
-            return {**binding, "kind": "refused"}
+            return {
+                **binding,
+                "kind": "refused",
+                "refusal": "pytest_target_outside_source",
+            }
         return {**binding, "kind": "unittest"}
     is_path = (
         "/" in raw
@@ -2162,24 +2097,44 @@ def _target_binding(target, member, *, framework="pytest"):
         rel, refusal = _split_and_check_path_parts(raw)
         if refusal:
             return {**binding, "kind": "refused", "refusal": refusal}
-        return {**binding, "kind": member(rel), "path": rel}
+        kind, member_refusal = member(rel)
+        return {
+            **binding,
+            "kind": kind,
+            "path": rel,
+            "refusal": member_refusal,
+        }
     parts = raw.split(".")
     if any(not part or part in {".", ".."} for part in parts):
         return None
     if any(part.lower() == ".git" for part in parts):
-        return {**binding, "kind": "refused"}
+        return {
+            **binding,
+            "kind": "refused",
+            "refusal": "pytest_target_outside_source",
+        }
     file_rel = "/".join(parts) + ".py"
-    file_kind = member(file_rel)
-    if file_kind == "file":
-        return {**binding, "kind": "file", "path": file_rel}
+    file_kind, file_refusal = member(file_rel)
+    if file_kind in {"file", "dir"}:
+        return {**binding, "kind": file_kind, "path": file_rel}
     if file_kind == "refused":
-        return {**binding, "kind": "refused", "path": file_rel}
+        return {
+            **binding,
+            "kind": "refused",
+            "path": file_rel,
+            "refusal": file_refusal,
+        }
     dir_rel = "/".join(parts)
-    dir_kind = member(dir_rel)
-    if dir_kind == "dir":
-        return {**binding, "kind": "dir", "path": dir_rel}
+    dir_kind, dir_refusal = member(dir_rel)
+    if dir_kind in {"file", "dir"}:
+        return {**binding, "kind": dir_kind, "path": dir_rel}
     if dir_kind == "refused":
-        return {**binding, "kind": "refused", "path": dir_rel}
+        return {
+            **binding,
+            "kind": "refused",
+            "path": dir_rel,
+            "refusal": dir_refusal,
+        }
     return {**binding, "kind": "missing", "path": file_rel}
 
 
@@ -2206,12 +2161,15 @@ def _binding_record(binding):
     """Stable JSON-serializable form of one binding for snapshot evidence."""
     if not isinstance(binding, dict):
         return {"target": None, "kind": "invalid"}
-    return {
+    record = {
         "target": binding.get("target"),
         "kind": binding.get("kind", "invalid"),
         "path": binding.get("path"),
         "nodeid": binding.get("nodeid"),
     }
+    if binding.get("refusal"):
+        record["refusal"] = binding["refusal"]
+    return record
 
 
 def _test_modules(
@@ -2810,26 +2768,44 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     f"Impacted by Python module: {module}"
                 )
     ordered = tuple(sorted(selected))
-    member = _source_member(root, tree=exec_tree if tree_in_odb else None)
-    selected_identities = {
-        identity
-        for target in selected
-        for identity in (
-            _binding_identity(
-                _target_binding(target, member, framework=config.framework)
-            ),
-        )
-        if identity is not None
-    }
-    base_prereqs = frozenset(
-        name
-        for name, tests in config.prerequisites.items()
-        if any(
-            _binding_identity(_target_binding(test, member, framework=config.framework))
-            in selected_identities
-            for test in tests
-        )
-    )
+    base_prereqs = frozenset()
+    if config.prerequisites:
+        from engineering_ci import git_source
+
+        def _activated(member):
+            selected_identities = {
+                identity
+                for target in selected
+                for identity in (
+                    _binding_identity(
+                        _target_binding(target, member, framework=config.framework)
+                    ),
+                )
+                if identity is not None
+            }
+            return frozenset(
+                name
+                for name, tests in config.prerequisites.items()
+                if any(
+                    _binding_identity(
+                        _target_binding(test, member, framework=config.framework)
+                    )
+                    in selected_identities
+                    for test in tests
+                )
+            )
+
+        if tree_in_odb:
+            try:
+                with git_source.materialized_tree(root, exec_tree) as (
+                    checkout,
+                    _env,
+                ):
+                    base_prereqs = _activated(_worktree_member(checkout))
+            except (git_source.GitSourceError, OSError) as error:
+                raise SelectionError("pytest_target_unreadable") from error
+        else:
+            base_prereqs = _activated(_worktree_member(root))
     prerequisites = set(base_prereqs)
     if config.dependency_edges:
         active_checks = _active_check_names(changes, config, root)
@@ -3667,11 +3643,22 @@ def _ref_source_snapshot(
         # Record the actual binding facts of this Ref's targets from the Git
         # Tree itself, plus the discovery state. The discovery list only scopes
         # automatic selection; it never stands in for the real Source members.
-        member = _tree_member(root, tree)
-        target_bindings = [
-            _binding_record(_target_binding(target, member, framework=config.framework))
-            for target in entry.get("tests") or ()
-        ]
+        from engineering_ci import git_source
+
+        try:
+            with git_source.materialized_tree(root, tree) as (checkout, _env):
+                member = _worktree_member(checkout)
+                target_bindings = [
+                    _binding_record(
+                        _target_binding(target, member, framework=config.framework)
+                    )
+                    for target in entry.get("tests") or ()
+                ]
+        except (git_source.GitSourceError, OSError):
+            target_bindings = [
+                {"target": target, "kind": "unavailable"}
+                for target in entry.get("tests") or ()
+            ]
         target_bindings.sort(
             key=lambda item: (str(item.get("target")), str(item.get("kind")))
         )
@@ -4437,20 +4424,24 @@ def plan(
         if loaded_profile is not None
         else None
     )
-    try:
-        tach_graph = _tach_graph(tach_path)
-    except SelectionError:
-        tach_graph = None
     test_prefix = ".".join(Path(config.tests_dir).parts)
     needs_test_discovery = (
         bool(selection.tests) or selection.full_tests or selection.escalated
     )
-    # Discovery facts must come from the same Source the selection inspected,
-    # not from whatever the current checkout contains.
+    # Discovery and Tach graph facts must come from the same Source the
+    # selection inspected, not from whatever the current checkout contains.
     inspected_tree = getattr(selection.changeset, "execution_tree", None)
     inspected_tree_in_odb = bool(inspected_tree) and (
         _git(root, "cat-file", "-e", f"{inspected_tree}^{{tree}}").returncode == 0
     )
+    try:
+        tach_graph = (
+            _tree_tach_graph(root, inspected_tree, tach_rel)
+            if inspected_tree_in_odb
+            else _tach_graph(tach_path)
+        )
+    except SelectionError:
+        tach_graph = None
     try:
         if inspected_tree_in_odb:
             tree_tests = _tree_test_modules(
@@ -5249,60 +5240,20 @@ def _split_and_check_path_parts(raw_target):
 
 
 def _resolve_pytest_target(target, root):
-    """Resolve a dotted module or relative path into a bound repository-relative pytest target.
+    """Resolve a target into a bound repository-relative pytest CLI argument.
 
-    Never emits ``--pyargs`` so an external ``PYTHONPATH`` package cannot shadow
-    or substitute for a target inside the bound Source root.
+    Shares ``_target_binding`` with Selection and Snapshot, so the candidate
+    order and refusal semantics are the same facts the runtime uses. Never emits
+    ``--pyargs`` so an external ``PYTHONPATH`` package cannot shadow or
+    substitute for a target inside the bound Source root.
     """
-    if (
-        not isinstance(target, str)
-        or not target.strip()
-        or any(ch in target for ch in "\0\r\n")
-        or target.lstrip().startswith("-")
-    ):
+    binding = _target_binding(target, _worktree_member(root), framework="pytest")
+    if binding is None:
         return None, "pytest_target_invalid"
-    raw_target, sep, nodeid = target.partition("::")
-    if not raw_target or raw_target != raw_target.strip() or (sep and not nodeid):
-        return None, "pytest_target_invalid"
-    resolved_root = Path(root).resolve()
-    is_path = (
-        "/" in raw_target
-        or "\\" in raw_target
-        or raw_target.endswith(".py")
-        or raw_target.startswith(".")
-        or ":" in raw_target
-    )
-    if is_path:
-        rel_posix, refusal = _split_and_check_path_parts(raw_target)
-        if refusal:
-            return None, refusal
-        _, refusal = _check_bound_pytest_path(root, resolved_root, rel_posix)
-        if refusal:
-            return None, refusal
-        return _format_pytest_cli_target(rel_posix, sep, nodeid), None
-
-    parts = raw_target.split(".")
-    if any(not part or part in {".", ".."} for part in parts):
-        return None, "pytest_target_invalid"
-    if parts[0].startswith("-"):
-        return None, "pytest_target_invalid"
-    if any(part.lower() == ".git" for part in parts):
-        return None, "pytest_target_outside_source"
-    file_rel = "/".join(parts) + ".py"
-    dir_rel = "/".join(parts)
-    file_exists, file_refusal = _check_bound_pytest_path(root, resolved_root, file_rel)
-    if file_refusal:
-        return None, file_refusal
-    if file_exists:
-        return _format_pytest_cli_target(file_rel, sep, nodeid), None
-    dir_exists, dir_refusal = _check_bound_pytest_path(root, resolved_root, dir_rel)
-    if dir_refusal:
-        return None, dir_refusal
-    if dir_exists:
-        return _format_pytest_cli_target(dir_rel, sep, nodeid), None
-    # Missing target stays bound as a relative repo path so pytest fails natively
-    # (exit 4) instead of falling back to an external PYTHONPATH module.
-    return _format_pytest_cli_target(file_rel, sep, nodeid), None
+    if binding.get("kind") == "refused":
+        return None, binding.get("refusal") or "pytest_target_unreadable"
+    _raw, sep, nodeid = target.partition("::")
+    return _format_pytest_cli_target(binding["path"], sep, nodeid), None
 
 
 def _validate_bound_pytest_cli_target(target):

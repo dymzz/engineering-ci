@@ -2741,13 +2741,18 @@ def test_pytest_lossless_paths_avoid_dotted_dir_collision_and_keep_legacy_aliase
     # P1-13: a dotted base with a native nodeid binds a distinct execution
     # target, recorded against the Ref's real members.
     nodeid_targets = ["tests.sub.pkg.test_case::test_nested"]
-    nodeid_member = selection._tree_member(path, plan_ref["tree"])
-    nodeid_bindings = [
-        selection._binding_record(
-            selection._target_binding(target, nodeid_member, framework=cfg.framework)
-        )
-        for target in nodeid_targets
-    ]
+    from engineering_ci import git_source
+
+    with git_source.materialized_tree(path, plan_ref["tree"]) as (checkout, _env):
+        nodeid_member = selection._worktree_member(checkout)
+        nodeid_bindings = [
+            selection._binding_record(
+                selection._target_binding(
+                    target, nodeid_member, framework=cfg.framework
+                )
+            )
+            for target in nodeid_targets
+        ]
     nodeid_entry = {**entry, "tests": nodeid_targets}
     nodeid_snap_raw = {
         **entry["source_snapshot_ref"],
@@ -3105,7 +3110,7 @@ def test_pytest_target_identity_follows_resolver_and_keeps_directories_distinct(
     }
 
     def member(rel):
-        return member_kinds.get(rel, "missing")
+        return member_kinds.get(rel, "missing"), None
 
     def identity(target, framework="pytest"):
         return selection._binding_identity(
@@ -3349,7 +3354,7 @@ def test_explicit_source_targets_keep_prerequisites_outside_auto_discovery(tmp_p
     )
 
     # The dotted name binds the same-name module file, not the directory.
-    member = selection._source_member(path)
+    member = selection._worktree_member(path)
     binding = selection._target_binding("tests.checks", member)
     assert selection._binding_identity(binding) == "file:tests/checks.py"
 
@@ -3650,34 +3655,142 @@ def test_member_kind_distinguishes_refused_symlink_from_missing(tmp_path):
     assert selection._binding_identity(binding) is None
 
 
-def test_tree_member_kind_distinguishes_refused_symlink_from_missing(tmp_path):
-    # P1-13: a Git Tree symlink (mode 120000) escaping the Source is refused,
-    # not reported as a file; a missing path stays missing.
-    root = tmp_path / "tree_symlink"
-    (root / "tests/checks").mkdir(parents=True)
-    (root / "tests/checks/test_inner.py").write_text(
-        "def test_bad():\n    assert False\n", encoding="utf-8"
+@pytest.mark.skipif(
+    os.name == "nt", reason="Git Tree symlinks need filesystem support to materialize"
+)
+def test_member_facts_refuse_escaping_symlink_and_keep_internal_links(tmp_path):
+    # P1-13: the materialized checkout is the shared Source fact. An escaping
+    # link is refused; a legal internal link (including ../ and an ancestor
+    # directory link) binds as the file it points to.
+    root = tmp_path / "link_facts"
+    (root / "tests/sub").mkdir(parents=True)
+    (root / "tests/real").mkdir()
+    (root / "tests/test_base.py").write_text(
+        "def test_base():\n    assert True\n", encoding="utf-8"
+    )
+    (root / "tests/real/test_inner.py").write_text(
+        "def test_inner():\n    assert True\n", encoding="utf-8"
+    )
+    (root / "tests/sub/test_link.py").symlink_to(Path("../test_base.py"))
+    (root / "tests/alias").symlink_to(Path("real"))
+    outside = tmp_path / "outside.py"
+    outside.write_text("def test_outside():\n    assert True\n", encoding="utf-8")
+    (root / "tests/escaping.py").symlink_to(outside)
+    run(root, "init", "-q", "-b", "main")
+    run(root, "config", "user.email", "selection@example.invalid")
+    run(root, "config", "user.name", "Selection Test")
+    run(root, "add", "-A")
+    run(root, "commit", "-qm", "init")
+    tree = run(root, "rev-parse", "HEAD^{tree}").strip()
+
+    from engineering_ci import git_source
+
+    with git_source.materialized_tree(root, tree) as (checkout, _env):
+        member = selection._worktree_member(checkout)
+        # A relative ../ link binds the file it resolves to.
+        assert selection._binding_record(
+            selection._target_binding("tests/sub/test_link.py", member)
+        ) == {
+            "target": "tests/sub/test_link.py",
+            "kind": "file",
+            "path": "tests/sub/test_link.py",
+            "nodeid": None,
+        }
+        # A link in an ancestor directory is traversed.
+        assert (
+            selection._target_binding("tests/alias/test_inner.py", member)["kind"]
+            == "file"
+        )
+        # An escaping link is refused, not reported as a file.
+        escaping = selection._target_binding("tests/escaping.py", member)
+        assert escaping["kind"] == "refused"
+        assert selection._binding_identity(escaping) is None
+        assert member("tests/missing.py") == ("missing", None)
+
+    snap = selection._ref_source_snapshot(
+        root,
+        {"tree": tree, "ref_action": "update"},
+        config=selection.load_config(root / "ci-selection.toml"),
+        entry={
+            "status": "targeted",
+            "tree": tree,
+            "ref_action": "update",
+            "tests": ["tests/sub/test_link.py", "tests/alias/test_inner.py"],
+            "config_source_binding": {"status": "verified"},
+        },
+    )
+    assert {item["target"]: item["kind"] for item in snap["target_bindings"]} == {
+        "tests/sub/test_link.py": "file",
+        "tests/alias/test_inner.py": "file",
+    }
+
+
+def test_target_binding_matches_resolver_candidate_for_module_named_directory(
+    tmp_path,
+):
+    # P1-13: the first .py candidate binds when it exists, even as a directory;
+    # Selection prerequisite and the native resolver must agree with it.
+    root = tmp_path / "module_named_dir"
+    (root / "tests/checks.py").mkdir(parents=True)
+    (root / "tests/checks").mkdir()
+    (root / "tests/checks.py/test_a.py").write_text(
+        "def test_a():\n    assert True\n", encoding="utf-8"
+    )
+    (root / "tests/checks/test_b.py").write_text(
+        "def test_b():\n    assert False\n", encoding="utf-8"
+    )
+    (root / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (root / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8"
+    )
+    (root / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (root / "src").mkdir()
+    (root / "src/pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "data").mkdir()
+    (root / "data/input.txt").write_text("x\n", encoding="utf-8")
+    (root / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n\n'
+        '[[non_code_rules]]\nexact = "data/input.txt"\n'
+        'tests = ["tests.checks"]\nreason = "module-named directory"\n\n'
+        "[prerequisites]\n"
+        'bound_target = ["tests.checks"]\n',
+        encoding="utf-8",
     )
     run(root, "init", "-q", "-b", "main")
     run(root, "config", "user.email", "selection@example.invalid")
     run(root, "config", "user.name", "Selection Test")
     run(root, "add", "-A")
     run(root, "commit", "-qm", "init")
-    outside = tmp_path / "outside.py"
-    outside.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-    blob = subprocess.run(
-        ["git", "hash-object", "-w", str(outside)],
+    base = run(root, "rev-parse", "HEAD").strip()
+
+    member = selection._worktree_member(root)
+    binding = selection._target_binding("tests.checks", member)
+    assert (binding["kind"], binding["path"]) == ("dir", "tests/checks.py")
+    resolved, refusal = selection.resolve_pytest_targets(["tests.checks"], root)
+    assert refusal is None
+    assert resolved == ["tests/checks.py"]
+
+    (root / "data/input.txt").write_text("y\n", encoding="utf-8")
+    selected = select(root, base)
+    assert selected.tests == ("tests.checks",)
+    assert "bound_target" in selected.prerequisites
+
+    # Native exits prove the two same-named targets are different obligations.
+    via_module_dir = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--", "tests/checks.py"],
         cwd=root,
         capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    run(root, "update-index", "--add", "--cacheinfo", f"120000,{blob},tests/checks.py")
-    run(root, "commit", "-qm", "link")
-    tree = run(root, "rev-parse", "HEAD^{tree}").strip()
-    member = selection._tree_member(root, tree)
-    assert member("tests/checks.py") == "refused"
-    assert member("tests/missing.py") == "missing"
-    binding = selection._target_binding("tests.checks", member)
-    assert binding["kind"] == "refused"
-    assert selection._binding_identity(binding) is None
+        check=False,
+    ).returncode
+    via_plain_dir = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--", "tests/checks"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    ).returncode
+    assert (via_module_dir, via_plain_dir) == (0, 1)
