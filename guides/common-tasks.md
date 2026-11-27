@@ -100,8 +100,9 @@ uv run --locked --no-sync engineering-ci version set v0.7.0
 信号）与 `execution`：后者以原生 `pytest_runtest_logstart`/`logfinish` 表达已启动/结束，
 setup/call/teardown report 仅作阶段结果（`phase_counts`），并保留 selected-but-not-started、
 started-not-finished 及重复实例多重性；collect-only 标 `execution.status=not_run`，不当作执行通过。
-sessionfinish 原生 writer 异常记录在 `writer_exception`；`native_exit_observation` 在进程内把
-`outer_process_exit` 标为 `unknown`，真实进程退出由外层调用者观察，二者不互相替代。
+sessionfinish hook 异常（不归因具体 writer）记录在 `sessionfinish_hook_exception`；
+`native_exit_observation` 在进程内把 `outer_process_exit` 标为 `unknown`，真实进程退出由
+外层调用者观察，二者不互相替代。
 `collection_finish` 的 finally 回调及“无 failed CollectReport”不等于收集成功；异常退出或
 未正常返回时标 `unknown`/`incomplete`。
 报告交付分别表达：`report_sealed` 仅表示 summary 封存成功；`report_delivery.status` 为
@@ -110,7 +111,8 @@ sessionfinish 原生 writer 异常记录在 `writer_exception`；`native_exit_ob
 恒为 `unverified`（本插件不做完整内容解析），`attribution_verified` 表示同次目录归属。
 显式传入的 `--report-log` / `--junitxml` 路径不被覆盖；JUnit 路径按 pytest 原生
 `expanduser`/`expandvars` 展开；不能证明同次归属时 `report_delivery.status=unknown`，
-不声明完整。历史 `report.jsonl` 目录不迁移、保持可读。`--durations` 默认值由根
+不声明完整。历史 `report.jsonl` 目录不迁移、保持可读。metadata 初始化失败时自动
+reportlog/JUnit 选项不会提交，显式路径仍由原生 writer 使用。`--durations` 默认值由根
 `addopts` 提供，显式 CLI 仍覆盖。可用
 `ECI_PYTEST_NO_AUTO_REPORT=1` 或 `--eci-no-auto-report` 关闭。报告是本地观察：
 `outer_invocation_ref` 为 `unknown`、不证明外层 Invocation/Receipt；未观察到选择范围时标

@@ -299,7 +299,7 @@ def _overall_delivery(
     report_log: dict[str, Any],
     junit: dict[str, Any],
     *,
-    writer_exception: dict[str, str] | None = None,
+    sessionfinish_hook_exception: dict[str, str] | None = None,
     summary_seal: str = "ok",
 ) -> dict[str, Any]:
     artifacts = {"report_log": report_log, "junit_xml": junit}
@@ -351,7 +351,7 @@ def _overall_delivery(
         "unknown": unknown,
         "artifacts": artifacts,
         "errors": errors,
-        "writer_exception": writer_exception,
+        "sessionfinish_hook_exception": sessionfinish_hook_exception,
         "summary_seal": summary_seal,
     }
 
@@ -464,10 +464,6 @@ def pytest_configure(config):
     except OSError as exc:
         _emit(config, f"ECI pytest report disabled: {exc}", error=True)
         return
-    if not existing_log:
-        config.option.report_log = str(report_log)
-    if not existing_junit:
-        config.option.xmlpath = str(junit_xml)
 
     meta = _build_meta(
         config,
@@ -483,6 +479,10 @@ def pytest_configure(config):
     except OSError as exc:
         _emit(config, f"ECI pytest report disabled: {exc}", error=True)
         return
+    if not existing_log:
+        config.option.report_log = str(report_log)
+    if not existing_junit:
+        config.option.xmlpath = str(junit_xml)
 
     config._eci_invocation_report = meta
     if not config.pluginmanager.has_plugin(_REPORT_PLUGIN):
@@ -761,7 +761,7 @@ class _InvocationReportPlugin:
         self,
         exitstatus: int,
         *,
-        writer_exception: dict[str, str] | None = None,
+        sessionfinish_hook_exception: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         meta = self.meta
         out_dir = Path(meta["out_dir"])
@@ -779,7 +779,7 @@ class _InvocationReportPlugin:
         return _overall_delivery(
             report_log,
             junit_xml,
-            writer_exception=writer_exception,
+            sessionfinish_hook_exception=sessionfinish_hook_exception,
         )
 
     def _finalize(self, session, *, hook_exitstatus, outcome) -> None:
@@ -787,10 +787,10 @@ class _InvocationReportPlugin:
         meta = self.meta
         finished_mono = time.perf_counter()
         wall_time = finished_mono - float(meta["started_mono"])
-        writer_exception: dict[str, str] | None = None
+        sessionfinish_hook_exception: dict[str, str] | None = None
         if outcome.excinfo is not None:
             exc_type, exc_value = outcome.excinfo[0], outcome.excinfo[1]
-            writer_exception = {
+            sessionfinish_hook_exception = {
                 "type": exc_type.__name__,
                 "message": str(exc_value)[:500],
             }
@@ -799,7 +799,9 @@ class _InvocationReportPlugin:
         collection = self._collection(exitstatus)
         selection = self._selection(config, exitstatus)
         execution = self._execution(config, exitstatus)
-        delivery = self._delivery(exitstatus, writer_exception=writer_exception)
+        delivery = self._delivery(
+            exitstatus, sessionfinish_hook_exception=sessionfinish_hook_exception
+        )
         finished_at_unix = time.time()
         native_exit_observation = {
             "status": "unknown_in_process",
@@ -807,7 +809,7 @@ class _InvocationReportPlugin:
             "stage_exitstatus": exitstatus,
             "session_exitstatus": session_exitstatus,
             "outer_process_exit": None,
-            "writer_exception": writer_exception,
+            "sessionfinish_hook_exception": sessionfinish_hook_exception,
         }
         summary = {
             **meta,
@@ -819,7 +821,7 @@ class _InvocationReportPlugin:
             "exitstatus": exitstatus,
             "exitstatus_scope": "pytest_sessionfinish_hook_stage",
             "session_exitstatus": session_exitstatus,
-            "writer_exception": writer_exception,
+            "sessionfinish_hook_exception": sessionfinish_hook_exception,
             "native_exit_observation": native_exit_observation,
             "selection": selection,
             "collection": collection,
@@ -852,7 +854,7 @@ class _InvocationReportPlugin:
                 collection=collection,
                 execution=execution,
                 session_exitstatus=session_exitstatus,
-                writer_exception=writer_exception,
+                sessionfinish_hook_exception=sessionfinish_hook_exception,
             )
             return
 
@@ -898,7 +900,7 @@ class _InvocationReportPlugin:
         collection,
         execution,
         session_exitstatus: int,
-        writer_exception: dict[str, str] | None,
+        sessionfinish_hook_exception: dict[str, str] | None,
     ) -> None:
         meta = self.meta
         native_exit_observation = {
@@ -907,7 +909,7 @@ class _InvocationReportPlugin:
             "stage_exitstatus": exitstatus,
             "session_exitstatus": session_exitstatus,
             "outer_process_exit": None,
-            "writer_exception": writer_exception,
+            "sessionfinish_hook_exception": sessionfinish_hook_exception,
         }
         failure = {
             **meta,
@@ -917,7 +919,7 @@ class _InvocationReportPlugin:
             "exitstatus": exitstatus,
             "exitstatus_scope": "pytest_sessionfinish_hook_stage",
             "session_exitstatus": session_exitstatus,
-            "writer_exception": writer_exception,
+            "sessionfinish_hook_exception": sessionfinish_hook_exception,
             "native_exit_observation": native_exit_observation,
             "failed_at_unix": time.time(),
             "selection": selection,

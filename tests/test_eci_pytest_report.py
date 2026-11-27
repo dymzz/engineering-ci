@@ -96,6 +96,25 @@ BODY_WRITER_FAILURE_CONFTEST = (
     "            path.unlink()\n"
     "        path.mkdir(parents=True, exist_ok=True)\n"
 )
+BODY_NON_WRITER_SESSIONFINISH_CONFTEST = (
+    "import pytest\n"
+    "\n"
+    "@pytest.hookimpl(trylast=True)\n"
+    "def pytest_sessionfinish(session, exitstatus):\n"
+    "    raise RuntimeError('non-writer sessionfinish failure')\n"
+)
+BODY_METADATA_FAILURE_CONFTEST = (
+    "import _eci_pytest_report\n"
+    "\n"
+    "_real_write = _eci_pytest_report._write_json_atomic\n"
+    "\n"
+    "def _fail_metadata(path, payload):\n"
+    "    if path.name == 'metadata.json':\n"
+    "        raise OSError('injected metadata write failure')\n"
+    "    return _real_write(path, payload)\n"
+    "\n"
+    "_eci_pytest_report._write_json_atomic = _fail_metadata\n"
+)
 BODY_FILTER = (
     "def test_keep():\n    assert True\n"
     "\n"
@@ -433,19 +452,22 @@ def test_explicit_junit_writer_failure_records_outcome_and_native_exit(tmp_path)
     assert summary["exitstatus"] == 0
     assert summary["exitstatus_scope"] == "pytest_sessionfinish_hook_stage"
     assert summary["session_exitstatus"] == 0
-    writer_exception = summary["writer_exception"]
-    assert writer_exception is not None
-    assert writer_exception["type"] in {
+    sessionfinish_hook_exception = summary["sessionfinish_hook_exception"]
+    assert sessionfinish_hook_exception is not None
+    assert sessionfinish_hook_exception["type"] in {
         "IsADirectoryError",
         "PermissionError",
         "OSError",
     }
     assert summary["native_exit_observation"]["status"] == "unknown_in_process"
     assert summary["native_exit_observation"]["outer_process_exit"] is None
-    assert summary["native_exit_observation"]["writer_exception"] == writer_exception
+    assert (
+        summary["native_exit_observation"]["sessionfinish_hook_exception"]
+        == sessionfinish_hook_exception
+    )
     assert summary["report_sealed"] is True
     delivery = summary["report_delivery"]
-    assert delivery["writer_exception"] == writer_exception
+    assert delivery["sessionfinish_hook_exception"] == sessionfinish_hook_exception
     assert delivery["native_artifacts_available"] is False
     assert "junit_xml" in delivery["missing"]
     assert delivery["status"] == "incomplete"
@@ -462,21 +484,79 @@ def test_auto_junit_writer_failure_records_outcome_and_native_exit(tmp_path):
     assert metadata["phase"] == "configured"
     assert summary["phase"] == "finished"
     assert summary["exitstatus"] == 0
-    writer_exception = summary["writer_exception"]
-    assert writer_exception is not None
-    assert writer_exception["type"] in {
+    sessionfinish_hook_exception = summary["sessionfinish_hook_exception"]
+    assert sessionfinish_hook_exception is not None
+    assert sessionfinish_hook_exception["type"] in {
         "IsADirectoryError",
         "PermissionError",
         "OSError",
     }
     assert summary["native_exit_observation"]["outer_process_exit"] is None
-    assert summary["native_exit_observation"]["writer_exception"] == writer_exception
+    assert (
+        summary["native_exit_observation"]["sessionfinish_hook_exception"]
+        == sessionfinish_hook_exception
+    )
     assert summary["report_sealed"] is True
     delivery = summary["report_delivery"]
-    assert delivery["writer_exception"] == writer_exception
+    assert delivery["sessionfinish_hook_exception"] == sessionfinish_hook_exception
     assert delivery["native_artifacts_available"] is False
     assert "junit_xml" in delivery["missing"]
     assert delivery["status"] == "incomplete"
+
+
+def test_non_writer_sessionfinish_hook_exception_keeps_limited_delivery(tmp_path):
+    root = _probe_root(tmp_path)
+    (root / "conftest.py").write_text(
+        BODY_NON_WRITER_SESSIONFINISH_CONFTEST, encoding="utf-8"
+    )
+    result = _run_probe(root, BODY_OK)
+    assert result.returncode == 1, result.stdout + result.stderr
+    invocation = _report_dir(result)
+    summary = _read_json(invocation / "summary.json")
+    assert summary["exitstatus"] == 0
+    exception = summary["sessionfinish_hook_exception"]
+    assert exception is not None
+    assert exception["type"] == "RuntimeError"
+    assert summary["native_exit_observation"]["outer_process_exit"] is None
+    assert summary["report_sealed"] is True
+    assert (invocation / "junit.xml").is_file()
+    assert (invocation / "pytest-reportlog.jsonl").is_file()
+    delivery = summary["report_delivery"]
+    assert delivery["status"] == "limited"
+    assert delivery["native_artifacts_available"] is True
+    assert delivery["limited_checks_passed"] is True
+    assert delivery["attribution_verified"] is True
+    assert delivery["content_completeness"] == "unverified"
+    assert delivery["sessionfinish_hook_exception"] == exception
+
+
+def test_metadata_initialization_failure_does_not_leave_auto_options(tmp_path):
+    root = _probe_root(tmp_path)
+    (root / "conftest.py").write_text(BODY_METADATA_FAILURE_CONFTEST, encoding="utf-8")
+    result = _run_probe(root, BODY_OK)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ECI pytest report disabled" in result.stdout + result.stderr
+    if _artifacts_root(root).exists():
+        for invocation in _artifacts_root(root).iterdir():
+            assert not (invocation / "metadata.json").exists()
+            assert not (invocation / "summary.json").exists()
+            assert not (invocation / "pytest-reportlog.jsonl").exists()
+            assert not (invocation / "junit.xml").exists()
+
+
+def test_metadata_initialization_failure_preserves_explicit_junit(tmp_path):
+    root = _probe_root(tmp_path)
+    (root / "conftest.py").write_text(BODY_METADATA_FAILURE_CONFTEST, encoding="utf-8")
+    target = tmp_path / "explicit-metadata-failure.xml"
+    result = _run_probe(root, BODY_OK, f"--junitxml={target}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert target.is_file()
+    if _artifacts_root(root).exists():
+        for invocation in _artifacts_root(root).iterdir():
+            assert not (invocation / "metadata.json").exists()
+            assert not (invocation / "summary.json").exists()
+            assert not (invocation / "pytest-reportlog.jsonl").exists()
+            assert not (invocation / "junit.xml").exists()
 
 
 def test_collect_only_records_selection_without_execution(tmp_path):
@@ -867,7 +947,7 @@ def test_sealing_failure_keeps_native_session_and_separates_delivery(
     assert metadata["session_finished"] is True
     assert metadata["exitstatus"] == 1
     assert metadata["report_sealed"] is False
-    assert metadata["writer_exception"] is None
+    assert metadata["sessionfinish_hook_exception"] is None
     assert metadata["native_exit_observation"]["status"] == "unknown_in_process"
     assert metadata["report_delivery"]["status"] == "failed"
     assert metadata["report_delivery"]["native_artifacts_available"] is True
