@@ -2,6 +2,7 @@
 
 本目录保存已执行验证的结果、风险审查及性能测量证据。
 
+- [结构化审阅试验](review-experiment/README.md) — 2.0 输出合同的显式消费校验与正反例；不属于工程质量门禁。
 - [发布风险审查](release-risk-review.md) — v0.4.9 发布证据审查、验证层次及当时剩余风险。
 - [授权依赖审阅](authorization-closure/README.md) — #125 A/B 版本化双向依赖图、源码索引，C 逐边 Coverage/Gap、D 独立审阅；固定快照不代表当前生产授权或全仓图谱。
 - [统一缺陷发现台账候选（PR #129）](https://github.com/dymzz/engineering-ci/pull/129) — 原缺陷编号、主责 Issue 与实施结算；从 PR 读取当前状态和实际版本，未合并版本不作为 main 已接纳定义。

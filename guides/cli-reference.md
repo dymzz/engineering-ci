@@ -66,15 +66,21 @@ PowerShell 查看 `$LASTEXITCODE`，Linux 查看 `$?`。fine-grained PAT 不支�
 
 ## 其他操作
 
+在复用主管理 checkout 共享 `.venv` 的 linked worktree 中直接执行下述命令或 `scripts/` 入口时，
+应在开发会话或命令作用域设置 `UV_PROJECT_ENVIRONMENT=<共享 .venv 绝对路径>` 且始终携带 `--no-sync`；
+调用 `engineering-ci ...` 或 `python -P -m engineering_ci...` 时同时设置 `PYTHONPATH=<当前检出>/src`
+（`scripts/release.py` 与 `scripts/download.py` 已内置注入所在检出 `src/`，会话切换、离开到独立消费者仓前清理 ECI 变量与更新约定见[常用操作](common-tasks.md)）。
+`engineering_ci.tools.consumer` 跨仓操作独立消费者时会过滤继承自 ECI 检出的 `UV_PROJECT*` / `VIRTUAL_ENV` / `PYTHONPATH`。等于当前解释器前缀的共享环境是宿主环境，不传给消费者子进程；显式指向其他路径的 `UV_PROJECT_ENVIRONMENT` 仍保留。调用方式见[常用操作](common-tasks.md)。
+
 | 功能 | 调用 |
 | --- | --- |
 | 本仓综合验证 | `uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`；默认入口见[显式本地综合验证](common-tasks.md#显式本地综合验证) |
 | 原生定向检查 | `dagger check` / `dagger check --engineering-ci --check=...`；选择与报告见[本地检查](../docs/architecture/local-checks.md) |
-| 版本 | `uv run --locked engineering-ci version show` / `check` / `set v0.7.0` |
+| 版本 | `uv run --locked --no-sync engineering-ci version show` / `check` / `set v0.7.0` |
 | Actions 内部发布/证据 | `python -m engineering_ci.workflow_actions release ...` / `manifest ...` |
-| 依赖安全 | `uv run --locked python -m engineering_ci.tools.security ...` |
-| 性能采样 | `uv run --locked python -m engineering_ci.tools.performance ...` |
-| 消费者同步 | `uv run --locked python -m engineering_ci.tools.consumer ...` |
+| 依赖安全 | `uv run --locked --no-sync python -P -m engineering_ci.tools.security ...` |
+| 性能采样 | `uv run --locked --no-sync python -P -m engineering_ci.tools.performance ...` |
+| 消费者同步 | `uv run --locked --no-sync python -P -m engineering_ci.tools.consumer ...` |
 
 Actions 内部操作依赖当前 Workflow 上下文，不是另一套本地发布入口。
 consumer 默认只读，修改/提交/推送由显式参数控制。
