@@ -1936,6 +1936,16 @@ def _normalized(path):
 
 
 def _pytest_norecursedirs_from_text(text):
+    """Read native pytest ``norecursedirs`` patterns, or refuse unsupported ones.
+
+    Selection must produce the same directory set on a Windows host and in the
+    Linux execution containers, so matching follows native POSIX
+    ``_pytest.pathlib.fnmatch_ex`` semantics (case sensitive, ``/`` separators,
+    basename patterns versus anchored ``*``/``?``/``[]`` pattern text).
+    Patterns anchored to an absolute location are refused fail-closed: native
+    pytest matches them against the checkout's absolute path, which no longer
+    names the same directory for a per-Ref or materialized snapshot.
+    """
     try:
         data = tomllib.loads(text)
     except ValueError:
@@ -1954,7 +1964,12 @@ def _pytest_norecursedirs_from_text(text):
     raw = ini.get("norecursedirs")
     if not isinstance(raw, list):
         return ()
-    return tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
+    patterns = tuple(
+        item.strip() for item in raw if isinstance(item, str) and item.strip()
+    )
+    if any(has_windows_or_absolute_root(pattern) for pattern in patterns):
+        raise SelectionError("pytest_norecursedirs_unsupported")
+    return patterns
 
 
 def _pytest_norecursedirs(root, *, tree=None):
@@ -1980,19 +1995,28 @@ def _normalized_tests_dir_parts(tests_dir_rel):
 
 
 def _fnmatch_norecurse(pattern, rel_dir_posix, dir_name):
+    """Match one ``norecursedirs`` pattern with native POSIX ``fnmatch_ex`` rules.
+
+    Native pytest matches a basename pattern against the directory name and a
+    pattern containing a separator against the directory path (prefixed with
+    ``*<sep>`` because collection paths are absolute). Repo-relative matching
+    reproduces that suffix anchoring on every host. Both separator spellings
+    are normalized to ``/`` so one configuration selects the same directories
+    on a Windows host and in the Linux execution containers. Absolute patterns
+    are refused at configuration load; a direct caller passing one matches
+    nothing here.
+    """
     pat = _normalized(pattern)
     while pat.startswith("./"):
         pat = pat[2:]
     pat = pat.rstrip("/")
-    if not pat:
+    if not pat or has_windows_or_absolute_root(pat):
         return False
     if "/" not in pat:
         return fnmatch.fnmatchcase(dir_name, pat)
-    if fnmatch.fnmatchcase(rel_dir_posix, pat):
-        return True
-    if not pat.startswith("/"):
-        return fnmatch.fnmatchcase(rel_dir_posix, f"*/{pat}")
-    return False
+    return fnmatch.fnmatchcase(rel_dir_posix, pat) or fnmatch.fnmatchcase(
+        rel_dir_posix, f"*/{pat}"
+    )
 
 
 def _is_excluded_test_parts(rel_parts, norecursedirs, *, tests_dir_parts=()):
@@ -2009,6 +2033,66 @@ def _is_excluded_test_parts(rel_parts, norecursedirs, *, tests_dir_parts=()):
         ):
             return True
     return False
+
+
+def _target_identity_keys(target):
+    """Identity keys for one selected test target, independent of its spelling.
+
+    One real file may be addressed as a repository-relative path, an
+    unambiguous dotted module, or either form with a ``::`` nodeid. Selection,
+    prerequisite activation, per-Ref membership and the pytest resolver must
+    agree on that identity, so they compare through this helper instead of
+    string equality on a single representation. Paths whose parent directories
+    contain ``.`` stay path-only: their dotted spelling is ambiguous with a
+    nested package path.
+    """
+    if not isinstance(target, str):
+        return frozenset()
+    raw_target, sep, nodeid = target.partition("::")
+    raw_target = raw_target.strip()
+    if (
+        not raw_target
+        or (sep and not nodeid)
+        or any(ch in raw_target for ch in "\0\r\n")
+        or raw_target.startswith("-")
+    ):
+        return frozenset()
+    is_path = (
+        "/" in raw_target
+        or "\\" in raw_target
+        or raw_target.endswith(".py")
+        or raw_target.startswith(".")
+        or ":" in raw_target
+    )
+    if is_path:
+        parts = tuple(
+            part
+            for part in _normalized(raw_target).strip("/").split("/")
+            if part and part != "."
+        )
+        if not parts or ".." in parts:
+            return frozenset()
+        rel_posix = "/".join(parts)
+        stem_parts = (
+            Path(rel_posix).with_suffix("").parts
+            if rel_posix.endswith(".py")
+            else parts
+        )
+        keys = {"path:" + rel_posix}
+        if all("." not in part for part in stem_parts):
+            keys.add("mod:" + ".".join(stem_parts))
+        return frozenset(keys)
+    parts = tuple(raw_target.split("."))
+    if any(not part or part in {".", ".."} for part in parts):
+        return frozenset()
+    dotted = ".".join(parts)
+    return frozenset(
+        {
+            "mod:" + dotted,
+            "path:" + "/".join(parts) + ".py",
+            "path:" + "/".join(parts),
+        }
+    )
 
 
 def _test_modules(
@@ -2596,8 +2680,13 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     f"Impacted by Python module: {module}"
                 )
     ordered = tuple(sorted(selected))
+    selected_identity_keys = set()
+    for target in selected:
+        selected_identity_keys.update(_target_identity_keys(target))
     base_prereqs = frozenset(
-        name for name, tests in config.prerequisites.items() if selected & set(tests)
+        name
+        for name, tests in config.prerequisites.items()
+        if any(_target_identity_keys(test) & selected_identity_keys for test in tests)
     )
     prerequisites = set(base_prereqs)
     if config.dependency_edges:
@@ -3523,30 +3612,12 @@ def verify_per_ref_source_snapshot(
         if sel_entry.get("status") not in {"blocked", "not_applicable"}:
             if config_binding.get("status") not in {"verified", "event_shared"}:
                 raise SelectionError("expected_per_ref_source_unverifiable")
-            allowed_targets = set(tests_modules)
-            dotted_aliases = {
-                ".".join(stem_parts)
-                for item in tests_modules
-                if isinstance(item, str) and item.endswith(".py")
-                for stem_parts in (Path(item).with_suffix("").parts,)
-                if all("." not in part for part in stem_parts)
-            }
+            allowed_target_keys = set()
+            for item in tests_modules:
+                allowed_target_keys.update(_target_identity_keys(item))
             for target in sel_entry.get("tests") or ():
-                if not isinstance(target, str):
-                    raise SelectionError("expected_per_ref_source_unverifiable")
-                if (
-                    "/" in target
-                    or "\\" in target
-                    or target.endswith(".py")
-                    or "::" in target
-                ):
-                    base_target = target.partition("::")[0]
-                    if (
-                        target not in allowed_targets
-                        and base_target not in allowed_targets
-                    ):
-                        raise SelectionError("expected_per_ref_source_unverifiable")
-                elif target not in allowed_targets and target not in dotted_aliases:
+                target_keys = _target_identity_keys(target)
+                if not target_keys or not (target_keys & allowed_target_keys):
                     raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
         for key in (

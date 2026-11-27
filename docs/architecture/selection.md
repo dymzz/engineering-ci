@@ -487,19 +487,32 @@ for actual request/reader counts and failure preservation.
   matching both basename patterns (`"fixtures"`, `".*"`) and path/glob
   patterns (`"tests/sub.pkg"`, `"tests/**/nested"`) with `fnmatch_ex` parity
   (excluding `tests/fixtures/` from root collection while preserving standalone
-  fixture project test discovery). Non-dict TOML sections (`[tool]`,
-  `[tool.pytest]`, `[tool.pytest.ini_options]`) and unreadable or malformed
-  `pyproject.toml` fall back safely without raising `AttributeError` or claiming
-  complete pytest discovery proof.
+  fixture project test discovery). Matching is defined against the POSIX
+  execution platform (case sensitive, `/` separators) rather than the host that
+  computes Selection, so a Windows host selects exactly the set the Linux
+  containers run and a case-differing directory is over-selected instead of
+  silently skipped. Patterns may use either separator spelling; both are
+  normalized so one configuration names the same directories on every host.
+  Patterns anchored to an absolute location (`/...`, drive or UNC paths) are
+  refused fail-closed as `pytest_norecursedirs_unsupported`, because native
+  pytest compares them against the checkout's absolute path, which no longer
+  names the same directory for a per-Ref or materialized snapshot. Non-dict TOML
+  sections (`[tool]`, `[tool.pytest]`, `[tool.pytest.ini_options]`) and
+  unreadable or malformed `pyproject.toml` fall back safely without raising
+  `AttributeError` or claiming complete pytest discovery proof.
 - For `framework = "pytest"`, Selection discovery (`_test_modules`,
   `_tree_test_modules`) and direct test-file edits emit lossless
   Source-relative POSIX paths (for example `"tests/sub.pkg/test_case.py"`,
   preventing directory-segment collisions with `tests/sub/pkg/test_case.py`),
   while explicit historical dotted entries in `[module_tests]`,
-  `[[non_code_rules]]`, and `[prerequisites]` remain accepted alongside explicit
-  path and `::nodeid` entries. `verify_per_ref_source_snapshot` requires exact
-  literal membership for path/`::nodeid` targets while keeping stem-based
-  resolution for historical dotted entries.
+  `[[non_code_rules]]`, `[prerequisites]`, and per-Ref targets remain accepted
+  alongside explicit path and `::nodeid` entries. One target identity
+  (`_target_identity_keys`) maps the path spelling, the unambiguous dotted
+  spelling (never for a parent segment containing `.`) and the `::nodeid` base
+  to the same identity, so direct edits, module impact, prerequisite activation,
+  per-Ref membership, Plan scope and native execution agree.
+  `verify_per_ref_source_snapshot` accepts a target when any of its identities
+  is a snapshot member instead of comparing the literal text.
 - Host `run_tests(..., framework="pytest")` and Dagger Plan-selected
   `plan_execution._tests` / `EngineeringCi._run_pytest` resolve Selection targets
   (including historical dotted modules and optional `::nodeid` suffixes)

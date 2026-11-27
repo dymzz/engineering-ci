@@ -2737,6 +2737,29 @@ def test_pytest_lossless_paths_avoid_dotted_dir_collision_and_keep_legacy_aliase
     selection.verify_per_ref_source_snapshot(
         entry, plan_ref=plan_ref, inputs=plan_inputs
     )
+    # P1-13: a dotted base with a native nodeid resolves to the same member as
+    # the path form, instead of being compared as a literal file name.
+    nodeid_entry = {**entry, "tests": ["tests.sub.pkg.test_case::test_nested"]}
+    nodeid_snap_raw = {
+        **entry["source_snapshot_ref"],
+        "selection_digest": selection._selection_entry_digest(
+            nodeid_entry,
+            ref=plan_ref,
+            sources_identity=plan_inputs.get("sources"),
+        ),
+    }
+    nodeid_snap = {
+        **nodeid_snap_raw,
+        "snapshot_digest": "sha256:"
+        + selection._json_sha256(
+            {k: v for k, v in nodeid_snap_raw.items() if k != "snapshot_digest"}
+        ),
+    }
+    selection.verify_per_ref_source_snapshot(
+        {**nodeid_entry, "source_snapshot_ref": nodeid_snap},
+        plan_ref=plan_ref,
+        inputs=plan_inputs,
+    )
     mat_dir = tmp_path / "mat_dot"
     shutil.copytree(
         path,
@@ -2882,3 +2905,178 @@ def test_pytest_norecursedirs_path_patterns_and_non_dict_toml_sections(tmp_path)
         case_dir.mkdir()
         (case_dir / "pyproject.toml").write_text(toml_body, encoding="utf-8")
         assert selection._pytest_norecursedirs(case_dir) == ()
+
+
+def test_pytest_norecursedirs_matches_native_fnmatch_ex_contract(tmp_path):
+    # P2-04: matching follows native POSIX _pytest.pathlib.fnmatch_ex semantics
+    # on every host so a Windows host selects what the Linux containers execute.
+    from _pytest.pathlib import fnmatch_ex
+
+    parity = (
+        ("fixtures", "tests/fixtures"),
+        (".*", "tests/.hidden"),
+        ("tests/sub.pkg", "tests/sub.pkg"),
+        ("tests/sub.pkg", "other/tests/sub.pkg"),
+        ("tests/**/nested", "tests/group/nested"),
+        ("*/sub.pkg", "tests/sub.pkg"),
+        ("tests/[ab]pk", "tests/apk"),
+        ("tests/?.pkg", "tests/a.pkg"),
+    )
+    for pattern, rel in parity:
+        name = rel.rsplit("/", 1)[-1]
+        ours = selection._fnmatch_norecurse(pattern, rel, name)
+        # Native collection paths are absolute, which anchors separator patterns.
+        native = fnmatch_ex(
+            pattern, ("C:/repo/" if os.name == "nt" else "/repo/") + rel
+        )
+        assert ours is native, (pattern, rel)
+
+    # Declared contract: case-sensitive (POSIX) matching, so hosts and containers agree.
+    # A Windows-native pytest folds case here; ECI over-selects instead of skipping.
+    assert selection._fnmatch_norecurse("Sub.PKG", "tests/sub.pkg", "sub.pkg") is False
+    assert os.name != "nt" or fnmatch_ex("Sub.PKG", "/repo/tests/sub.pkg") is True
+
+    # Both separator spellings name the same directory on every host.
+    assert (
+        selection._fnmatch_norecurse("tests\\sub.pkg", "tests/sub.pkg", "sub.pkg")
+        is True
+    )
+    assert (
+        selection._fnmatch_norecurse("./fixtures", "tests/fixtures", "fixtures") is True
+    )
+
+    # Absolute patterns are refused fail-closed, not silently unmatched.
+    for pattern in (
+        "/repo/tests/fixtures",
+        "C:/repo/tests/fixtures",
+        "\\\\server\\share",
+    ):
+        case_dir = tmp_path / pattern.replace("/", "_").replace("\\", "_").replace(
+            ":", "_"
+        )
+        case_dir.mkdir()
+        (case_dir / "pyproject.toml").write_text(
+            f"[tool.pytest.ini_options]\nnorecursedirs = [{json.dumps(pattern)}]\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(
+            selection.SelectionError, match="pytest_norecursedirs_unsupported"
+        ):
+            selection._pytest_norecursedirs(case_dir)
+
+
+def test_pytest_norecursedirs_case_semantics_agree_across_worktree_tree_and_selection(
+    tmp_path,
+):
+    # A lowercase basename pattern must not silently drop a case-differing real
+    # directory: worktree discovery, tree discovery and direct selection agree.
+    path = tmp_path / "norecurse_case"
+    (path / "tests/Sub.PKG").mkdir(parents=True)
+    (path / "tests").mkdir(exist_ok=True)
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\nnorecursedirs = ["sub.pkg"]\n',
+        encoding="utf-8",
+    )
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "src").mkdir(parents=True)
+    (path / "src/pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n', encoding="utf-8"
+    )
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "tests/Sub.PKG/test_case.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    tree_id = run(path, "rev-parse", "HEAD^{tree}").strip()
+
+    expected = ("tests/Sub.PKG/test_case.py", "tests/test_keep.py")
+    assert (
+        selection._test_modules(path / "tests", "tests", framework="pytest") == expected
+    )
+    assert (
+        selection._tree_test_modules(
+            path, tree_id, "tests", "tests", framework="pytest"
+        )
+        == expected
+    )
+    base = run(path, "rev-parse", "HEAD").strip()
+    (path / "tests/Sub.PKG/test_case.py").write_text(
+        "def test_ok():\n    assert 1 == 1\n", encoding="utf-8"
+    )
+    direct = select(path, base)
+    assert direct.tests == ("tests/Sub.PKG/test_case.py",)
+
+
+def test_pytest_dotted_prerequisites_activate_for_lossless_path_targets(tmp_path):
+    # P1-13: one pytest target identity across direct paths, dotted config aliases and nodeids.
+    path = tmp_path / "pytest_prereq"
+    (path / "tests").mkdir(parents=True)
+    (path / "src").mkdir()
+    (path / "src/pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "tests/test_other.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8"
+    )
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n\n'
+        '[module_tests]\n"pkg" = ["tests.test_other"]\n\n'
+        '[prerequisites]\nwheel_smoke = ["tests.test_other"]\n',
+        encoding="utf-8",
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    base = run(path, "rev-parse", "HEAD").strip()
+
+    # Direct pytest file modification selects a lossless path but keeps the dotted prerequisite.
+    (path / "tests/test_other.py").write_text(
+        "def test_ok():\n    assert 1 == 1\n", encoding="utf-8"
+    )
+    direct = select(path, base)
+    assert direct.tests == ("tests/test_other.py",)
+    assert "wheel_smoke" in direct.prerequisites
+    assert "wheel_smoke" in direct.base_prerequisites
+    direct_plan = selection.plan(
+        direct,
+        config=config(path),
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    execution.validate_plan(direct_plan)
+    assert direct_plan["selection"]["prerequisites"] == ["wheel_smoke"]
+    run(path, "checkout", "--", "tests/test_other.py")
+
+    # Module impact still activates the same prerequisite through the dotted alias.
+    (path / "src/pkg.py").write_text("VALUE = 2\n", encoding="utf-8")
+    impacted = select(path, base)
+    assert "tests.test_other" in impacted.tests
+    assert "wheel_smoke" in impacted.prerequisites
+
+    # Both spellings of the same real file keep one prerequisite and one native target.
+    (path / "tests/test_other.py").write_text(
+        "def test_ok():\n    assert 1 == 1\n", encoding="utf-8"
+    )
+    mixed = select(path, base)
+    assert set(mixed.tests) == {"tests.test_other", "tests/test_other.py"}
+    assert "wheel_smoke" in mixed.prerequisites
+    resolved, refusal = selection.resolve_pytest_targets(mixed.tests, path)
+    assert refusal is None
+    assert resolved == ["tests/test_other.py"]
