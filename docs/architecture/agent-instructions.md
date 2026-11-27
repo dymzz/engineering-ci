@@ -30,7 +30,7 @@ Codex CLI 官方说明按全局、仓库根到当前工作目录逐层发现并�
 工作对象包括架构规划、实施、审阅与验收；当前用户授权优先。通过以下现有权威入口取得所需关系，
 不要把历史快照、候选设计或自报完成状态当成当前事实。
 
-审阅任务遵循 [ECI 审阅要求](eci-review-requirements.md) 及其引用的 ReviewResult JSON Schema；实际范围、关系发现、证据复用和结构化输出以该规范为准。根 AGENTS.md 提供固定入口，当前文档不复制审阅规则。实际试验校验入口、规范版本与受审基线的区别及未接线边界见审阅要求 §5、§8。
+审阅任务遵循 [ECI 审阅要求](eci-review-requirements.md) 及其引用的 ReviewResult JSON Schema；实际范围、关系发现、证据复用和结构化输出以该规范为准。仓库内由 AGENTS.md 导航；普通 Chat / GitHub Connector 直接读取该要求的 main 版本，不假定自动加载 AGENTS.md。规范加载与基线见 §1，实际结果校验见 §5；实施验收见[审阅试验记录](../verification/review-experiment/README.md)。
 
 ### 关系导航
 
