@@ -422,6 +422,7 @@ exact = "config/otel-collector-github-receiver.yaml"
 tests = [
     "tests.test_github_receiver",
     "tests.test_cicd_telemetry",
+    "tests.test_issue52_githubreceiver_e2e",
     "tests.test_otlp_grpc_live",
 ]
 reason = "collector receiver config"
@@ -513,7 +514,12 @@ reason = "Dagger PowerShell AST probe"
 
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/pytest_ci.py"
-tests = ["tests.test_ci_performance", "tests.test_pytest_ci", "tests.test_pytest_quality"]
+tests = [
+    "tests.test_ci_performance",
+    "tests.test_plan_result",
+    "tests.test_pytest_ci",
+    "tests.test_pytest_quality",
+]
 reason = "Dagger pytest CI helper"
 
 [[non_code_rules]]
@@ -528,12 +534,15 @@ reason = "Dagger pytest matrix runtime"
 
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/pytest_quality.py"
-tests = ["tests.test_pytest_matrix", "tests.test_pytest_quality"]
+tests = ["tests.test_plan_result", "tests.test_pytest_matrix", "tests.test_pytest_quality"]
 reason = "Dagger pytest quality helper"
 
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/pytest_report.py"
 tests = [
+    "tests.test_ci_performance",
+    "tests.test_manual_release",
+    "tests.test_plan_result",
     "tests.test_pytest_ci",
     "tests.test_pytest_matrix",
     "tests.test_pytest_quality",
@@ -640,7 +649,7 @@ reason = "OSV security fixture"
 
 [[non_code_rules]]
 prefix = "tests/fixtures/python-app/"
-tests = ["tests.test_pytest_ci", "tests.test_pytest_report"]
+tests = ["tests.test_native_hooks", "tests.test_pytest_ci", "tests.test_pytest_report"]
 reason = "python app fixture"
 
 [[non_code_rules]]
@@ -650,6 +659,10 @@ tests = [
     "tests.test_execution",
     "tests.test_expected_checks",
     "tests.test_hygiene",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_plan_result",
+    "tests.test_reconciliation",
+    "tests.test_terminal_expected",
 ]
 reason = "selection app fixture"
 
@@ -674,6 +687,10 @@ tests = [
     "tests.test_weaver",
     "tests.test_cicd_telemetry",
     "tests.test_cicd_telemetry_attributes",
+    "tests.test_github_receiver",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_selection",
+    "tests.test_terminal_expected",
 ]
 reason = "weaver cicd fixture"
 

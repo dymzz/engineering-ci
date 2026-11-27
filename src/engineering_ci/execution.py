@@ -478,7 +478,52 @@ def _verify_git_execution_binding(plan, root, *, execution_context="host"):
     return True, None, expected_tree
 
 
-def _changeset_from_plan(plan, root, *, extra_paths=()):
+def _has_verified_materialized_source(
+    plan,
+    source_root,
+    *,
+    execution_context="host",
+    view_root=None,
+    generated_input_refs=(),
+):
+    """Return True only when ``source_root`` proves a Git-free materialized tree."""
+    if plan is None or source_root is None:
+        return False
+    git = plan.get("git")
+    if not isinstance(git, dict):
+        return False
+    target_tree = git.get("execution_tree")
+    snapshot = str(git.get("snapshot") or ("commit" if target_tree else "worktree"))
+    if snapshot not in {"index", "commit", "push", "pr_merge"}:
+        return False
+    ok, _, _ = _verify_git_execution_binding(
+        plan, source_root, execution_context=execution_context
+    )
+    if not ok:
+        return False
+    if snapshot == "index":
+        is_materialized = execution_context == "dagger_export"
+    else:
+        has_git_root = (
+            execution_context != "dagger_export"
+            and selection._resolve_git_dir(source_root) is not None
+        )
+        is_materialized = not has_git_root and bool(git.get("source_tree_id"))
+    if not is_materialized:
+        return False
+    if view_root is not None:
+        src_resolved = Path(source_root).resolve()
+        view_resolved = Path(view_root).resolve()
+        if view_resolved != src_resolved and not _verify_consumer_view_closure(
+            src_resolved, view_resolved, generated_input_refs
+        ):
+            return False
+    return True
+
+
+def _changeset_from_plan(
+    plan, root, *, extra_paths=(), _verified_materialized_tree=False
+):
     git = plan["git"]
     target_tree = git.get("execution_tree")
     snapshot = str(git.get("snapshot") or ("commit" if target_tree else "worktree"))
@@ -522,6 +567,7 @@ def _changeset_from_plan(plan, root, *, extra_paths=()):
         object_type=git.get("object_type"),
         force_push=bool(git.get("force_push", False)),
         baseline_status=git.get("baseline_status"),
+        materialized_tree=bool(_verified_materialized_tree),
         base_tree=git.get("base_tree"),
     )
 
@@ -769,6 +815,7 @@ def omitted_hygiene_checks(
     root,
     hygiene_config=None,
     extra_paths=(),
+    execution_context="host",
 ):
     """Return decorated not_executed entries for configured hygiene checks omitted from plan."""
     has_bound_hygiene = isinstance((plan.get("inputs") or {}).get("hygiene"), dict)
@@ -798,7 +845,15 @@ def omitted_hygiene_checks(
         fallback_name="engineering-ci.hygiene",
         digest_after=digest_after,
     )
-    changes = _changeset_from_plan(plan, root, extra_paths=extra_paths)
+    verified_materialized = _has_verified_materialized_source(
+        plan, root, execution_context=execution_context
+    )
+    changes = _changeset_from_plan(
+        plan,
+        root,
+        extra_paths=extra_paths,
+        _verified_materialized_tree=verified_materialized,
+    )
     selected_names = {
         item.get("name") for item in selected if item.get("name") in _HYGIENE_CHECKS
     }
@@ -827,6 +882,7 @@ def _run_hygiene_checks(
     extra_paths=(),
     generated_input_refs=(),
     check_omitted=True,
+    _verified_materialized_tree=None,
 ):
     selected_by_name = {
         item["name"]: item for item in selected if item.get("name") in _HYGIENE_CHECKS
@@ -860,7 +916,16 @@ def _run_hygiene_checks(
         digest_after=digest_after,
     )
     configured = hygiene.effective_checks(config)
-    changes = _changeset_from_plan(plan, root, extra_paths=extra_paths)
+    if _verified_materialized_tree is None:
+        _verified_materialized_tree = _has_verified_materialized_source(
+            plan, root, execution_context=execution_context
+        )
+    changes = _changeset_from_plan(
+        plan,
+        root,
+        extra_paths=extra_paths,
+        _verified_materialized_tree=bool(_verified_materialized_tree),
+    )
     omitted_entries = (
         _find_omitted_hygiene_entries(
             plan,
@@ -6095,6 +6160,16 @@ def run_host_check(
         base_root=_consumer_source_root,
     )
     if name in _HYGIENE_CHECKS:
+        source_anchor = (
+            _consumer_source_root if _consumer_source_root is not None else root
+        )
+        verified_materialized = _has_verified_materialized_source(
+            plan,
+            source_anchor,
+            execution_context=execution_context,
+            view_root=root if _consumer_source_root is not None else None,
+            generated_input_refs=generated_input_refs,
+        )
         results, _ = _run_hygiene_checks(
             plan,
             [item],
@@ -6106,6 +6181,7 @@ def run_host_check(
             extra_paths=artifact_paths,
             generated_input_refs=generated_input_refs,
             check_omitted=False,
+            _verified_materialized_tree=verified_materialized,
         )
         raw = results or [
             {
@@ -6592,6 +6668,7 @@ def _execute_with_dependencies(
         selected,
         root=root,
         hygiene_config=hygiene_config,
+        execution_context=execution_context,
     ) + omitted_workflow_script_checks(
         plan,
         selected,

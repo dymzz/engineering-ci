@@ -557,6 +557,15 @@ def _deleted_paths(changes, paths, root):
     snapshot = getattr(changes, "snapshot", "worktree")
     if snapshot == "worktree":
         return {path for path in paths if not source_file_present(root, path)}
+    if getattr(changes, "materialized_tree", False):
+        if getattr(changes, "deleted_paths_resolved", False):
+            deleted = {
+                str(path).replace("\\", "/")
+                for path in (getattr(changes, "deleted_paths", ()) or ())
+                if isinstance(path, str)
+            }
+            return deleted & set(paths)
+        return {path for path in paths if not source_file_present(root, path)}
     target_tree = getattr(changes, "execution_tree", None) or getattr(
         changes, "tree", None
     )

@@ -4693,8 +4693,55 @@ def _is_link_stat(info):
     )
 
 
+def _check_resolved_in_source(candidate, resolved_root):
+    """Return ``(resolved_path, None)`` or ``(None, refusal)`` when escaping Source."""
+    try:
+        resolved = candidate.resolve(strict=False)
+        rel_target = resolved.relative_to(resolved_root)
+    except (OSError, ValueError):
+        return None, "pytest_target_outside_source"
+    if any(segment.lower() == ".git" for segment in rel_target.parts):
+        return None, "pytest_target_outside_source"
+    return resolved, None
+
+
+def _check_bound_pytest_directory(root_dir, resolved_root, start_resolved):
+    """Verify recursive directory members of a pytest target stay inside ``resolved_root``."""
+    visited = {start_resolved}
+    stack = [root_dir]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                items = sorted(entries, key=lambda entry: entry.name)
+        except OSError:
+            return "pytest_target_unreadable"
+        for entry in items:
+            if entry.name.lower() == ".git":
+                return "pytest_target_outside_source"
+            entry_path = Path(entry.path)
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                return "pytest_target_unreadable"
+            is_link = _is_link_stat(info)
+            if is_link or stat.S_ISDIR(info.st_mode):
+                entry_resolved, refusal = _check_resolved_in_source(
+                    entry_path, resolved_root
+                )
+                if refusal:
+                    return refusal
+                if entry_resolved.is_dir() and not (
+                    # Avoid following directory junctions/symlinks twice or looping.
+                    entry_resolved in visited
+                ):
+                    visited.add(entry_resolved)
+                    stack.append(entry_path)
+    return None
+
+
 def _check_bound_pytest_path(root, resolved_root, rel_posix):
-    """Verify every existing component along ``rel_posix`` stays inside ``root``."""
+    """Verify ``rel_posix``, ancestors, and recursive directory members stay inside ``root``."""
     current = Path(root)
     parts = rel_posix.split("/")
     for index, part in enumerate(parts, start=1):
@@ -4706,21 +4753,19 @@ def _check_bound_pytest_path(root, resolved_root, rel_posix):
         except OSError:
             return False, "pytest_target_unreadable"
         if _is_link_stat(info):
-            try:
-                resolved = current.resolve(strict=False)
-                rel_target = resolved.relative_to(resolved_root)
-            except (OSError, ValueError):
-                return False, "pytest_target_outside_source"
-            if any(segment.lower() == ".git" for segment in rel_target.parts):
-                return False, "pytest_target_outside_source"
+            _, refusal = _check_resolved_in_source(current, resolved_root)
+            if refusal:
+                return False, refusal
         if index == len(parts):
-            try:
-                resolved = current.resolve(strict=False)
-                rel_target = resolved.relative_to(resolved_root)
-            except (OSError, ValueError):
-                return False, "pytest_target_outside_source"
-            if any(segment.lower() == ".git" for segment in rel_target.parts):
-                return False, "pytest_target_outside_source"
+            resolved, refusal = _check_resolved_in_source(current, resolved_root)
+            if refusal:
+                return False, refusal
+            if resolved.is_dir():
+                dir_refusal = _check_bound_pytest_directory(
+                    current, resolved_root, resolved
+                )
+                if dir_refusal:
+                    return False, dir_refusal
             return current.exists(), None
     return False, None
 

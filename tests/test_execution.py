@@ -6524,3 +6524,260 @@ def test_multi_ref_push_hygiene_config_vulture_only_parity(repo):
     expected_checks.validate_projection(
         p["expected_checks"], p["git"], p["check_scope"], plan=p, root=path
     )
+
+
+def test_git_free_index_dagger_export_runs_tach_when_verified_and_refuses_unproven(
+    repo, tmp_path
+):
+    from engineering_ci import plan_contract
+
+    path, base = repo
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["tach"]\n\n[tach]\nexecutable = "tach"\npath = "tach.toml"\nexternal = false\n',
+        encoding="utf-8",
+    )
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(path, "add", "tach.toml", "ci-hygiene.toml", "src/pkg/sub.py")
+    index_tree = run(path, "write-tree").strip()
+
+    def _export_git_free(dest):
+        shutil.copytree(
+            path,
+            dest,
+            ignore=shutil.ignore_patterns(".git"),
+            copy_function=shutil.copyfile,
+        )
+        assert not (dest / ".git").exists()
+        return selection.directory_content_id(dest)
+
+    exported = tmp_path / "exported_git_free"
+    source_tree_id = _export_git_free(exported)
+
+    def _index_plan(
+        *,
+        tree_id=source_tree_id,
+        changed_paths=("src/pkg/sub.py",),
+        check_scope=({"name": "tach", "status": "selected"},),
+        extra_git=None,
+    ):
+        hyg_path = exported / "ci-hygiene.toml"
+        hyg_cfg = hygiene.load_config(hyg_path)
+        hyg_sha = check_contract.file_digest(hyg_path)
+        hyg_id = hygiene.config_identity(hyg_path, hyg_cfg, root=exported)
+        git_data = {
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": "f" * 40,
+            "head_commit": "e" * 40,
+            "snapshot": "index",
+            "execution_tree": index_tree,
+            "index_tree": index_tree,
+            "source_tree_id": tree_id,
+            "changed_paths": list(changed_paths),
+        }
+        if extra_git:
+            git_data.update(extra_git)
+        return {
+            "schema_version": 2,
+            "kind": "engineering-ci-selection-plan",
+            "generator": {"name": "engineering-ci", "version": "0.7.0"},
+            "git": git_data,
+            "selection": {
+                "tests": [],
+                "framework": "pytest",
+                "src_root": "src",
+                "tests_dir": "tests",
+                "checks": [c["name"] for c in check_scope],
+            },
+            "check_scope": list(check_scope),
+            "dependency_contract": plan_contract.graph_contract([]),
+            "inputs": {
+                "hygiene": {
+                    "kind": "config",
+                    "path": "ci-hygiene.toml",
+                    "sha256": hyg_sha,
+                    "policy_scope": "repo_target_tree",
+                    "normalized": hyg_id["normalized"],
+                    "effective_check_config_ref": hyg_id["effective_check_config_ref"],
+                }
+            },
+        }
+
+    # Caller-injected boolean in plan JSON MUST NEVER establish materialized trust.
+    forged_plan = _index_plan(
+        tree_id=None,
+        extra_git={"materialized_tree": True},
+    )
+    assert (
+        execution._changeset_from_plan(forged_plan, exported).materialized_tree is False
+    )
+    assert (
+        execution._has_verified_materialized_source(
+            forged_plan, exported, execution_context="dagger_export"
+        )
+        is False
+    )
+    forged_runner = FakeRunner()
+    forged_report = execution.execute(
+        forged_plan,
+        root=exported,
+        execution_context="dagger_export",
+        runner=forged_runner,
+    )
+    assert forged_report["status"] == "not_executed"
+    assert forged_report["reason"] == "dagger_export_index_source_unverified"
+    assert not forged_runner.calls
+
+    # Wrong digest stays rejected before starting tach.
+    wrong_report = execution.execute(
+        _index_plan(tree_id="sha256:" + "0" * 64),
+        root=exported,
+        execution_context="dagger_export",
+        runner=FakeRunner(),
+    )
+    assert wrong_report["status"] == "not_executed"
+    assert wrong_report["reason"] == "source_tree_mismatch"
+
+    # Verified Git-free Index Source starts native tach and preserves exit 0 and exit 1.
+    # Missing base ODB while ci-hygiene.toml is listed in changed_paths does not fail target tach.toml.
+    for code, expected_status in ((0, "passed"), (1, "failed")):
+        runner = FakeRunner(code=code)
+        ok_plan = _index_plan(
+            changed_paths=("ci-hygiene.toml", "src/pkg/sub.py"),
+        )
+        rep = execution.execute(
+            ok_plan,
+            root=exported,
+            execution_context="dagger_export",
+            runner=runner,
+        )
+        tach_entry = next(c for c in rep["checks"] if c["name"] == "tach")
+        assert tach_entry.get("execution_started") is not False, tach_entry
+        assert tach_entry["check_contract"]["status"] == "valid", tach_entry
+        assert tach_entry["exit_code"] == code, tach_entry
+        assert tach_entry["status"] == expected_status, tach_entry
+        assert rep["status"] == expected_status, rep
+        assert any(call[0] == ("tach", "check") for call in runner.calls)
+
+        dag_runner = FakeRunner(code=code)
+        dag_entry = execution.run_host_check(
+            ok_plan,
+            {"name": "tach", "status": "selected", "inputs": ["src/pkg/sub.py"]},
+            root=exported,
+            execution_context="dagger_export",
+            runner=dag_runner,
+        )
+        assert dag_entry.get("execution_started") is not False, dag_entry
+        assert dag_entry["check_contract"]["status"] == "valid", dag_entry
+        assert dag_entry["exit_code"] == code
+        assert dag_entry["status"] == expected_status
+
+    # Omitted check evaluation accurately uses target tach.toml when verified, and never trusts tampered roots.
+    docs_only = _index_plan(changed_paths=("docs/guide.md",), check_scope=())
+    assert (
+        execution.omitted_hygiene_checks(
+            docs_only, [], root=exported, execution_context="dagger_export"
+        )
+        == []
+    )
+    omitted_src = _index_plan(changed_paths=("src/pkg/sub.py",), check_scope=())
+    omitted = execution.omitted_hygiene_checks(
+        omitted_src, [], root=exported, execution_context="dagger_export"
+    )
+    assert [item["name"] for item in omitted] == ["tach"]
+
+    # Verified overlay view allows reading target config cleanly; tampered overlay fails closed.
+    gen_dir = tmp_path / "gen"
+    gen_dir.mkdir()
+    gen_doc = gen_dir / "docs/api.md"
+    gen_doc.parent.mkdir(parents=True)
+    gen_doc.write_text("# generated\n", encoding="utf-8")
+    gen_sha = hashlib.sha256(gen_doc.read_bytes()).hexdigest()
+    gen_refs = [
+        {
+            "kind": "generated_input",
+            "input_kind": "file",
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "path": "docs/api.md",
+            "sha256": gen_sha,
+        }
+    ]
+    tmp_view, consumer_view = execution.build_consumer_view(
+        exported, [(gen_dir, "docs/api.md", "file")]
+    )
+    try:
+        overlay_plan = _index_plan()
+        overlay_runner = FakeRunner(code=0)
+        overlay_entry = execution.run_host_check(
+            overlay_plan,
+            {
+                "name": "tach",
+                "status": "selected",
+                "inputs": ["src/pkg/sub.py"],
+                "generated_input_refs": gen_refs,
+                "generated_inputs_retained": True,
+            },
+            root=consumer_view,
+            execution_context="dagger_export",
+            runner=overlay_runner,
+            artifact_paths=("docs/api.md",),
+            generated_input_refs=gen_refs,
+            _consumer_source_root=exported,
+            _consumer_generated_retained=True,
+        )
+        assert overlay_entry.get("execution_started") is not False, overlay_entry
+        assert overlay_entry["check_contract"]["status"] == "valid", overlay_entry
+        assert overlay_entry["status"] == "passed"
+
+        # Tampering an unapproved file inside overlay causes verification refusal (False).
+        (consumer_view / "src/pkg/sub.py").write_text("VALUE = 999\n", encoding="utf-8")
+        assert (
+            execution._has_verified_materialized_source(
+                overlay_plan,
+                exported,
+                execution_context="dagger_export",
+                view_root=consumer_view,
+                generated_input_refs=gen_refs,
+            )
+            is False
+        )
+    finally:
+        tmp_view.cleanup()
+
+    # Missing or invalid tach.toml in Git-free exported Source fails pre-execution closed.
+    missing_dir = tmp_path / "missing_tach"
+    shutil.copytree(exported, missing_dir, copy_function=shutil.copyfile)
+    (missing_dir / "tach.toml").unlink()
+    missing_id = selection.directory_content_id(missing_dir)
+    missing_runner = FakeRunner()
+    missing_rep = execution.execute(
+        _index_plan(tree_id=missing_id),
+        root=missing_dir,
+        execution_context="dagger_export",
+        runner=missing_runner,
+    )
+    missing_check = next(c for c in missing_rep["checks"] if c["name"] == "tach")
+    assert missing_check["status"] == "failed"
+    assert missing_check["reason"] == "tach_config_missing"
+    assert missing_check["execution_started"] is False
+    assert missing_check["check_contract"]["status"] == "not_started"
+    assert not any(call[0][0] == "tach" for call in missing_runner.calls)
+
+    bad_dir = tmp_path / "invalid_tach"
+    shutil.copytree(exported, bad_dir, copy_function=shutil.copyfile)
+    (bad_dir / "tach.toml").write_text("source_roots = [\n", encoding="utf-8")
+    bad_id = selection.directory_content_id(bad_dir)
+    bad_rep = execution.execute(
+        _index_plan(tree_id=bad_id),
+        root=bad_dir,
+        execution_context="dagger_export",
+        runner=FakeRunner(),
+    )
+    bad_check = next(c for c in bad_rep["checks"] if c["name"] == "tach")
+    assert bad_check["status"] == "failed"
+    assert bad_check["reason"] == "tach_config_invalid"
+    assert bad_check["execution_started"] is False

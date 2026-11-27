@@ -1000,6 +1000,29 @@ def _make_hygiene_runner(
                 outcome["stdout"],
                 outcome["stderr"],
             )
+        if (
+            hasattr(module, "_exec_uv_tool")
+            and argv_list[:1] == ["tach"]
+            and shutil.which(tool) is None
+        ):
+            from . import tooling
+
+            pinned_argv = ["uvx", "--from", f"tach=={tooling.TACH_VERSION}", *argv_list]
+            key = tuple(pinned_argv)
+            if exec_cache is not None and key in exec_cache:
+                outcome = exec_cache[key]
+            else:
+                outcome = asyncio.run_coroutine_threadsafe(
+                    module._exec_uv_tool(consumer_source, pinned_argv), loop
+                ).result()
+                if exec_cache is not None:
+                    exec_cache[key] = outcome
+            return subprocess.CompletedProcess(
+                argv_list,
+                outcome["exit_code"],
+                outcome["stdout"],
+                outcome["stderr"],
+            )
         return hygiene._run(argv, cwd, data)
 
     return _runner
@@ -1725,7 +1748,10 @@ async def _execute_dag(
                 report["prerequisites"].append(output)
 
         omitted = execution.omitted_hygiene_checks(
-            host_plan, host_checks, root=directory
+            host_plan,
+            host_checks,
+            root=directory,
+            execution_context="dagger_export",
         ) + execution.omitted_workflow_script_checks(
             host_plan, host_checks, root=directory
         )

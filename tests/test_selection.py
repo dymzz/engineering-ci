@@ -1903,6 +1903,81 @@ def test_repository_root_selection_and_tach_configs_target_src_and_dagger():
     assert "tests.test_execution" in tooling_sel.tests
     assert "tests.test_script_analysis" in tooling_sel.tests
 
+    for path_rel, expected_tests in (
+        (
+            ".dagger/src/engineering_ci_module/pytest_ci.py",
+            {
+                "tests.test_ci_performance",
+                "tests.test_plan_result",
+                "tests.test_pytest_ci",
+                "tests.test_pytest_quality",
+            },
+        ),
+        (
+            ".dagger/src/engineering_ci_module/pytest_quality.py",
+            {
+                "tests.test_plan_result",
+                "tests.test_pytest_matrix",
+                "tests.test_pytest_quality",
+            },
+        ),
+        (
+            ".dagger/src/engineering_ci_module/pytest_report.py",
+            {
+                "tests.test_ci_performance",
+                "tests.test_manual_release",
+                "tests.test_plan_result",
+                "tests.test_pytest_ci",
+                "tests.test_pytest_matrix",
+                "tests.test_pytest_quality",
+                "tests.test_pytest_report",
+            },
+        ),
+        (
+            "tests/fixtures/python-app/pyproject.toml",
+            {
+                "tests.test_native_hooks",
+                "tests.test_pytest_ci",
+                "tests.test_pytest_report",
+            },
+        ),
+        (
+            "tests/fixtures/selection-app/ci-hygiene.toml",
+            {
+                "tests.test_selection",
+                "tests.test_execution",
+                "tests.test_expected_checks",
+                "tests.test_hygiene",
+                "tests.test_issue52_githubreceiver_e2e",
+                "tests.test_plan_result",
+                "tests.test_reconciliation",
+                "tests.test_terminal_expected",
+            },
+        ),
+        (
+            "tests/fixtures/weaver-cicd/.weaver.toml",
+            {
+                "tests.test_weaver",
+                "tests.test_cicd_telemetry",
+                "tests.test_cicd_telemetry_attributes",
+                "tests.test_github_receiver",
+                "tests.test_issue52_githubreceiver_e2e",
+                "tests.test_selection",
+                "tests.test_terminal_expected",
+            },
+        ),
+        (
+            "config/otel-collector-github-receiver.yaml",
+            {"tests.test_issue52_githubreceiver_e2e"},
+        ),
+    ):
+        single_sel = selection.select(_worktree_changes(path_rel), cfg, root=root)
+        assert single_sel.status == "targeted", path_rel
+        assert single_sel.escalated is False, path_rel
+        assert expected_tests <= set(single_sel.tests), (path_rel, single_sel.tests)
+        if path_rel.endswith("pytest_ci.py"):
+            assert "tests.test_weaver" not in single_sel.tests
+
     docs_sel = selection.select(
         _worktree_changes("docs/architecture/hygiene.md"), cfg, root=root
     )
@@ -2260,6 +2335,163 @@ def test_pytest_targets_stay_bound_to_source_under_external_pythonpath(
         assert rc_link == 4
         assert link_cap["source_refusal"] == "pytest_target_outside_source"
         assert "argv" not in link_cap
+
+
+def test_resolve_pytest_targets_blocks_recursive_dir_symlinks_and_keeps_valid_internal_links(
+    tmp_path,
+):
+    import sys
+    import xml.etree.ElementTree as ET
+
+    external = tmp_path / "outside"
+    external.mkdir()
+    (external / "test_outside.py").write_text(
+        "def test_external():\n    assert True\n", encoding="utf-8"
+    )
+
+    repo_root = tmp_path / "repo"
+    (repo_root / ".git/hooks").mkdir(parents=True)
+    (repo_root / ".git/hooks/test_git_hook.py").write_text(
+        "def test_hook():\n    assert True\n", encoding="utf-8"
+    )
+    (repo_root / "chosen").mkdir()
+    (repo_root / "chosen/test_ok.py").write_text(
+        "def test_inside():\n    assert True\n", encoding="utf-8"
+    )
+    (repo_root / "chosen_dir").mkdir()
+    (repo_root / "chosen_dot").mkdir()
+    (repo_root / "chosen_git").mkdir()
+    (repo_root / "chosen_broken/sub").mkdir(parents=True)
+
+    symlink_available = True
+    try:
+        os.symlink(external / "test_outside.py", repo_root / "chosen/test_outside.py")
+        os.symlink(external, repo_root / "chosen_dir/ext_sub", target_is_directory=True)
+        os.symlink(external / "test_outside.py", repo_root / "chosen_dot/test_ext.py")
+        os.symlink(
+            repo_root / ".git/hooks/test_git_hook.py",
+            repo_root / "chosen_git/test_hook.py",
+        )
+        os.symlink(
+            external / "missing_outside.py",
+            repo_root / "chosen_broken/sub/test_broken.py",
+        )
+    except OSError:
+        symlink_available = False
+        assert sys.platform == "win32"
+        import _winapi
+
+        # Unprivileged Windows fallback: real directory junctions are reparse points
+        # that native pytest traverses recursively unless blocked by _check_bound_pytest_directory.
+        _winapi.CreateJunction(str(external), str(repo_root / "chosen/ext_outside"))
+        _winapi.CreateJunction(str(external), str(repo_root / "chosen_dir/ext_sub"))
+        _winapi.CreateJunction(str(external), str(repo_root / "chosen_dot/ext_dot"))
+        _winapi.CreateJunction(
+            str(repo_root / ".git/hooks"), str(repo_root / "chosen_git/git_hooks")
+        )
+        missing_outside = external / "missing_outside_dir"
+        missing_outside.mkdir()
+        _winapi.CreateJunction(
+            str(missing_outside), str(repo_root / "chosen_broken/sub/broken_dir")
+        )
+        missing_outside.rmdir()
+
+    for target_expr in (
+        "./chosen",
+        "chosen",
+        "./chosen_dir",
+        "chosen_dot",
+        "./chosen_git",
+        "./chosen_broken",
+    ):
+        resolved, refusal = selection.resolve_pytest_targets([target_expr], repo_root)
+        assert resolved is None, target_expr
+        assert refusal == "pytest_target_outside_source", target_expr
+        cap = {}
+        rc = selection.run_tests(
+            (target_expr,), root=repo_root, framework="pytest", capture=cap
+        )
+        assert rc == 4
+        assert cap["source_refusal"] == "pytest_target_outside_source"
+        assert "argv" not in cap
+
+    # Explicit sibling file target stays allowed even when chosen/ holds an escaping link.
+    (repo_root / "chosen.py").write_text(
+        "def test_explicit_file():\n    assert True\n", encoding="utf-8"
+    )
+    assert selection.resolve_pytest_targets(["chosen.py"], repo_root) == (
+        ["chosen.py"],
+        None,
+    )
+    assert (
+        selection.run_tests(
+            ("chosen.py",), root=repo_root, framework="pytest", capture={}
+        )
+        == 0
+    )
+
+    # Valid internal links (plus ordinary stdlib imports) pass natively without false refusal.
+    # Also ensure cyclic internal directory links terminate in resolve_pytest_targets without infinite recursion.
+    (repo_root / "shared_dir").mkdir()
+    (repo_root / "shared_dir/test_shared_dir.py").write_text(
+        "import json\n\ndef test_shared_dir():\n    assert json.loads('{\"ok\": 1}')['ok'] == 1\n",
+        encoding="utf-8",
+    )
+    (repo_root / "shared_file.py").write_text(
+        "def test_shared_file():\n    assert True\n", encoding="utf-8"
+    )
+    (repo_root / "chosen_valid").mkdir()
+    (repo_root / "chosen_cycle").mkdir()
+    if symlink_available:
+        os.symlink(
+            repo_root / "shared_dir",
+            repo_root / "chosen_valid/internal_dir",
+            target_is_directory=True,
+        )
+        os.symlink(
+            repo_root / "shared_file.py",
+            repo_root / "chosen_valid/test_internal_file.py",
+        )
+        os.symlink(
+            repo_root / "chosen_cycle",
+            repo_root / "chosen_cycle/loop_back",
+            target_is_directory=True,
+        )
+        expected_cases = {"test_shared_dir", "test_shared_file"}
+    else:
+        import _winapi
+
+        _winapi.CreateJunction(
+            str(repo_root / "shared_dir"), str(repo_root / "chosen_valid/internal_dir")
+        )
+        _winapi.CreateJunction(
+            str(repo_root / "chosen_cycle"), str(repo_root / "chosen_cycle/loop_back")
+        )
+        (repo_root / "chosen_valid/test_direct.py").write_text(
+            "def test_direct():\n    assert True\n", encoding="utf-8"
+        )
+        expected_cases = {"test_shared_dir", "test_direct"}
+    assert selection.resolve_pytest_targets(["./chosen_cycle"], repo_root) == (
+        ["./chosen_cycle"],
+        None,
+    )
+    assert selection.resolve_pytest_targets(["./chosen_valid"], repo_root) == (
+        ["./chosen_valid"],
+        None,
+    )
+    valid_junit = tmp_path / "valid-junit.xml"
+    valid_cap = {}
+    rc_valid = selection.run_tests(
+        ("./chosen_valid",),
+        root=repo_root,
+        framework="pytest",
+        junit_path=valid_junit,
+        capture=valid_cap,
+    )
+    assert rc_valid == 0, valid_cap
+    root_xml = ET.fromstring(valid_junit.read_text(encoding="utf-8"))
+    case_names = {tc.attrib["name"] for tc in root_xml.iter("testcase")}
+    assert case_names == expected_cases
 
 
 def test_selection_rejects_unsupported_custom_tach_config_paths(repo, tmp_path):

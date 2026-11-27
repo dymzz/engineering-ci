@@ -506,16 +506,23 @@ for actual request/reader counts and failure preservation.
   disable `pytest 9.0.3` `fromfile_prefix_chars="@"` expansion after `--`.
   Legitimate `PYTHONPATH` is preserved while external packages and `@argsfile`
   expansion cannot shadow or substitute for bound repository test targets;
-  out-of-source, escaping symlink, whitespace-padded, pre-/post-normalization
+  out-of-source, escaping symlink/junction (including recursive members and
+  links discovered inside bound directory targets), `.git` references,
+  whitespace-padded, pre-/post-normalization
   Windows drive/UNC (`./C:/outside`, `./C:outside`), and option-like targets
   (`./--collect-only`, `./--help`, `./--version`, ` -q`) are refused before
   spawning pytest (`source_refusal` on Host, `not_executed` on Dagger Plan
   execution, or `ValueError` on direct `_run_pytest`), while missing non-option
-  in-source targets fail natively with pytest exit `4`. Generic consumer
+  in-source targets fail natively with pytest exit `4`. Verified Git-free Index
+  materialized trees (`dagger_export` with authenticated `source_tree_id`)
+  propagate `materialized_tree` internally to Hygiene applicability and
+  target `tach.toml` reading without accepting caller-supplied booleans or
+  conflating missing base ODB history with missing target config. Generic consumer
   `python_test` retains the `pytest_arguments` CLI shape while neutralizing
   leading `@` and rejecting post-normalization leading `-` and Windows drives
   in `test_policy`. `unittest` semantics stay unchanged. Any non-`tach.toml`
-  `./tach.toml`) is refused fail-closed matching native `tach 0.35.3` discovery.
+  `tach` config path (after normalizing `./tach.toml`) is refused fail-closed
+  matching native `tach 0.35.3` discovery.
 - **Adoption scope (R15 independent slice):** this delivers selection mapping,
   hygiene applicability, root `tach.toml` / `ci-selection.toml` artifacts, and
   host-native `tach check` / `tach check-external` evidence when those tools are

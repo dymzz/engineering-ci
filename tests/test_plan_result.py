@@ -5009,3 +5009,308 @@ def test_dagger_plan_selected_pytest_stays_bound_without_pyargs_and_resists_at_a
     )
     assert generic_args[-1] == "tests"
     assert "--" not in generic_args
+
+
+def test_dagger_git_free_index_runs_tach_and_rejects_external_dir_symlink(
+    modules, monkeypatch, tmp_path
+):
+    import importlib
+    import os
+    import subprocess
+
+    _, collector = modules
+    dagger_mod = sys.modules["dagger"]
+    repo_root = Path(__file__).resolve().parents[1]
+
+    def identity(*args, **kwargs):
+        if args and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda fn: fn
+
+    monkeypatch.setattr(dagger_mod, "function", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "check", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        dagger_mod,
+        "dag",
+        types.SimpleNamespace(directory=lambda: MemoryDirectory()),
+        raising=False,
+    )
+    for attr in ("Directory", "Container", "Secret"):
+        if not hasattr(dagger_mod, attr):
+            monkeypatch.setattr(dagger_mod, attr, object, raising=False)
+
+    spec = importlib.util.spec_from_file_location(
+        collector.__package__ + ".main", MODULE / "main.py"
+    )
+    main_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, main_mod)
+    spec.loader.exec_module(main_mod)
+
+    from engineering_ci import hygiene
+    from engineering_ci import selection as real_selection
+
+    # 1. P1-09 through plan_execution.execute on Git-free Index Source: runs tach and preserves exit 0/1.
+    hyg_toml = (
+        'schema_version = 1\nchecks = ["tach"]\n\n'
+        '[tach]\nexecutable = "tach"\npath = "tach.toml"\nexternal = false\n'
+    )
+    tach_toml = 'source_roots = ["src"]\n\n[[modules]]\npath = "app"\ndepends_on = []\n'
+    hyg_file = tmp_path / "ci-hygiene.toml"
+    hyg_file.write_bytes(hyg_toml.encode("utf-8"))
+    hyg_cfg = hygiene.load_config(hyg_file)
+    hyg_sha = check_contract.file_digest(hyg_file)
+    hyg_id = hygiene.config_identity(hyg_file, hyg_cfg, root=tmp_path)
+
+    src_files = {
+        "ci-hygiene.toml": hyg_toml.encode("utf-8"),
+        "tach.toml": tach_toml.encode("utf-8"),
+        "src/app/__init__.py": b"VALUE = 1\n",
+    }
+    mat_dir = tmp_path / "git_free_tach_src"
+    mat_dir.mkdir()
+    _write_memdir(MemoryDirectory(src_files), mat_dir)
+    verified_tree_id = real_selection.directory_content_id(mat_dir)
+
+    idx_plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {
+            "base_ref": "main",
+            "head_ref": "HEAD",
+            "base_commit": "0" * 40,
+            "head_commit": "1" * 40,
+            "snapshot": "index",
+            "execution_tree": "a" * 40,
+            "index_tree": "a" * 40,
+            "source_tree_id": verified_tree_id,
+            "changed_paths": ["src/app/__init__.py"],
+        },
+        "selection": {
+            "tests": [],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+            "checks": ["tach"],
+        },
+        "check_scope": [
+            {"name": "tach", "status": "selected", "inputs": ["src/app/__init__.py"]}
+        ],
+        "inputs": {
+            "hygiene": {
+                "kind": "config",
+                "path": "ci-hygiene.toml",
+                "sha256": hyg_sha,
+                "policy_scope": "repo_target_tree",
+                "normalized": hyg_id["normalized"],
+                "effective_check_config_ref": hyg_id["effective_check_config_ref"],
+            }
+        },
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+
+    tach_calls = []
+
+    def _fake_tach_run(argv, root, data=None):
+        tach_calls.append(list(argv))
+        if argv and argv[0] == "tach":
+            return subprocess.CompletedProcess(argv, _tach_exit["code"], "ok\n", "")
+        return subprocess.CompletedProcess(argv, 128, "", "not a git repo")
+
+    _tach_exit = {"code": 0}
+    monkeypatch.setattr(hygiene, "_run", _fake_tach_run)
+    import shutil
+
+    orig_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/usr/bin/tach" if name == "tach" else orig_which(name),
+    )
+    engine = main_mod.EngineeringCi()
+
+    for code, expected_status in ((0, "passed"), (1, "failed")):
+        _tach_exit["code"] = code
+        tach_calls.clear()
+        exec_res = asyncio.run(
+            collector.execute(
+                engine,
+                MemoryFile(json.dumps(idx_plan)),
+                MemoryDirectory(src_files),
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+        rep = json.loads(asyncio.run(exec_res.report()))
+        tach_entry = next(c for c in rep["checks"] if c["name"] == "tach")
+        assert tach_entry.get("execution_started") is not False, tach_entry
+        assert tach_entry["check_contract"]["status"] == "valid", tach_entry
+        assert tach_entry["exit_code"] == code
+        assert tach_entry["status"] == expected_status
+        assert any(call == ["tach", "check"] for call in tach_calls)
+
+    # When host tach binary is absent in Dagger container, _make_hygiene_runner delegates pinned tach==0.35.3 via _exec_uv_tool.
+    uv_calls = []
+
+    class UvTachEngine(main_mod.EngineeringCi):
+        async def _exec_uv_tool(self, source_dir, argv_list):
+            uv_calls.append(list(argv_list))
+            return {"exit_code": 0, "stdout": "All modules validated!\n", "stderr": ""}
+
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: None if name == "tach" else orig_which(name),
+    )
+    uv_exec = asyncio.run(
+        collector.execute(
+            UvTachEngine(),
+            MemoryFile(json.dumps(idx_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    uv_rep = json.loads(asyncio.run(uv_exec.report()))
+    uv_tach = next(c for c in uv_rep["checks"] if c["name"] == "tach")
+    assert uv_tach["status"] == "passed"
+    assert uv_tach["exit_code"] == 0
+    assert uv_calls == [["uvx", "--from", "tach==0.35.3", "tach", "check"]]
+
+    # Wrong digest refuses execution before running tach.
+    tach_calls.clear()
+    bad_idx_plan = json.loads(json.dumps(idx_plan))
+    bad_idx_plan["git"]["source_tree_id"] = "sha256:" + "0" * 64
+    bad_exec = asyncio.run(
+        collector.execute(
+            engine,
+            MemoryFile(json.dumps(bad_idx_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    bad_rep = json.loads(asyncio.run(bad_exec.report()))
+    assert bad_rep["status"] == "not_executed"
+    assert bad_rep["reason"] == "source_tree_mismatch"
+    assert not tach_calls
+
+    # 2. P1-10: Directory target holding an external link is blocked on Dagger plan_execution & _run_pytest.
+    ext_dir = tmp_path / "ext_outside_dagger"
+    ext_dir.mkdir()
+    (ext_dir / "test_outside.py").write_text(
+        "def test_external():\n    assert True\n", encoding="utf-8"
+    )
+    symlink_repo = tmp_path / "symlink_dagger_src"
+    (symlink_repo / "chosen").mkdir(parents=True)
+    (symlink_repo / "chosen/test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (symlink_repo / "ci-weaver.toml").write_text("# clean\n", encoding="utf-8")
+    symlink_mode = True
+    try:
+        os.symlink(ext_dir / "test_outside.py", symlink_repo / "chosen/test_outside.py")
+    except OSError:
+        symlink_mode = False
+
+    class SymlinkDagDir(MemoryDirectory):
+        def __init__(
+            self, files=None, *, dirs=None, _loader=None, _preserve_escape=False
+        ):
+            super().__init__(files, dirs=dirs, _loader=_loader)
+            self._preserve_escape = _preserve_escape
+
+        def with_directory(self, prefix, directory, *, exclude=()):
+            merged = super().with_directory(prefix, directory, exclude=exclude)
+            return SymlinkDagDir(
+                merged.files,
+                dirs=merged.dirs,
+                _preserve_escape=self._preserve_escape
+                or isinstance(directory, SymlinkDagDir)
+                and directory._preserve_escape,
+            )
+
+        async def export(self, directory):
+            await super().export(directory)
+            if not self._preserve_escape:
+                return
+            dest = Path(directory)
+            (dest / "chosen").mkdir(parents=True, exist_ok=True)
+            (dest / "chosen/test_ok.py").write_text(
+                "def test_ok():\n    assert True\n", encoding="utf-8"
+            )
+            if symlink_mode:
+                link_path = dest / "chosen/test_outside.py"
+                if not link_path.exists() and not link_path.is_symlink():
+                    os.symlink(ext_dir / "test_outside.py", link_path)
+            else:
+                import _winapi
+
+                j_path = dest / "chosen/ext_sub"
+                if not j_path.exists() and not j_path.is_junction():
+                    _winapi.CreateJunction(str(ext_dir), str(j_path))
+
+    monkeypatch.setattr(
+        dagger_mod,
+        "dag",
+        types.SimpleNamespace(directory=lambda: SymlinkDagDir()),
+        raising=False,
+    )
+
+    recorded_pytest = []
+
+    class RejectEngine(main_mod.EngineeringCi):
+        def _bound_public_source(self, source):
+            return source
+
+        def _uv_container(self, *args, **kwargs):
+            return types.SimpleNamespace()
+
+        async def _run_pytest(self, *args, **kwargs):
+            recorded_pytest.append((args, kwargs))
+            raise AssertionError(
+                "_run_pytest must not launch when directory has escaping symlink"
+            )
+
+    sym_source = SymlinkDagDir(
+        {
+            "ci-weaver.toml": b"# clean\n",
+            "chosen/test_ok.py": b"def test_ok():\n    assert True\n",
+        },
+        _preserve_escape=True,
+    )
+    sym_plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=["./chosen"],
+        checks=(),
+    )
+    sym_plan["selection"]["framework"] = "pytest"
+    sym_plan["git"] = _plan_git_identity("worktree")
+    refused_exec = asyncio.run(
+        collector.execute(
+            RejectEngine(),
+            MemoryFile(json.dumps(sym_plan)),
+            sym_source,
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    refused_rep = json.loads(asyncio.run(refused_exec.report()))
+    assert not recorded_pytest
+    assert refused_rep["status"] == "blocked"
+    assert refused_rep["tests"]["status"] == "not_executed"
+    assert refused_rep["tests"]["reason"] == "pytest_target_outside_source"
+
+    direct_engine = RejectEngine()
+    with pytest.raises(ValueError, match="pytest_target_outside_source"):
+        asyncio.run(
+            main_mod.EngineeringCi._run_pytest(
+                direct_engine, sym_source, "3.14", "./chosen", _targets=["./chosen"]
+            )
+        )
+    assert repo_root.is_dir()
