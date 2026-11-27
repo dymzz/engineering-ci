@@ -7,13 +7,6 @@ import sys
 from pathlib import Path
 
 
-def _enclosing_git_checkout(path: Path) -> Path | None:
-    for candidate in (path, *path.parents):
-        if (candidate / ".git").exists():
-            return candidate
-    return None
-
-
 def _check_worktree_source_binding() -> str | None:
     """Diagnostic guard when editable CLI loads from another checkout of one repo."""
     package_file = Path(__file__).resolve()
@@ -27,12 +20,13 @@ def _check_worktree_source_binding() -> str | None:
         cwd = Path.cwd().resolve()
     except OSError:
         return None
-    cwd_checkout = _enclosing_git_checkout(cwd)
+    from engineering_ci import git_source
+
+    cwd_checkout = git_source.enclosing_git_checkout(cwd)
     if cwd_checkout is None or cwd_checkout == pkg_checkout:
         return None
     if not (cwd_checkout / "src" / "engineering_ci" / "cli" / "__init__.py").is_file():
         return None
-    from engineering_ci import git_source
 
     if git_source.registered_worktree(pkg_checkout, cwd_checkout):
         relation = f"is registered worktree {cwd_checkout}"

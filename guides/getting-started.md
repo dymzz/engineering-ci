@@ -65,7 +65,11 @@ uv 通过绝对路径 `UV_PROJECT_ENVIRONMENT` 指定共享项目环境，通过
   `PYTHONPATH=<当前检出>/src`（避免命中共享环境里主管理 checkout 的 editable `.pth`；
   新版本 `engineering_ci.cli` 含辅助诊断守卫，在从另一检出的 editable `src/` 加载时
   返回退出码 `2`，但旧版本或非 editable 安装不具备该守卫，因此显式 `PYTHONPATH` 仍是
-  实际源码绑定机制）。本仓不新建总 Runner，也不强迫原生 `git` / `ruff` / `pytest` /
+  实际源码绑定机制）。同一 Shell 切换目录不会重置环境变量：切到其他 ECI checkout
+  需重绑（或切回主 checkout 时移除）`PYTHONPATH`，进入独立消费者项目前须清除 ECI
+  特定 `UV_PROJECT_ENVIRONMENT` / `UV_PROJECT` / `VIRTUAL_ENV` / `PYTHONPATH`
+  或显式重设为目标消费者环境（`tools.consumer` 跨仓调用时会自动剥离 ECI 检出绑定并
+  保留用户有意选择的目标环境）。本仓不新建总 Runner，也不强迫原生 `git` / `ruff` / `pytest` /
   `dagger` 经过 Python CLI。
 
 Git Hook 安装及运行见[常用操作](common-tasks.md#lefthook-本地入口)。

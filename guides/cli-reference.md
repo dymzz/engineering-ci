@@ -69,7 +69,8 @@ PowerShell 查看 `$LASTEXITCODE`，Linux 查看 `$?`。fine-grained PAT 不支�
 在复用主管理 checkout 共享 `.venv` 的 linked worktree 中直接执行下述命令或 `scripts/` 入口时，
 应在开发会话或命令作用域设置 `UV_PROJECT_ENVIRONMENT=<共享 .venv 绝对路径>` 且始终携带 `--no-sync`；
 调用 `engineering-ci ...` 或 `python -P -m engineering_ci...` 时同时设置 `PYTHONPATH=<当前检出>/src`
-（`scripts/release.py` 与 `scripts/download.py` 已内置注入所在检出 `src/`，会话与更新约定见[常用操作](common-tasks.md)）。
+（`scripts/release.py` 与 `scripts/download.py` 已内置注入所在检出 `src/`，会话切换、离开到独立消费者仓前清理 ECI 变量与更新约定见[常用操作](common-tasks.md)）。
+`engineering_ci.tools.consumer` 跨仓操作独立消费者时会自动过滤继承自 ECI 检出的 `UV_PROJECT*` / `VIRTUAL_ENV` / `PYTHONPATH`，同时保留显式指定的非 ECI 目标环境。
 
 | 功能 | 调用 |
 | --- | --- |

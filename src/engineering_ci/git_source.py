@@ -60,6 +60,15 @@ def _git_common_dir(root, *, env):
     return Path(common).resolve() if Path(top).resolve() == root else None
 
 
+def enclosing_git_checkout(path: Path) -> Path | None:
+    """Return the nearest enclosing directory containing ``.git``, if any."""
+    resolved = Path(path).resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
 def shared_git_common_dir(checkout, candidate):
     """Prove that two checkout roots share one Git common directory.
 

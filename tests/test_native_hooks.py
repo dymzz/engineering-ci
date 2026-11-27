@@ -1193,6 +1193,35 @@ def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
         assert Path(reported_lock).resolve() == expected_lock.resolve()
         assert Path(reported_env).resolve() == expected_env.resolve()
 
+    # 11. F12 cross-repo scope: inherited ECI session vars propagate across `cd` into independent consumer repos
+    #     until explicitly cleared or re-targeted (matching guides/common-tasks.md).
+    inherited_in_consumer = invoke(
+        consumer_linked,
+        {
+            **base_env,
+            "UV_PROJECT_ENVIRONMENT": str(primary / ".venv"),
+            "PYTHONPATH": str(linked / "src"),
+        },
+        "run",
+        "pre-commit",
+    )
+    assert (
+        Path(inherited_in_consumer["UV_PROJECT_ENVIRONMENT"]).resolve()
+        == (primary / ".venv").resolve()
+    )
+    assert (
+        Path(inherited_in_consumer["PYTHONPATH"]).resolve()
+        == (linked / "src").resolve()
+    )
+    assert inherited_in_consumer["MARKER"] == "linked"
+    cleared_in_consumer = invoke(consumer_linked, base_env, "run", "pre-commit")
+    assert (
+        Path(cleared_in_consumer["UV_PROJECT_ENVIRONMENT"]).resolve()
+        == (consumer / ".venv").resolve()
+    )
+    assert cleared_in_consumer["PYTHONPATH"] == ""
+    assert cleared_in_consumer["MARKER"] == "primary"
+
 
 def test_linked_worktree_hooks_succeed_without_local_venv_or_uv_env(tmp_path, hook_env):
     """Joint native uv acceptance: shared venv, candidate Hook & CLI/Verify, and dependency drift."""
@@ -1444,6 +1473,45 @@ def test_linked_worktree_hooks_succeed_without_local_venv_or_uv_env(tmp_path, ho
         "--help",
     )
     assert "CANDIDATE_VERIFY_LINKED_MARKER" in direct_module.stdout
+
+    # Switching from one ECI worktree to another without updating PYTHONPATH refuses to execute stale src.
+    linked_other = tmp_path / "linked other"
+    git(
+        root,
+        "worktree",
+        "add",
+        "-qb",
+        "linked-other-branch",
+        str(linked_other),
+        "HEAD",
+        env=hook_env,
+    )
+    stale_switch = _run(
+        linked_other,
+        shared_candidate_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "engineering-ci",
+        "verify",
+        "--help",
+        exit_code=2,
+    )
+    assert "is registered worktree" in stale_switch.stderr
+    assert str((linked_other / "src").resolve()) in stale_switch.stderr
+    rebound_switch = _run(
+        linked_other,
+        {**shared_only_env, "PYTHONPATH": str(linked_other / "src")},
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "engineering-ci",
+        "verify",
+        "--help",
+    )
+    assert "Verify" in rebound_switch.stdout or "--out" in rebound_switch.stdout
 
     # Cross-version evidence: simulate primary/.venv holding an older main CLI without the guard.
     # Without PYTHONPATH, the legacy editable CLI executes primary's code (guard is diagnostic-only for
