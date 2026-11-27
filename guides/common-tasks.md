@@ -96,9 +96,14 @@ uv run --locked --no-sync engineering-ci version set v0.7.0
 `.artifacts/pytest/<invocation-id>/` 自动保留原生 `pytest-reportlog.jsonl`
 （pytest-reportlog）、`junit.xml`，以及 `metadata.json`（配置时）与 `summary.json`
 （结束时）。summary 分别记录原生 `exitstatus`、`selection`（选中/未选 node ID 清册）、
-`collection`（是否完整、收集错误）、`execution`（started/completed 及
-selected-but-not-started、started-not-finished）、耗时与 `report_delivery`
-（逐件可用性/同次归属）；collect-only 标 `execution.status=not_run`，不当作执行通过。
+`collection`（是否完整、收集错误、usage/interrupt/internal 信号）与 `execution`：
+后者以原生 `pytest_runtest_logstart`/`logfinish` 表达已启动/结束，setup/call/teardown
+report 仅作阶段结果（`phase_counts`），并保留 selected-but-not-started、started-not-finished
+及重复实例多重性；`report_delivery` 记录逐件可用性/同次归属；collect-only 标
+`execution.status=not_run`，不当作执行通过。
+`collection_finish` 的 finally 回调及“无 failed CollectReport”不等于收集成功；异常退出或
+未正常返回时标 `unknown`/`incomplete`。`report_complete` 只表示整体报告封存成功，
+`report_delivery.native_artifacts_available` 只表示原生文件可用，二者不互相替代。
 历史 `report.jsonl` 目录不迁移、保持可读。
 显式传入的 `--report-log` / `--junitxml` 路径不被覆盖；这类目录外路径只验证文件存在与
 原生格式，不能证明同次归属时 `report_delivery` 标 `unknown`，不声明完整。`--durations`

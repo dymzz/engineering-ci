@@ -70,6 +70,23 @@ BODY_ERROR = (
 )
 BODY_EXIT = "import pytest\n\ndef test_stop():\n    pytest.exit('stop', returncode=2)\n"
 BODY_INTERRUPT = "def test_interrupt():\n    raise KeyboardInterrupt\n"
+BODY_SETUP_INTERRUPT = (
+    "import pytest\n"
+    "\n"
+    "@pytest.fixture\n"
+    "def interrupt_setup():\n"
+    "    raise KeyboardInterrupt\n"
+    "\n"
+    "def test_first(interrupt_setup):\n"
+    "    assert True\n"
+    "\n"
+    "def test_second():\n"
+    "    assert True\n"
+)
+BODY_COLLECTION_INTERRUPT = "raise KeyboardInterrupt\n"
+BODY_DUPLICATES = (
+    "def test_first():\n    assert True\n\ndef test_second():\n    assert True\n"
+)
 BODY_FILTER = (
     "def test_keep():\n    assert True\n"
     "\n"
@@ -165,6 +182,35 @@ def _run_probe(
     )
 
 
+def _run_pytest(
+    root: Path,
+    *args: str,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "_eci_pytest_report",
+        "-p",
+        "no:cacheprovider",
+        f"--rootdir={root}",
+        *args,
+    ]
+    return subprocess.run(
+        command,
+        cwd=root,
+        env=_subprocess_env(env_overrides),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+
 def _report_dir(result: subprocess.CompletedProcess) -> Path:
     combined = result.stdout + result.stderr
     match = REPORT_LINE.search(combined)
@@ -208,6 +254,7 @@ def test_serial_invocation_records_native_reports_and_selection(tmp_path):
     assert summary["session_finished"] is True
     assert summary["report_complete"] is True
     assert summary["report_delivery"]["status"] == "complete"
+    assert summary["report_delivery"]["native_artifacts_available"] is True
     assert summary["source_observation"]["status"] == "unknown"
     assert summary["invocation_binding"]["outer_invocation_ref"] is None
 
@@ -243,6 +290,10 @@ def test_serial_invocation_records_native_reports_and_selection(tmp_path):
     assert execution["completed_items"] == 2
     assert execution["not_started_node_ids"] == []
     assert execution["incomplete_node_ids"] == []
+    phase_counts = execution["phase_counts"]
+    assert phase_counts["setup"] == {"passed": 2}
+    assert phase_counts["call"] == {"passed": 1, "skipped": 1}
+    assert phase_counts["teardown"] == {"passed": 2}
 
 
 def test_two_invocations_use_distinct_directories(tmp_path):
@@ -296,7 +347,8 @@ def test_explicit_native_report_paths_are_not_overwritten(tmp_path):
     assert not (invocation / "junit.xml").exists()
     delivery = summary["report_delivery"]
     assert delivery["status"] == "unknown"
-    assert delivery["report_complete"] is False
+    assert summary["report_complete"] is False
+    assert delivery["native_artifacts_available"] is False
     assert delivery["artifacts"]["report_log"]["attribution"] == (
         "explicit_path_unverified"
     )
@@ -468,6 +520,80 @@ def test_keyboard_interrupt_preserves_native_exit(tmp_path):
     assert execution["incomplete_node_ids"] == ["tests/test_probe.py::test_interrupt"]
 
 
+def test_setup_interrupt_uses_native_logstart(tmp_path):
+    root = _probe_root(tmp_path)
+    result = _run_probe(root, BODY_SETUP_INTERRUPT)
+    assert result.returncode == 2, result.stdout + result.stderr
+    summary = _read_json(_report_dir(result) / "summary.json")
+    assert summary["exitstatus"] == 2
+    assert summary["collection"]["complete"] is True
+    execution = summary["execution"]
+    assert execution["status"] == "incomplete"
+    assert execution["started_items"] == 1
+    assert execution["started_node_ids"] == ["tests/test_probe.py::test_first"]
+    assert execution["completed_items"] == 0
+    assert execution["incomplete_node_ids"] == ["tests/test_probe.py::test_first"]
+    assert execution["not_started_node_ids"] == ["tests/test_probe.py::test_second"]
+
+
+def test_collection_interrupt_and_invalid_target_are_incomplete(tmp_path):
+    interrupt_root = _probe_root(tmp_path / "interrupt")
+    interrupted = _run_probe(interrupt_root, BODY_COLLECTION_INTERRUPT)
+    assert interrupted.returncode == 2, interrupted.stdout + interrupted.stderr
+    interrupt_summary = _read_json(_report_dir(interrupted) / "summary.json")
+    assert interrupt_summary["collection"]["complete"] is False
+    assert (
+        "collection_interrupted_before_execution"
+        in interrupt_summary["collection"]["unknown_reasons"]
+    )
+    assert interrupt_summary["selection"]["complete"] is False
+    assert interrupt_summary["execution"]["status"] == "unknown"
+
+    invalid_root = _probe_root(tmp_path / "invalid")
+    (invalid_root / "tests" / "test_probe.py").write_text(BODY_OK, encoding="utf-8")
+    invalid = _run_pytest(invalid_root, "tests/does_not_exist.py")
+    assert invalid.returncode == 4, invalid.stdout + invalid.stderr
+    invalid_summary = _read_json(_report_dir(invalid) / "summary.json")
+    assert invalid_summary["exitstatus"] == 4
+    assert invalid_summary["collection"]["complete"] is False
+    assert invalid_summary["collection"]["usage_error"] is True
+    assert invalid_summary["execution"]["status"] == "unknown"
+
+
+def test_duplicate_selection_preserves_instances(tmp_path):
+    root = _probe_root(tmp_path)
+    (root / "tests" / "test_probe.py").write_text(BODY_DUPLICATES, encoding="utf-8")
+    result = _run_pytest(
+        root,
+        "--keep-duplicates",
+        "tests/test_probe.py",
+        "tests/test_probe.py",
+        "-k",
+        "second",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = _read_json(_report_dir(result) / "summary.json")
+    selection = summary["selection"]
+    assert selection["selected_items"] == 2
+    assert selection["selected_node_ids"] == [
+        "tests/test_probe.py::test_second",
+        "tests/test_probe.py::test_second",
+    ]
+    assert selection["deselected_items"] == 2
+    assert selection["deselected_node_ids"] == [
+        "tests/test_probe.py::test_first",
+        "tests/test_probe.py::test_first",
+    ]
+    assert selection["collected_items"] == 4
+    assert selection["complete"] is True
+    execution = summary["execution"]
+    assert execution["status"] == "complete"
+    assert execution["started_items"] == 2
+    assert execution["completed_items"] == 2
+    assert execution["duplicate_node_ids"] == ["tests/test_probe.py::test_second"]
+    assert summary["report_delivery"]["status"] == "complete"
+
+
 def test_keyword_selection_and_deselection_are_recorded(tmp_path):
     root = _probe_root(tmp_path)
     result = _run_probe(root, BODY_FILTER, "-k", "keep")
@@ -599,6 +725,7 @@ def test_sealing_failure_keeps_native_session_and_separates_delivery(
     monkeypatch.setattr(report_plugin, "_write_json_atomic", fail_summary)
     plugin = report_plugin._InvocationReportPlugin(meta)
     plugin.collection_observed = True
+    plugin.collection_hook_returned = True
     plugin.collection_mode = "serial"
     plugin.selected_node_ids = ["tests/test_probe.py::test_ok"]
     plugin.started_counts["tests/test_probe.py::test_ok"] = 1
@@ -617,8 +744,10 @@ def test_sealing_failure_keeps_native_session_and_separates_delivery(
     assert metadata["exitstatus"] == 1
     assert metadata["report_complete"] is False
     assert metadata["report_delivery"]["status"] == "failed"
+    assert metadata["report_delivery"]["native_artifacts_available"] is True
     assert metadata["report_delivery"]["summary_seal"] == "failed"
     assert metadata["report_delivery"]["native_exit_preserved"] is True
+    assert "report_complete" not in metadata["report_delivery"]
     assert metadata["execution"]["status"] == "complete"
     assert any("delivery failed" in line for line in reporter.lines)
 
@@ -644,6 +773,7 @@ def test_missing_native_artifact_marks_report_incomplete(tmp_path):
     plugin = report_plugin._InvocationReportPlugin(meta)
     delivery = plugin._delivery(0)
     assert delivery["status"] == "incomplete"
+    assert delivery["native_artifacts_available"] is False
     assert delivery["missing"] == ["junit_xml"]
     assert delivery["unknown"] == ["report_log"]
     assert delivery["artifacts"]["report_log"]["session_finish_observed"] is False
@@ -670,6 +800,7 @@ def test_invalid_native_artifacts_are_not_complete(tmp_path):
     plugin = report_plugin._InvocationReportPlugin(meta)
     delivery = plugin._delivery(0)
     assert delivery["status"] == "incomplete"
+    assert delivery["native_artifacts_available"] is False
     assert set(delivery["invalid"]) == {"report_log", "junit_xml"}
     assert delivery["artifacts"]["report_log"]["status"] == "invalid"
     assert delivery["artifacts"]["junit_xml"]["status"] == "invalid"
@@ -679,6 +810,7 @@ def test_duplicate_node_ids_use_multiset_lifecycle(tmp_path):
     config = _stub_config(tmp_path, _Reporter())
     plugin = report_plugin._InvocationReportPlugin({})
     plugin.collection_observed = True
+    plugin.collection_hook_returned = True
     plugin.collection_mode = "serial"
     plugin.selected_node_ids = ["tests/a.py::t1", "tests/a.py::t1"]
     plugin.started_counts["tests/a.py::t1"] = 1

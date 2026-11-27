@@ -309,7 +309,7 @@ def _overall_delivery(
     ]
     return {
         "status": status,
-        "report_complete": status == "complete",
+        "native_artifacts_available": status == "complete",
         "missing": missing,
         "invalid": invalid,
         "unknown": unknown,
@@ -467,6 +467,31 @@ class _InvocationReportPlugin:
         self.finished_counts: Counter[str] = Counter()
         self.started_order: list[str] = []
         self.finished_order: list[str] = []
+        self.phase_counts: dict[str, Counter[str]] = {
+            "setup": Counter(),
+            "call": Counter(),
+            "teardown": Counter(),
+        }
+        self.collection_hook_returned = False
+        self.collection_hook_exception: str | None = None
+        self.keyboard_interrupt = False
+        self.internal_error = False
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_collection(self, session) -> None:
+        try:
+            yield
+        except BaseException as exc:
+            self.collection_hook_exception = type(exc).__name__
+            raise
+        else:
+            self.collection_hook_returned = True
+
+    def pytest_keyboard_interrupt(self, excinfo) -> None:
+        self.keyboard_interrupt = True
+
+    def pytest_internalerror(self, excrepr, excinfo) -> None:
+        self.internal_error = True
 
     def pytest_collection_finish(self, session) -> None:
         self.collection_observed = True
@@ -482,13 +507,17 @@ class _InvocationReportPlugin:
                 {"nodeid": str(report.nodeid), "outcome": str(report.outcome)}
             )
 
+    def pytest_runtest_logstart(self, nodeid, location) -> None:
+        self.started_counts[nodeid] += 1
+        self.started_order.append(nodeid)
+
+    def pytest_runtest_logfinish(self, nodeid, location) -> None:
+        self.finished_counts[nodeid] += 1
+        self.finished_order.append(nodeid)
+
     def pytest_runtest_logreport(self, report) -> None:
-        if report.when == "setup":
-            self.started_counts[report.nodeid] += 1
-            self.started_order.append(report.nodeid)
-        elif report.when == "teardown":
-            self.finished_counts[report.nodeid] += 1
-            self.finished_order.append(report.nodeid)
+        if report.when in self.phase_counts:
+            self.phase_counts[report.when][str(report.outcome)] += 1
 
     def pytest_deselected(self, items) -> None:
         self.deselection_observed = True
@@ -511,7 +540,7 @@ class _InvocationReportPlugin:
                 error=True,
             )
 
-    def _selection(self, config) -> dict[str, Any]:
+    def _selection(self, config, exitstatus: int = 0) -> dict[str, Any]:
         if self.collection_mode == "xdist":
             return {
                 "mode": "xdist",
@@ -547,7 +576,7 @@ class _InvocationReportPlugin:
         filters_present = _selection_filters_present(config)
         deselection_known = self.deselection_observed or not filters_present
         deselected_node_ids = (
-            list(dict.fromkeys(self.deselected_node_ids)) if deselection_known else None
+            list(self.deselected_node_ids) if deselection_known else None
         )
         selected_items = len(self.selected_node_ids)
         deselected_items = (
@@ -556,7 +585,7 @@ class _InvocationReportPlugin:
         unknown_reasons: list[str] = []
         if not deselection_known:
             unknown_reasons.append("deselection_not_observed")
-        if self.collection_errors:
+        if not self._collection(exitstatus)["complete"]:
             unknown_reasons.append("collection_incomplete")
         return {
             "mode": "serial",
@@ -574,26 +603,54 @@ class _InvocationReportPlugin:
             "unknown_reasons": unknown_reasons,
         }
 
-    def _collection(self) -> dict[str, Any]:
+    def _collection(self, exitstatus: int = 0) -> dict[str, Any]:
+        started_items = sum(self.started_counts.values())
         if self.collection_mode == "xdist":
             return {
                 "observed": False,
                 "complete": False,
+                "hook_returned": self.collection_hook_returned,
+                "hook_exception": self.collection_hook_exception,
                 "errors": self.collection_errors,
+                "usage_error": exitstatus == 4,
+                "keyboard_interrupt": self.keyboard_interrupt,
+                "internal_error": self.internal_error or exitstatus == 3,
                 "unknown_reasons": ["xdist_controller_collection_not_observed"],
             }
+        unknown_reasons: list[str] = []
+        if not self.collection_observed:
+            unknown_reasons.append("collection_not_observed")
+        if not self.collection_hook_returned:
+            unknown_reasons.append("collection_hook_not_returned")
+        if self.collection_errors:
+            unknown_reasons.append("collection_errors")
+        usage_error = exitstatus == 4
+        internal_error = self.internal_error or exitstatus == 3
+        collection_interrupted = self.keyboard_interrupt and started_items == 0
+        if usage_error:
+            unknown_reasons.append("usage_error")
+        if collection_interrupted:
+            unknown_reasons.append("collection_interrupted_before_execution")
+        if exitstatus in {2, 3, 4} and started_items == 0:
+            unknown_reasons.append("abnormal_exit_before_execution")
         return {
             "observed": self.collection_observed,
-            "complete": self.collection_observed and not self.collection_errors,
+            "complete": not unknown_reasons,
+            "hook_returned": self.collection_hook_returned,
+            "hook_exception": self.collection_hook_exception,
             "errors": self.collection_errors,
-            "unknown_reasons": (
-                ["collection_incomplete"] if self.collection_errors else []
-            ),
+            "usage_error": usage_error,
+            "keyboard_interrupt": self.keyboard_interrupt,
+            "internal_error": internal_error,
+            "unknown_reasons": unknown_reasons,
         }
 
-    def _execution(self, config) -> dict[str, Any]:
+    def _execution(self, config, exitstatus: int = 0) -> dict[str, Any]:
         started_items = sum(self.started_counts.values())
         completed_items = sum(self.finished_counts.values())
+        phase_counts = {
+            phase: dict(counter) for phase, counter in self.phase_counts.items()
+        }
         collect_only = bool(getattr(config.option, "collectonly", False))
         if collect_only:
             return {
@@ -607,13 +664,16 @@ class _InvocationReportPlugin:
                 "not_started_node_ids": None,
                 "incomplete_node_ids": None,
                 "duplicate_node_ids": [],
+                "phase_counts": phase_counts,
                 "unknown_reasons": ["collect_only_no_execution_intent"],
             }
         unknown_reasons: list[str] = []
-        if not self.collection_observed or self.collection_errors:
+        if not self._collection(exitstatus)["complete"]:
             unknown_reasons.append("collection_incomplete")
         if self.selected_node_ids is None or self.collection_mode == "xdist":
             unknown_reasons.append("selection_unknown")
+        if self.internal_error or exitstatus == 3:
+            unknown_reasons.append("internal_error")
         if unknown_reasons:
             return {
                 "mode": "run",
@@ -626,6 +686,7 @@ class _InvocationReportPlugin:
                 "not_started_node_ids": None,
                 "incomplete_node_ids": None,
                 "duplicate_node_ids": [],
+                "phase_counts": phase_counts,
                 "unknown_reasons": unknown_reasons,
             }
 
@@ -659,6 +720,7 @@ class _InvocationReportPlugin:
             "not_started_node_ids": not_started_node_ids,
             "incomplete_node_ids": incomplete_node_ids,
             "duplicate_node_ids": duplicate_node_ids,
+            "phase_counts": phase_counts,
             "unknown_reasons": reasons,
         }
 
@@ -684,16 +746,16 @@ class _InvocationReportPlugin:
         finished_mono = time.perf_counter()
         wall_time = finished_mono - float(meta["started_mono"])
         exitstatus = int(session.exitstatus)
-        selection = self._selection(config)
-        collection = self._collection()
-        execution = self._execution(config)
+        collection = self._collection(exitstatus)
+        selection = self._selection(config, exitstatus)
+        execution = self._execution(config, exitstatus)
         delivery = self._delivery(exitstatus)
         finished_at_unix = time.time()
         summary = {
             **meta,
             "phase": "finished",
             "session_finished": True,
-            "report_complete": delivery["report_complete"],
+            "report_complete": delivery["status"] == "complete",
             "finished_at_unix": finished_at_unix,
             "wall_time_seconds": round(wall_time, 3),
             "exitstatus": exitstatus,
