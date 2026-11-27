@@ -372,7 +372,7 @@ async def _tests(
     generated_inputs=(),
     binding_root=None,
     consumed_source=None,
-    verified_content_id=None,
+    verified_source=None,
 ):
     """Use the existing pytest computation, or native unittest, exactly once."""
     from . import native_results, tooling
@@ -401,14 +401,14 @@ async def _tests(
             [],
             root=binding_root,
             execution_context="dagger_export",
-            _verified_content_id=verified_content_id,
+            _verified_source=verified_source,
         )
         binding = execution.test_input_binding(
             bound_plan,
             root=binding_root,
             execution_context="dagger_export",
             source_snapshots=snapshots,
-            _verified_content_id=verified_content_id,
+            _verified_source=verified_source,
         )
 
     (
@@ -702,6 +702,7 @@ async def _native_results(
     artifacts,
     python_version,
     weaver_config,
+    verified_source,
 ):
     """Collect fixed independent native branches; Engine owns their DAG."""
     from engineering_ci import execution
@@ -735,11 +736,7 @@ async def _native_results(
                     binding_root=directory
                     if report.get("tree_verified") is True
                     else None,
-                    verified_content_id=(
-                        (report.get("source_handoff") or {}).get("exported_content_id")
-                        if report.get("tree_verified") is True
-                        else None
-                    ),
+                    verified_source=verified_source,
                 ),
             )
         )
@@ -934,6 +931,21 @@ def _consumer_source_view(module, source, *, tree_verified=False, dag_objects=()
             tooling.SOURCE_NOISE,
         )
     return consumer_source, None, None
+
+
+def _verified_source_handoff(value, directory, exported_content_id, report, *, stage):
+    """Bind one measured export identity to the Directory that produced it."""
+    from engineering_ci import execution
+
+    if report.get("tree_verified") is not True or not exported_content_id:
+        return None
+    return execution._VerifiedSourceHandoff(
+        content_id=exported_content_id,
+        root=Path(directory).resolve(),
+        execution_context="dagger_export",
+        source_tree_id=(value.get("git") or {}).get("source_tree_id"),
+        stage=stage,
+    )
 
 
 def _make_hygiene_runner(
@@ -1197,6 +1209,7 @@ async def _execute_dag(
     python_version,
     weaver_config,
     exported_content_id,
+    verified_source,
 ):
     """Map v2 pre_execution_pass and data edges directly onto async Dagger work."""
     import tempfile
@@ -1207,6 +1220,22 @@ async def _execute_dag(
     from pathlib import Path
 
     from engineering_ci import execution, selection
+
+    # A DAG may materialize prerequisite artifacts into the exported Directory
+    # before checks consume it. The delivery identity stays valid, but the
+    # current directory content no longer equals the export measurement, so
+    # current-content checks must measure again from this stage on.
+    verified_source = (
+        execution._VerifiedSourceHandoff(
+            content_id=verified_source.content_id,
+            root=verified_source.root,
+            execution_context=verified_source.execution_context,
+            source_tree_id=verified_source.source_tree_id,
+            stage=execution._VERIFIED_SOURCE_MATERIALIZED,
+        )
+        if verified_source is not None
+        else None
+    )
 
     chosen = value.get("selection") or {}
     targets = chosen.get("tests") or []
@@ -1221,15 +1250,12 @@ async def _execute_dag(
     verified_workflow_plan = None
     verified_workflow_authority = None
     raw_snapshot = (value.get("git") or {}).get("snapshot") or "worktree"
-    verified_content_id = (
-        exported_content_id if report.get("tree_verified") is True else None
-    )
     if raw_snapshot == "index":
         index_bound_ok, index_bind_reason, _ = execution._verify_git_execution_binding(
             host_plan,
             Path(directory),
             execution_context="dagger_export",
-            _verified_content_id=verified_content_id,
+            _verified_source=verified_source,
         )
     else:
         index_bound_ok, index_bind_reason = True, None
@@ -1264,7 +1290,7 @@ async def _execute_dag(
         _plan_with_repo_relative_configs(value),
         root=directory,
         execution_context="dagger_export",
-        _verified_content_id=verified_content_id,
+        _verified_source=verified_source,
     )
     selected_by_name = {item.get("name"): item for item in selected_checks}
     run_instance = report["execution_identity"]["execution_ref"]
@@ -1610,7 +1636,7 @@ async def _execute_dag(
                             profile_ref=verified_profile,
                             artifact_paths=artifact_paths,
                             base_root=Path(directory) if fs_files else None,
-                            _verified_content_id=verified_content_id,
+                            _verified_source=verified_source,
                         )[0]
                     else:
                         entry = await asyncio.to_thread(
@@ -1633,7 +1659,7 @@ async def _execute_dag(
                             ),
                             _consumer_source_root=Path(directory) if fs_files else None,
                             _consumer_generated_retained=bool(fs_files),
-                            _verified_content_id=verified_content_id,
+                            _verified_source=verified_source,
                         )
                 finally:
                     if temporary is not None:
@@ -1694,7 +1720,7 @@ async def _execute_dag(
                     if report.get("tree_verified") is True
                     else None,
                     consumed_source=consumed_source,
-                    verified_content_id=verified_content_id,
+                    verified_source=verified_source,
                 )
                 return payload, test_files
             if kind == "report_artifacts":
@@ -1811,7 +1837,7 @@ async def _execute_dag(
             host_checks,
             root=directory,
             execution_context="dagger_export",
-            _verified_content_id=verified_content_id,
+            _verified_source=verified_source,
         ) + execution.omitted_workflow_script_checks(
             host_plan, host_checks, root=directory
         )
@@ -1912,6 +1938,9 @@ async def _execute_dag(
             "native_branches": native_branches,
             "origin_execution_attributed": False,
         }
+        # Observation only: the raw export measurement detects whether host
+        # actions mutated the delivered Directory. Authentication stays in
+        # ``verified_source``; this digest is never reused as an identity hint.
         after_host = selection.directory_content_id(directory)
         report["source_handoff"]["host_result_ids"] = [
             result["result_id"]
@@ -2105,6 +2134,11 @@ async def execute(
                 "directory": exported_directory,
             },
         }
+        # Measured once, bound to this exported Directory; every consumer below
+        # reuses it only for the same root, tree and lifecycle stage.
+        verified_source = _verified_source_handoff(
+            value, directory, exported_content_id, report, stage="exported"
+        )
         if execution.pre_execution_edges(value):
             report, artifacts, mutated = await _execute_dag(
                 module,
@@ -2118,6 +2152,7 @@ async def execute(
                 python_version,
                 weaver_config,
                 exported_content_id,
+                verified_source,
             )
             if mutated:
                 return make_result(report, artifacts)
@@ -2134,6 +2169,7 @@ async def execute(
             artifacts,
             python_version,
             weaver_config,
+            verified_source,
         )
         if selected_checks or prerequisites:
             weaver_checks = {"weaver_registry", "weaver_live", "weaver_terminal"}
@@ -2148,9 +2184,7 @@ async def execute(
                 _plan_with_repo_relative_configs(value),
                 root=directory,
                 execution_context="dagger_export",
-                _verified_content_id=(
-                    exported_content_id if report.get("tree_verified") is True else None
-                ),
+                _verified_source=verified_source,
             )
             report["source_handoff"]["before_host_content_id"] = (
                 selection.directory_content_id(directory)
@@ -2180,11 +2214,7 @@ async def execute(
                     ),
                     profile_ref=verified_profile,
                     run_instance=identity["execution_ref"],
-                    _verified_content_id=(
-                        exported_content_id
-                        if report.get("tree_verified") is True
-                        else None
-                    ),
+                    _verified_source=verified_source,
                 )
                 if check_plan["check_scope"] or prerequisites
                 else {
@@ -2202,10 +2232,14 @@ async def execute(
             report["source_handoff"]["host_report_sha256"] = hashlib.sha256(
                 host_raw.encode()
             ).hexdigest()
+            # Same field contract as the DAG path: this handoff lists results the
+            # host phase itself produced. Container-delegated results keep
+            # result_origin="dagger" and stay out of it either way.
             report["source_handoff"]["host_result_ids"] = [
                 result["result_id"]
                 for check in host_checks_out
                 for result in check.get("native_results") or ()
+                if result.get("result_origin") == "host"
             ]
             if host_checks_out:
                 report["checks"].extend(host_checks_out)

@@ -6783,18 +6783,17 @@ def test_git_free_index_dagger_export_runs_tach_when_verified_and_refuses_unprov
     assert bad_check["execution_started"] is False
 
 
-def test_dagger_export_verified_content_id_reuses_digest_and_host_never_bypasses(
-    repo, tmp_path, monkeypatch
-):
+def _dagger_export_plan(repo, tmp_path):
+    """Build an immutable-index Plan and the Git-free Directory it exports."""
     path, _ = repo
     exported = tmp_path / "exported"
     shutil.copytree(path, exported, ignore=shutil.ignore_patterns(".git"))
     (exported / "tach.toml").write_text('source_roots = ["src"]\n', encoding="utf-8")
-    # Build a git-free exported index plan with valid tach.toml + inputs for _profile_reference / checks.
     repo_with_tach = tmp_path / "repo_with_tach"
     shutil.copytree(exported, repo_with_tach, copy_function=shutil.copyfile)
     (repo_with_tach / "tach.toml").write_text(
-        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n\n[[modules]]\npath = "pkg.sub"\ndepends_on = []\n',
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.sub"\ndepends_on = []\n',
         encoding="utf-8",
     )
     (repo_with_tach / "ci-hygiene.toml").write_text(
@@ -6802,7 +6801,8 @@ def test_dagger_export_verified_content_id_reuses_digest_and_host_never_bypasses
         encoding="utf-8",
     )
     (repo_with_tach / "ci-selection.toml").write_text(
-        'schema_version = 1\nframework = "pytest"\nchecks = ["tach"]\nignored_prefixes = ["src/"]\n',
+        'schema_version = 1\nframework = "pytest"\nchecks = ["tach"]\n'
+        'ignored_prefixes = ["src/"]\n',
         encoding="utf-8",
     )
     run(repo_with_tach, "init", "-q", "-b", "main")
@@ -6836,25 +6836,48 @@ def test_dagger_export_verified_content_id_reuses_digest_and_host_never_bypasses
         entry = (idx_plan.get("inputs") or {}).get(cfg_key)
         if isinstance(entry, dict) and entry.get("path"):
             entry["path"] = rel_cfg
+    return idx_plan, export_dir, idx_id, repo_with_tach
 
-    orig_digest = selection.directory_content_id
-    calls = 0
 
-    def counting_digest(root):
-        nonlocal calls
-        calls += 1
-        return orig_digest(root)
+def _export_handoff(plan, root, content_id, *, stage=None):
+    return execution._VerifiedSourceHandoff(
+        content_id=content_id,
+        root=Path(root).resolve(),
+        execution_context="dagger_export",
+        source_tree_id=(plan.get("git") or {}).get("source_tree_id"),
+        stage=stage or execution._VERIFIED_SOURCE_EXPORTED,
+    )
 
-    monkeypatch.setattr(selection, "directory_content_id", counting_digest)
+
+def _count_directory_content_id(monkeypatch):
+    original = selection.directory_content_id
+    measured = []
+
+    def counting(root):
+        measured.append(Path(root).resolve())
+        return original(root)
+
+    monkeypatch.setattr(selection, "directory_content_id", counting)
+    return measured
+
+
+def test_verified_source_handoff_reuses_digest_and_host_never_bypasses(
+    repo, tmp_path, monkeypatch
+):
+    idx_plan, export_dir, idx_id, repo_with_tach = _dagger_export_plan(repo, tmp_path)
+    measured = _count_directory_content_id(monkeypatch)
+    handoff = _export_handoff(idx_plan, export_dir, idx_id)
+
     rep = execution.execute(
         idx_plan,
         root=export_dir,
         execution_context="dagger_export",
         runner=FakeRunner(code=0, stdout="All modules validated!\n"),
-        _verified_content_id=idx_id,
+        _verified_source=handoff,
     )
     assert rep["status"] == "passed", rep
-    assert calls == 0
+    # One export measurement is reused by the whole execution.
+    assert measured == []
     tach_chk = next(c for c in rep["checks"] if c["name"] == "tach")
     assert tach_chk["check_contract"]["status"] == "valid"
     assert tach_chk["source_ref"]["binding_status"] == "identity_only"
@@ -6863,32 +6886,42 @@ def test_dagger_export_verified_content_id_reuses_digest_and_host_never_bypasses
             idx_plan,
             export_dir,
             execution_context="dagger_export",
-            _verified_content_id=idx_id,
+            _verified_source=handoff,
         )
         is True
     )
-    assert calls == 0
+    assert (
+        execution._prepare_source_snapshots(
+            idx_plan,
+            [],
+            root=export_dir,
+            execution_context="dagger_export",
+            _verified_source=handoff,
+        )["kind"]
+        == "full"
+    )
+    assert measured == []
 
-    # Wrong _verified_content_id fails closed immediately.
+    # A different digest for the same export stage still fails closed.
     bad = execution.execute(
         idx_plan,
         root=export_dir,
         execution_context="dagger_export",
         runner=FakeRunner(code=0),
-        _verified_content_id="0" * 64,
+        _verified_source=_export_handoff(idx_plan, export_dir, "0" * 64),
     )
     assert bad["status"] == "not_executed"
     assert bad["reason"] == "source_tree_mismatch"
 
-    # Mutable host execution_context ignores _verified_content_id completely.
+    # Mutable host execution_context never consumes an export handoff.
     (repo_with_tach / "src/pkg/sub.py").write_text("VALUE = 99\n", encoding="utf-8")
-    host_calls_before = calls
+    host_measured_before = len(measured)
     host_rep = execution.execute(
         idx_plan,
         root=repo_with_tach,
         execution_context="host",
         runner=FakeRunner(code=0),
-        _verified_content_id=idx_id,
+        _verified_source=handoff,
     )
     assert host_rep["status"] == "not_executed"
     assert host_rep["reason"] in {
@@ -6896,7 +6929,7 @@ def test_dagger_export_verified_content_id_reuses_digest_and_host_never_bypasses
         "index_snapshot_stale",
         "source_tree_mismatch",
     }
-    assert calls > host_calls_before or host_rep["reason"] in {
+    assert len(measured) > host_measured_before or host_rep["reason"] in {
         "index_worktree_mismatch",
         "index_snapshot_stale",
     }
@@ -6905,7 +6938,122 @@ def test_dagger_export_verified_content_id_reuses_digest_and_host_never_bypasses
             idx_plan,
             export_dir,
             execution_context="host",
-            _verified_content_id=idx_id,
+            _verified_source=handoff,
         )
         is False
     )
+
+
+def test_verified_source_handoff_is_refused_for_a_different_root(
+    repo, tmp_path, monkeypatch
+):
+    idx_plan, export_dir, idx_id, _ = _dagger_export_plan(repo, tmp_path)
+    other = tmp_path / "other_root"
+    shutil.copytree(export_dir, other, copy_function=shutil.copyfile)
+    (other / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    measured = _count_directory_content_id(monkeypatch)
+    handoff = _export_handoff(idx_plan, export_dir, idx_id)
+
+    # A correct old digest says nothing about another root.
+    assert (
+        execution._delivery_content_id(idx_plan, other, "dagger_export", handoff)
+        is None
+    )
+    assert (
+        execution._current_content_id(idx_plan, other, "dagger_export", handoff) is None
+    )
+
+    rep = execution.execute(
+        idx_plan,
+        root=other,
+        execution_context="dagger_export",
+        runner=FakeRunner(code=0),
+        _verified_source=handoff,
+    )
+    assert rep["status"] == "not_executed"
+    assert rep["reason"] == "source_tree_mismatch"
+    # The actual root is measured; the export digest is not assumed for it.
+    assert other.resolve() in measured
+
+
+def test_verified_source_handoff_remeasures_after_materialization(
+    repo, tmp_path, monkeypatch
+):
+    idx_plan, export_dir, idx_id, _ = _dagger_export_plan(repo, tmp_path)
+    exported = _export_handoff(idx_plan, export_dir, idx_id)
+    materialized = dataclasses.replace(
+        exported, stage=execution._VERIFIED_SOURCE_MATERIALIZED
+    )
+
+    # Delivery identity survives materialization; current content does not.
+    for stage_handoff in (exported, materialized):
+        assert (
+            execution._delivery_content_id(
+                idx_plan, export_dir, "dagger_export", stage_handoff
+            )
+            == idx_id
+        )
+    assert (
+        execution._current_content_id(idx_plan, export_dir, "dagger_export", exported)
+        == idx_id
+    )
+    assert (
+        execution._current_content_id(
+            idx_plan, export_dir, "dagger_export", materialized
+        )
+        is None
+    )
+
+    # A prerequisite materialized files into the exported Directory: a
+    # current-content check measures the mutated root instead of reusing.
+    (export_dir / "src/pkg/sub.py").write_text("VALUE = 4\n", encoding="utf-8")
+    measured = _count_directory_content_id(monkeypatch)
+    item = {"name": "actionlint", "status": "selected", "execution_started": True}
+    snapshots = {
+        "kind": "full",
+        "files": [],
+        "binding": {"verified_paths": [], "unverified_paths": []},
+        "workflow_tree_content_id": idx_id,
+    }
+    source = execution._verified_check_source_ref(
+        idx_plan,
+        "actionlint",
+        item,
+        root=export_dir,
+        execution_context="dagger_export",
+        source_snapshots=snapshots,
+        _verified_source=materialized,
+    )
+    assert source is None
+    assert export_dir.resolve() in measured
+
+
+def test_consumer_overlay_view_never_reuses_verified_source(
+    repo, tmp_path, monkeypatch
+):
+    idx_plan, export_dir, idx_id, _ = _dagger_export_plan(repo, tmp_path)
+    view = tmp_path / "consumer_view"
+    shutil.copytree(export_dir, view, copy_function=shutil.copyfile)
+    (view / "src/pkg/generated.py").write_text("GENERATED = 1\n", encoding="utf-8")
+    measured = _count_directory_content_id(monkeypatch)
+    handoff = _export_handoff(idx_plan, export_dir, idx_id)
+
+    # A Consumer Overlay view is a different root: nothing is inherited.
+    assert (
+        execution._delivery_content_id(idx_plan, view, "dagger_export", handoff) is None
+    )
+    assert (
+        execution._current_content_id(idx_plan, view, "dagger_export", handoff) is None
+    )
+
+    snapshots = execution._prepare_source_snapshots(
+        idx_plan,
+        [],
+        root=view,
+        base_root=export_dir,
+        execution_context="dagger_export",
+        _verified_source=handoff,
+    )
+    assert snapshots["kind"] == "full"
+    # The base root is measured again for the overlaid view.
+    assert export_dir.resolve() in measured

@@ -353,14 +353,14 @@ def _workflow_config_drift_reason(plan, root, selection_config=None):
 
 
 def _verify_execution_binding(
-    plan, root, *, execution_context="host", _verified_content_id=None
+    plan, root, *, execution_context="host", _verified_source=None
 ):
     """Return (ok, reason, expected_tree). ok False means refuse execution."""
     ok, reason, expected_tree = _verify_git_execution_binding(
         plan,
         root,
         execution_context=execution_context,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     if not ok:
         return False, reason, expected_tree
@@ -371,7 +371,7 @@ def _verify_execution_binding(
 
 
 def _verify_git_execution_binding(
-    plan, root, *, execution_context="host", _verified_content_id=None
+    plan, root, *, execution_context="host", _verified_source=None
 ):
     git = plan["git"]
     expected_tree = git.get("execution_tree")
@@ -385,8 +385,12 @@ def _verify_git_execution_binding(
         snapshot = "commit" if expected_tree else "worktree"
 
     def _actual_content_id():
-        if execution_context == "dagger_export" and _is_hex64(_verified_content_id):
-            return _verified_content_id
+        # Delivery identity: the bytes authenticated when this Source was
+        # exported for the same root and declared tree. Mutations after that
+        # (verified Overlays, prerequisite actions) keep the delivery fact.
+        delivery = _delivery_content_id(plan, root, execution_context, _verified_source)
+        if delivery is not None:
+            return delivery
         return selection.directory_content_id(root)
 
     if snapshot == "index":
@@ -498,7 +502,7 @@ def _has_verified_materialized_source(
     execution_context="host",
     view_root=None,
     generated_input_refs=(),
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     """Return True only when ``source_root`` proves a Git-free materialized tree."""
     if plan is None or source_root is None:
@@ -514,7 +518,7 @@ def _has_verified_materialized_source(
         plan,
         source_root,
         execution_context=execution_context,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     if not ok:
         return False
@@ -595,6 +599,77 @@ def _is_hex64(value):
         and len(value) == 64
         and all(ch in "0123456789abcdef" for ch in value)
     )
+
+
+_VERIFIED_SOURCE_EXPORTED = "exported"
+_VERIFIED_SOURCE_MATERIALIZED = "after_materialization"
+
+
+@dataclasses.dataclass(frozen=True)
+class _VerifiedSourceHandoff:
+    """One measured Source identity bound to the root and stage it was measured on.
+
+    A bare digest proves nothing about the directory it is later compared
+    against, so reuse requires the exact resolved ``root``, the Dagger export
+    execution context, the Plan ``source_tree_id`` that was verified, and the
+    recorded lifecycle ``stage``.  ``stage`` separates delivery identity, which
+    stays true after a verified Data Overlay or prerequisite action added files
+    to an immutable Directory, from current directory content, which must be
+    measured again once that happened.
+    """
+
+    content_id: str
+    root: Path
+    execution_context: str = "dagger_export"
+    source_tree_id: str | None = None
+    stage: str = _VERIFIED_SOURCE_EXPORTED
+
+
+def _verified_source_bound_to(plan, root, execution_context, handoff):
+    """Return ``handoff`` only when it measured exactly this Plan, root and context."""
+    if not isinstance(handoff, _VerifiedSourceHandoff):
+        return None
+    if root is None or execution_context != "dagger_export":
+        return None
+    if handoff.execution_context != "dagger_export":
+        return None
+    if not _is_hex64(handoff.content_id):
+        return None
+    try:
+        resolved_root = Path(root).resolve()
+        handoff_root = Path(handoff.root).resolve()
+    except (OSError, TypeError, ValueError):
+        return None
+    if resolved_root != handoff_root:
+        return None
+    git = plan.get("git") if isinstance(plan, dict) else None
+    declared_tree = git.get("source_tree_id") if isinstance(git, dict) else None
+    if not isinstance(declared_tree, str) or declared_tree != handoff.source_tree_id:
+        return None
+    return handoff
+
+
+def _delivery_content_id(plan, root, execution_context, handoff):
+    """Export-time delivery identity; valid while comparing with ``source_tree_id``.
+
+    Verified Data Overlays and prerequisite actions add files to an already
+    authenticated delivery, so comparisons against the declared tree keep using
+    the measured export value instead of re-hashing the mutated root.
+    """
+    bound = _verified_source_bound_to(plan, root, execution_context, handoff)
+    return bound.content_id if bound is not None else None
+
+
+def _current_content_id(plan, root, execution_context, handoff):
+    """Current directory content, or ``None`` when the caller must measure it again.
+
+    Reuse stops as soon as the recorded stage changed: once the caller
+    materialized files into that root it no longer holds the measured bytes.
+    """
+    bound = _verified_source_bound_to(plan, root, execution_context, handoff)
+    if bound is None or bound.stage != _VERIFIED_SOURCE_EXPORTED:
+        return None
+    return bound.content_id
 
 
 def _is_git_oid(value):
@@ -833,7 +908,7 @@ def omitted_hygiene_checks(
     hygiene_config=None,
     extra_paths=(),
     execution_context="host",
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     """Return decorated not_executed entries for configured hygiene checks omitted from plan."""
     has_bound_hygiene = isinstance((plan.get("inputs") or {}).get("hygiene"), dict)
@@ -867,7 +942,7 @@ def omitted_hygiene_checks(
         plan,
         root,
         execution_context=execution_context,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     changes = _changeset_from_plan(
         plan,
@@ -904,7 +979,7 @@ def _run_hygiene_checks(
     generated_input_refs=(),
     check_omitted=True,
     _verified_materialized_tree=None,
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     selected_by_name = {
         item["name"]: item for item in selected if item.get("name") in _HYGIENE_CHECKS
@@ -943,7 +1018,7 @@ def _run_hygiene_checks(
             plan,
             root,
             execution_context=execution_context,
-            _verified_content_id=_verified_content_id,
+            _verified_source=_verified_source,
         )
     changes = _changeset_from_plan(
         plan,
@@ -3033,7 +3108,7 @@ def _profile_reference(
     root=None,
     execution_context=None,
     profile_ref=None,
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     """Return the bound EffectiveProfile identity only when backed by verified Plan & source proof."""
     if not isinstance(plan, dict):
@@ -3055,11 +3130,11 @@ def _profile_reference(
                 if isinstance(expected_block, dict):
                     if not isinstance(source_tree_id, str) or not source_tree_id:
                         return None
-                    actual_id = (
-                        _verified_content_id
-                        if _is_hex64(_verified_content_id)
-                        else selection.directory_content_id(root)
+                    actual_id = _delivery_content_id(
+                        plan, root, execution_context, _verified_source
                     )
+                    if actual_id is None:
+                        actual_id = selection.directory_content_id(root)
                     if actual_id != source_tree_id:
                         return None
                 require_file = cfg_decl.get("policy_scope") == "repo_target_tree"
@@ -3356,7 +3431,7 @@ def _all_source_entries(root):
     return sorted(set(members))
 
 
-def _tree_files_for_snapshot(plan, root, execution_context, _verified_content_id=None):
+def _tree_files_for_snapshot(plan, root, execution_context, _verified_source=None):
     git = plan.get("git") or {}
     snapshot = str(git.get("snapshot") or "worktree")
     if execution_context == "host" and selection._resolve_git_dir(root) is not None:
@@ -3385,12 +3460,13 @@ def _tree_files_for_snapshot(plan, root, execution_context, _verified_content_id
     source_tree_id = git.get("source_tree_id")
     if _is_hex64(source_tree_id):
         try:
-            actual_tree_id = (
-                _verified_content_id
-                if execution_context == "dagger_export"
-                and _is_hex64(_verified_content_id)
-                else selection.directory_content_id(root)
+            # Gate on the delivery identity; the enumerated members below are
+            # always read from the current root, including Overlay additions.
+            actual_tree_id = _delivery_content_id(
+                plan, root, execution_context, _verified_source
             )
+            if actual_tree_id is None:
+                actual_tree_id = selection.directory_content_id(root)
         except (OSError, SourcePathError):
             return None
         if actual_tree_id != source_tree_id:
@@ -3478,19 +3554,21 @@ def _prepare_source_snapshots(
     artifact_paths=(),
     workflow_authority=None,
     base_root=None,
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     git = plan.get("git") or {}
     snapshot = str(git.get("snapshot") or "worktree")
     base_path = Path(base_root) if base_root is not None else Path(root)
     if snapshot in {"index", "commit", "push", "pr_merge"}:
+        # The handoff may only describe the base root it was measured on; a
+        # Consumer Overlay view is a different root and never inherits it.
         same_root = base_path.resolve() == Path(root).resolve()
-        base_verified_id = _verified_content_id if same_root else None
+        base_verified_id = _verified_source if same_root else None
         tree_files = _tree_files_for_snapshot(
             plan,
             base_path,
             execution_context,
-            _verified_content_id=base_verified_id,
+            _verified_source=base_verified_id,
         )
         if tree_files:
             binding = selection.worktree_content_binding(
@@ -3525,12 +3603,13 @@ def _prepare_source_snapshots(
                     execution_context == "host" or git_root is not None
                 ) and _is_git_oid(tree):
                     content_id = selection.tree_content_id(base_path, tree)
-                    actual_base_id = (
-                        base_verified_id
-                        if execution_context == "dagger_export"
-                        and _is_hex64(base_verified_id)
-                        else selection.directory_content_id(base_path)
+                    # Current-content check: reuse only while the base root still
+                    # holds the measured export bytes.
+                    actual_base_id = _current_content_id(
+                        plan, base_path, execution_context, base_verified_id
                     )
+                    if actual_base_id is None:
+                        actual_base_id = selection.directory_content_id(base_path)
                     if content_id and actual_base_id == content_id:
                         snapshots["workflow_tree_content_id"] = content_id
             return snapshots
@@ -3571,7 +3650,7 @@ def _verified_check_source_ref(
     artifact_paths=(),
     require_execution_started=True,
     base_root=None,
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     if (
         require_execution_started and item.get("execution_started") is False
@@ -3581,12 +3660,14 @@ def _verified_check_source_ref(
     base_path = Path(base_root).resolve() if base_root is not None else resolved_root
 
     def _base_content_id():
-        if (
-            execution_context == "dagger_export"
-            and base_path == resolved_root
-            and _is_hex64(_verified_content_id)
-        ):
-            return _verified_content_id
+        # Current-content check: the base root must still be the measured root,
+        # and a handoff recorded after materialization cannot describe it.
+        if execution_context == "dagger_export" and base_path == resolved_root:
+            current = _current_content_id(
+                plan, resolved_root, execution_context, _verified_source
+            )
+            if current is not None:
+                return current
         return selection.directory_content_id(base_path)
 
     gen_refs = list(item.get("generated_input_refs") or ())
@@ -3648,7 +3729,7 @@ def _verified_check_source_ref(
             base_path,
             execution_context,
             sources_config,
-            _verified_content_id=_verified_content_id,
+            _verified_source=_verified_source,
         )
     ):
         return None
@@ -3838,7 +3919,7 @@ def _closed_tree_check(
     base_path,
     execution_context,
     sources_config,
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     git = plan["git"]
     if (
@@ -3848,11 +3929,11 @@ def _closed_tree_check(
         or not git.get("source_tree_id")
     ):
         return False
-    actual_tree_id = (
-        _verified_content_id
-        if execution_context == "dagger_export" and _is_hex64(_verified_content_id)
-        else selection.directory_content_id(root)
+    actual_tree_id = _delivery_content_id(
+        plan, root, execution_context, _verified_source
     )
+    if actual_tree_id is None:
+        actual_tree_id = selection.directory_content_id(root)
     if actual_tree_id != git["source_tree_id"]:
         return False
     if name == "forwarding":
@@ -6096,7 +6177,7 @@ def _decorate_checks(
     artifact_paths=(),
     base_root=None,
     index_offset=0,
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     fallback_source = _source_reference(plan, execution_context)
     baseline = _baseline_reference(plan)
@@ -6107,9 +6188,9 @@ def _decorate_checks(
         root=profile_root,
         execution_context=execution_context,
         profile_ref=profile_ref,
-        _verified_content_id=_verified_content_id
-        if base_root is not None or profile_root == root
-        else None,
+        # The handoff binds its own measured root; a Consumer Overlay view
+        # (different root) simply fails that binding and is re-measured.
+        _verified_source=_verified_source,
     )
     authorized_names = {
         entry.get("name") for entry in _selected_checks(plan) if isinstance(entry, dict)
@@ -6149,7 +6230,7 @@ def _decorate_checks(
                 sources_config=sources_config,
                 artifact_paths=artifact_paths,
                 base_root=base_root,
-                _verified_content_id=_verified_content_id,
+                _verified_source=_verified_source,
             )
             if root is not None
             else None
@@ -6296,7 +6377,7 @@ def run_host_check(
     workflow_source_authority=None,
     _consumer_source_root=None,
     _consumer_generated_retained=None,
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     """Run one selected Host check (hygiene, source or workflow/script) with contract decoration."""
     name = item.get("name")
@@ -6328,7 +6409,7 @@ def run_host_check(
         artifact_paths=artifact_paths,
         workflow_authority=workflow_authority,
         base_root=_consumer_source_root,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     if name in _HYGIENE_CHECKS:
         source_anchor = (
@@ -6340,7 +6421,7 @@ def run_host_check(
             execution_context=execution_context,
             view_root=root if _consumer_source_root is not None else None,
             generated_input_refs=generated_input_refs,
-            _verified_content_id=_verified_content_id,
+            _verified_source=_verified_source,
         )
         results, _ = _run_hygiene_checks(
             plan,
@@ -6354,7 +6435,7 @@ def run_host_check(
             generated_input_refs=generated_input_refs,
             check_omitted=False,
             _verified_materialized_tree=verified_materialized,
-            _verified_content_id=_verified_content_id,
+            _verified_source=_verified_source,
         )
         raw = results or [
             {
@@ -6418,7 +6499,7 @@ def run_host_check(
         sources_config=sources_config,
         artifact_paths=artifact_paths,
         base_root=_consumer_source_root,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     return decorated[0]
 
@@ -6938,7 +7019,7 @@ def _test_target_inputs(plan, expected=None):
 
 
 def test_input_binding(
-    plan, *, root, execution_context, source_snapshots, _verified_content_id=None
+    plan, *, root, execution_context, source_snapshots, _verified_source=None
 ):
     """Bind a selected framework invocation to its rules and observed Source."""
     if not plan or source_snapshots is None:
@@ -6951,7 +7032,7 @@ def test_input_binding(
         root=root,
         execution_context=execution_context,
         source_snapshots=source_snapshots,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     if source is None:
         return None
@@ -6975,14 +7056,14 @@ def test_input_binding(
             plan,
             root=root,
             execution_context=execution_context,
-            _verified_content_id=_verified_content_id,
+            _verified_source=_verified_source,
         ),
         "input_refs": [config, *_test_target_inputs(plan, expected)],
     }
 
 
 def _finalize_report(
-    report, *, plan, root, source_snapshots=None, _verified_content_id=None
+    report, *, plan, root, source_snapshots=None, _verified_source=None
 ):
     tests = report.get("tests") or {}
     if tests.get("observation") and not tests.get("check_contract"):
@@ -7013,7 +7094,7 @@ def _finalize_report(
                 root=root,
                 execution_context=report["execution_context"],
                 source_snapshots=source_snapshots,
-                _verified_content_id=_verified_content_id,
+                _verified_source=_verified_source,
             ),
         )
         tests["implementation_sources"] = hashes
@@ -7210,7 +7291,7 @@ def execute(
     run_ref=None,
     attempt_ref=None,
     check_names=None,
-    _verified_content_id=None,
+    _verified_source=None,
 ):
     """Execute a Plan with optional independently verified Workflow/Shell Source claims.
 
@@ -7307,7 +7388,7 @@ def execute(
         plan,
         root,
         execution_context=execution_context,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     if not bound_ok:
         report["status"] = "not_executed"
@@ -7320,7 +7401,7 @@ def execute(
         plan,
         root,
         execution_context=execution_context,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     actions = _prerequisite_actions(plan, prerequisite_actions)
     if pre_execution_edges(plan):
@@ -7366,7 +7447,7 @@ def execute(
         hygiene_config=hygiene_config,
         sources_config=sources_config,
         workflow_authority=workflow_authority,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     hygiene_results, _ = _run_hygiene_checks(
         plan,
@@ -7378,7 +7459,7 @@ def execute(
         whitespace_runner=whitespace_runner,
         check_omitted=check_names is None,
         _verified_materialized_tree=verified_materialized,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
     source_result, _ = _run_source_check(
         plan,
@@ -7411,7 +7492,7 @@ def execute(
         source_snapshots=source_snapshots,
         hygiene_config=hygiene_config,
         sources_config=sources_config,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
 
     exit_code = 0
@@ -7486,7 +7567,7 @@ def execute(
             hygiene_config=hygiene_config,
             sources_config=sources_config,
             index_offset=len(decorated_native),
-            _verified_content_id=_verified_content_id,
+            _verified_source=_verified_source,
         )
         if remaining
         else []
@@ -7505,7 +7586,7 @@ def execute(
         plan=plan,
         root=root,
         source_snapshots=source_snapshots,
-        _verified_content_id=_verified_content_id,
+        _verified_source=_verified_source,
     )
 
 

@@ -369,6 +369,7 @@ def test_independent_native_branches_and_all_readers_share_saved_results(
             MemoryDirectory(),
             "3.14",
             "ci-weaver.toml",
+            verified_source=None,
         )
         collector._aggregate(report)
         assert native.started == {"tests", "weaver"}
@@ -421,6 +422,7 @@ def test_infrastructure_error_preserves_the_independent_native_result(modules):
             MemoryDirectory(),
             "3.14",
             "ci-weaver.toml",
+            verified_source=None,
         )
         collector._aggregate(report)
         assert report["status"] == "blocked" and report["exit_code"] == 5
@@ -492,6 +494,7 @@ def test_existing_test_precondition_blocks_only_its_native_consumer(
             MemoryDirectory(),
             "3.14",
             "ci-weaver.toml",
+            verified_source=None,
         )
         collector._aggregate(report)
         if weaver_status == "failed":
@@ -628,6 +631,16 @@ def test_export_handoff_links_directory_bytes_parent_and_original_host_report(
             evidence={"unit_double": True},
             runner_ref="execution:dagger_export",
         )
+        delegated = check_contract.native_result(
+            check_contract.definition_for("tach"),
+            source=check_contract.source_ref("worktree"),
+            status="passed",
+            result_origin="dagger",
+            result_instance=run_instance + ":dagger:tach",
+            native_exit_code=0,
+            evidence={"execution_location": "dagger_container"},
+            runner_ref="execution:dagger",
+        )
         return {
             "kind": host_execution.REPORT_KIND,
             "schema_version": 1,
@@ -637,7 +650,7 @@ def test_export_handoff_links_directory_bytes_parent_and_original_host_report(
                 {
                     "name": "source",
                     "status": "passed",
-                    "native_results": [native],
+                    "native_results": [native, delegated],
                     "check_contract": {"status": "valid"},
                 }
             ],
@@ -672,6 +685,11 @@ def test_export_handoff_links_directory_bytes_parent_and_original_host_report(
         result = json.loads(raw)["checks"][0]["native_results"][0]
         assert handoff["host_result_ids"] == [result["result_id"]]
         assert result["result_origin"] == "host"
+        # P2-06: container-delegated results stay out of the host-origin field
+        # in both the DAG and non-DAG paths.
+        delegated = json.loads(raw)["checks"][0]["native_results"][1]
+        assert delegated["result_origin"] == "dagger"
+        assert delegated["result_id"] not in handoff["host_result_ids"]
         assert report["source_binding_verified"] == "unknown"
         assert report["execution_identity"]["run_attempt_verification"] == "unverified"
 
