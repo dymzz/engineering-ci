@@ -9,8 +9,9 @@ Engineering CI provides reusable Python CI/CD capabilities through Dagger and Gi
 - [Documentation index](docs/README.md): technical documentation and maintenance conventions.
 - [Repository overview](docs/architecture/repository-overview.md): architecture, responsibilities and module boundaries.
 - [Technology inventory](docs/architecture/technology.md): adopted, experimental, planned and removed technologies.
-- [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures. Before running repository verification, decide the actual obligation scope, then use the matching standard entry in [Explicit local full verification](guides/common-tasks.md#显式本地综合验证); reuse still-valid native evidence instead of expanding scope or re-running for a receipt.
-- [Agent task continuity](docs/architecture/agent-instructions.md#task-continuity-and-evidence-reuse): locate relevant knowledge relations, existing work, evidence and handoff before implementation or review.
+- [Common tasks](guides/common-tasks.md): development, CI/CD and recovery procedures. Use [Engineering verification](guides/common-tasks.md#工程验证入口与选择) as the mandatory guide for obligation selection, environment binding, native execution and evidence reconciliation.
+- [Agent task continuity](docs/architecture/agent-instructions.md#task-continuity-and-evidence-reuse): resolve applicable instructions, current engineering facts, existing work and evidence before starting or resuming implementation or review.
+- [Engineering Review](docs/architecture/eci-review-requirements.md): read and follow this direct review contract, including its result schema and actual validation.
 - [Authorization dependency review](docs/verification/authorization-closure/README.md): pinned dependency and evidence coverage snapshots, not current execution or authorization state.
 
 Consult relevant documentation and interfaces when working across module boundaries. Before starting or resuming work, follow the task continuity procedure: locate the existing owner and applicable evidence, inspect the actual revision delta, and resume from the authoritative task record. Do not duplicate task, defect, dependency or evidence records for relationships already represented by their authoritative resources.

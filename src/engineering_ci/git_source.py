@@ -38,30 +38,61 @@ def _git(root, *args, env=None, data=None):
     return result.stdout
 
 
-def registered_worktree(checkout, candidate):
-    """Prove that both checkout roots belong to one Git worktree registration."""
-    env = {
+def _clean_git_env():
+    return {
         key: value
         for key, value in os.environ.items()
         if not key.upper().startswith("GIT_")
     }
 
-    def common_dir(root):
-        top, common = os.fsdecode(
-            _git(
-                root,
-                "rev-parse",
-                "--path-format=absolute",
-                "--show-toplevel",
-                "--git-common-dir",
-                env=env,
-            )
-        ).splitlines()
-        return Path(common).resolve() if Path(top).resolve() == root else None
 
+def _git_common_dir(root, *, env):
+    top, common = os.fsdecode(
+        _git(
+            root,
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-common-dir",
+            env=env,
+        )
+    ).splitlines()
+    return Path(common).resolve() if Path(top).resolve() == root else None
+
+
+def enclosing_git_checkout(path: Path) -> Path | None:
+    """Return the nearest enclosing directory containing ``.git``, if any."""
+    resolved = Path(path).resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def shared_git_common_dir(checkout, candidate):
+    """Prove that two checkout roots share one Git common directory.
+
+    This is strictly weaker than :func:`registered_worktree` (for example under
+    ``--separate-git-dir`` without ``core.worktree``). Callers may use it for
+    non-authorizing local diagnostics and environment attribution. It must not
+    replace :func:`registered_worktree` for Dagger module admission.
+    """
+    env = _clean_git_env()
     try:
-        common = common_dir(checkout)
-        if common is None or common_dir(candidate) != common:
+        checkout_root = Path(checkout).resolve()
+        candidate_root = Path(candidate).resolve()
+        common = _git_common_dir(checkout_root, env=env)
+        return common is not None and _git_common_dir(candidate_root, env=env) == common
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def registered_worktree(checkout, candidate):
+    """Prove that both checkout roots belong to one Git worktree registration."""
+    env = _clean_git_env()
+    try:
+        common = _git_common_dir(checkout, env=env)
+        if common is None or _git_common_dir(candidate, env=env) != common:
             return False
         worktrees = {
             Path(os.fsdecode(field.removeprefix(b"worktree "))).resolve()

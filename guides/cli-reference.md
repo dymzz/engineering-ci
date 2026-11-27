@@ -66,15 +66,21 @@ PowerShell 查看 `$LASTEXITCODE`，Linux 查看 `$?`。fine-grained PAT 不支�
 
 ## 其他操作
 
+在复用主管理 checkout 共享 `.venv` 的 linked worktree 中直接执行下述命令或 `scripts/` 入口时，
+应在开发会话或命令作用域设置 `UV_PROJECT_ENVIRONMENT=<共享 .venv 绝对路径>` 且始终携带 `--no-sync`；
+调用 `engineering-ci ...` 或 `python -P -m engineering_ci...` 时同时设置 `PYTHONPATH=<当前检出>/src`
+（`scripts/release.py` 与 `scripts/download.py` 已内置注入所在检出 `src/`，会话切换、离开到独立消费者仓前清理 ECI 变量与更新约定见[常用操作](common-tasks.md)）。
+`engineering_ci.tools.consumer` 跨仓操作独立消费者时会过滤继承自 ECI 检出的 `UV_PROJECT*` / `VIRTUAL_ENV` / `PYTHONPATH`。等于当前解释器前缀的共享环境是宿主环境，不传给消费者子进程；显式指向其他路径的 `UV_PROJECT_ENVIRONMENT` 仍保留。调用方式见[常用操作](common-tasks.md)。
+
 | 功能 | 调用 |
 | --- | --- |
 | 本仓综合验证 | `uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`（或 `verify report [--verify-dir ...] [--hook-root ... --invocation-ref ... | --hook-invocation ...] [--execution-report ...] [--pytest-invocation ...] ...` 只读分级关联报告：保留 `verify-timing.json`/`verify-status.json` 的 `native_started`/`native_exit_source`/`outer_exit_code`/`child_references` 与并存/损坏冲突诊断；区分 Lefthook 组耗时 `cumulative_child_durations` 与根 `lefthook_reported_wall_seconds` 及 `bytes_parsed`；通过 `hook_checks.inspect_invocation_offline` 离线读取 Hook Plan/Activation/Execution/Receipt/Staging 与缺失 sibling/共享 Activation 冲突；多执行 Hook 容器在缺 sibling 或 0/1/2+ 子报告查询中一致保持 `multi_execution_container` 与按 sibling 隔离冲突；共享纯标准库 `pytest_contracts.py` 校验 Dagger `pytest_report` v1 与严格 JUnit，要求 `has_session_start` + collection/test/exit-5 才判 ReportLog `complete` 并显式读取 `#168` 目录；分别校验 ECI 报告与 `plan.json` 投影、验证 `core-junit.xml` 自身 manifest 摘要并在父冲突时收回子摘要资格、`execution.verify_producer_handoff_bundle` 双向检查重复与多余产物；区分内容等价 `content_equivalent`、Attempt 上下文、`tools/performance.py` 指标 + `cicd_telemetry` Job 成员校验及 `#87 B` 门槛；强制 `--hook-root`/`--invocation-ref` 成对且与 `--hook-invocation` 互斥，冲突或违规 `--out` 返回退出码 `2`）；默认入口见[显式本地综合验证](common-tasks.md#显式本地综合验证) |
 | 原生定向检查 | `dagger check` / `dagger check --engineering-ci --check=...`；选择与报告见[本地检查](../docs/architecture/local-checks.md) |
-| 版本 | `uv run --locked engineering-ci version show` / `check` / `set v0.7.0` |
+| 版本 | `uv run --locked --no-sync engineering-ci version show` / `check` / `set v0.7.0` |
 | Actions 内部发布/证据 | `python -m engineering_ci.workflow_actions release ...` / `manifest ...` |
-| 依赖安全 | `uv run --locked python -m engineering_ci.tools.security ...` |
-| 性能采样 | `uv run --locked python -m engineering_ci.tools.performance ...` |
-| 消费者同步 | `uv run --locked python -m engineering_ci.tools.consumer ...` |
+| 依赖安全 | `uv run --locked --no-sync python -P -m engineering_ci.tools.security ...` |
+| 性能采样 | `uv run --locked --no-sync python -P -m engineering_ci.tools.performance ...` |
+| 消费者同步 | `uv run --locked --no-sync python -P -m engineering_ci.tools.consumer ...` |
 
 Actions 内部操作依赖当前 Workflow 上下文，不是另一套本地发布入口。
 consumer 默认只读，修改/提交/推送由显式参数控制。
