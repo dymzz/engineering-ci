@@ -14,7 +14,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from engineering_ci import execution, hook_checks, hooks, reconciliation
+from engineering_ci import execution, hook_checks, hooks, plan_contract, reconciliation
 
 MAX_OUTPUT_PARSE_BYTES = 8 * 1024 * 1024
 MAX_JSON_REPORT_BYTES = 16 * 1024 * 1024
@@ -2173,13 +2173,20 @@ def _build_bundle_manifest_index(
                 bundle_dir,
                 handoff,
                 plan=plan_payload,
+                report=report_payload,
                 expected_run_ref=meta.get("run_ref"),
                 expected_attempt_ref=meta.get("attempt_ref"),
+                allow_failed_producers=True,
             )
+            delivery_status = verified.get("delivery_status")
             handoff_status = (
-                "verified"
-                if verified["plan_envelope_verified"]
-                else "unverified_missing_plan"
+                delivery_status
+                if delivery_status is not None
+                else (
+                    "verified"
+                    if verified["plan_envelope_verified"]
+                    else "unverified_missing_plan"
+                )
             )
             if not verified["plan_envelope_verified"]:
                 internal_conflicts.append(
@@ -2206,6 +2213,11 @@ def _build_bundle_manifest_index(
                 "handoff_id": verified["handoff_id"],
                 "plan_envelope_verified": verified["plan_envelope_verified"],
                 "admission_authority_63": verified["admission_authority_63"],
+                "delivery_status": delivery_status,
+                "retention_status": verified.get("retention_status"),
+                "prerequisite_statuses": verified.get("prerequisite_statuses", []),
+                "closure_statuses": verified.get("closure_statuses", []),
+                "non_produced_edges": verified.get("non_produced_edges", []),
                 "artifacts": verified["verified_artifacts"],
             }
         except execution.ExecutionError as exc:
@@ -2238,9 +2250,384 @@ def _build_bundle_manifest_index(
     return index, handoff_summary
 
 
-def _extract_execution_metadata(
-    payload: dict[str, Any], *, internal_conflicts: list[dict[str, Any]]
+def _validate_execution_report_contract(
+    payload: dict[str, Any], *, is_single_check_artifact: bool = False
 ) -> dict[str, Any]:
+    """Validate Native Execution Report contract via reconciliation without merging #63 admission."""
+    if not isinstance(payload, dict):
+        return {
+            "status": "invalid",
+            "error": "execution_report_invalid",
+            "rejections": {},
+            "native_result_count": 0,
+        }
+    target: dict[str, Any] = payload
+    if is_single_check_artifact and "kind" not in payload and "checks" not in payload:
+        has_check_shape = isinstance(payload.get("name"), str) and bool(
+            payload.get("name")
+        )
+        has_contract_or_result = (
+            isinstance(payload.get("check_contract"), dict)
+            or payload.get("native_results") is not None
+            or payload.get("native_result") is not None
+        )
+        if not (has_check_shape and has_contract_or_result):
+            return {
+                "status": "invalid",
+                "error": "execution_report_invalid",
+                "rejections": {},
+                "native_result_count": 0,
+            }
+        target = {
+            "kind": execution.REPORT_KIND,
+            "schema_version": execution.SCHEMA_VERSION,
+            "check_contract": payload.get("check_contract"),
+            "checks": [payload],
+        }
+    else:
+        if payload.get("schema_version") != execution.SCHEMA_VERSION:
+            return {
+                "status": "invalid",
+                "error": "execution_report_schema_unsupported",
+                "rejections": {},
+                "native_result_count": 0,
+            }
+    try:
+        results, rejections, _ = reconciliation.verify_execution_report(target)
+    except reconciliation.ReconciliationError as exc:
+        err = (
+            f"{exc.code}:{exc.native_code}"
+            if getattr(exc, "native_code", None)
+            else exc.code
+        )
+        return {
+            "status": "invalid",
+            "error": err,
+            "rejections": {},
+            "native_result_count": 0,
+        }
+    return {
+        "status": "valid",
+        "error": None,
+        "rejections": dict(rejections),
+        "native_result_count": len(results),
+    }
+
+
+def _collect_declared_plan_refs(
+    payload: dict[str, Any], *, internal_conflicts: list[dict[str, Any]]
+) -> str | None:
+    """Collect declared plan_ref values from report/handoff/identity and flag internal conflicts."""
+    candidates: list[tuple[str, str]] = []
+    for label, raw in (
+        ("report.plan_ref", payload.get("plan_ref")),
+        (
+            "execution_identity.plan_ref",
+            (payload.get("execution_identity") or {}).get("plan_ref")
+            if isinstance(payload.get("execution_identity"), dict)
+            else None,
+        ),
+        (
+            "source_handoff.plan_ref",
+            (payload.get("source_handoff") or {}).get("plan_ref")
+            if isinstance(payload.get("source_handoff"), dict)
+            else None,
+        ),
+        (
+            "producer_artifact_handoff.plan_ref",
+            (payload.get("producer_artifact_handoff") or {}).get("plan_ref")
+            if isinstance(payload.get("producer_artifact_handoff"), dict)
+            else None,
+        ),
+    ):
+        norm = _norm_optional_str(raw)
+        if norm is not None:
+            candidates.append((label, norm))
+    unique_vals = sorted({val for _, val in candidates})
+    if len(unique_vals) > 1:
+        internal_conflicts.append(
+            {
+                "reason": "bundle_declared_plan_ref_conflict",
+                "values": unique_vals,
+                "sources": {label: val for label, val in candidates},
+            }
+        )
+        return unique_vals[0]
+    return unique_vals[0] if unique_vals else None
+
+
+def _verify_plan_report_correspondence(
+    plan_payload: dict[str, Any],
+    report_payload: dict[str, Any],
+    *,
+    internal_conflicts: list[dict[str, Any]],
+) -> None:
+    """Verify bundle plan.json matches report projection fields without equating projection to full Plan."""
+    if "kind" in plan_payload and plan_payload.get("kind") != plan_contract.PLAN_KIND:
+        internal_conflicts.append(
+            {
+                "reason": "bundle_plan_invalid",
+                "detail": "plan_kind_mismatch",
+            }
+        )
+        return
+
+    plan_git = plan_payload.get("git")
+    rep_plan = report_payload.get("plan")
+    rep_plan_dict = rep_plan if isinstance(rep_plan, dict) else {}
+    rep_git = rep_plan_dict.get("git")
+    if isinstance(plan_git, dict) and isinstance(rep_git, dict) and plan_git != rep_git:
+        internal_conflicts.append({"reason": "bundle_plan_git_mismatch"})
+    handoff = report_payload.get("source_handoff")
+    orig_git = handoff.get("original_git") if isinstance(handoff, dict) else None
+    if (
+        isinstance(plan_git, dict)
+        and isinstance(orig_git, dict)
+        and orig_git != plan_git
+    ):
+        internal_conflicts.append({"reason": "bundle_plan_git_mismatch"})
+
+    plan_gen = plan_payload.get("generator")
+    rep_gen = rep_plan_dict.get("generator")
+    if plan_gen is not None and rep_gen is not None and plan_gen != rep_gen:
+        internal_conflicts.append({"reason": "bundle_plan_generator_mismatch"})
+
+    plan_sel = (
+        plan_payload.get("selection")
+        if isinstance(plan_payload.get("selection"), dict)
+        else {}
+    )
+    plan_tests = plan_sel.get("tests")
+    if isinstance(plan_tests, list) and "targets" in report_payload:
+        rep_targets = report_payload.get("targets")
+        if not isinstance(rep_targets, list) or list(rep_targets) != list(plan_tests):
+            internal_conflicts.append(
+                {
+                    "reason": "bundle_plan_targets_mismatch",
+                    "expected": list(plan_tests),
+                    "observed": rep_targets,
+                }
+            )
+
+    has_fw = isinstance(plan_sel.get("framework"), str)
+    expected_fw = (
+        plan_sel.get("framework") if has_fw else ("unittest" if plan_sel else None)
+    )
+    if expected_fw is not None and "framework" in report_payload:
+        rep_fw = report_payload.get("framework")
+        if rep_fw != expected_fw:
+            internal_conflicts.append(
+                {
+                    "reason": "bundle_plan_framework_mismatch",
+                    "expected": expected_fw,
+                    "observed": rep_fw,
+                }
+            )
+
+    sel_checks = [c for c in (plan_sel.get("checks") or ()) if isinstance(c, str)]
+    scope_items = plan_payload.get("check_scope") or plan_sel.get("check_scope") or []
+    selected_scope_names = [
+        item.get("name")
+        for item in scope_items
+        if isinstance(item, dict)
+        and item.get("status") == "selected"
+        and isinstance(item.get("name"), str)
+    ]
+    allowed_scope_names = {
+        item.get("name")
+        for item in scope_items
+        if isinstance(item, dict)
+        and item.get("status") in {"selected", "unknown"}
+        and isinstance(item.get("name"), str)
+    }
+    expected_obj = (
+        plan_payload.get("expected_checks")
+        if isinstance(plan_payload.get("expected_checks"), dict)
+        else None
+    )
+    expected_entries = (
+        [item for item in (expected_obj.get("checks") or ()) if isinstance(item, dict)]
+        if expected_obj is not None
+        else []
+    )
+    expected_names = {
+        item.get("name")
+        for item in expected_entries
+        if isinstance(item.get("name"), str)
+    }
+    plan_declares_checks = bool(
+        "checks" in plan_sel or scope_items or expected_obj is not None
+    )
+    allowed_checks = set(sel_checks) | allowed_scope_names | expected_names
+    if plan_tests and expected_fw:
+        allowed_checks.add(expected_fw)
+
+    rep_checks = report_payload.get("checks")
+    if plan_declares_checks and isinstance(rep_checks, list):
+        rep_check_names = [
+            item.get("name")
+            for item in rep_checks
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        if rep_check_names:
+            unexpected = sorted(
+                {name for name in rep_check_names if name not in allowed_checks}
+            )
+            if unexpected:
+                internal_conflicts.append(
+                    {
+                        "reason": "bundle_plan_unexpected_check",
+                        "unexpected": unexpected,
+                        "allowed": sorted(allowed_checks),
+                    }
+                )
+        if report_payload.get("status") not in ("not_executed", "rejected"):
+            required_non_fw = {
+                name
+                for name in (set(sel_checks) | set(selected_scope_names))
+                if not (plan_tests and name == expected_fw)
+            }
+            if required_non_fw:
+                missing = sorted(required_non_fw - set(rep_check_names))
+                if missing:
+                    internal_conflicts.append(
+                        {
+                            "reason": "bundle_plan_selected_checks_mismatch",
+                            "missing": missing,
+                            "observed": sorted(set(rep_check_names)),
+                        }
+                    )
+        if expected_entries and rep_checks:
+            expected_by_name = {
+                item["name"]: item
+                for item in expected_entries
+                if isinstance(item.get("name"), str)
+            }
+            for item in rep_checks:
+                if not isinstance(item, dict):
+                    continue
+                cname = item.get("name")
+                exp_item = expected_by_name.get(cname)
+                if (
+                    exp_item is not None
+                    and exp_item.get("definition_status") == "resolved"
+                ):
+                    rep_cid = item.get("check_id")
+                    exp_cid = exp_item.get("check_id")
+                    if (
+                        isinstance(rep_cid, str)
+                        and isinstance(exp_cid, str)
+                        and rep_cid != exp_cid
+                    ):
+                        internal_conflicts.append(
+                            {
+                                "reason": "bundle_plan_expected_check_id_mismatch",
+                                "check": cname,
+                                "expected": exp_cid,
+                                "observed": rep_cid,
+                            }
+                        )
+
+    if (
+        expected_obj is not None
+        and isinstance(report_payload.get("expected_set_ref"), str)
+        and report_payload.get("expected_set_ref")
+        != expected_obj.get("expected_set_ref")
+    ):
+        internal_conflicts.append(
+            {
+                "reason": "bundle_plan_expected_checks_mismatch",
+                "expected": expected_obj.get("expected_set_ref"),
+                "observed": report_payload.get("expected_set_ref"),
+            }
+        )
+
+    plan_prereqs = (
+        list(plan_sel.get("prerequisites") or ())
+        if isinstance(plan_sel.get("prerequisites"), list)
+        else (
+            list((plan_payload.get("prerequisite_actions") or {}).keys())
+            if isinstance(plan_payload.get("prerequisite_actions"), dict)
+            else None
+        )
+    )
+    rep_prereqs = report_payload.get("prerequisites")
+    if isinstance(plan_prereqs, list) and isinstance(rep_prereqs, list) and rep_prereqs:
+        rep_pnames = {
+            item.get("name")
+            for item in rep_prereqs
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        extra_p = sorted(rep_pnames - set(plan_prereqs))
+        if extra_p:
+            internal_conflicts.append(
+                {
+                    "reason": "bundle_plan_prerequisites_mismatch",
+                    "unexpected": extra_p,
+                    "expected": list(plan_prereqs),
+                }
+            )
+
+    if (
+        "dependency_contract" in plan_payload
+        and "dependency_contract" in report_payload
+        and plan_payload.get("dependency_contract")
+        != report_payload.get("dependency_contract")
+    ):
+        internal_conflicts.append(
+            {"reason": "bundle_plan_dependency_contract_mismatch"}
+        )
+
+    if (
+        plan_payload.get("plan_execution_tree") is not None
+        and report_payload.get("plan_execution_tree") is not None
+        and plan_payload.get("plan_execution_tree")
+        != report_payload.get("plan_execution_tree")
+    ):
+        internal_conflicts.append({"reason": "bundle_plan_execution_tree_mismatch"})
+
+    plan_tree_id = _norm_optional_str(
+        plan_git.get("source_tree_id") if isinstance(plan_git, dict) else None
+    ) or _norm_optional_str(
+        (plan_payload.get("plan_execution_tree") or {}).get("source_tree_id")
+        if isinstance(plan_payload.get("plan_execution_tree"), dict)
+        else None
+    )
+    rep_tree_id = _norm_optional_str(
+        rep_git.get("source_tree_id") if isinstance(rep_git, dict) else None
+    ) or _norm_optional_str(report_payload.get("source_tree_id"))
+    if (
+        plan_tree_id is not None
+        and rep_tree_id is not None
+        and plan_tree_id != rep_tree_id
+    ):
+        internal_conflicts.append(
+            {
+                "reason": "bundle_plan_source_tree_id_mismatch",
+                "expected": plan_tree_id,
+                "observed": rep_tree_id,
+            }
+        )
+
+
+def _extract_execution_metadata(
+    payload: dict[str, Any],
+    *,
+    internal_conflicts: list[dict[str, Any]],
+    is_single_check_artifact: bool = False,
+) -> dict[str, Any]:
+    contract = _validate_execution_report_contract(
+        payload, is_single_check_artifact=is_single_check_artifact
+    )
+    contract_valid = contract["status"] == "valid"
+    if not contract_valid:
+        internal_conflicts.append(
+            {
+                "reason": "execution_report_contract_invalid",
+                "error": contract["error"],
+            }
+        )
+
     ident = payload.get("execution_identity")
     handoff = payload.get("source_handoff")
     run_ref = (
@@ -2295,16 +2682,39 @@ def _extract_execution_metadata(
         if isinstance(plan_git, dict)
         else None
     ) or _norm_optional_str(payload.get("source_tree_id"))
-
-    return {
+    declared_plan_ref = _collect_declared_plan_refs(
+        payload, internal_conflicts=internal_conflicts
+    )
+    report_ref = _compute_execution_report_ref_key(payload)
+    declared_identity = {
         "run_ref": run_ref,
         "attempt_ref": attempt_ref,
         "execution_ref": execution_ref,
-        "report_ref": _compute_execution_report_ref_key(payload),
-        "plan_ref": _norm_optional_str(payload.get("plan_ref")),
+        "report_ref": report_ref,
+        "plan_ref": declared_plan_ref,
         "git_commit": git_commit,
         "source_tree_id": source_tree_id,
     }
+
+    out: dict[str, Any] = {
+        "report_contract_status": contract["status"],
+        "report_contract_rejections": contract["rejections"],
+        "native_result_count": contract["native_result_count"],
+        "declared_identity": declared_identity,
+        "declared_report_plan_ref": declared_plan_ref,
+        "verifiable_execution_proven": contract_valid,
+        "admission_authority_63": "not_evaluated",
+        "run_ref": run_ref if contract_valid else None,
+        "attempt_ref": attempt_ref if contract_valid else None,
+        "execution_ref": execution_ref if contract_valid else None,
+        "report_ref": report_ref if contract_valid else None,
+        "plan_ref": declared_plan_ref if contract_valid else None,
+        "git_commit": git_commit,
+        "source_tree_id": source_tree_id,
+    }
+    if contract["error"] is not None:
+        out["report_contract_error"] = contract["error"]
+    return out
 
 
 def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
@@ -2371,25 +2781,69 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                 ]
             report_payload = loaded_rep["payload"]
             meta = _extract_execution_metadata(
-                report_payload, internal_conflicts=internal_conflicts
+                report_payload,
+                internal_conflicts=internal_conflicts,
+                is_single_check_artifact=(report_candidate.name == "check-result.json"),
             )
-            if plan_ref is not None and meta.get("plan_ref") is None:
-                meta["plan_ref"] = plan_ref
+            contract_valid = meta.get("report_contract_status") == "valid"
+            declared_plan_ref = meta.get("declared_report_plan_ref")
+            if (
+                plan_ref is not None
+                and declared_plan_ref is not None
+                and plan_ref != declared_plan_ref
+            ):
+                internal_conflicts.append(
+                    {
+                        "reason": "bundle_plan_ref_mismatch",
+                        "expected": declared_plan_ref,
+                        "observed": plan_ref,
+                    }
+                )
+
             if isinstance(plan_payload, dict):
+                conflict_count_before = len(internal_conflicts)
+                _verify_plan_report_correspondence(
+                    plan_payload,
+                    report_payload,
+                    internal_conflicts=internal_conflicts,
+                )
                 plan_git = plan_payload.get("git")
-                rep_git = (report_payload.get("plan") or {}).get("git")
-                if (
-                    isinstance(plan_git, dict)
-                    and isinstance(rep_git, dict)
-                    and plan_git != rep_git
-                ):
-                    internal_conflicts.append({"reason": "bundle_plan_git_mismatch"})
                 if isinstance(plan_git, dict) and meta.get("git_commit") is None:
                     meta["git_commit"] = _norm_optional_str(plan_git.get("head_commit"))
                 if isinstance(plan_git, dict) and meta.get("source_tree_id") is None:
                     meta["source_tree_id"] = _norm_optional_str(
                         plan_git.get("source_tree_id")
                     )
+                if (
+                    (plan_ref != declared_plan_ref and declared_plan_ref is not None)
+                    or len(internal_conflicts) > conflict_count_before
+                    or any(
+                        c.get("reason")
+                        in (
+                            "bundle_plan_ref_mismatch",
+                            "bundle_declared_plan_ref_conflict",
+                        )
+                        for c in internal_conflicts
+                    )
+                ):
+                    plan_binding_status = "mismatch"
+                else:
+                    plan_binding_status = "verified"
+                    if (
+                        plan_ref is not None
+                        and meta.get("plan_ref") is None
+                        and contract_valid
+                    ):
+                        meta["plan_ref"] = plan_ref
+            elif plan_candidate.exists() or any(
+                c.get("reason") == "bundle_declared_plan_ref_conflict"
+                for c in internal_conflicts
+            ):
+                plan_binding_status = "mismatch"
+            else:
+                plan_binding_status = "unknown_missing_plan"
+            meta["observed_plan_file_ref"] = plan_ref
+            meta["plan_binding_status"] = plan_binding_status
 
             exit_file = bundle_dir / "exit-code.txt"
             if exit_file.exists():
@@ -2476,7 +2930,16 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                 {
                     "source_type": "execution_bundle",
                     "path": str(report_candidate),
-                    "bundle_directory": bundle_dir.as_posix(),
+                    "bundle_directory": (
+                        bundle_dir.as_posix()
+                        if meta.get("report_contract_status") == "valid"
+                        else None
+                    ),
+                    "colocated_directory": (
+                        None
+                        if meta.get("report_contract_status") == "valid"
+                        else bundle_dir.as_posix()
+                    ),
                     "status": "loaded",
                     "execution_status": report_payload.get("status"),
                     "exit_code": report_payload.get("exit_code"),
@@ -2547,8 +3010,8 @@ def _load_execution_entries(path: Path) -> list[dict[str, Any]]:
                             "observed": sha,
                         }
                     )
-            if digest_verified:
-                # Only concrete native digest bindings (handoff or embedded report junit) prove bundle membership.
+            if digest_verified and meta.get("report_contract_status") == "valid":
+                # Only concrete native digest bindings on contract-valid bundles prove bundle membership.
                 parsed["bundle_binding"] = "verified_manifest_digest"
                 parsed["bound_bundle_directory"] = bundle_dir.as_posix()
                 parsed["bound_artifact_digest"] = sha
@@ -2794,20 +3257,21 @@ def _source_identities(src: dict[str, Any]) -> dict[str, Any]:
             if ex.get("source_tree_id"):
                 content_keys["source_tree_id"].add(ex["source_tree_id"])
     elif stype in ("execution_bundle", "execution_report"):
-        if src.get("run_ref") and src.get("attempt_ref"):
-            context_keys["run_attempt_pair"].add(
-                f"{src['run_ref']}|{src['attempt_ref']}"
-            )
-        if src.get("execution_ref"):
-            concrete_keys["execution_ref"].add(src["execution_ref"])
-        if src.get("report_ref"):
-            concrete_keys["report_ref"].add(src["report_ref"])
-        if src.get("bundle_directory"):
-            concrete_keys["bundle_directory"].add(src["bundle_directory"])
-        if src.get("plan_ref"):
-            content_keys["plan_ref"].add(src["plan_ref"])
-        if src.get("source_tree_id"):
-            content_keys["source_tree_id"].add(src["source_tree_id"])
+        if src.get("report_contract_status") == "valid":
+            if src.get("run_ref") and src.get("attempt_ref"):
+                context_keys["run_attempt_pair"].add(
+                    f"{src['run_ref']}|{src['attempt_ref']}"
+                )
+            if src.get("execution_ref"):
+                concrete_keys["execution_ref"].add(src["execution_ref"])
+            if src.get("report_ref"):
+                concrete_keys["report_ref"].add(src["report_ref"])
+            if src.get("bundle_directory"):
+                concrete_keys["bundle_directory"].add(src["bundle_directory"])
+            if src.get("plan_ref"):
+                content_keys["plan_ref"].add(src["plan_ref"])
+            if src.get("source_tree_id"):
+                content_keys["source_tree_id"].add(src["source_tree_id"])
         if src.get("git_commit"):
             revisions.add(src["git_commit"])
     elif stype in ("junit_xml", "pytest_reportlog"):
@@ -2885,6 +3349,8 @@ def _check_scoped_cross_conflicts(
             continue
         stype = src["source_type"]
         if stype in ("execution_bundle", "execution_report"):
+            if src.get("report_contract_status") != "valid":
+                continue
             if src.get("execution_ref"):
                 anchors.setdefault(("execution_ref", src["execution_ref"]), []).append(
                     src
@@ -3201,16 +3667,50 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
             if src.get("source_type") == "hook_invocation"
             else []
         )
-        hook_unit_summaries = [
-            {
-                "execution_index": units[u_idx]["execution_index"],
-                "artifact": units[u_idx].get("artifact"),
-                "scope": units[u_idx].get("scope"),
-                "execution_group_index": unit_to_exec_group.get(u_idx),
-                "execution_keys": unit_matches.get(u_idx, {}),
-            }
-            for u_idx in hook_u_idxs
-        ]
+        is_multi_exec_hook = (
+            src.get("source_type") == "hook_invocation" and len(hook_u_idxs) > 1
+        )
+        hook_execs = src.get("executions") or []
+        hook_unit_summaries: list[dict[str, Any]] = []
+        for u_idx in hook_u_idxs:
+            ex_idx = units[u_idx]["execution_index"]
+            ex_item = (
+                hook_execs[ex_idx]
+                if isinstance(ex_idx, int) and 0 <= ex_idx < len(hook_execs)
+                else {}
+            )
+            u_conflicts = [
+                c
+                for c in src_conflicts
+                if (
+                    isinstance(c.get("anchor"), dict)
+                    and _anchor_matches_unit(c["anchor"], units[u_idx], ex_item)
+                )
+                or (
+                    c.get("artifact") is not None
+                    and c.get("artifact") == units[u_idx].get("artifact")
+                )
+            ]
+            u_matched = bool(unit_matches.get(u_idx))
+            u_status = (
+                "conflict" if u_conflicts else ("matched" if u_matched else "unqueried")
+            )
+            hook_unit_summaries.append(
+                {
+                    "execution_index": ex_idx,
+                    "artifact": units[u_idx].get("artifact"),
+                    "scope": units[u_idx].get("scope"),
+                    "status": u_status,
+                    "same_execution_proven": u_status == "matched",
+                    "execution_group_index": unit_to_exec_group.get(u_idx),
+                    "execution_keys": unit_matches.get(u_idx, {}),
+                }
+            )
+        group_indices = src_to_exec_groups.get(idx, [])
+        matched_unit_count = sum(
+            1 for item in hook_unit_summaries if item["status"] == "matched"
+        )
+        unqueried_unit_count = len(hook_unit_summaries) - matched_unit_count
 
         if src_conflicts:
             verdict = {
@@ -3222,6 +3722,14 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
                 "revision_keys": rev_list,
                 "conflicts": src_conflicts,
             }
+            if is_multi_exec_hook:
+                verdict["container_kind"] = "multi_execution_hook"
+                verdict["execution_group_indices"] = group_indices
+                verdict["matched_unit_count"] = matched_unit_count
+                verdict["unqueried_unit_count"] = unqueried_unit_count
+                verdict["execution_units"] = hook_unit_summaries
+            elif hook_unit_summaries:
+                verdict["execution_units"] = hook_unit_summaries
         elif src.get("bundle_binding") == "colocated_unverified":
             verdict = {
                 "strength": "colocated_unverified",
@@ -3233,34 +3741,33 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
                 "content_keys": content_matches,
                 "revision_keys": rev_list,
             }
+        elif is_multi_exec_hook:
+            verdict = {
+                "strength": "multi_execution_container",
+                "container_kind": "multi_execution_hook",
+                "same_execution_proven": False,
+                "reason": "hook_invocation_contains_multiple_independent_executions",
+                "execution_group_indices": group_indices,
+                "matched_unit_count": matched_unit_count,
+                "unqueried_unit_count": unqueried_unit_count,
+                "execution_units": hook_unit_summaries,
+                "execution_keys": exec_matches,
+                "context_keys": ctx_matches,
+                "content_keys": content_matches,
+                "revision_keys": rev_list,
+            }
         elif exec_matches:
-            group_indices = src_to_exec_groups.get(idx, [])
-            if src.get("source_type") == "hook_invocation" and len(group_indices) > 1:
-                verdict = {
-                    "strength": "multi_execution_container",
-                    "same_execution_proven": False,
-                    "reason": "hook_invocation_contains_multiple_independent_executions",
-                    "execution_group_indices": group_indices,
-                    "execution_units": hook_unit_summaries,
-                    "execution_keys": exec_matches,
-                    "context_keys": ctx_matches,
-                    "content_keys": content_matches,
-                    "revision_keys": rev_list,
-                }
-            else:
-                verdict = {
-                    "strength": "execution_matched",
-                    "same_execution_proven": True,
-                    "execution_group_index": group_indices[0]
-                    if group_indices
-                    else None,
-                    "execution_keys": exec_matches,
-                    "context_keys": ctx_matches,
-                    "content_keys": content_matches,
-                    "revision_keys": rev_list,
-                }
-                if hook_unit_summaries:
-                    verdict["execution_units"] = hook_unit_summaries
+            verdict = {
+                "strength": "execution_matched",
+                "same_execution_proven": True,
+                "execution_group_index": group_indices[0] if group_indices else None,
+                "execution_keys": exec_matches,
+                "context_keys": ctx_matches,
+                "content_keys": content_matches,
+                "revision_keys": rev_list,
+            }
+            if hook_unit_summaries:
+                verdict["execution_units"] = hook_unit_summaries
         elif ctx_matches:
             verdict = {
                 "strength": "shared_context_only",
@@ -3319,14 +3826,12 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
         and all(s == "execution_matched" for s in strengths)
     ):
         overall = "execution_matched"
-    elif execution_groups or any(
-        s in ("execution_matched", "multi_execution_container") for s in strengths
-    ):
+    elif execution_groups or any(s == "execution_matched" for s in strengths):
         overall = "partial_execution_matched"
         if len(execution_groups) > 1:
             overall_reason = "multiple_disconnected_execution_groups"
         elif "multi_execution_container" in strengths:
-            overall_reason = "hook_invocation_contains_multiple_independent_executions"
+            overall_reason = "multi_execution_container_partially_matched"
     elif any(s == "shared_context_only" for s in strengths):
         overall = "shared_context_only"
     elif any(s == "content_shared_distinct_execution" for s in strengths):
@@ -3345,6 +3850,28 @@ def _evaluate_correlations(sources: list[dict[str, Any]]) -> dict[str, Any]:
     if overall_reason is not None:
         out["reason"] = overall_reason
     return out
+
+
+def _anchor_matches_unit(
+    anchor: dict[str, str], unit: dict[str, Any], exec_item: dict[str, Any]
+) -> bool:
+    keys = unit.get("keys") or {}
+    if "execution_ref" in anchor and anchor["execution_ref"] in keys.get(
+        "execution_ref", ()
+    ):
+        return True
+    if "bundle_directory" in anchor and anchor["bundle_directory"] in keys.get(
+        "bundle_directory", ()
+    ):
+        return True
+    rref = exec_item.get("run_ref")
+    aref = exec_item.get("attempt_ref")
+    rem = exec_item.get("remote_ref")
+    if "push_ref_target" in anchor and rref and aref and rem:
+        return anchor["push_ref_target"] == f"{rref}|{aref}|{rem}"
+    if "run_attempt_binding" in anchor and rref and aref:
+        return anchor["run_attempt_binding"] == f"{rref}|{aref}"
+    return False
 
 
 def _anchor_matches_source(anchor: dict[str, str], ids: dict[str, Any]) -> bool:

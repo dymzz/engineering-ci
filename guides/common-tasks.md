@@ -143,8 +143,7 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 
 若准备工作失败（含输出文件打开或进程拉起失败 `output_open_failed` / `spawn_failed`）、
 收到中断信号（含统一 `subprocess.Popen` 启动后等待异常 `wait_failed`、原生返回后报告准备阶段中断 `report_preparation_interrupted`，以及 `Popen` 前后尚未观察到任何子进程输出即中断时记 `native_started="unknown"` 与 `started_at_ns=null`）或最终回执落盘失败（`seal_failed`），
-会在同目录写入 `verify-status.json`（按实际进展区分 `native_started`、已有观察事实与
-已知或 `null` 的 `native_exit_code`，不写虚假完成回执 `verify-timing.json`）。其中
+会在同目录写入 `verify-status.json`（按实际进展区分 `native_started`、已有观察事实、`native_exit_code`、明确来源 `native_exit_source` 及 `outer_exit_code=130`，不将已捕获/reap 的子进程退出码盲目抹成 `null`，亦不写虚假完成回执 `verify-timing.json`）。其中
 `seal_failed` 会保留真实的 `native_exit_code`，而 `verify` CLI 以 `native_exit_code or 1`
 退出（即原生检查退 `0` 但无法封存回执时返回 `1`）；`SIGKILL` 等不可捕获强杀仅保证强杀前已落盘字节。
 返回原生检查退出状态；被中断时返回 `130`、保留已写入的部分输出并在 `stderr` 打印目录路径。原始输出写文件而非实时透传终端，
@@ -162,12 +161,12 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 
 需要只读汇总结算与跨源关联时，使用 `verify report`（严格只读、不启动任何检查/Git 子进程，
 使用与 `hooks.load_invocation_binding(..., max_bytes=...)` 同源的严格字节上限且拒绝 `--out` 覆盖任何已消费输入或产物目录）：
-关联判定按具体执行单元（Concrete Execution Unit）连通分量区分 `execution_matched`（多执行 Hook 容器作为外层容器按子执行分别参与所属执行组而不对兄弟子执行求传递等价闭合；多组互不相连或仅子集匹配记
-`partial_execution_matched` 并列出 `execution_groups`）、上层 Run/Invocation/`#87` Trace 共享上下文
+关联判定按具体执行单元（Concrete Execution Unit）连通分量区分 `execution_matched`（单执行 Hook 或同一报告副本方可整组证明；多执行 Hook 容器无论同时查询 0/1/2+ 子报告始终维持 `multi_execution_container`、`same_execution_proven=false` 与逐单元 `matched`/`unqueried`/`conflict` 状态，多组互不相连或仅子集匹配记
+`partial_execution_matched` 并列出 `execution_groups`）、复用 `reconciliation.verify_execution_report` 与 `execution.SCHEMA_VERSION` 核验所有独立执行报告及 Bundle `report.json`/`check-result.json`（将文件 `loaded`、契约校验 `report_contract_status`/`report_contract_rejections`、声明身份 `declared_identity`、可验证执行关联与 `#63` `not_evaluated` 分离，同时保留非 ECI 裸 pytest 目录可读性 `missing_report_json`）、核对 `plan.json` 与 `report.json` 的 `observed_plan_file_ref`/`declared_report_plan_ref` 与真实投影字段（输出 `plan_binding_status`: `verified` / `unknown_missing_plan` / `mismatch`）、上层 Run/Invocation/`#87` Trace 共享上下文
 `shared_context_only`、跨 Bundle 同 SHA-256 等内容等价 `content_shared_distinct_execution`（`artifact_sha256` 仅作内容一致而不视为具体执行身份）、版本重合 `revision_only`、
 未认证共存 `colocated_unverified`、`standalone_uncorrelated` 与 `conflict`（同一次多 Ref `pre-push`
 共享 `run_ref`/`attempt_ref` 且推送不同 Ref Commit/Tree 时不误判冲突），并复用 `#66-C` `hook_checks.verify_index_receipt_binding` / `verify_push_receipt_binding` 核验 `Plan[i] -> Ref[i] -> Receipt[i] -> Execution[i]`、Scope/Expected/Job 对应及合法零执行 `pre-push`（`delete` 或全不适用计划且无报告，保留原生
-`native_status` 与 `verifiable_evidence_status`）、复用 `execution.verify_producer_handoff_bundle` 按实际 `output_ref` 与 Producer Root 相对路径基准核验 `#86` File/Directory 保留闭包（缺 `plan.json` 记 `unverified_missing_plan` 且不标 `verified`）、消费 `#86` `tests/` / `checks/` 产物并导出有界原始 `testcase_verifies` 诊断映射（`*_diagnostic_only_not_c2_delivery`，`#162 C2` 消费合同独立；不将 `call passed` 缺 `teardown` 计为通过，保留重复阶段记录）、完整保留 `#87`
+`native_status` 与 `verifiable_evidence_status`）、复用 `execution.verify_producer_handoff_bundle(..., allow_failed_producers=True)` 按实际 `output_ref` 与 Producer Root 相对路径基准核验 `#86` File/Directory 保留闭包（将诚实 producer `failed`/`blocked` 标记为 `not_delivered_producer_failed`/`not_delivered_producer_blocked` 而非伪造冲突，仅在伪称 `passed`/`verified=true`、缺少预期保留或字节篡改时记冲突；缺 `plan.json` 记 `unverified_missing_plan` 且不标 `verified`）、消费 `#86` `tests/` / `checks/` 产物并导出有界原始 `testcase_verifies` 诊断映射（`*_diagnostic_only_not_c2_delivery`，`#162 C2` 消费合同独立；不将 `call passed` 缺 `teardown` 计为通过，保留重复阶段记录）、完整保留 `#87`
 Trace/Session/Engine/Anchor/DagQL/Core/Lineage 与 `source_binding` 语义，以及 `#75`/`#131`/`#63`/`#61`
 独立边界；冲突或非法 `--out` 返回退出码 `2`，且全程保持 `time_source_verified=false`：
 

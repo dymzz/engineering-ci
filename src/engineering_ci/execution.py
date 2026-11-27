@@ -2620,13 +2620,98 @@ def verify_retained_artifact_record(
     }
 
 
+def _diagnose_unretained_data_edge(edge, handoff, *, report=None):
+    """Distinguish honest producer failure/blocking from silent handoff omission."""
+    p_ref = edge["producer_ref"]
+    p_kind = p_ref.get("kind")
+    p_name = p_ref.get("name")
+    key = _edge_retention_key(p_ref, edge.get("consumer_ref"), edge.get("output_ref"))
+
+    closure_rec = None
+    if isinstance(report, dict):
+        for item in report.get("artifact_closure") or ():
+            if (
+                isinstance(item, dict)
+                and _edge_retention_key(
+                    item.get("producer_ref"),
+                    item.get("consumer_ref"),
+                    item.get("output_ref"),
+                )
+                == key
+            ):
+                closure_rec = item
+                break
+    if closure_rec is not None and closure_rec.get("verified") is True:
+        raise ExecutionError("producer_handoff_missing")
+
+    handoff_exec = None
+    for item in handoff.get("producer_executions") or ():
+        if (
+            isinstance(item, dict)
+            and item.get("kind") == p_kind
+            and item.get("name") == p_name
+        ):
+            if handoff_exec is not None and item != handoff_exec:
+                raise ExecutionError("producer_execution_inconsistent")
+            handoff_exec = item
+
+    prereq_rec = None
+    if isinstance(report, dict) and p_kind == "prerequisite_action":
+        for item in report.get("prerequisites") or ():
+            if isinstance(item, dict) and item.get("name") == p_name:
+                prereq_rec = item
+                break
+
+    handoff_status = handoff_exec.get("status") if handoff_exec else None
+    prereq_status = prereq_rec.get("status") if prereq_rec else None
+    if (
+        handoff_status is not None
+        and prereq_status is not None
+        and handoff_status != prereq_status
+    ):
+        raise ExecutionError("producer_execution_inconsistent")
+
+    observed_status = handoff_status or prereq_status
+    if observed_status == "passed":
+        raise ExecutionError("producer_handoff_missing")
+    if isinstance(report, dict) and report.get("status") == "passed":
+        raise ExecutionError("producer_handoff_missing")
+
+    non_pass_statuses = {"failed", "not_executed", "blocked"}
+    closure_failed = closure_rec is not None and closure_rec.get("verified") is False
+    if observed_status in non_pass_statuses or (
+        closure_failed and observed_status is None
+    ):
+        effective_status = observed_status or (
+            "failed"
+            if (closure_rec or {}).get("reason") == "producer_execution_failed"
+            else "not_executed"
+        )
+        return {
+            "producer_ref": dict(p_ref),
+            "consumer_ref": dict(edge["consumer_ref"]),
+            "output_ref": dict(edge["output_ref"]),
+            "producer_status": effective_status,
+            "closure_verified": False,
+            "closure_reason": (
+                (closure_rec or {}).get("reason")
+                or (handoff_exec or {}).get("reason")
+                or (prereq_rec or {}).get("reason")
+            ),
+            "retention_status": "not_retained",
+        }
+    raise ExecutionError("producer_handoff_missing")
+
+
 def verify_producer_handoff_bundle(
     bundle_root,
     handoff,
     *,
     plan=None,
+    report=None,
     expected_run_ref=None,
     expected_attempt_ref=None,
+    allow_failed_producers=False,
 ):
     """Read-only verification of a #86 Producer Artifact Handoff bundle (non-#63 admission)."""
     if not isinstance(handoff, dict):
@@ -2641,6 +2726,9 @@ def verify_producer_handoff_bundle(
     body = {k: v for k, v in handoff.items() if k != "handoff_digest"}
     if _canonical_sha256(body) != recorded_digest:
         raise ExecutionError("producer_handoff_digest_mismatch")
+
+    matched_records = []
+    non_produced_edges = []
     if isinstance(plan, dict):
         _validate_handoff_envelope(
             plan,
@@ -2649,8 +2737,23 @@ def verify_producer_handoff_bundle(
             expected_attempt_ref=expected_attempt_ref,
         )
         for edge in (plan.get("dependency_contract") or {}).get("edges") or ():
-            if isinstance(edge, dict) and edge.get("dependency_kind") == "data":
-                _match_handoff_record(edge, handoff)
+            if not (isinstance(edge, dict) and edge.get("dependency_kind") == "data"):
+                continue
+            try:
+                rec = _match_handoff_record(edge, handoff)
+            except ExecutionError as exc:
+                if allow_failed_producers and exc.code in {
+                    "producer_execution_failed",
+                    "producer_execution_not_verified",
+                    "producer_handoff_missing",
+                }:
+                    non_produced_edges.append(
+                        _diagnose_unretained_data_edge(edge, handoff, report=report)
+                    )
+                else:
+                    raise
+            else:
+                matched_records.append(rec)
     elif not isinstance(handoff.get("artifacts"), list):
         raise ExecutionError("producer_handoff_invalid")
 
@@ -2682,10 +2785,101 @@ def verify_producer_handoff_bundle(
                 "file_digests": dict(retained["actual"]["file_digests"]),
             }
         )
+
+    prereq_statuses = [
+        {
+            "kind": item.get("kind", "prerequisite_action"),
+            "name": item.get("name"),
+            "status": item.get("status"),
+            "exit_code": item.get("exit_code"),
+            "reason": item.get("reason"),
+        }
+        for item in (handoff.get("producer_executions") or ())
+        if isinstance(item, dict)
+    ]
+    if not prereq_statuses and isinstance(report, dict):
+        prereq_statuses = [
+            {
+                "kind": "prerequisite_action",
+                "name": item.get("name"),
+                "status": item.get("status"),
+                "exit_code": item.get("exit_code"),
+                "reason": item.get("reason"),
+            }
+            for item in (report.get("prerequisites") or ())
+            if isinstance(item, dict)
+        ]
+    closure_statuses = [
+        {
+            "producer_ref": item.get("producer_ref"),
+            "consumer_ref": item.get("consumer_ref"),
+            "output_ref": item.get("output_ref"),
+            "verified": item.get("verified"),
+            "reason": item.get("reason"),
+        }
+        for item in (
+            (report.get("artifact_closure") or ()) if isinstance(report, dict) else ()
+        )
+        if isinstance(item, dict)
+    ]
+
+    if non_produced_edges:
+        has_failed = any(
+            item["producer_status"] == "failed" for item in non_produced_edges
+        )
+        if verified:
+            retention_status = "partial_retained"
+            delivery_status = "partial_with_failed_producer"
+        else:
+            retention_status = (
+                "not_retained_producer_failed"
+                if has_failed
+                else "not_retained_producer_blocked"
+            )
+            delivery_status = (
+                "not_delivered_producer_failed"
+                if has_failed
+                else "not_delivered_producer_blocked"
+            )
+    elif verified:
+        retention_status = "retained"
+        delivery_status = (
+            "verified" if isinstance(plan, dict) else "unverified_missing_plan"
+        )
+    else:
+        failed_prereq = any(p.get("status") == "failed" for p in prereq_statuses)
+        blocked_prereq = any(
+            p.get("status") in {"not_executed", "blocked"} for p in prereq_statuses
+        )
+        if (
+            allow_failed_producers
+            and failed_prereq
+            and (not isinstance(report, dict) or report.get("status") != "passed")
+        ):
+            retention_status = "not_retained_producer_failed"
+            delivery_status = "not_delivered_producer_failed"
+        elif (
+            allow_failed_producers
+            and blocked_prereq
+            and (not isinstance(report, dict) or report.get("status") != "passed")
+        ):
+            retention_status = "not_retained_producer_blocked"
+            delivery_status = "not_delivered_producer_blocked"
+        else:
+            retention_status = "none"
+            delivery_status = (
+                "verified" if isinstance(plan, dict) else "unverified_missing_plan"
+            )
+
     return {
         "handoff_id": recorded_digest,
         "plan_envelope_verified": isinstance(plan, dict),
         "admission_authority_63": "not_evaluated",
+        "delivery_status": delivery_status,
+        "retention_status": retention_status,
+        "prerequisite_statuses": prereq_statuses,
+        "closure_statuses": closure_statuses,
+        "non_produced_edges": non_produced_edges,
         "verified_artifacts": verified,
     }
 

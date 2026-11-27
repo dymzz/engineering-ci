@@ -68,7 +68,7 @@ PowerShell 查看 `$LASTEXITCODE`，Linux 查看 `$?`。fine-grained PAT 不支�
 
 | 功能 | 调用 |
 | --- | --- |
-| 本仓综合验证 | `uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`（或 `verify report --invocation-ref invocation:<32hex> ...` 只读分级关联报告：按具体执行单元分组而不通过多执行 Hook 容器传递桥接、跨 Bundle 同 SHA-256 仅记内容等价、复用 `#66-C` Scope/Ref/Job/Execution 对应与合法零执行 Push 判定、复用 `#86` File/Directory Handoff 保留校验并在缺 Plan 时记 `unverified_missing_plan`、导出有界原始 `testcase_verifies` 诊断并拒绝覆盖输入，冲突/违规输出返回退出码 `2`）；默认入口见[显式本地综合验证](common-tasks.md#显式本地综合验证) |
+| 本仓综合验证 | `uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`（或 `verify report --invocation-ref invocation:<32hex> ...` 只读分级关联报告：多执行 Hook 容器在 0/1/2+ 子报告查询中一致保持 `multi_execution_container` 与逐单元状态、复用 `reconciliation.verify_execution_report` 与 `execution.SCHEMA_VERSION` 校验报告契约、核对 `plan.json`<->`report.json` Ref 与投影一致性、跨 Bundle 同 SHA-256 仅记内容等价、复用 `#66-C` Scope/Ref/Job/Execution 对应与合法零执行 Push 判定、复用 `#86` File/Directory Handoff 保留校验并区分诚实 producer failed/blocked 与缺 Plan `unverified_missing_plan`/篡改、导出有界原始 `testcase_verifies` 诊断并拒绝覆盖输入，冲突/违规输出返回退出码 `2`）；默认入口见[显式本地综合验证](common-tasks.md#显式本地综合验证) |
 | 原生定向检查 | `dagger check` / `dagger check --engineering-ci --check=...`；选择与报告见[本地检查](../docs/architecture/local-checks.md) |
 | 版本 | `uv run --locked engineering-ci version show` / `check` / `set v0.7.0` |
 | Actions 内部发布/证据 | `python -m engineering_ci.workflow_actions release ...` / `manifest ...` |

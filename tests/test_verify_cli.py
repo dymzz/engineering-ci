@@ -312,7 +312,16 @@ time.sleep(30)
     status_data = json.loads(status_path.read_text(encoding="utf-8"))
     assert status_data["status"] == "interrupted"
     assert status_data["native_started"] is True
-    assert status_data["native_exit_code"] is None
+    assert status_data["outer_exit_code"] == 130
+    assert status_data["native_exit_source"] in {
+        "observed_before_terminate",
+        "observed_after_terminate",
+        "unobserved_after_terminate",
+    }
+    if status_data["native_exit_source"] == "unobserved_after_terminate":
+        assert status_data["native_exit_code"] is None
+    else:
+        assert isinstance(status_data["native_exit_code"], int)
     assert status_data["time_source_verified"] is False
     assert status_data["elapsed_seconds"] >= 0
     err_text = stderr_bytes.decode("utf-8", "replace")
@@ -630,6 +639,8 @@ def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
     assert status_data["status"] == "report_preparation_interrupted"
     assert status_data["native_started"] is True
     assert status_data["native_exit_code"] == 2
+    assert status_data["native_exit_source"] == "observed_before_report_preparation"
+    assert status_data["outer_exit_code"] == 130
     assert status_data["stages"]["report_preparation"]["status"] == "interrupted"
     assert "verify interrupted; partial outputs in" in capsys.readouterr().err
 
@@ -666,6 +677,8 @@ def test_verify_unconfirmed_spawn_interrupt_reports_unknown_started(
     assert status_data["native_started"] == "unknown"
     assert status_data["started_at_ns"] is None
     assert status_data["native_exit_code"] is None
+    assert status_data["native_exit_source"] == "unknown_spawn"
+    assert status_data["outer_exit_code"] == 130
     assert status_data["stages"]["lefthook_native"]["status"] == "unknown"
 
 
@@ -722,6 +735,7 @@ def test_verify_post_spawn_wait_failure_marks_native_started_and_wait_failed(
     assert status_data["native_started"] is True
     assert status_data["started_at_ns"] == 777
     assert status_data["native_exit_code"] == -9
+    assert status_data["native_exit_source"] == "observed_after_terminate"
     assert status_data["stages"]["lefthook_native"]["status"] == "wait_failed"
     assert instances[0].terminated is True
     assert instances[0].killed is True
@@ -778,6 +792,97 @@ def test_verify_post_spawn_interrupt_reaps_timeout_without_losing_interrupted_st
     assert status_data["native_started"] is True
     assert status_data["started_at_ns"] == 888
     assert status_data["native_exit_code"] is None
+    assert status_data["native_exit_source"] == "unobserved_after_terminate"
+    assert status_data["outer_exit_code"] == 130
     assert status_data["stages"]["lefthook_native"]["status"] == "interrupted"
     assert instances[0].terminated is True
     assert instances[0].killed is True
+
+
+def test_verify_interrupt_preserves_observed_exit_before_and_after_terminate(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(verify, "time_ns", lambda: 999)
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"parallel":false,"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
+    )
+
+    terminated_instances = []
+
+    class _ObservedAfterTerminatePopen:
+        def __init__(self, cmd, *, stdout, stderr):
+            stdout.write(b"\xe2\x94\x83 lint \xe2\x9d\xaf \n")
+            stdout.flush()
+            self._rc = None
+            self.terminated = False
+            terminated_instances.append(self)
+
+        def wait(self, timeout=None):
+            if timeout is None:
+                raise KeyboardInterrupt()
+            return self._rc
+
+        def poll(self):
+            return self._rc
+
+        def terminate(self):
+            self.terminated = True
+            self._rc = -15
+
+        def kill(self):
+            self._rc = -9
+
+    monkeypatch.setattr(verify.subprocess, "Popen", _ObservedAfterTerminatePopen)
+    out_term = tmp_path / "after-term"
+    assert main(["verify", "--out", str(out_term)]) == 130
+    (status_term_path,) = out_term.glob("*/verify-status.json")
+    status_term = json.loads(status_term_path.read_text(encoding="utf-8"))
+    assert status_term["native_exit_code"] == -15
+    assert status_term["native_exit_source"] == "observed_after_terminate"
+    assert status_term["outer_exit_code"] == 130
+    assert status_term["lefthook_summary"]["jobs"][0]["status"] == "unknown"
+    assert status_term["lefthook_summary"]["counts"]["unknown"] == 1
+    assert terminated_instances[0].terminated is True
+
+    pre_exit_instances = []
+
+    class _ObservedBeforeTerminatePopen:
+        def __init__(self, cmd, *, stdout, stderr):
+            self.terminated = False
+            self.killed = False
+            pre_exit_instances.append(self)
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt()
+
+        def poll(self):
+            return 2
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(verify.subprocess, "Popen", _ObservedBeforeTerminatePopen)
+    out_pre = tmp_path / "before-term"
+    assert main(["verify", "--out", str(out_pre)]) == 130
+    (status_pre_path,) = out_pre.glob("*/verify-status.json")
+    status_pre = json.loads(status_pre_path.read_text(encoding="utf-8"))
+    assert status_pre["native_exit_code"] == 2
+    assert status_pre["native_exit_source"] == "observed_before_terminate"
+    assert status_pre["outer_exit_code"] == 130
+    assert pre_exit_instances[0].terminated is False
+    assert pre_exit_instances[0].killed is False

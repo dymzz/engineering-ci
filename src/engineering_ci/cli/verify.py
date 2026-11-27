@@ -110,6 +110,8 @@ def _status_payload(
     lefthook_version=None,
     native_started=False,
     native_exit_code=None,
+    native_exit_source=None,
+    outer_exit_code=None,
     started_at_ns=None,
     completed_at_ns=None,
     native_outputs=None,
@@ -134,6 +136,10 @@ def _status_payload(
         "stages": stages,
         "timing_boundaries": _TIMING_BOUNDARIES,
     }
+    if native_exit_source is not None:
+        payload["native_exit_source"] = native_exit_source
+    if outer_exit_code is not None:
+        payload["outer_exit_code"] = outer_exit_code
     if native_outputs is not None:
         payload["native_outputs"] = native_outputs
     if lefthook_summary is not None:
@@ -262,6 +268,29 @@ def _verify(out):
     opened_streams = False
     spawn_attempted = False
     proc = None
+    returncode = None
+    observed_interrupt_exit = None
+    observed_interrupt_source = None
+
+    def _reap_child(child) -> tuple[int | None, str]:
+        observed = None
+        with suppress(OSError, subprocess.SubprocessError):
+            observed = child.poll()
+        if observed is not None:
+            return observed, "observed_before_terminate"
+        with suppress(OSError, subprocess.SubprocessError):
+            child.terminate()
+            child.wait(timeout=2)
+        with suppress(OSError, subprocess.SubprocessError):
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=2)
+        with suppress(OSError, subprocess.SubprocessError):
+            observed = child.poll()
+        if observed is not None:
+            return observed, "observed_after_terminate"
+        return None, "unobserved_after_terminate"
+
     try:
         try:
             stdout_cm = stdout_path.open("xb")
@@ -335,26 +364,10 @@ def _verify(out):
                 )
                 raise
 
-            def _reap_child() -> int | None:
-                observed = None
-                with suppress(OSError, subprocess.SubprocessError):
-                    observed = proc.poll()
-                if observed is None:
-                    with suppress(OSError, subprocess.SubprocessError):
-                        proc.terminate()
-                        proc.wait(timeout=2)
-                    with suppress(OSError, subprocess.SubprocessError):
-                        if proc.poll() is None:
-                            proc.kill()
-                            proc.wait(timeout=2)
-                    with suppress(OSError, subprocess.SubprocessError):
-                        observed = proc.poll()
-                return observed
-
             try:
                 returncode = proc.wait()
             except (OSError, subprocess.SubprocessError) as exc:
-                observed_exit = _reap_child()
+                observed_exit, observed_exit_source = _reap_child(proc)
                 _write_status_best_effort(
                     invocation,
                     _status_payload(
@@ -376,6 +389,7 @@ def _verify(out):
                         lefthook_version=lefthook_version,
                         native_started=True,
                         native_exit_code=observed_exit,
+                        native_exit_source=observed_exit_source,
                         started_at_ns=started_at_ns,
                         completed_at_ns=None,
                         native_outputs=_safe_native_outputs(stdout_path, stderr_path),
@@ -390,7 +404,7 @@ def _verify(out):
                 )
                 raise
             except KeyboardInterrupt:
-                _reap_child()
+                observed_interrupt_exit, observed_interrupt_source = _reap_child(proc)
                 raise
 
             result = subprocess.CompletedProcess(cmd, returncode)
@@ -413,21 +427,41 @@ def _verify(out):
             native_started: bool | str = False
             effective_started_ns = None
             native_stage_status = "not_started"
-        elif proc is not None or observed_output:
+            interrupt_exit_code = None
+            interrupt_exit_source = "not_started"
+        elif returncode is not None:
             native_started = True
             effective_started_ns = started_at_ns
             native_stage_status = "interrupted"
+            interrupt_exit_code = returncode
+            interrupt_exit_source = "observed_before_report_preparation"
+        elif proc is not None:
+            native_started = True
+            effective_started_ns = started_at_ns
+            native_stage_status = "interrupted"
+            if observed_interrupt_source is None:
+                observed_interrupt_exit, observed_interrupt_source = _reap_child(proc)
+            interrupt_exit_code = observed_interrupt_exit
+            interrupt_exit_source = observed_interrupt_source
+        elif observed_output:
+            native_started = True
+            effective_started_ns = started_at_ns
+            native_stage_status = "interrupted"
+            interrupt_exit_code = None
+            interrupt_exit_source = "unobserved_process_handle"
         else:
             # Interrupted during Popen before process handle or child output exists.
             native_started = "unknown"
             effective_started_ns = None
             native_stage_status = "unknown"
+            interrupt_exit_code = None
+            interrupt_exit_source = "unknown_spawn"
         lefthook_summary = (
             parse_lefthook_output(
                 stdout_path,
                 stderr_path,
                 verify_config=parsed_verify_config,
-                native_exit_code=None,
+                native_exit_code=interrupt_exit_code,
             )
             if opened_streams
             else None
@@ -457,7 +491,9 @@ def _verify(out):
                 observed_config_sha256=observed_config_sha256,
                 lefthook_version=lefthook_version,
                 native_started=native_started,
-                native_exit_code=None,
+                native_exit_code=interrupt_exit_code,
+                native_exit_source=interrupt_exit_source,
+                outer_exit_code=130,
                 started_at_ns=effective_started_ns,
                 completed_at_ns=None,
                 native_outputs=native_outputs,
@@ -548,6 +584,8 @@ def _verify(out):
                 lefthook_version=lefthook_version,
                 native_started=True,
                 native_exit_code=native_exit,
+                native_exit_source="observed_before_report_preparation",
+                outer_exit_code=130,
                 started_at_ns=started_at_ns,
                 completed_at_ns=ended_at_ns if wall_clock_monotonic else None,
                 native_outputs=native_outputs,
@@ -580,6 +618,8 @@ def _verify(out):
                 lefthook_version=lefthook_version,
                 native_started=True,
                 native_exit_code=native_exit,
+                native_exit_source="natural_exit",
+                outer_exit_code=exit_code or 1,
                 started_at_ns=started_at_ns,
                 completed_at_ns=ended_at_ns if wall_clock_monotonic else None,
                 native_outputs=native_outputs,
