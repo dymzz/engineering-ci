@@ -6,14 +6,28 @@
 ## 开发、审查与合并
 
 先确认当前分支、未提交内容与版本；版本必须与功能代码进入同一 PR。
-例如准备 v0.7.0：
+若在复用主管理 checkout 共享 `.venv` 的 **linked worktree** 中直接运行命令，先在当前开发会话作用域绑定环境变量（主管理 checkout 在自身目录可直接省略；若会话已设 `PYTHONPATH` 应前置拼接 `<当前检出>/src`）：
+
+```powershell
+# PowerShell（消费 linked worktree 会话初始化，填绝对路径）
+$env:UV_PROJECT_ENVIRONMENT = "<主管理 checkout>/.venv"
+$env:PYTHONPATH = "<当前检出>/src"
+```
+
+```sh
+# sh / bash（消费 linked worktree 会话初始化，填绝对路径）
+export UV_PROJECT_ENVIRONMENT="<主管理 checkout>/.venv"
+export PYTHONPATH="<当前检出>/src"
+```
+
+查看状态并核对或准备版本（消费端始终携带 `--no-sync`，避免触发隐式同步改写共享环境的 editable `.pth` 或误删超集包）；例如准备 v0.7.0：
 
 ```powershell
 git status --short --branch
 git diff
-uv run --locked engineering-ci version show
+uv run --locked --no-sync engineering-ci version show
 # 仅在本轮需要准备该版本时执行。
-uv run --locked engineering-ci version set v0.7.0
+uv run --locked --no-sync engineering-ci version set v0.7.0
 ```
 
 开发中的单项/定向检查使用原生 `dagger check --engineering-ci --check=...`；本仓日常综合验证见下方[显式本地综合验证](#显式本地综合验证)。
@@ -34,12 +48,19 @@ gh pr view --json number,url,headRefOid
 
 ### Lefthook 本地入口
 
-在 checkout 里从开发依赖锁文件安装和调用 Lefthook 2.2.2。
+`lefthook==2.2.2` 定义在开发依赖组 `--group dev` 中。由**主管理 checkout**（通常为主 checkout `main`）从锁文件同步共享环境（必须保留 `--inexact`），并安装共用 Hook：
 
 ```sh
-uv sync --locked
+uv sync --locked --inexact --group dev
 uv run --locked --no-sync lefthook validate
 uv run --locked --no-sync lefthook install
+```
+
+在已共享同一 `.git` Hook 的 **linked worktree（消费端）**，不要运行省略 `--no-install-project` 的 `uv sync`；直接验证配置或检查启动器身份时绑定 `UV_PROJECT_ENVIRONMENT` 并使用 `--no-sync`（Hook 前置校验因使用 `--no-dev` 不检查 `--group dev`，若共享环境缺少 `lefthook`，`uv run --no-sync` 会回退查找 `PATH`，必要时可用原生 `lefthook version` 核对）：
+
+```sh
+UV_PROJECT_ENVIRONMENT=<共享环境路径> uv run --locked --no-sync lefthook validate
+UV_PROJECT_ENVIRONMENT=<共享环境路径> uv run --locked --no-sync lefthook version
 ```
 
 已有 `core.hooksPath` 时，默认安装会返回 Lefthook 的冲突诊断，已有 Hook
@@ -68,9 +89,11 @@ checkout 的反向路径，不隐式推导 `.venv`，须显式传入 `UV_PROJECT
     `uv sync --locked --check --no-install-project --no-dev --inexact --offline`
     确认运行时环境已准备且满足核心锁定依赖，防止 `uv run --locked --no-sync` 建出空
     `.venv`，同时避免每次 `git commit` / `git push` 在 Lefthook 调度前把不适用的全开发
-    依赖（如 `ruff`、`pytest`）强加为 Hook 门禁（完整开发依赖校验在环境准备或测试前由
-    `uv sync --locked --check --no-install-project --inexact --offline` 承担；当前工作区
-    lock 校验也不替代受检 Index/逐 Ref Source 的验证）；
+    依赖（如 `ruff`、`pytest`）强加为 Hook 门禁（若显式指定 `UV_PROJECT`，校验与诊断
+    均对应所选 `UV_PROJECT/pyproject.toml` 与 `UV_PROJECT/uv.lock`；`lefthook==2.2.2`
+    属于 `--group dev`，由环境准备确保其在共享或所选环境中可用；完整开发依赖校验在
+    环境准备或测试前由 `uv sync --locked --check --no-install-project --inexact --offline`
+    承担；当前工作区 lock 校验也不替代受检 Index/逐 Ref Source 的验证）；
   - 在 ECI 自身 checkout 中独立将当前检出的 `src/` 前置到 `PYTHONPATH`（无论使用默认
     主仓 `.venv`、显式外部共享 `UV_PROJECT_ENVIRONMENT` 还是显式 `UV_PROJECT`），确保
     Hook 执行当前 worktree 的候选源码而非共享环境里另一检出的 editable `.pth`。
@@ -212,10 +235,11 @@ gh pr checks $pr.number --watch
 ```powershell
 gh pr ready $pr.number
 gh pr merge $pr.number --squash --delete-branch --match-head-commit $pr.headRefOid
+# 以下在主管理 checkout 切回 main 同步共享环境（保留 --inexact 超集并恢复主仓 editable .pth 绑定）
 git switch main
 git pull --ff-only
-uv sync --locked --group dev
-uv run --locked engineering-ci version check
+uv sync --locked --inexact --group dev
+uv run --locked --no-sync engineering-ci version check
 ```
 
 若合并后仍有未交付改动，保留它们并另行交付，不能认为已合并 PR 的 CI 已验证这些内容。
@@ -224,10 +248,10 @@ uv run --locked engineering-ci version check
 ## 默认发布流程
 
 main 已包含相应版本且完成 Release Readiness 后，由获授权的操作者请求一次正式发布。
-下面命令会触发真正的 Release Workflow；它不提交、不 Push、不创建或合并 PR：
+下面命令会触发真正的 Release Workflow；它不提交、不 Push、不创建或合并 PR（`scripts/release.py` 会自动加载所在 checkout 的 `src/`；若在复用共享 `.venv` 的 linked worktree 调用，先设置 `UV_PROJECT_ENVIRONMENT=<共享环境路径>` 并始终携带 `--no-sync`）：
 
 ```powershell
-uv run --locked python scripts/release.py publish --repo dymzz/engineering-ci --version v0.7.0 --wait
+uv run --locked --no-sync python scripts/release.py publish --repo dymzz/engineering-ci --version v0.7.0 --wait
 ```
 
 GitHub 在同一 Run 完成完整验收、生成 Manifest、准备 Draft、读回验证 Asset，再正式发布。
@@ -244,7 +268,7 @@ GitHub 在同一 Run 完成完整验收、生成 Manifest、准备 Draft、读�
 只有需要单独验证候选分支时使用；BRANCH 必须替换为确实包含该版本的远端分支：
 
 ```sh
-uv run --locked python scripts/release.py validate --repo dymzz/engineering-ci --version v0.7.0 --ref BRANCH --wait
+uv run --locked --no-sync python scripts/release.py validate --repo dymzz/engineering-ci --version v0.7.0 --ref BRANCH --wait
 ```
 
 它只运行非发布模式；`validated` 与 `published` 分别表示验证通过和正式发布通过。
@@ -292,12 +316,12 @@ fine-grained PAT 不支持 `gh run watch` 时，status 仍只查同一 Run API�
 
 ## 下载已有 Run
 
-将输出中的真实 Run ID 传入 `--run`。下例 RUN_ID 表示该明确 ID：
+将输出中的真实 Run ID 传入 `--run`（`scripts/download.py` 会自动加载所在 checkout 的 `src/`；若在复用共享 `.venv` 的 linked worktree 调用，先设置 `UV_PROJECT_ENVIRONMENT=<共享环境路径>` 并始终携带 `--no-sync`）。下例 RUN_ID 表示该明确 ID：
 
 ```sh
-uv run --locked python scripts/download.py --repo dymzz/engineering-ci --run RUN_ID --save-log
-uv run --locked python scripts/download.py --repo dymzz/engineering-ci --run RUN_ID --artifact core-tests --out .test-tools/run-evidence
-uv run --locked python scripts/download.py --repo dymzz/engineering-ci --interactive
+uv run --locked --no-sync python scripts/download.py --repo dymzz/engineering-ci --run RUN_ID --save-log
+uv run --locked --no-sync python scripts/download.py --repo dymzz/engineering-ci --run RUN_ID --artifact core-tests --out .test-tools/run-evidence
+uv run --locked --no-sync python scripts/download.py --repo dymzz/engineering-ci --interactive
 ```
 
 下载不会 Dispatch。日志为选定 attempt 的 `run.log`，Artifact 由 gh 按 Run 下载；

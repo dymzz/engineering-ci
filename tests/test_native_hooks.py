@@ -904,6 +904,13 @@ def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
     uv_stub = bin_dir / "uv"
     uv_stub.write_bytes(
         b"#!/bin/sh\n"
+        b'if [ "${1:-}" = "sync" ]; then\n'
+        b'  if [ "${UV_STUB_FAIL_SYNC_CHECK:-}" = "1" ]; then\n'
+        b'    printf "stub sync check failed (UV_PROJECT=%s)\\n" "${UV_PROJECT:-}" >&2\n'
+        b"    exit 1\n"
+        b"  fi\n"
+        b"  exit 0\n"
+        b"fi\n"
         b'printf "UV_PROJECT_ENVIRONMENT=%s\\n" "${UV_PROJECT_ENVIRONMENT:-}"\n'
         b'printf "PYTHONPATH=%s\\n" "${PYTHONPATH:-}"\n'
         b'if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ -d "$UV_PROJECT_ENVIRONMENT" ]; then\n'
@@ -1135,6 +1142,56 @@ def test_lefthook_arguments_reuses_primary_venv_and_binds_linked_worktree_src(
     )
     assert consumer_out["PYTHONPATH"] == ""
     assert consumer_out["MARKER"] == "primary"
+
+    # 10. Runtime check & diagnostic report the active project's uv.lock (respecting explicit UV_PROJECT).
+    (linked / "pyproject.toml").write_text(
+        "[project]\nname='linked-cwd'\n", encoding="utf-8"
+    )
+    (linked / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    managed_project = tmp_path / "explicit managed project"
+    managed_project.mkdir()
+    (managed_project / "pyproject.toml").write_text(
+        "[project]\nname='managed-project'\n", encoding="utf-8"
+    )
+    (managed_project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    sh_bin = shutil.which("sh", path=base_env.get("PATH"))
+    assert sh_bin
+    for env_override, expected_lock, expected_env in (
+        ({}, linked / "uv.lock", primary / ".venv"),
+        (
+            {"UV_PROJECT": str(managed_project)},
+            managed_project / "uv.lock",
+            managed_project / ".venv",
+        ),
+        (
+            {
+                "UV_PROJECT": str(managed_project),
+                "UV_PROJECT_ENVIRONMENT": str(external_venv),
+            },
+            managed_project / "uv.lock",
+            external_venv,
+        ),
+    ):
+        failed = subprocess.run(
+            [sh_bin, "scripts/lefthook-arguments.sh", "run", "pre-commit"],
+            cwd=linked,
+            env={**base_env, **env_override, "UV_STUB_FAIL_SYNC_CHECK": "1"},
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=60,
+        )
+        assert failed.returncode == 1
+        diag_line = next(
+            line
+            for line in failed.stderr.splitlines()
+            if line.startswith("engineering-ci hook: ")
+        )
+        lock_and_env = diag_line.split("does not satisfy ", 1)[1]
+        reported_lock, reported_env = lock_and_env.rsplit(": ", 1)
+        assert Path(reported_lock).resolve() == expected_lock.resolve()
+        assert Path(reported_env).resolve() == expected_env.resolve()
 
 
 def test_linked_worktree_hooks_succeed_without_local_venv_or_uv_env(tmp_path, hook_env):
@@ -1572,20 +1629,95 @@ def test_linked_worktree_hooks_succeed_without_local_venv_or_uv_env(tmp_path, ho
             "dev",
             timeout=120,
         )
-    assert superset_dist.is_dir()
-    editable_origin = _run(
-        root,
-        clean_env,
-        str(primary_python),
-        "-I",
-        "-c",
-        "import engineering_ci; print(engineering_ci.__file__)",
+
+    def _assert_shared_venv_intact():
+        assert superset_dist.is_dir()
+        editable_origin = _run(
+            root,
+            clean_env,
+            str(primary_python),
+            "-I",
+            "-c",
+            "import engineering_ci; print(engineering_ci.__file__)",
+        )
+        assert (
+            Path(editable_origin.stdout.strip())
+            .resolve()
+            .is_relative_to((root / "src").resolve())
+        )
+
+    _assert_shared_venv_intact()
+
+    # Documented non-hook commands from common-tasks.md / cli-reference.md in the linked worktree
+    # run cleanly with `--no-sync` without overwriting primary/.venv's editable binding or superset deps.
+    for rel in (".dagger/pyproject.toml", ".dagger/uv.lock", "scripts/release.py"):
+        dest = linked / rel
+        dest.parent.mkdir(exist_ok=True)
+        dest.write_bytes((ROOT / rel).read_bytes())
+
+    lefthook_ver = _run(
+        linked,
+        shared_only_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "lefthook",
+        "version",
     )
-    assert (
-        Path(editable_origin.stdout.strip())
-        .resolve()
-        .is_relative_to((root / "src").resolve())
+    assert "2.2.2" in lefthook_ver.stdout
+    refused_version = _run(
+        linked,
+        shared_only_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "engineering-ci",
+        "version",
+        "show",
+        exit_code=2,
     )
+    assert "refusing to execute another checkout's CLI" in refused_version.stderr
+    cli_version = _run(
+        linked,
+        shared_candidate_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "engineering-ci",
+        "version",
+        "show",
+    )
+    module_version = _run(
+        linked,
+        shared_candidate_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "python",
+        "-P",
+        "-m",
+        "engineering_ci.cli",
+        "version",
+        "show",
+    )
+    assert cli_version.stdout.strip()
+    assert cli_version.stdout.strip() == module_version.stdout.strip()
+    _run(
+        linked,
+        shared_only_env,
+        "uv",
+        "run",
+        "--locked",
+        "--no-sync",
+        "python",
+        "scripts/release.py",
+        "--help",
+    )
+    _assert_shared_venv_intact()
 
     admitted_drift = _run(
         linked, clean_env, "git", "commit", "-m", "admitted after inexact uv sync"
