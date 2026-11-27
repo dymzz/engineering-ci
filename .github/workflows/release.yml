@@ -59,6 +59,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       coverage: true
+      full_verification: true
 
   complete-ci:
     needs: candidate

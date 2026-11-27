@@ -43,7 +43,7 @@ Workflow Runtime，从而避免反向依赖和引导循环。
 | 可复用容器检查 | `.dagger/src/engineering_ci_module/` | Lint、Format、pytest、质量策略、Matrix、单次执行报告 |
 | Plan 原生结果 | `.dagger/src/engineering_ci_module/plan_execution.py`、`plan_result.py` | 独立原生分支收集、同一 Directory 的 Report/Artifact/Enforce；不授予 Source/Trusted 接纳 |
 | 共享检查实现 | `src/engineering_ci/{selection,execution,hygiene,sources,cicd_telemetry}.py` | CLI 与 Dagger 共同消费的选择、执行、来源和遥测实现 |
-| CI 检查适用性 | `src/engineering_ci/ci_applicability.py`、`ci-applicability.toml` | 从累积变更集决定既有 CI Check 是否执行，fail-closed，不产生 Required/证据接纳 |
+| CI 检查适用性 | `src/engineering_ci/ci_applicability.py`、`src/engineering_ci/ci_check_inputs.py` | 共享 Check 输入合同 + 累积变更计划范围；fail-closed，不产生 Required/证据接纳 |
 | 本地 Hook 调度 | `lefthook.yml`、`ci-selection.toml`、`ci-hygiene.toml`、`config/hook-profiles/` | Lefthook 2.2.2 生命周期与 Job 调度；本仓已启用 `pre-commit`、`pre-push` 与显式 `verify` |
 | Hook 来源与对账 | `src/engineering_ci/{hooks,hook_checks,git_source,dagger_plan,reconciliation}.py` | Git Event/Index/Push 捕获、blob 隔离物化、Dagger 交接与 #66-C 对账（本地 Receipt 保持 `trusted=false`、`required=false`） |
 | GitHub Run 操作 | `src/engineering_ci/github_cli.py`、`cli/` | 原生 gh 查询、等待、Artifact 与日志下载 |
