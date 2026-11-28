@@ -4211,6 +4211,20 @@ def per_ref_selections_and_scopes(
     return per_ref_entries, per_ref_scopes
 
 
+def _tach_source_sha256(root, tach_rel, changes):
+    """Digest the same Source the Plan records: the inspected Tree blob.
+
+    A checkout with core.autocrlf rewrites CRLF locally, so hashing the file
+    would not match the raw Tree bytes used by the Plan digest.
+    """
+    tree = changes.execution_tree
+    if tree and _git(root, "cat-file", "-e", f"{tree}^{{tree}}").returncode == 0:
+        blob = _git_bytes(root, "cat-file", "blob", f"{tree}:{tach_rel}")
+        if blob.returncode == 0:
+            return hashlib.sha256(blob.stdout).hexdigest()
+    return _digest(root / tach_rel)
+
+
 def _tach_check(root, config, changes):
     tach_rel, tach_path_err = hygiene._supported_tach_config_rel(config.tach)
     if tach_path_err is not None:
@@ -4220,7 +4234,7 @@ def _tach_check(root, config, changes):
             "stdout": "",
             "stderr": f"execution refused: {tach_path_err}",
             "reason": tach_path_err,
-            "tach_sha256": _digest(root / config.tach),
+            "tach_sha256": _tach_source_sha256(root, tach_rel, changes),
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
@@ -4239,7 +4253,7 @@ def _tach_check(root, config, changes):
             "stdout": "",
             "stderr": f"execution refused: {refusal}",
             "reason": refusal,
-            "tach_sha256": _digest(root / tach_rel),
+            "tach_sha256": _tach_source_sha256(root, tach_rel, changes),
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
@@ -4283,7 +4297,7 @@ def _tach_check(root, config, changes):
             "exit_code": 127,
             "stdout": "",
             "stderr": "tach not found",
-            "tach_sha256": _digest(root / tach_rel),
+            "tach_sha256": _tach_source_sha256(root, tach_rel, changes),
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
@@ -4294,7 +4308,7 @@ def _tach_check(root, config, changes):
         "tach_path": tach_rel,
         "stdout": result.stdout[-4000:],
         "stderr": result.stderr[-4000:],
-        "tach_sha256": _digest(root / tach_rel),
+        "tach_sha256": _tach_source_sha256(root, tach_rel, changes),
         "source_tree": changes.execution_tree or changes.tree,
         "snapshot": changes.snapshot,
     }
