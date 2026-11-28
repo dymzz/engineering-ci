@@ -153,24 +153,39 @@ def test_broken_links_fail(repo):
 
 
 @pytest.mark.parametrize(
-    ("runner_code", "expected_status", "expected"),
+    ("runner_code", "stdout", "expected_status", "expected"),
     [
         pytest.param(
             3,
+            "dead.py:1: unused variable 'x'",
             "passed",
-            {"status": "advisory", "exit_code": 3},
-            id="advisory",
+            {
+                "status": "advisory",
+                "exit_code": 3,
+                "reason": "vulture_findings",
+                "stdout": "dead.py:1: unused variable 'x'",
+            },
+            id="advisory-with-output",
         ),
-        pytest.param(1, "failed", {"reason": "vulture_failed"}, id="execution-error"),
+        pytest.param(
+            1,
+            "",
+            "failed",
+            {"reason": "vulture_failed", "stdout": ""},
+            id="execution-error",
+        ),
     ],
 )
 def test_vulture_outcome_follows_native_exit(
-    repo, runner_code, expected_status, expected
+    repo, runner_code, stdout, expected_status, expected
 ):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
     result = report(
-        path, base, checks=("vulture",), runner=FakeRunner(code=runner_code)
+        path,
+        base,
+        checks=("vulture",),
+        runner=FakeRunner(code=runner_code, stdout=stdout),
     )
     assert result["status"] == expected_status
     entry = by_name(result)["vulture"]
