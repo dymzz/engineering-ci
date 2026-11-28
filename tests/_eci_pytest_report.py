@@ -461,7 +461,8 @@ def pytest_configure(config):
     existing_log = getattr(config.option, "report_log", None)
     existing_junit = getattr(config.option, "xmlpath", None)
     invocation_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
-    export_dir = os.environ.get("ECI_PYTEST_REPORT_DIRECTORY")
+    # Subprocess pytest sessions must allocate their own native Invocation.
+    export_dir = os.environ.pop("ECI_PYTEST_REPORT_DIRECTORY", None)
     out_dir = (
         Path(export_dir).resolve()
         if export_dir

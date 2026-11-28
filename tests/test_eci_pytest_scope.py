@@ -27,8 +27,9 @@ def checkout(tmp_path):
     for name in ("conftest.py", "_eci_pytest_scope.py", "_eci_pytest_report.py"):
         shutil.copyfile(plugin_dir / name, tests / name)
     (tests / "test_first.py").write_text(
-        "from pathlib import Path\nimport pytest\n"
+        "import os\nfrom pathlib import Path\nimport pytest\n"
         "@pytest.mark.quick\ndef test_first():\n"
+        '    assert "ECI_PYTEST_REPORT_DIRECTORY" not in os.environ\n'
         '    Path("first-ran").touch()\n',
         encoding="utf-8",
     )
