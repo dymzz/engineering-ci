@@ -600,3 +600,21 @@ for actual request/reader counts and failure preservation.
 - `expected_checks.derive_expected_checks` / `validate_projection` forward
   `hygiene_config_path` and per-ref `base_commit` / `head_commit` so single-ref
   and per-ref projections agree on config-triggered hygiene applicability.
+
+## Entry points and handoff
+
+The production chain is: bound Git source (worktree/index/commit/push/multi) →
+accumulated ChangeSet → `selection.select` → `selection.plan` → native
+execution (`--run` / Hook `_make_plan` / Dagger Plan handoff) → the same-run
+report and native exit. Each step consumes the Plan produced by the previous
+one; no entry reinterprets explicit targets or re-exports the Source.
+
+- `engineering-ci select ... --json` exposes that bound Plan read-only;
+  `--run` executes its selected native targets and propagates the native exit.
+- `engineering-ci ci-applicability` decides whether an existing Dagger Check
+  Job runs; it is not a test-target list and does not authorize a partial
+  Required scope.
+- Failure boundaries stay explicit: unavailable/refused Source or target
+  facts fail closed (no substitution from the checkout), unknown scope is
+  escalated by the Plan, and selected-test failures propagate as native
+  failures rather than being converted into a passing report.

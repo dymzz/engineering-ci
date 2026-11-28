@@ -51,7 +51,29 @@ uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
 ```
 
 相对既有有效证据的增量复用仍属 #63 接纳，未实现前不因此跳过 Required 义务；
-测试目标选择仍用 #66/#165 的 Selection 入口，不把本决策当作受影响测试清单。
+本决策不是受影响测试清单，目标选择见下节。
+
+### 受影响测试目标（Selection）
+
+`engineering-ci select` 从实际受检 Git 快照（`worktree`/`index`/`commit`/`push`/`multi`）
+取 ChangeSet，经 `selection.select` → `selection.plan` 输出可复用 Plan；`--run` 按该
+绑定 Plan 执行原生测试目标，原生失败以退出码传播。它回答“改了什么、跑哪些受影响
+目标”，与 Job 适用性、Full/Required 是不同语义：
+
+- `ci-applicability`：既有 Dagger Check 的 Job 是否需要执行（不产生测试清单）；
+- `select`：受影响测试目标及未知范围升级（Plan 的 `escalated`/`full_tests`）；
+- Full/Required：完整测试义务或 Required 授权，不能由 `not_applicable` 或部分目标替代。
+
+未知或不可判定范围按 Plan 的升级语义扩大到全量测试，不静默缩小；显式目标、非代码
+输入命中、Tach 图缺失等边界见 [Selection 架构](../docs/architecture/selection.md)。
+本地只读复算（不执行测试）：
+
+```sh
+uv run --locked --no-sync python -m engineering_ci.cli select \
+  --mode commit --base <merge-base> --head HEAD --json
+```
+
+需要按同一 Plan 实际执行时加 `--run`；执行结果与 Plan 一起按本次 Invocation 引用。
 
 ## 开发、审查与合并
 
