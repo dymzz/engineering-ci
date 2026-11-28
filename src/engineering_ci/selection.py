@@ -60,6 +60,7 @@ _CONFIG_KEYS = {
     "ignored_prefixes",
     "checks",
     "module_tests",
+    "test_helpers",
     "non_code_rules",
     "prerequisites",
     "prerequisite_actions",
@@ -149,6 +150,7 @@ class Config:
     push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
     effective_profile_policy: dict | list[dict] | None = None
     workflow_checks: WorkflowChecksConfig = field(default_factory=WorkflowChecksConfig)
+    test_helpers: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -352,6 +354,13 @@ def _parse_config_bytes(raw):
     rules = value.get("non_code_rules", [])
     if not isinstance(rules, list):
         raise SelectionError("non_code_rules_invalid")
+    test_helpers_raw = value.get("test_helpers", {})
+    if not isinstance(test_helpers_raw, dict):
+        raise SelectionError("test_helpers_invalid")
+    test_helpers = {}
+    for key, entries in test_helpers_raw.items():
+        helper_path = _normalized(key)
+        test_helpers[helper_path] = tuple(_string_list(entries, "test_helpers"))
     parsed_rules = []
     for rule in rules:
         if not isinstance(rule, dict) or set(rule) - {
@@ -557,6 +566,7 @@ def _parse_config_bytes(raw):
         checks=checks,
         module_tests=module_tests,
         non_code_rules=tuple(parsed_rules),
+        test_helpers=test_helpers,
         prerequisites=prerequisites,
         prerequisite_actions=prerequisite_actions,
         strict_modules=strict_modules,
@@ -694,6 +704,7 @@ def _normalize_config(config):
         "ignored_prefixes": list(config.ignored_prefixes),
         "checks": list(config.checks),
         "module_tests": {k: list(v) for k, v in sorted(config.module_tests.items())},
+        "test_helpers": {k: list(v) for k, v in sorted(config.test_helpers.items())},
         "non_code_rules": [
             {
                 "prefix": r.prefix,
@@ -884,6 +895,9 @@ def config_from_identity(identity):
         checks=tuple(norm.get("checks") or ()),
         module_tests={
             str(k): tuple(v) for k, v in (norm.get("module_tests") or {}).items()
+        },
+        test_helpers={
+            str(k): tuple(v) for k, v in (norm.get("test_helpers") or {}).items()
         },
         non_code_rules=tuple(
             NonCodeRule(
@@ -2436,6 +2450,30 @@ def _escalated(
     )
 
 
+def _test_module_path(test_id):
+    """Map `tests.test_x` / `tests.sub.test_x` to its file path."""
+    parts = test_id.split(".")
+    if len(parts) < 2:
+        return None
+    return "/".join([*parts[:-1], parts[-1] + ".py"])
+
+
+def _test_helper_consumers(config, paths):
+    """Transitive consumer tests of changed test-helper files."""
+    found = set()
+    queue = [path for path in paths if path in config.test_helpers]
+    while queue:
+        path = queue.pop()
+        for consumer in config.test_helpers.get(path, ()):
+            if consumer in found:
+                continue
+            found.add(consumer)
+            consumer_path = _test_module_path(consumer)
+            if consumer_path is not None:
+                queue.append(consumer_path)
+    return found
+
+
 def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None):
     """Select tests for one change set; unknown coverage escalates, never passes."""
     if getattr(changes, "source_refusal", None):
@@ -2748,6 +2786,11 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             changed_modules.add(module)
         else:
             unmapped.append(path)
+    for consumer in _test_helper_consumers(config, paths):
+        selected.add(consumer)
+        reasons.setdefault(consumer, []).append(
+            "Test helper dependency: changed test helper"
+        )
     if unmapped:
         return _escalated(
             changes,
@@ -4222,6 +4265,9 @@ def _tach_source_sha256(root, tach_rel, changes):
         blob = _git_bytes(root, "cat-file", "blob", f"{tree}:{tach_rel}")
         if blob.returncode == 0:
             return hashlib.sha256(blob.stdout).hexdigest()
+        # A known inspected Tree without the Blob is unavailable; only a real
+        # non-ODB Source may fall back to the checkout file digest.
+        return None
     return _digest(root / tach_rel)
 
 

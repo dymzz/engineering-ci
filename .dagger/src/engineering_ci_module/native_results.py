@@ -31,11 +31,12 @@ def implementation(kind):
         ]
     )
     files = {"dagger/" + name: root / name for name in names}
+    # SOURCE_NOISE/SOURCE_EXCLUDES are the actual non-verified-tree filter
+    # authority consumed here; its bytes must identify every implementation
+    # kind, including Weaver.
+    files["engineering_ci/ci_check_inputs.py"] = Path(ci_check_inputs.__file__)
     if kind != "weaver":
         files["engineering_ci/pytest_contracts.py"] = Path(pytest_contracts.__file__)
-        # SOURCE_NOISE/SOURCE_EXCLUDES are the actual non-verified-tree filter
-        # authority consumed here; its bytes must identify the implementation.
-        files["engineering_ci/ci_check_inputs.py"] = Path(ci_check_inputs.__file__)
     return native_producer.implementation("engineering-ci/dagger/" + kind, files)
 
 

@@ -64,17 +64,21 @@ uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
   保留原生 pytest 退出，但不消费 Plan 的 graph gate/Execution Report。
 - 实际 Plan 消费由既有公共入口完成，完整可操作组合：
   ```sh
-  # 1) 固定 Tach 版本（与 execution 锁定的版本一致）
-  uvx --from tach==0.35.3 tach --version
+  mkdir -p .artifacts
+
+  # 1) 让后续独立进程中的裸 `tach check` 绑定固定版本（_tach_check 调裸 tach）
+  uv tool install tach==0.35.3
+  tach --version
 
   # 2) 在受检快照上产出 Plan 与 Tach 验证事实（不执行测试）
   uv run --locked --no-sync python -m engineering_ci.cli select \
     --mode commit --base <base> --head <head> --validate-tach \
     --json > .artifacts/plan.json
 
-  # 3) 在同一 Source 上消费同一 Plan，保存 JUnit/Execution Report
+  # 3) 在同一 Source 上消费同一 Plan，保存结构化报告与 JUnit
   uv run --locked --no-sync python -m engineering_ci.cli execute \
-    --plan .artifacts/plan.json --junit .artifacts/plan-junit.xml
+    --plan .artifacts/plan.json --json > .artifacts/execution-report.json \
+    --junit .artifacts/plan-junit.xml
   ```
   `select` 退出 0 只表示 Plan 产出；`execute` 的原生退出与 JUnit/report 是执行证据。
   选择语义按 Source 区分：`worktree`/`commit` 可选择目标；完整 `index`/`push` 默认

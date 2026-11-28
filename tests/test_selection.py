@@ -4081,6 +4081,13 @@ def test_dynamic_consumer_mappings_keep_their_tests(tmp_path):
         "tests.test_ci_performance"
         in config.module_tests["engineering_ci.pytest_contracts"]
     )
+    assert config.test_helpers["tests/test_hooks.py"] == (
+        "tests.test_execution",
+        "tests.test_native_hooks",
+        "tests.test_pre_execution_source_proof",
+    )
+    closure = selection._test_helper_consumers(config, ["tests/test_hooks.py"])
+    assert {"tests.test_plan_result", "tests.test_verify_report"} <= closure
 
 
 def test_tach_digest_matches_blob_when_checkout_has_crlf(tmp_path):
@@ -4148,10 +4155,39 @@ def test_dagger_native_implementation_covers_source_filter_module(tmp_path):
     second.write_text("SOURCE_NOISE = ('x',)\n", encoding="utf-8")
     original = ci_check_inputs.__file__
     try:
-        ci_check_inputs.__file__ = str(first)
-        one = native_results.implementation("pytest")
-        ci_check_inputs.__file__ = str(second)
-        two = native_results.implementation("pytest")
+        results = {}
+        for kind in ("pytest", "weaver"):
+            ci_check_inputs.__file__ = str(first)
+            one = native_results.implementation(kind)
+            ci_check_inputs.__file__ = str(second)
+            two = native_results.implementation(kind)
+            results[kind] = (
+                one[0]["implementation_sha256"],
+                two[0]["implementation_sha256"],
+            )
     finally:
         ci_check_inputs.__file__ = original
-    assert one[0]["implementation_sha256"] != two[0]["implementation_sha256"]
+    for kind, (first_sha, second_sha) in results.items():
+        assert first_sha != second_sha, kind
+
+
+def test_tach_digest_unavailable_for_known_tree_without_blob(tmp_path):
+    # P2-14: a known inspected Tree without the Tach Blob is unavailable; only a
+    # real non-ODB Source may fall back to the checkout file digest.
+    path = tmp_path / "missing_blob"
+    (path / "tests").mkdir(parents=True)
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n', encoding="utf-8"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "without tach")
+    base = run(path, "rev-parse", "HEAD").strip()
+    (path / "tach.toml").write_text('source_roots = ["src"]\n', encoding="utf-8")
+    changed = selection.changeset(path, base=base, head="HEAD", mode="commit")
+    assert selection._tach_source_sha256(path, "tach.toml", changed) is None
