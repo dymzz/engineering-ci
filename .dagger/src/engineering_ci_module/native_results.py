@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from engineering_ci import check_contract, native_producer
+from engineering_ci import check_contract, native_producer, pytest_contracts
 
 
 def implementation(kind):
@@ -25,10 +25,10 @@ def implementation(kind):
             "python_dependency_auth.py",
         ]
     )
-    return native_producer.implementation(
-        "engineering-ci/dagger/" + kind,
-        {"dagger/" + name: root / name for name in names},
-    )
+    files = {"dagger/" + name: root / name for name in names}
+    if kind != "weaver":
+        files["engineering_ci/pytest_contracts.py"] = Path(pytest_contracts.__file__)
+    return native_producer.implementation("engineering-ci/dagger/" + kind, files)
 
 
 def child_context(parent=None):

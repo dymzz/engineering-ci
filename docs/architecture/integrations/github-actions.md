@@ -14,6 +14,7 @@ Rules: [Workflow contracts](../release/workflow.md). Contracts: [Release workflo
   `.github/workflows/release.yml` (formal release workflow),
   `.github/workflows/reusable-python-ci.yml` (reusable check orchestrator)
 - **Contract:** [Workflow contracts](../release/workflow.md),
+  [CI check applicability](../ci-applicability.md),
   [Release workflow](../release/workflow.md)
 - **Verify:** actual native Check execution and release Manifest tests
 - **Verified:** 2026-10-14 @ `963d809a295f`

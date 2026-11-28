@@ -1141,17 +1141,38 @@ def test_issue52_reconcile_attempt_witness_handles_zero_job_pagination_and_parti
     assert zero_ok["task_coverage"] == "zero_task_confirmed"
 
 
-def _docker_and_dagger_available() -> bool:
-    if grpc is None or os.environ.get("ECI_SKIP_LIVE_COLLECTOR_TESTS") == "1":
-        return False
-    if not shutil.which("docker") or not shutil.which("dagger"):
-        return False
+def _live_collector_opt_in() -> bool:
+    """True only when the operator explicitly requests live collector E2E."""
+    return (
+        os.environ.get("ECI_RUN_LIVE_COLLECTOR_TESTS") == "1"
+        and os.environ.get("ECI_SKIP_LIVE_COLLECTOR_TESTS") != "1"
+    )
+
+
+def _require_live_collector_deps() -> None:
+    """Fail closed when opt-in is set but Docker/Dagger/gRPC/image deps are missing."""
+    missing = []
+    if grpc is None:
+        missing.append("grpcio (import grpc)")
+    if not shutil.which("docker"):
+        missing.append("docker on PATH")
+    if not shutil.which("dagger"):
+        missing.append("dagger on PATH")
+    if missing:
+        pytest.fail(
+            "ECI_RUN_LIVE_COLLECTOR_TESTS=1 but live collector deps are missing: "
+            + ", ".join(missing)
+        )
     probe = subprocess.run(
         ["docker", "image", "inspect", gr.COLLECTOR_CONTRIB_REF],
         capture_output=True,
         check=False,
     )
-    return probe.returncode == 0
+    if probe.returncode != 0:
+        pytest.fail(
+            "ECI_RUN_LIVE_COLLECTOR_TESTS=1 but docker image "
+            f"{gr.COLLECTOR_CONTRIB_REF!r} is not available locally"
+        )
 
 
 class _OtlpCaptureServer(
@@ -1178,11 +1199,12 @@ def _rmtree(path: Path) -> None:
 
 
 @pytest.mark.skipif(
-    not _docker_and_dagger_available(),
-    reason="Requires Docker with pinned otelcol-contrib image and Dagger CLI",
+    not _live_collector_opt_in(),
+    reason="Set ECI_RUN_LIVE_COLLECTOR_TESTS=1 to run Docker + Dagger live collector E2E",
 )
 def test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e():
     """Live Webhook -> otelcol-contrib -> Dagger Weaver Terminal -> #66-C -> #63 -> #61."""
+    _require_live_collector_deps()
     work_root = ROOT / ".artifacts" / "pytest-issue52-e2e"
     _rmtree(work_root)
     work_root.mkdir(parents=True)

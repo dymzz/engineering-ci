@@ -14,10 +14,10 @@ Inventory: [technology](../technology.md). Up: [Integrations](README.md).
 
 - **Status:** adopted
 - **Pin:** `lefthook==2.2.2` in root dev dependencies (`pyproject.toml`, `uv.lock`) and `min_version: "2.2.2"` in `lefthook.yml`.
-- **Used by:** root `lefthook.yml`, `src/engineering_ci/hooks.py`, `src/engineering_ci/hook_checks.py` — native Git hook installation (`pre-commit`, `pre-push`), job activation, safe parallelism, and explicit `verify`; `engineering-ci` owns Git event capture, Source materialization, Execution, Reconciliation, and local exit propagation.
+- **Used by** the root `lefthook.yml` for native Hook installation and scheduling. Explicit Verify runs three native Check groups and exports one pytest run through Dagger's `repository-test-artifacts`. The exported `ci.py gate` carries that run's exit into Lefthook. ECI owns capture, Source checks, execution records, reconciliation, and the read-only diagnostics described in the [verification guide](../../../guides/common-tasks.md#显式本地综合验证).
 - **Constraints:** `2.2.2` requires top-level `lefthook:` stream framing for space-containing `pre-push` arguments, single-consumer `use_stdin` handling, and native `files` / `{files}` activation on `pre-push` (see [upstream observations](../../../.agent/upstream-observations.md)). Local Hook Receipts remain `trusted=false`, `required=false`.
 - **Contract:** [selection](../selection.md), [reconciliation](../reconciliation.md), [common tasks](../../../guides/common-tasks.md#lefthook-本地入口).
-- **Verify:** `tests/test_hooks.py`, `tests/test_native_hooks.py`.
+- **Verify:** `tests/test_hooks.py`, `tests/test_native_hooks.py`, `tests/test_verify_cli.py`, `tests/test_verify_report.py`.
 
 ## Git CLI
 

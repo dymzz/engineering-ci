@@ -589,10 +589,13 @@ class EngineeringCi:
         source: Annotated[
             dagger.Directory, DefaultPath("/"), Ignore(repository.SOURCE_EXCLUDES)
         ],
+        core_evidence: bool = True,
     ) -> dagger.Directory:
         """Export the same pytest node used by tests, even when it failed."""
         execution = await self._repository_tests(source)
         bundle = self._pytest_bundle(execution)
+        if not core_evidence:
+            return bundle
         bundle = bundle.with_file("core-junit.xml", bundle.file("junit.xml"))
         if self.repository_coverage:
             bundle = bundle.with_file(
@@ -1978,6 +1981,12 @@ class EngineeringCi:
                 "ci.py" if filename == "pytest_ci.py" else filename,
                 Path(__file__).with_name(filename).read_text(encoding="utf-8"),
             )
+        from engineering_ci import pytest_contracts
+
+        directory = directory.with_new_file(
+            "pytest_contracts.py",
+            Path(pytest_contracts.__file__).read_text(encoding="utf-8"),
+        )
         for version, facts, runtime, pytest in execution.rows:
             folder = dag.directory()
             if pytest is not None and runtime.get("pytest_started"):
