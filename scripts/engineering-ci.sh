@@ -73,25 +73,45 @@ fi
 operation=$1
 shift
 
+report_disabled=0
+if [ "${ECI_PYTEST_NO_AUTO_REPORT:-}" = "1" ]; then
+  report_disabled=1
+fi
+for argument in "$@"; do
+  case "$argument" in
+    --eci-no-auto-report|--eci-no-auto-report=*)
+      report_disabled=1
+      ;;
+  esac
+done
+
 case "$operation" in
   verify)
     case "${1:-}" in
       -h|--help) scope=runtime ;;
+      report) scope=report ;;
       *) scope=verify ;;
     esac
     ;;
   cli)
     if [ "${1:-}" = "verify" ]; then
       case "${2:-}" in
-        report|-h|--help) scope=runtime ;;
+        report) scope=report ;;
+        -h|--help) scope=runtime ;;
         *) scope=verify ;;
       esac
+    elif [ "${1:-}" = "version" ]; then
+      scope=version
     else
       scope=runtime
     fi
     ;;
   pytest)
-    scope=pytest
+    if [ "$report_disabled" -eq 1 ]; then
+      scope=pytest-noreport
+    else
+      scope=pytest
+    fi
     ;;
   ruff)
     scope=ruff

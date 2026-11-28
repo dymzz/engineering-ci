@@ -81,7 +81,9 @@ uv 通过绝对路径 `UV_PROJECT_ENVIRONMENT` 指定共享项目环境，通过
   操作类型为 `verify` / `cli` / `pytest` / `ruff`。普通 entry 使用确定性默认：linked
   worktree 复用主管理 checkout 的 `.venv`，候选源码固定为当前检出 `src/`；也可用
   `--environment <已准备路径>` 选择显式隔离环境。就绪范围按实际操作确定：runtime
-  CLI/help/只读报告只要求 runtime 依赖，`pytest` 只要求 pytest，`ruff` 只要求 Ruff；
+  CLI/help 只要求 runtime 依赖；`cli version` 与 `verify report`/`cli verify report`
+  作为诊断/只读入口不要求当前锁新鲜；`pytest` 要求 pytest 与默认报告的
+  `pytest-reportlog`（显式 `--eci-no-auto-report` 可关闭），`ruff` 只要求 Ruff；
   完整 `verify` 才要求 dev 组、pytest、Ruff 与 Lefthook。pytest/Ruff 以所选环境中实际
   安装的发行版、控制台脚本及 `uv.lock` 版本为准并执行同一脚本，不因候选 `src/` 同名
   模块换源。环境缺失、解释器不匹配、工具来源/版本不符、有效 cache 不稳定或锁定检查

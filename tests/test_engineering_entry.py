@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,10 @@ version = "2.2.2"
 [[package]]
 name = "pytest"
 version = "9.0.3"
+
+[[package]]
+name = "pytest-reportlog"
+version = "1.0.0"
 
 [[package]]
 name = "ruff"
@@ -166,6 +171,7 @@ def _write_tools(venv: Path, *, lefthook: bool = False) -> None:
     for name, version in (("pytest", "9.0.3"), ("ruff", "0.16.10")):
         _write_dist(venv, name, version)
         _write_tool_script(venv, name, version)
+    _write_dist(venv, "pytest-reportlog", "1.0.0")
     if lefthook:
         _write_dist(venv, "lefthook", "2.2.2")
         target = _venv_bin(venv) / "lefthook"
@@ -174,7 +180,14 @@ def _write_tools(venv: Path, *, lefthook: bool = False) -> None:
 
 
 def _remove_tool(venv: Path, name: str) -> None:
-    for dist in _venv_site(venv).glob(f"{name}-*.dist-info"):
+    versions = {
+        "pytest": "9.0.3",
+        "pytest-reportlog": "1.0.0",
+        "ruff": "0.16.10",
+        "lefthook": "2.2.2",
+    }
+    dist = _venv_site(venv) / f"{name}-{versions[name]}.dist-info"
+    if dist.is_dir():
         shutil.rmtree(dist)
     (_venv_bin(venv) / name).unlink(missing_ok=True)
 
@@ -449,9 +462,7 @@ def test_entry_runtime_cli_does_not_require_dev_tools(tmp_path, entry_env):
     output = _json_output(result)
     assert output["marker"] == "linked"
     assert output["argv"] == ["version", "show"]
-    lines = _sync_lines(log)
-    assert "--no-dev" in lines[0]
-    assert "--group dev" not in lines[0]
+    assert not log.exists()
 
 
 def test_entry_pytest_scope_does_not_require_ruff(tmp_path, entry_env):
@@ -495,9 +506,64 @@ def test_entry_read_only_verify_report_does_not_require_dev_tools(tmp_path, entr
     result = _entry(linked, env, "cli", "verify", "report", "--verify-dir", "x")
     assert result.returncode == 0, result.stdout + result.stderr
     assert _json_output(result)["tool"] == "cli"
+    assert not log.exists()
+
+
+def test_entry_verify_report_scope_matches_cli_report(tmp_path, entry_env):
+    primary, linked, env, log = _fixture(tmp_path, entry_env)
+    _remove_tool(primary / ".venv", "pytest")
+    _remove_tool(primary / ".venv", "ruff")
+    result = _entry(linked, env, "verify", "report", "--verify-dir", "x")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _json_output(result)["tool"] == "cli"
+    assert not log.exists()
+
+
+def test_entry_version_scope_skips_lock_check(tmp_path, entry_env):
+    _primary, linked, env, log = _fixture(tmp_path, entry_env)
+    env["UV_STUB_FAIL"] = "1"
+    result = _entry(linked, env, "cli", "version", "show")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _json_output(result)["argv"] == ["version", "show"]
+    assert not log.exists()
+
+
+def test_entry_report_scope_skips_lock_check(tmp_path, entry_env):
+    _primary, linked, env, log = _fixture(tmp_path, entry_env)
+    env["UV_STUB_FAIL"] = "1"
+    result = _entry(linked, env, "cli", "verify", "report", "--verify-dir", "x")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _json_output(result)["tool"] == "cli"
+    assert not log.exists()
+
+
+def test_entry_pytest_requires_reportlog(tmp_path, entry_env):
+    primary, linked, env, log = _fixture(tmp_path, entry_env)
+    _remove_tool(primary / ".venv", "pytest-reportlog")
+    result = _entry(linked, env, "pytest", "-q")
+    assert result.returncode != 0
+    assert "pytest-reportlog is not installed" in result.stderr
+    assert not log.exists()
+
+
+def test_entry_pytest_no_auto_report_skips_reportlog(tmp_path, entry_env):
+    primary, linked, env, log = _fixture(tmp_path, entry_env)
+    _remove_tool(primary / ".venv", "pytest-reportlog")
+    result = _entry(linked, env, "pytest", "-q", "--eci-no-auto-report")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _json_output(result)["tool"] == "pytest"
     lines = _sync_lines(log)
     assert "--no-dev" in lines[0]
-    assert "--group dev" not in lines[0]
+
+
+def test_entry_pytest_env_disable_skips_reportlog(tmp_path, entry_env):
+    primary, linked, env, log = _fixture(tmp_path, entry_env)
+    _remove_tool(primary / ".venv", "pytest-reportlog")
+    env["ECI_PYTEST_NO_AUTO_REPORT"] = "1"
+    result = _entry(linked, env, "pytest", "-q")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _json_output(result)["tool"] == "pytest"
+    assert "--no-dev" in _sync_lines(log)[0]
 
 
 def test_entry_full_verify_requires_bound_lefthook(tmp_path, entry_env):
@@ -629,4 +695,37 @@ def test_real_uv_inherited_cache_overrides_are_ignored(tmp_path, entry_env):
         "UV_CACHE_DIR": str(tmp_path / "inherited cache"),
     }
     result = _run_cache_check(project, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_real_pytest_probe_uses_dispatch_import_environment(tmp_path, entry_env):
+    shadow = tmp_path / "shadow pytest"
+    shadow.mkdir()
+    (shadow / "pytest.py").write_text(
+        'raise RuntimeError("shadow pytest must not be imported")\n',
+        encoding="utf-8",
+    )
+    sh_bin = shutil.which("sh", path=entry_env.get("PATH"))
+    assert sh_bin, "POSIX sh executable not found"
+    env = {
+        **entry_env,
+        "ECI_ENV_DIR": sys.prefix,
+        "ECI_PYTHON": sys.executable,
+        "ECI_PROJECT_ROOT": str(ROOT),
+        "PYTHONPATH": str(shadow),
+    }
+    result = subprocess.run(
+        [
+            sh_bin,
+            "-c",
+            f'. "{ROOT / "scripts" / "eci-env.sh"}"; _eci_require_pytest',
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=120,
+    )
     assert result.returncode == 0, result.stdout + result.stderr

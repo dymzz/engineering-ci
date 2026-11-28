@@ -310,8 +310,8 @@ class VersionSyncTests(unittest.TestCase):
                 custom_venv.resolve(),
             )
             self.assertNotIn("VIRTUAL_ENV", sanitized_target)
-            self.assertNotIn("UV_NO_SYNC", sanitized_target)
-            self.assertNotIn("UV_PYTHON_DOWNLOADS", sanitized_target)
+            self.assertEqual(sanitized_target["UV_NO_SYNC"], "1")
+            self.assertEqual(sanitized_target["UV_PYTHON_DOWNLOADS"], "never")
             self.assertEqual(
                 Path(sanitized_target["PYTHONPATH"]).resolve(), custom_lib.resolve()
             )

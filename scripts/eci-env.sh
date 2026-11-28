@@ -252,33 +252,21 @@ _eci_lock_version() {
   ' "$_eci_lock"
 }
 
-_eci_require_distribution_tool() {
+_eci_require_metadata_distribution() {
   _eci_dist_name=$1
   _eci_lock_name=$2
-  _eci_bin_name=$3
-  _eci_version_cmd=$4
-  _eci_bin=$(eci_entry_bin_dir)
-  _eci_tool=""
-  for _eci_candidate in "$_eci_bin/$_eci_bin_name.exe" "$_eci_bin/$_eci_bin_name"; do
-    if [ -f "$_eci_candidate" ]; then
-      _eci_tool=$_eci_candidate
-      break
-    fi
-  done
-  if [ -z "$_eci_tool" ]; then
-    _eci_error "$_eci_bin_name is not available in $_eci_bin; the selected environment is not ready"
-    return 1
-  fi
   _eci_dist_result=$(PYTHONPATH='' "$ECI_PYTHON" -P -c '
 import importlib.metadata as metadata
 import pathlib
 import sys
 
-try:
-    distribution = metadata.distribution(sys.argv[1])
-except metadata.PackageNotFoundError as exc:
-    print(f"ERROR {exc}")
-    raise SystemExit(2) from None
+distribution = next(
+    (item for item in metadata.distributions() if item.metadata.get("Name") == sys.argv[1]),
+    None,
+)
+if distribution is None:
+    print(f"ERROR No package metadata was found for {sys.argv[1]}")
+    raise SystemExit(2)
 root = pathlib.Path(sys.argv[2]).resolve()
 location = distribution.locate_file("").resolve()
 if not (location == root or location.is_relative_to(root)):
@@ -298,7 +286,28 @@ print(distribution.version)
     _eci_error "$_eci_dist_name distribution version mismatch: environment has $_eci_dist_result, uv.lock requires $_eci_expected_version"
     return 1
   fi
-  _eci_version_output=$("$_eci_tool" "$_eci_version_cmd" </dev/null 2>&1) || {
+  return 0
+}
+
+_eci_require_distribution_tool() {
+  _eci_dist_name=$1
+  _eci_lock_name=$2
+  _eci_bin_name=$3
+  _eci_version_cmd=$4
+  _eci_bin=$(eci_entry_bin_dir)
+  _eci_tool=""
+  for _eci_candidate in "$_eci_bin/$_eci_bin_name.exe" "$_eci_bin/$_eci_bin_name"; do
+    if [ -f "$_eci_candidate" ]; then
+      _eci_tool=$_eci_candidate
+      break
+    fi
+  done
+  if [ -z "$_eci_tool" ]; then
+    _eci_error "$_eci_bin_name is not available in $_eci_bin; the selected environment is not ready"
+    return 1
+  fi
+  _eci_require_metadata_distribution "$_eci_dist_name" "$_eci_lock_name" || return 1
+  _eci_version_output=$(PYTHONPATH='' "$_eci_tool" "$_eci_version_cmd" </dev/null 2>&1) || {
     _eci_error "$_eci_bin_name version check failed for $_eci_tool"
     return 1
   }
@@ -312,8 +321,13 @@ print(distribution.version)
 }
 
 _eci_require_pytest() {
+  _eci_report_mode=${1:-report}
   # shellcheck disable=SC2034
-  _eci_require_distribution_tool pytest pytest pytest --version && ECI_PYTEST_BIN=$ECI_TOOL_BIN
+  _eci_require_distribution_tool pytest pytest pytest --version && ECI_PYTEST_BIN=$ECI_TOOL_BIN || return 1
+  if [ "$_eci_report_mode" = report ]; then
+    _eci_require_metadata_distribution pytest-reportlog pytest-reportlog || return 1
+  fi
+  return 0
 }
 
 _eci_require_ruff() {
@@ -482,14 +496,20 @@ eci_entry_validate() {
   _eci_validate_environment || return 1
   _eci_require_persistent_cache || return 1
   case "$_eci_scope" in
+    report|version)
+      return 0
+      ;;
     pytest)
-      _eci_require_pytest || return 1
+      _eci_require_pytest report || return 1
+      ;;
+    pytest-noreport)
+      _eci_require_pytest no-report || return 1
       ;;
     ruff)
       _eci_require_ruff || return 1
       ;;
     verify)
-      _eci_require_pytest || return 1
+      _eci_require_pytest report || return 1
       _eci_require_ruff || return 1
       _eci_require_lefthook || return 1
       ;;
@@ -507,7 +527,7 @@ eci_entry_export() {
   # shellcheck disable=SC2031
   export UV_PROJECT="$_eci_native_project"
   case "$_eci_scope" in
-    pytest|ruff)
+    pytest|pytest-noreport|ruff)
       unset PYTHONPATH
       ;;
     *)

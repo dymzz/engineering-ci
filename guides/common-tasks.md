@@ -246,9 +246,13 @@ checkout 的反向路径，不隐式推导 `.venv`，须显式传入 `UV_PROJECT
     [`scripts/eci-env.sh`](../scripts/eci-env.sh) 解析主管理 checkout、共享环境、候选
     `src/`、实际解释器与工具，再按操作的实际边界执行一次只读
     `uv sync --locked --check --no-install-project --inexact --offline`：
-    - `cli`、`verify --help`、`cli verify report` 等 runtime 操作只要求 runtime 依赖；
-    - `pytest` 只要求 pytest，`ruff` 只要求 Ruff，不因无关开发工具缺失阻断；
-    - 完整 `verify` 要求 pytest、Ruff、Lefthook 与 dev 依赖组。
+    - `cli`、`verify --help` 等 runtime 操作只要求 runtime 依赖；
+    - `cli version`、`verify report`、`cli verify report` 是诊断/只读入口，只绑定环境、
+      解释器、候选源码与有效 cache，不要求当前候选锁新鲜，以便原生诊断/修正锁和查询历史报告；
+    - `pytest` 要求 pytest 与默认报告所需的 `pytest-reportlog`（显式
+      `--eci-no-auto-report` / `ECI_PYTEST_NO_AUTO_REPORT=1` 可关闭），`ruff` 只要求
+      Ruff，不因无关开发工具缺失阻断；
+    - 完整 `verify` 要求 pytest、Ruff、Lefthook 与 dev 依赖组，并保留锁定就绪检查。
     检查使用 `--python <实际解释器>`、`--no-python-downloads`，并清除继承的
     `UV_PYTHON` / `UV_NO_DEV` / `UV_NO_GROUP` / `UV_NO_SYNC` 等会改变已确定请求的覆盖。
   - pytest/Ruff 以所选环境中实际安装的发行版、控制台脚本及其 `uv.lock` 版本为准；
