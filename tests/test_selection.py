@@ -3965,6 +3965,43 @@ def test_graph_validation_untrusted_when_inspected_digest_unavailable(tmp_path):
             "status": "untrusted",
             "reason": "tach_config_unavailable",
         }
+        # The gate consumes that result and must block the test runner.
+        plan = {
+            "selection": {
+                "tests": ["tests/test_unit.py"],
+                "requires_tach_check": True,
+                "tach_graph_validation": result,
+            }
+        }
+        assert execution.target_test_gate(plan) == ("tach_graph_unvalidated", None)
+
+    passed_value = {
+        "status": "passed",
+        "exit_code": 0,
+        "tach_sha256": "b" * 64,
+        "source_tree": "a" * 40,
+    }
+    passed = selection._graph_validation(
+        _Selected(),
+        _Config(),
+        tmp_path,
+        passed_value,
+        tach_sha256="b" * 64,
+        tach_sha_authoritative=True,
+    )
+    assert passed["status"] == "passed"
+    assert (
+        execution.target_test_gate(
+            {
+                "selection": {
+                    "tests": ["tests/test_unit.py"],
+                    "requires_tach_check": True,
+                    "tach_graph_validation": passed,
+                }
+            }
+        )
+        is None
+    )
 
 
 def test_tree_tach_graph_requires_strict_utf8(tmp_path):
