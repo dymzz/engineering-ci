@@ -11,7 +11,7 @@
 | --- | --- |
 | 开发诊断、局部反例、专项测试 | 适用的原生工具和实际测试目标；本仓 pytest 见[本仓 pytest 调用报告](#本仓-pytest-调用报告) |
 | 已定义的单项工程检查 | `dagger check --engineering-ci --check=...`；见[本地检查](../docs/architecture/local-checks.md) |
-| 完整本地综合验证 | [显式本地综合验证](#显式本地综合验证)：`uv run --locked --no-sync engineering-ci verify --out .artifacts/verify` |
+| 完整本地综合验证 | [显式本地综合验证](#显式本地综合验证)：`scripts/engineering-ci.sh verify --out .artifacts/verify`（PowerShell 用 `pwsh -NoProfile -File scripts/engineering-ci.ps1 ...`） |
 | Index / Ref 检查 | 原生 Git commit/push 触发 [Lefthook](#lefthook-本地入口) |
 | 远端候选检查 | 现有 GitHub Actions，按实际候选和要求查询 |
 | 发布验证与证据接纳 | [发布准备](../docs/delivery/release-readiness.md)及既有发布、证据合同 |
@@ -20,7 +20,7 @@
 
 ### 执行前的环境与对象绑定
 
-执行前按[环境准备](getting-started.md)确认实际工作目录、受检对象、适用配置、工具环境及候选实现。切换 checkout、worktree、消费者或执行宿主时重新确认受影响的绑定，不能假定切换目录自动更新继承变量。实际采用共享环境时，调用前完成适用的宿主环境及候选源码绑定；不得先运行可能创建错误环境、导入其他检出源码或隐式修改共享环境的命令再清理。共享环境的具体准备和调用按实际采用版本的技术合同执行，不将未合并候选能力当作现行能力。
+执行前按[环境准备](getting-started.md)确认实际工作目录、受检对象、适用配置、工具环境及候选实现。普通本地操作直接用 [`scripts/engineering-ci.sh`](../scripts/engineering-ci.sh)（Windows 可用 `scripts/engineering-ci.ps1`），由入口完成主管理 checkout、共享环境、候选源码及工具绑定；只在维护、直接调试或未受管原生命令时才手工设置会话变量。切换 checkout、worktree、消费者或执行宿主时重新确认受影响的绑定，不能假定切换目录自动更新继承变量。实际采用共享环境时，调用前完成适用的宿主环境及候选源码绑定；不得先运行可能创建错误环境、导入其他检出源码或隐式修改共享环境的命令再清理。共享环境的具体准备和调用按实际采用版本的技术合同执行，不将未合并候选能力当作现行能力。
 
 同一有效绑定直接复用；仅相关目录、解释器、依赖、配置等变化时重新确认，不要求每条命令重复检查。验证错误行为的定向探针可以使用不同入口，但须明确目的和隔离范围。
 
@@ -46,7 +46,7 @@ gh run download RUN_ID --repo dymzz/engineering-ci -n ci-applicability
 本地只读复算同一决策（不执行 Check）：
 
 ```sh
-uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
+scripts/engineering-ci.sh cli ci-applicability \
   --event pull_request --base origin/main --head HEAD --json
 ```
 
@@ -56,23 +56,39 @@ uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
 ## 开发、审查与合并
 
 先确认当前分支、未提交内容与版本；版本必须与功能代码进入同一 PR。
-若在复用主管理 checkout 共享 `.venv` 的 **linked worktree** 中直接运行命令，先在当前开发会话作用域绑定环境变量（主管理 checkout 在自身目录可直接省略；若会话已设 `PYTHONPATH` 应前置拼接 `<当前检出>/src`）：
+普通本地验证、ECI CLI 与定向测试使用仓库薄入口，入口自动解析共享环境、候选 `src/`、
+解释器及所需工具，失败在实际操作前阻断且不创建/同步环境：
 
 ```powershell
-# PowerShell（消费 linked worktree 会话初始化，填绝对路径）
-$env:UV_PROJECT_ENVIRONMENT = "<主管理 checkout>/.venv"
-$env:PYTHONPATH = "<当前检出>/src"
+# PowerShell：直接经 Git Bash 包装器调用
+pwsh -NoProfile -File scripts/engineering-ci.ps1 verify --out .artifacts/verify
+pwsh -NoProfile -File scripts/engineering-ci.ps1 pytest -q tests/test_engineering_entry.py
 ```
 
 ```sh
-# sh / bash（消费 linked worktree 会话初始化，填绝对路径）
-export UV_PROJECT_ENVIRONMENT="<主管理 checkout>/.venv"
-export PYTHONPATH="<当前检出>/src"
+# sh / bash：在同一检出内直接调用
+scripts/engineering-ci.sh verify --out .artifacts/verify
+scripts/engineering-ci.sh cli version show
+scripts/engineering-ci.sh pytest -q tests/test_engineering_entry.py
+scripts/engineering-ci.sh ruff check src tests
 ```
 
-仅切换目录（`cd` / `Set-Location`）**不会**自动重绑环境变量，会话作用域变量会随子进程继承传播：
-- 在同一 Shell 切换至另一个 ECI worktree 时，必须重设 `PYTHONPATH="<新检出>/src"`；切回主管理 checkout 时应移除 `PYTHONPATH`（含守卫的新版 editable CLI 在同仓另一检出触发 `PYTHONPATH` 错配时会以退出码 `2` 阻断提示，直接 Python 调用仍依赖正确的会话绑定）。
-- 进入独立消费者项目（如 `cd ../consumer`）执行消费者 `git` / `uv` / `dagger` 时，必须先清除 `UV_PROJECT_ENVIRONMENT`、`UV_PROJECT`、`VIRTUAL_ENV`、`PYTHONPATH`（PowerShell：`Remove-Item Env:UV_PROJECT_ENVIRONMENT, Env:UV_PROJECT, Env:VIRTUAL_ENV, Env:PYTHONPATH -ErrorAction SilentlyContinue`；sh：`unset UV_PROJECT_ENVIRONMENT UV_PROJECT VIRTUAL_ENV PYTHONPATH`）或显式指向消费者自身环境，避免继续继承 ECI 的共享 `.venv` 与 `src/`。若曾激活 ECI 虚拟环境，须先使用原生 `deactivate`（若可用）或从未激活 ECI 环境的 Shell 恢复原 `PATH`；仅删除 `VIRTUAL_ENV` 不会移除宿主 `Scripts`/`bin` 路径。随后按消费者自己的环境准备并执行。本条针对本人在消费者目录直接运行的原生命令；由 `tools.consumer` 从 ECI 检出代跑时按其宿主/目标环境区分处理，见下条。
+linked worktree 默认复用主管理 checkout 的 `.venv`，候选源码固定为当前检出 `src/`；
+独立环境用 `--environment <已准备路径>` 显式选择。普通入口会忽略继承的
+`UV_PROJECT_ENVIRONMENT` / `UV_CACHE_DIR` 等任意会话覆盖，维护或直接调试原生命令时仍可
+手工绑定环境变量。切换目录不会自动重绑手工变量：
+- 在同一 Shell 切换至另一个 ECI worktree 时，手工绑定的 `PYTHONPATH` 必须重设；普通入口
+  则按当前 cwd/Git common dir 自动解析。切回主管理 checkout 的手工会话应移除
+  `PYTHONPATH`（含守卫的新版 editable CLI 在同仓另一检出触发 `PYTHONPATH` 错配时会以
+  退出码 `2` 阻断提示）。
+- 进入独立消费者项目（如 `cd ../consumer`）执行消费者 `git` / `uv` / `dagger` 时，必须
+  先清除手工的 `UV_PROJECT_ENVIRONMENT`、`UV_PROJECT`、`VIRTUAL_ENV`、`PYTHONPATH`
+  （PowerShell：`Remove-Item Env:UV_PROJECT_ENVIRONMENT, Env:UV_PROJECT, Env:VIRTUAL_ENV, Env:PYTHONPATH -ErrorAction SilentlyContinue`；sh：`unset UV_PROJECT_ENVIRONMENT UV_PROJECT VIRTUAL_ENV PYTHONPATH`）
+  或显式指向消费者自身环境，避免继续继承 ECI 的共享 `.venv` 与 `src/`。若曾激活 ECI
+  虚拟环境，须先使用原生 `deactivate`（若可用）或从未激活 ECI 环境的 Shell 恢复原
+  `PATH`；仅删除 `VIRTUAL_ENV` 不会移除宿主 `Scripts`/`bin` 路径。随后按消费者自己的
+  环境准备并执行。本条针对本人在消费者目录直接运行的原生命令；由 `tools.consumer` 从
+  ECI 检出代跑时按其宿主/目标环境区分处理，见下条。
 - 从 ECI 会话调用 `python -P -m engineering_ci.tools.consumer --consumer <目录>` 时注意工具会向 `cwd=consumer` 拉起 `dagger` 与 `git`：只 `cd` 到消费者目录不会改变本进程已继承的变量，也盖不住这些子进程。`tools.consumer` 以当前解释器前缀（`sys.prefix`）区分**ECI 工具的宿主环境**与**消费者目标环境**：等于宿主前缀且不在消费者内的外置共享环境按宿主剥离；指向其他路径的 `UV_PROJECT_ENVIRONMENT` 仍作为消费者目标保留。
 
 外置共享环境下的可执行方式——以该宿主解释器直接启动工具，`UV_PROJECT_ENVIRONMENT` 等宿主变量无需手工清除：
@@ -107,9 +123,9 @@ env -u UV_PROJECT_ENVIRONMENT -u UV_PROJECT -u VIRTUAL_ENV \
 ```powershell
 git status --short --branch
 git diff
-uv run --locked --no-sync engineering-ci version show
+scripts/engineering-ci.sh cli version show
 # 仅在本轮需要准备该版本时执行。
-uv run --locked --no-sync engineering-ci version set v0.7.0
+scripts/engineering-ci.sh cli version set v0.7.0
 ```
 
 开发中的检查按上方[工程验证入口与选择](#工程验证入口与选择)执行。
@@ -224,18 +240,23 @@ checkout 的反向路径，不隐式推导 `.venv`，须显式传入 `UV_PROJECT
   - 在 ECI 自身 checkout 中独立将当前检出的 `src/` 前置到 `PYTHONPATH`（无论使用默认
     主仓 `.venv`、显式外部共享 `UV_PROJECT_ENVIRONMENT` 还是显式 `UV_PROJECT`），确保
     Hook 执行当前 worktree 的候选源码而非共享环境里另一检出的 editable `.pth`。
-- **Hook 之外的直接命令（`verify` / CLI / `pytest` / `ruff`）**：
-  - `scripts/lefthook-arguments.sh` 仅覆盖 Git Hook；在 linked worktree 开发会话或单次
-    命令直接执行 `uv run --locked --no-sync ...` 时，须显式设置
-    `UV_PROJECT_ENVIRONMENT=<共享环境路径>`；
-  - 调用 **ECI 自身 CLI / `verify`**（如 `engineering-ci verify --out .artifacts/verify`
-    或 `python -P -m engineering_ci.cli ...`）时，**必须同时设置**
-    `PYTHONPATH=<当前检出>/src`，确保执行当前 worktree 的候选 CLI 实现；本 PR 版本起的
-    `engineering_ci.cli` 内置辅助诊断守卫，当从同一仓库另一检出的 editable `src/` 加载时
-    返回退出码 `2`（该守卫仅对包含它的 CLI 版本与 editable 形态生效，不能替代显式
-    `PYTHONPATH` 绑定）；
-  - 定向 `pytest <target>` 已由 `pyproject.toml` 的 `pythonpath = ["src"]` 优先加载当前
-    检出的 `src/`，`ruff` 为独立可执行文件，二者传 `UV_PROJECT_ENVIRONMENT` 即可。
+- **Hook 之外的本地入口（`verify` / CLI / `pytest` / `ruff`）**：
+  - 标准入口为 [`scripts/engineering-ci.sh`](../scripts/engineering-ci.sh)（Windows 可直接
+    `pwsh -NoProfile -File scripts/engineering-ci.ps1 ...`）。入口先经共享
+    [`scripts/eci-env.sh`](../scripts/eci-env.sh) 解析主管理 checkout、共享环境、候选
+    `src/`、解释器与工具，再按操作范围执行一次只读
+    `uv sync --locked --check --no-install-project --inexact --offline`（runtime 用
+    `--no-dev`，pytest/ruff/verify 用 `--group dev`），随后分派原生操作；
+  - 环境缺失、实际解释器 `sys.prefix` 不符、工具缺失/版本与 `uv.lock` 不符、候选源码
+    绑定错误或锁定检查失败时，入口在实际操作前非零退出并给出维护命令。入口不创建
+    `.venv`、不执行写式 `uv sync`、不改 cache、不回退系统 PATH 工具；不要把
+    `uv sync --check` 的退出 0 单独当作环境存在或工具就绪；
+  - linked worktree 默认使用主管理 checkout 的 `.venv`；普通入口不采用任意继承的
+    `UV_PROJECT_ENVIRONMENT` / `UV_CACHE_DIR` / `UV_NO_CACHE` / uv config 覆盖，显式隔离
+    环境通过 `--environment <已准备路径>` 选择。维护或直接调试原生命令时仍可按上节手工
+    绑定，但必须自行保证同一有效绑定；
+  - 入口只分派 `verify` / `cli` / `pytest` / `ruff` 四类原生操作，不新建总 Runner，也不
+    强迫原生 `git` / `dagger` 经过 Python CLI。
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
@@ -274,14 +295,14 @@ Invocation 的全部适用结果。失败、缺失、过滤及异源结果都会
 目录字节、原始退出和本次 Invocation。
 
 复验固定修订的跨仓调用时，将 `ECI_TEST_DAGGER_MODULE` 设为已发布的 ECI 模块引用，
-然后运行 `uv run --locked --no-sync pytest -q tests/test_native_hooks.py::test_installed_lefthook_uses_pinned_dagger_module`。
+然后运行 `scripts/engineering-ci.sh pytest -q tests/test_native_hooks.py::test_installed_lefthook_uses_pinned_dagger_module`。
 测试使用已有的 Dagger CLI、Engine 和 Tach，在隔离 Git 仓库中运行 Lefthook，核对能通过的首次提交和因暂存空白失败被拒绝的提交（未设置 `ECI_TEST_DAGGER_MODULE` 时在默认 PR CI 中跳过；消费者仓库的长期接入配置由 [新仓库接入](new-repository.md) 在后续阶段承接）。
 
 需要 Git 比较的 Dagger Plan 会携带受检 Tree 与基线所需的 Git 对象和 Index，
 由隔离检出生成 Git 配置。该输入不包含调用方的 Git 配置、其他引用或完整历史。
 Git 须支持 `--attr-source` 和 `show-ref --exists`。
 要单独采集新一次 Invocation、运行暂存空白检查并输出原生结果，运行
-`uv run --locked --no-sync python -P -m engineering_ci.cli hooks check pre-commit --json`。
+`scripts/engineering-ci.sh cli hooks check pre-commit --json`。
 
 本仓的 `lefthook install` 安装 `pre-commit` 和 `pre-push`。同次推送的每个 Ref
 在自己的目标树内读取 `ci-selection.toml`、`ci-hygiene.toml` 和对应动作的
@@ -320,8 +341,8 @@ Receipt，缺失最终对账时阻断。
 
 ```powershell
 $env:ECI_RUN_LIVE_COLLECTOR_TESTS = "1"
-uv run --locked --no-sync pytest -q tests/test_github_receiver.py::test_live_collector_to_otlp_to_weaver_v1_45_0_e2e
-uv run --locked --no-sync pytest -q tests/test_issue52_githubreceiver_e2e.py::test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e
+scripts/engineering-ci.sh pytest -q tests/test_github_receiver.py::test_live_collector_to_otlp_to_weaver_v1_45_0_e2e
+scripts/engineering-ci.sh pytest -q tests/test_issue52_githubreceiver_e2e.py::test_live_githubreceiver_full_issue52_terminal_trusted_required_e2e
 ```
 
 需要本机 `docker` / `dagger` 在 PATH、已拉取 `otelcol-contrib` 固定镜像，以及 Issue #52
@@ -335,16 +356,22 @@ uv run --locked --no-sync pytest -q tests/test_issue52_githubreceiver_e2e.py::te
 
 ### 显式本地综合验证
 
-本仓在确实需要一次完整本地综合验证时，默认使用：
+本仓在确实需要一次完整本地综合验证时，默认使用薄入口：
 
 ```powershell
-uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
+pwsh -NoProfile -File scripts/engineering-ci.ps1 verify --out .artifacts/verify
 ```
 
-在复用共享 `.venv` 的 linked worktree 中执行上述命令时，须在当前命令作用域同时指定
-`UV_PROJECT_ENVIRONMENT=<共享环境路径>` 与 `PYTHONPATH=<当前检出>/src`（也可等价运行
-`uv run --locked --no-sync python -P -m engineering_ci.cli verify --out .artifacts/verify`），
-确保实际运行当前 worktree 的候选 `cli/verify.py` 而非共享环境里另一检出的 editable `.pth`。
+```sh
+scripts/engineering-ci.sh verify --out .artifacts/verify
+```
+
+入口自动解析共享 `.venv`、候选 `src/`、解释器与 `lefthook`/`pytest`/`ruff`，在实际启动
+Verify 前完成一次只读锁定就绪检查；失败会先停止并给出维护命令。复用共享 `.venv` 的
+linked worktree 不需要手工设置 `UV_PROJECT_ENVIRONMENT` / `PYTHONPATH`。维护或直接调试时
+仍可等价运行
+`UV_PROJECT_ENVIRONMENT=<共享环境路径> uv run --locked --no-sync python -P -m engineering_ci.cli verify --out .artifacts/verify`
+并自行保证候选源码绑定，但这不属于普通入口合同。
 
 该入口启动一次原生 `lefthook run verify --no-auto-install`。Lefthook 并行调度 lint、
 format、version/lock、核心测试四组。前三组运行原生 Dagger Check。核心测试组调用
@@ -396,7 +423,7 @@ Dagger 和查询共用标准库 pytest/JUnit 计数规则。`--pytest-invocation
 `--pytest-reportlog`。查询保留原始文件，完整性冲突或输出路径覆盖输入时退出 2。
 
 ```powershell
-uv run --locked --no-sync engineering-ci verify report `
+scripts/engineering-ci.sh cli verify report `
   --verify-dir .artifacts/verify/<verify-invocation> `
   --hook-root . `
   --invocation-ref invocation:<32hex> `
@@ -417,7 +444,7 @@ uv run --locked --no-sync engineering-ci verify report `
 JUnit 用 `classname::name` 和 `case_total`。模块/阶段的统计为实际可见记录累计。
 
 ```powershell
-uv run --locked --no-sync engineering-ci verify report `
+scripts/engineering-ci.sh cli verify report `
   --pytest-invocation <baseline-invocation-dir> `
   --pytest-invocation <candidate-invocation-dir> `
   --test-node 'tests/test_sample.py::test_case' --test-phase call --compare-tests
@@ -454,7 +481,7 @@ gh pr merge $pr.number --squash --delete-branch --match-head-commit $pr.headRefO
 git switch main
 git pull --ff-only
 uv sync --locked --inexact --group dev
-uv run --locked --no-sync engineering-ci version check
+scripts/engineering-ci.sh cli version check
 ```
 
 若合并后仍有未交付改动，保留它们并另行交付，不能认为已合并 PR 的 CI 已验证这些内容。

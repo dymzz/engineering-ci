@@ -42,9 +42,15 @@ UV_PROJECT_ENVIRONMENT=<共享环境路径> uv sync --locked --no-install-projec
 UV_PROJECT_ENVIRONMENT=<共享环境路径> uv sync --locked --check --no-install-project --inexact --offline
 ```
 
+普通薄入口会在调用上述只读校验前先核实环境目录、实际解释器 `sys.prefix`、候选源码及
+所需工具版本/路径；`uv sync --check` 的退出 0 单独不构成“环境存在且就绪”。入口使用
+宿主 uv 默认 cache，不把继承的 `UV_CACHE_DIR` / `UV_NO_CACHE` / 调用方 config 覆盖当作
+宿主权威，也不自动创建、同步或清理环境。维护操作仍显式执行上述 `uv sync` 命令，并按
+实际需要选择 `--group dev`；不要为普通操作重新指定临时 cache。
+
 若分支引入与共享环境不兼容的锁定版本冲突，通过显式独立的
 `UV_PROJECT_ENVIRONMENT=<独立环境路径> uv sync --locked --group dev` 隔离管理，
-不把单个分支冲突强行混入共享环境。
+不把单个分支冲突强行混入共享环境；普通入口用 `--environment <独立环境路径>` 选择它。
 
 ### 运行时与 Hook 绑定
 
@@ -60,18 +66,33 @@ uv 通过绝对路径 `UV_PROJECT_ENVIRONMENT` 指定共享项目环境，通过
   运行时环境就绪，不在每次 Hook 调度前强加不适用的全开发依赖（如 `ruff`/`pytest`）门禁，
   也不在 Hook 内自动 `uv sync`。在 ECI 自身 checkout 中独立将当前检出的 `src/` 前置到
   `PYTHONPATH`。
-- **Hook 之外的直接命令**：开发会话或命令作用域中显式设置
-  `UV_PROJECT_ENVIRONMENT=<共享环境路径>`；执行 ECI 自身 CLI / `verify` 时同时设置
-  `PYTHONPATH=<当前检出>/src`（避免命中共享环境里主管理 checkout 的 editable `.pth`；
-  新版本 `engineering_ci.cli` 含辅助诊断守卫，在从另一检出的 editable `src/` 加载时
-  返回退出码 `2`，但旧版本或非 editable 安装不具备该守卫，因此显式 `PYTHONPATH` 仍是
-  实际源码绑定机制）。同一 Shell 切换目录不会重置环境变量：切到其他 ECI checkout
-  需重绑（或切回主 checkout 时移除）`PYTHONPATH`，进入独立消费者项目前须清除 ECI
-  特定 `UV_PROJECT_ENVIRONMENT` / `UV_PROJECT` / `VIRTUAL_ENV` / `PYTHONPATH`
+- **Hook 之外的本地入口（推荐）**：使用仓库自带的薄入口，入口在任何操作前解析共享环境、
+  候选 `src/`、解释器与所需工具，并执行一次只读锁定就绪检查：
+  ```powershell
+  bash scripts/engineering-ci.sh verify --out .artifacts/verify
+  pwsh -NoProfile -File scripts/engineering-ci.ps1 cli version show
+  ```
+  ```sh
+  scripts/engineering-ci.sh pytest -q tests/test_engineering_entry.py
+  scripts/engineering-ci.sh ruff check src tests
+  ```
+  操作类型为 `verify` / `cli` / `pytest` / `ruff`。普通 entry 使用确定性默认：linked
+  worktree 复用主管理 checkout 的 `.venv`，候选源码固定为当前检出 `src/`；也可用
+  `--environment <已准备路径>` 选择显式隔离环境。环境缺失、解释器不匹配、工具版本/
+  路径不符或锁定检查失败时，入口在实际操作前以非零退出并打印维护命令；**不会**创建
+  `.venv`、执行 `uv sync`、改 cache 或回退系统工具。Windows 的 `engineering-ci.ps1`
+  定位 Git for Windows 的 Bash（可用 `ECI_GIT_BASH` 显式指定），不会回退到 WSL 的
+  `bash`；找不到时明确失败。Hook 仍自动走
+  [`scripts/lefthook-arguments.sh`](../scripts/lefthook-arguments.sh)。
+- 维护或使用未受管原生命令时仍可手工会话绑定：设置
+  `UV_PROJECT_ENVIRONMENT=<共享环境路径>`，执行 ECI 自身 CLI / `verify` 时同时设置
+  `PYTHONPATH=<当前检出>/src`。同一 Shell 切换目录不会重置环境变量：切到其他 ECI
+  checkout 需重绑（或切回主管理 checkout 时移除）`PYTHONPATH`，进入独立消费者项目前
+  须清除 ECI 特定 `UV_PROJECT_ENVIRONMENT` / `UV_PROJECT` / `VIRTUAL_ENV` / `PYTHONPATH`
   或在同一命令作用域重设为消费者自己的环境（`tools.consumer` 跨仓调用时剥离 ECI 检出绑定，
   并把等于当前解释器前缀的共享环境视为宿主环境；另一路径的
-  `UV_PROJECT_ENVIRONMENT` 仍作为消费者目标保留）。本仓不新建总 Runner，也不强迫原生 `git` / `ruff` / `pytest` /
-  `dagger` 经过 Python CLI。
+  `UV_PROJECT_ENVIRONMENT` 仍作为消费者目标保留）。本仓不新建总 Runner，也不强迫原生
+  `git` / `ruff` / `pytest` / `dagger` 经过 Python CLI。
 
 Git Hook 安装及运行见[常用操作](common-tasks.md#lefthook-本地入口)。
 Run 等待、日志和 Artifact 下载使用原生 gh，无额外下载器。
@@ -80,7 +101,8 @@ Run 等待、日志和 Artifact 下载使用原生 gh，无额外下载器。
 ## 工程验证入口
 
 本仓日常综合验证使用[显式本地综合验证](common-tasks.md#显式本地综合验证)
-的默认入口，由 ECI CLI 保留同次原生 Lefthook 调用结果与计时。
+的默认入口 `scripts/engineering-ci.sh verify --out .artifacts/verify`，由 ECI CLI 保留同次
+原生 Lefthook 调用结果与计时；入口先完成环境与候选源码就绪检查。
 Git commit/push 仍走原生 Git Hook；单项或定向检查使用适用的原生入口，
 不为局部修改默认扩大为完整验证。
 

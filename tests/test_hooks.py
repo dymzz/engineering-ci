@@ -829,10 +829,12 @@ def _git_sh_env():
 
 
 def _copy_lefthook_command(root):
-    path = Path("scripts/lefthook-arguments.sh")
-    target = root / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(Path(__file__).resolve().parents[1] / path, target)
+    source_root = Path(__file__).resolve().parents[1]
+    for name in ("lefthook-arguments.sh", "eci-env.sh"):
+        path = Path("scripts") / name
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_root / path, target)
 
 
 def test_lefthook_installed_pre_commit_passes_no_stage_fixed_and_isolates_index(
