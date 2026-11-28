@@ -4234,7 +4234,7 @@ def _tach_check(root, config, changes):
             "stdout": "",
             "stderr": f"execution refused: {tach_path_err}",
             "reason": tach_path_err,
-            "tach_sha256": _tach_source_sha256(root, tach_rel, changes),
+            "tach_sha256": _digest(root / config.tach),
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
