@@ -1,0 +1,4 @@
+baseline 941a2f4
+python 3.14.10
+pytest 9.0.3
+engineering_ci D:\workspace\engineering-ci\.tmp\baseline-165\src\engineering_ci\__init__.py
