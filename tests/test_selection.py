@@ -3518,7 +3518,7 @@ def test_per_ref_snapshot_distinguishes_not_enumerated_from_empty(tmp_path):
     }
     body = {
         "kind": "engineering-ci-per-ref-source-snapshot",
-        "schema_version": 1,
+        "schema_version": 2,
         "source_origin": "git_target_tree",
         "target_tree": tree,
         "source_tree_id": "a" * 64,
@@ -3797,3 +3797,39 @@ def test_target_binding_matches_resolver_candidate_for_module_named_directory(
         check=False,
     ).returncode
     assert (via_module_dir, via_plain_dir) == (0, 1)
+
+
+def test_per_ref_snapshot_rejects_v1_schema(tmp_path):
+    # P2-10: the per-Ref snapshot schema is 2; a v1 record is not upgraded.
+    body = {
+        "kind": "engineering-ci-per-ref-source-snapshot",
+        "schema_version": 1,
+        "source_origin": "git_target_tree",
+        "target_tree": "a" * 40,
+        "source_tree_id": "a" * 64,
+        "ref_action": "update",
+        "tach_path": "tach.toml",
+        "tach_sha256": None,
+        "tach_graph_digest": None,
+        "tests_dir": "tests",
+        "tests_state": "not_selected",
+        "tests_modules": [],
+        "tests_digest": "sha256:" + selection._json_sha256([]),
+        "target_bindings": [],
+        "bindings_digest": "sha256:" + selection._json_sha256([]),
+        "config_binding": {"status": "verified"},
+        "selection_digest": "unused",
+    }
+    snap = {**body, "snapshot_digest": "sha256:" + selection._json_sha256(body)}
+    entry = {
+        "status": "targeted",
+        "tree": "a" * 40,
+        "ref_action": "update",
+        "tests": [],
+        "config_source_binding": {"status": "verified"},
+        "source_snapshot_ref": snap,
+    }
+    with pytest.raises(
+        selection.SelectionError, match="expected_per_ref_source_unverifiable"
+    ):
+        selection.verify_per_ref_source_snapshot(entry)

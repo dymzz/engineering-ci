@@ -3635,8 +3635,34 @@ def _ref_source_snapshot(
     if ref_action == "delete":
         source_origin = "ref_deleted"
     elif tree and _git(root, "cat-file", "-e", f"{tree}^{{tree}}").returncode == 0:
-        source_tree_id = tree_content_id(root, tree)
-        source_origin = "git_target_tree" if source_tree_id else "unverifiable"
+        from engineering_ci import git_source
+
+        try:
+            with git_source.raw_checkout(root, tree) as (checkout, _env, _fmt):
+                source_tree_id = directory_content_id(checkout)
+                source_origin = "git_target_tree" if source_tree_id else "unverifiable"
+                if entry.get("tests"):
+                    binding_member = _worktree_member(checkout)
+                    target_bindings = [
+                        _binding_record(
+                            _target_binding(
+                                target, binding_member, framework=config.framework
+                            )
+                        )
+                        for target in entry.get("tests") or ()
+                    ]
+                else:
+                    target_bindings = []
+        except (git_source.GitSourceError, OSError):
+            source_tree_id = None
+            source_origin = "unverifiable"
+            target_bindings = [
+                {"target": target, "kind": "unavailable"}
+                for target in entry.get("tests") or ()
+            ]
+        target_bindings.sort(
+            key=lambda item: (str(item.get("target")), str(item.get("kind")))
+        )
         cat = _git(root, "cat-file", "-p", f"{tree}:{_normalized(config.tach)}")
         if cat.returncode == 0:
             tach_sha256 = hashlib.sha256(cat.stdout.encode("utf-8")).hexdigest()
@@ -3648,25 +3674,6 @@ def _ref_source_snapshot(
         # Record the actual binding facts of this Ref's targets from the Git
         # Tree itself, plus the discovery state. The discovery list only scopes
         # automatic selection; it never stands in for the real Source members.
-        from engineering_ci import git_source
-
-        try:
-            with git_source.raw_checkout(root, tree) as (checkout, _env, _fmt):
-                member = _worktree_member(checkout)
-                target_bindings = [
-                    _binding_record(
-                        _target_binding(target, member, framework=config.framework)
-                    )
-                    for target in entry.get("tests") or ()
-                ]
-        except (git_source.GitSourceError, OSError):
-            target_bindings = [
-                {"target": target, "kind": "unavailable"}
-                for target in entry.get("tests") or ()
-            ]
-        target_bindings.sort(
-            key=lambda item: (str(item.get("target")), str(item.get("kind")))
-        )
         if entry.get("tests"):
             test_prefix = ".".join(Path(config.tests_dir).parts)
             tree_tests = _tree_test_modules(
@@ -3691,7 +3698,7 @@ def _ref_source_snapshot(
     )
     body = {
         "kind": "engineering-ci-per-ref-source-snapshot",
-        "schema_version": 1,
+        "schema_version": 2,
         "source_origin": source_origin,
         "target_tree": tree,
         "source_tree_id": source_tree_id,
@@ -3725,7 +3732,7 @@ def verify_per_ref_source_snapshot(
     if not isinstance(snap, dict):
         raise SelectionError("expected_per_ref_source_unverifiable")
     if snap.get("kind") != "engineering-ci-per-ref-source-snapshot" or (
-        snap.get("schema_version") != 1
+        snap.get("schema_version") != 2
     ):
         raise SelectionError("expected_per_ref_source_unverifiable")
     origin = snap.get("source_origin")
@@ -4287,12 +4294,18 @@ def _tach_check(root, config, changes):
     }
 
 
-def _graph_validation(selection, config, root, value, *, tach_sha256=None):
+def _graph_validation(
+    selection, config, root, value, *, tach_sha256=None, tach_sha_authoritative=False
+):
     if value is None:
         return {"status": "not_executed"}
-    expected_sha = (
-        tach_sha256 if tach_sha256 is not None else _digest(root / config.tach)
-    )
+    if tach_sha_authoritative:
+        # A known inspected Tree must not fall back to the checkout file.
+        expected_sha = tach_sha256
+    else:
+        expected_sha = (
+            tach_sha256 if tach_sha256 is not None else _digest(root / config.tach)
+        )
     expected_tree = selection.changeset.execution_tree or selection.changeset.tree
     if value.get("tach_sha256") != expected_sha:
         return {"status": "untrusted", "reason": "tach_config_mismatch"}
@@ -4452,9 +4465,9 @@ def plan(
     # The digest must describe the same inspected configuration the graph and
     # discovery facts come from, not the current checkout.
     if inspected_tree_in_odb:
-        tach_blob = _git(root, "-" + "cat-file", "-p", f"{inspected_tree}:{tach_rel}")
+        tach_blob = _git_bytes(root, "cat-file", "blob", f"{inspected_tree}:{tach_rel}")
         plan_tach_sha256 = (
-            hashlib.sha256(tach_blob.stdout.encode("utf-8")).hexdigest()
+            hashlib.sha256(tach_blob.stdout).hexdigest()
             if tach_blob.returncode == 0
             else None
         )
@@ -4507,7 +4520,12 @@ def plan(
             raise
         all_tests = ()
     graph = _graph_validation(
-        selection, config, root, tach_validation, tach_sha256=plan_tach_sha256
+        selection,
+        config,
+        root,
+        tach_validation,
+        tach_sha256=plan_tach_sha256,
+        tach_sha_authoritative=inspected_tree_in_odb,
     )
     profile_changed = False
     if resolved_profile_path is not None:
@@ -4611,7 +4629,7 @@ def plan(
         root=root,
         workflow_config_digests=wf_digests,
     )
-    tach_input = {"path": config.tach, "sha256": _digest(tach_path)}
+    tach_input = {"path": config.tach, "sha256": plan_tach_sha256}
     if tach_graph is not None:
         tach_input["modules"] = list(tach_graph[0])
         tach_input["reverse"] = {k: list(v) for k, v in sorted(tach_graph[1].items())}
