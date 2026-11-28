@@ -1694,7 +1694,7 @@ def _parse_pytest_reportlog(
                             "when": record.get("when"),
                         }
                     )
-        elif report_type == "TestReport":
+        elif report_type in ("TestReport", "SubTestReport"):
             when = record.get("when", "")
             outcome = record.get("outcome", "")
             nodeid = record.get("nodeid")
@@ -1706,12 +1706,15 @@ def _parse_pytest_reportlog(
             ):
                 malformed_line_count += 1
                 return
-            wasxfail = bool(record.get("wasxfail"))
             if when in phase_counts:
                 bucket = (
                     outcome if outcome in ("passed", "failed", "skipped") else "other"
                 )
                 phase_counts[when][bucket] += 1
+            if report_type == "SubTestReport":
+                # The enclosing TestReport accounts for the node instance and elapsed time.
+                return
+            wasxfail = bool(record.get("wasxfail"))
             parsed_dur, _ = _parse_valid_nonneg_float(record.get("duration"))
             if isinstance(parsed_dur, float):
                 cumulative_phase_seconds += parsed_dur

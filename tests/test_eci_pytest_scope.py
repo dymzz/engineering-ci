@@ -168,6 +168,33 @@ def test_exported_invocation_remains_queryable_after_relocation(checkout, tmp_pa
     assert sources["pytest_reportlog"]["phase_reconciliation"]["status"] == "matched"
 
 
+def test_native_subtests_reconcile_without_duplicating_the_parent_phase(checkout):
+    (checkout / "tests/test_subtests.py").write_text(
+        "def test_subtests(subtests):\n"
+        "    for value in (1, 2):\n"
+        "        with subtests.test(value=value):\n"
+        "            assert value > 0\n",
+        encoding="utf-8",
+    )
+    result = _run(checkout, "tests/test_subtests.py")
+    assert result.returncode == 0, result.stdout + result.stderr
+    (directory,) = (checkout / ".artifacts/pytest").iterdir()
+    report = verify_report.build_verify_report(pytest_invocations=[directory])
+    log = next(
+        source
+        for source in report["sources"]
+        if source["source_type"] == "pytest_reportlog"
+    )
+    assert log["phase_reconciliation"]["status"] == "matched"
+    assert log["phase_counts"]["call"]["passed"] == 3
+    assert log["observed_node_instances"] == {
+        "tests/test_subtests.py::test_subtests": 1
+    }
+    assert (
+        len([phase for phase in log["slowest_phases"] if phase["when"] == "call"]) == 1
+    )
+
+
 @pytest.mark.skipif(
     find_spec("xdist") is None, reason="optional pytest-experiments group"
 )

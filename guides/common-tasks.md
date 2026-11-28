@@ -414,6 +414,7 @@ Dagger 和查询共用标准库 pytest/JUnit 计数规则。`--pytest-invocation
 所声明的文件，并保留其 selection、collection、execution、report_delivery、封存状态和
 `sessionfinish_hook_exception`。
 生产者的 Hook 阶段退出与外层进程退出分别记录。ReportLog 的独立解析状态、节点实例与阶段结果计数对账均可查询。
+原生 subtest 报告计入阶段结果，父用例的实例和耗时由其原生 `TestReport` 记录。
 阶段计数差异进入完整性冲突，保留原始节点观察。历史比较要求节点和阶段计数均已对账，
 缺少阶段事实的旧报告仍可查询。查阅 Invocation 外的文件时，显式传 `--junit-xml` 或
 `--pytest-reportlog`。查询保留原始文件，完整性冲突或输出路径覆盖输入时退出 2。
