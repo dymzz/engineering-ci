@@ -4061,3 +4061,97 @@ def test_dynamic_consumer_mappings_keep_their_tests(tmp_path):
     ]
     assert rules, "pytest_report rule missing"
     assert "tests.test_verify_report" in rules[0].tests
+
+    exact_rules = {r.exact: r.tests for r in config.non_code_rules if r.exact}
+    for name in ("repository.py", "tooling.py"):
+        assert (
+            "tests.test_ci_applicability"
+            in exact_rules[".dagger/src/engineering_ci_module/" + name]
+        )
+    prefix_rules = {
+        r.prefix: r.tests
+        for r in config.non_code_rules
+        if getattr(r, "prefix", None) == ".dagger/src/engineering_ci_module/"
+    }
+    assert (
+        "tests.test_ci_applicability"
+        in prefix_rules[".dagger/src/engineering_ci_module/"]
+    )
+    assert (
+        "tests.test_ci_performance"
+        in config.module_tests["engineering_ci.pytest_contracts"]
+    )
+
+
+def test_tach_digest_matches_blob_when_checkout_has_crlf(tmp_path):
+    # P2-14: with core.autocrlf the checkout rewrites CRLF but the Plan digest
+    # must stay the inspected Tree blob; validation then accepts the record.
+    path = tmp_path / "tach_crlf"
+    (path / "tests").mkdir(parents=True)
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8"
+    )
+    (path / "tach.toml").write_bytes(
+        b'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n'
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n', encoding="utf-8"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "config", "core.autocrlf", "true")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    base = run(path, "rev-parse", "HEAD").strip()
+    # Force the checkout to hold CRLF while the Blob stays LF.
+    (path / "tach.toml").write_bytes(
+        b'source_roots = ["src"]\r\n\r\n[[modules]]\r\npath = "pkg"\r\ndepends_on = []\r\n'
+    )
+    blob = subprocess.run(
+        ["git", "cat-file", "blob", "HEAD:tach.toml"],
+        cwd=path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    checkout = (path / "tach.toml").read_bytes()
+    assert b"\r\n" in checkout
+    assert b"\r\n" not in blob
+    changed = selection.changeset(path, base=base, head="HEAD", mode="commit")
+    digest = selection._tach_source_sha256(path, "tach.toml", changed)
+    assert digest == hashlib.sha256(blob).hexdigest()
+    assert digest != hashlib.sha256(checkout).hexdigest()
+
+
+def test_dagger_native_implementation_covers_source_filter_module(tmp_path):
+    # P2-13: the shared source-filter authority must be part of the Dagger
+    # implementation identity, so a change to it changes implementation_sha256.
+    import importlib.util
+
+    from engineering_ci import ci_check_inputs
+
+    module_path = (
+        Path(__file__).parents[1]
+        / ".dagger/src/engineering_ci_module/native_results.py"
+    )
+    spec = importlib.util.spec_from_file_location("_eci_native_results", module_path)
+    assert spec is not None and spec.loader is not None
+    native_results = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native_results)
+
+    first = tmp_path / "first_ci_check_inputs.py"
+    first.write_text("SOURCE_NOISE = ()\n", encoding="utf-8")
+    second = tmp_path / "second_ci_check_inputs.py"
+    second.write_text("SOURCE_NOISE = ('x',)\n", encoding="utf-8")
+    original = ci_check_inputs.__file__
+    try:
+        ci_check_inputs.__file__ = str(first)
+        one = native_results.implementation("pytest")
+        ci_check_inputs.__file__ = str(second)
+        two = native_results.implementation("pytest")
+    finally:
+        ci_check_inputs.__file__ = original
+    assert one[0]["implementation_sha256"] != two[0]["implementation_sha256"]

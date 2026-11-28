@@ -210,6 +210,7 @@ declared_checks = [
     "tests.test_python_static",
 ]
 "engineering_ci.pytest_contracts" = [
+    "tests.test_ci_performance",
     "tests.test_manual_release",
     "tests.test_plan_result",
     "tests.test_pytest_ci",
@@ -587,6 +588,7 @@ reason = "Dagger python static helper"
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/repository.py"
 tests = [
+    "tests.test_ci_applicability",
     "tests.test_dagger_native_telemetry",
     "tests.test_execution",
     "tests.test_link_check",
@@ -608,6 +610,7 @@ reason = "Dagger script analysis helper"
 [[non_code_rules]]
 exact = ".dagger/src/engineering_ci_module/tooling.py"
 tests = [
+    "tests.test_ci_applicability",
     "tests.test_dagger_native_telemetry",
     "tests.test_execution",
     "tests.test_link_check",
@@ -636,6 +639,7 @@ reason = "Dagger Weaver requirements"
 [[non_code_rules]]
 prefix = ".dagger/src/engineering_ci_module/"
 tests = [
+    "tests.test_ci_applicability",
     "tests.test_dagger_native_telemetry",
     "tests.test_execution",
     "tests.test_link_check",

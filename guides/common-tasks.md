@@ -62,10 +62,24 @@ uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
   Plan 产出，不代表 Plan 已执行。
 - `--json` 与 `--run` 互斥；`--run` 是直接对选中目标运行原生 pytest 的诊断入口，
   保留原生 pytest 退出，但不消费 Plan 的 graph gate/Execution Report。
-- 实际 Plan 消费由既有公共入口完成：`select --json --validate-tach` 产出 Plan 后，
-  使用 `engineering-ci execute --plan <plan>` 执行，Source 前置条件与原生结果/
-  Execution Report 引用按该入口合同。Multi Ref 的 Plan 是各 Ref 的聚合范围，
-  公共执行器要求逐 Ref 执行，不把聚合 Plan 当作单目标执行。
+- 实际 Plan 消费由既有公共入口完成，完整可操作组合：
+  ```sh
+  # 1) 固定 Tach 版本（与 execution 锁定的版本一致）
+  uvx --from tach==0.35.3 tach --version
+
+  # 2) 在受检快照上产出 Plan 与 Tach 验证事实（不执行测试）
+  uv run --locked --no-sync python -m engineering_ci.cli select \
+    --mode commit --base <base> --head <head> --validate-tach \
+    --json > .artifacts/plan.json
+
+  # 3) 在同一 Source 上消费同一 Plan，保存 JUnit/Execution Report
+  uv run --locked --no-sync python -m engineering_ci.cli execute \
+    --plan .artifacts/plan.json --junit .artifacts/plan-junit.xml
+  ```
+  `select` 退出 0 只表示 Plan 产出；`execute` 的原生退出与 JUnit/report 是执行证据。
+  选择语义按 Source 区分：`worktree`/`commit` 可选择目标；完整 `index`/`push` 默认
+  `select_tests=false`；`multi` 是逐 Ref 聚合，公共执行器要求逐 Ref 执行；显式
+  `--full` 覆盖关闭条件。不要把五种 Source 当作五种 affected 执行。
 
 它回答“改了什么、跑哪些受影响目标”；与 `ci-applicability`（既有 Dagger Check 的
 Job 是否执行）及 Full/Required（完整义务/授权）是不同语义，不能互相替代。未知或
