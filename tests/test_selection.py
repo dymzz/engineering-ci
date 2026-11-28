@@ -945,34 +945,33 @@ def test_index_source_refusal_allows_eol_checkout_representation(repo):
     assert selection.index_source_refusal(path, tree) is None
 
 
-def test_index_source_refusal_rejects_skip_worktree_bytes(repo):
+@pytest.mark.parametrize(
+    ("flag", "expected_reason"),
+    [
+        pytest.param(
+            "--skip-worktree",
+            "index_skip_worktree_bytes_mismatch",
+            id="skip-worktree",
+        ),
+        pytest.param(
+            "--assume-unchanged",
+            "index_assume_unchanged_bytes_mismatch",
+            id="assume-unchanged",
+        ),
+    ],
+)
+def test_index_source_refusal_rejects_worktree_metadata_bytes(
+    repo, flag, expected_reason
+):
     path, _ = repo
     tree = run(path, "write-tree").strip()
-    run(path, "update-index", "--skip-worktree", "src/pkg/sub.py")
+    run(path, "update-index", flag, "src/pkg/sub.py")
     (path / "src/pkg/sub.py").write_text("VALUE = 99\n", encoding="utf-8")
     assert (
         subprocess.run(["git", "diff", "--quiet"], cwd=path, check=False).returncode
         == 0
     )
-    assert (
-        selection.index_source_refusal(path, tree)
-        == "index_skip_worktree_bytes_mismatch"
-    )
-
-
-def test_index_source_refusal_rejects_assume_unchanged_bytes(repo):
-    path, _ = repo
-    tree = run(path, "write-tree").strip()
-    run(path, "update-index", "--assume-unchanged", "src/pkg/sub.py")
-    (path / "src/pkg/sub.py").write_text("VALUE = 100\n", encoding="utf-8")
-    assert (
-        subprocess.run(["git", "diff", "--quiet"], cwd=path, check=False).returncode
-        == 0
-    )
-    assert (
-        selection.index_source_refusal(path, tree)
-        == "index_assume_unchanged_bytes_mismatch"
-    )
+    assert selection.index_source_refusal(path, tree) == expected_reason
 
 
 def test_push_snapshot_uses_before_after_commits(repo):

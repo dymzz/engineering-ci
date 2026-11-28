@@ -26,7 +26,15 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["src"]
 # Native defaults; explicit CLI --durations/--durations-min still overrides these
-# (the report plugin never rewrites native reporting options).
+# (the report plugin never rewrites native reporting options). The native
+# strict_markers option is used because pytest 9.0.3 did not enforce
+# --strict-markers supplied through addopts (measured on the locked version).
+# It rejects unregistered marker decorators only; it does not validate marker
+# names inside a `-m` selection expression. Expression-name validation is not
+# provided by this configuration (upstream pytest #2781); #172's guard governs
+# collection scope, and #167 decides whether expression validation is an actual
+# obligation. No local expression parser is added here.
+strict_markers = true
 addopts = ["--durations=10", "--durations-min=0.05"]
 
 [project.scripts]

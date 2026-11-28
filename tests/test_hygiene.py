@@ -152,26 +152,45 @@ def test_broken_links_fail(repo):
     assert by_name(result)["docs"]["reason"] == "lychee_findings"
 
 
-def test_vulture_findings_are_advisory_not_failure(repo):
+@pytest.mark.parametrize(
+    ("runner_code", "stdout", "expected_status", "expected"),
+    [
+        pytest.param(
+            3,
+            "dead.py:1: unused variable 'x'",
+            "passed",
+            {
+                "status": "advisory",
+                "exit_code": 3,
+                "reason": "vulture_findings",
+                "stdout": "dead.py:1: unused variable 'x'",
+            },
+            id="advisory-with-output",
+        ),
+        pytest.param(
+            1,
+            "",
+            "failed",
+            {"reason": "vulture_failed", "stdout": ""},
+            id="execution-error",
+        ),
+    ],
+)
+def test_vulture_outcome_follows_native_exit(
+    repo, runner_code, stdout, expected_status, expected
+):
     path, base = repo
     (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
     result = report(
         path,
         base,
         checks=("vulture",),
-        runner=FakeRunner(code=3, stdout="dead.py:1: unused variable 'x'"),
+        runner=FakeRunner(code=runner_code, stdout=stdout),
     )
-    assert result["status"] == "passed"
-    assert by_name(result)["vulture"]["status"] == "advisory"
-    assert by_name(result)["vulture"]["exit_code"] == 3
-
-
-def test_vulture_execution_error_fails(repo):
-    path, base = repo
-    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
-    result = report(path, base, checks=("vulture",), runner=FakeRunner(code=1))
-    assert result["status"] == "failed"
-    assert by_name(result)["vulture"]["reason"] == "vulture_failed"
+    assert result["status"] == expected_status
+    entry = by_name(result)["vulture"]
+    for key, value in expected.items():
+        assert entry[key] == value
 
 
 def test_tach_requires_its_config(repo):
