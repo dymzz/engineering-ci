@@ -32,6 +32,27 @@
 
 同一远端执行复用实际 Run/Attempt/Job 身份和原生等待结果；已有有效等待时，仅因独立事实需求、矛盾或等待失败另行查询。将义务、证据、剩余缺口及下一动作关联到原任务、PR 或 Review，按[提交关系维护](../docs/architecture/agent-instructions.md#graph-maintenance-on-every-submission)交接，不建第二份证据台账。
 
+### CI 候选适用性
+
+`ci.yml` 的 `change-applicability` Job 按实际累积变更集决定既有 Dagger Check 是否执行，
+规则与边界见 [CI 检查适用性](../docs/architecture/ci-applicability.md)。不适用只记录
+`not_applicable` 与原因，不产生原生退出或 PASS；正式 Release 与手动 Dispatch 保持全量。
+决策报告为 Artifact `ci-applicability`，查询既有 Run 时直接下载，不重跑 Workflow 或 pytest：
+
+```sh
+gh run download RUN_ID --repo dymzz/engineering-ci -n ci-applicability
+```
+
+本地只读复算同一决策（不执行 Check）：
+
+```sh
+uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
+  --event pull_request --base origin/main --head HEAD --json
+```
+
+相对既有有效证据的增量复用仍属 #63 接纳，未实现前不因此跳过 Required 义务；
+测试目标选择仍用 #66/#165 的 Selection 入口，不把本决策当作受影响测试清单。
+
 ## 开发、审查与合并
 
 先确认当前分支、未提交内容与版本；版本必须与功能代码进入同一 PR。

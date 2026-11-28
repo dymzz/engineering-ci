@@ -9,6 +9,7 @@
 
 - [CLI 边界](cli-boundaries.md) — 用户入口、Actions 内部调用及模块职责。
 - [本地检查](local-checks.md) — 原生 Dagger Checks、失败传播与单次执行报告。
+- [CI 检查适用性](ci-applicability.md) — #167 P0b 累积变更 → 既有 Check 义务、fail-closed 跳过与报告边界。
 - [依赖安全](dependency-security.md) — 锁文件完整性、安全扫描及质量门禁。
 - [变更影响选择](selection.md) — Git 对象、Tach 闭包、选择计划与原生 unittest 执行交接。
 - [Expected Checks](expected-checks.md) — 调度器无关的 Plan Expected 投影、完整性状态与 #66-C 边界。

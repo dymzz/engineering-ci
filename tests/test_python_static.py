@@ -827,10 +827,12 @@ class SourceBoundaryTests(unittest.TestCase):
     def test_public_source_noise_keeps_consumer_artifacts_builds_and_design(self):
         import ast
 
-        tooling_ast = ast.parse((MODULES / "tooling.py").read_text(encoding="utf-8"))
+        contract_path = ROOT / "src" / "engineering_ci" / "ci_check_inputs.py"
+        contract_text = contract_path.read_text(encoding="utf-8")
+        contract_ast = ast.parse(contract_text)
         source_noise = next(
             ast.literal_eval(node.value)
-            for node in tooling_ast.body
+            for node in contract_ast.body
             if isinstance(node, ast.Assign)
             and any(getattr(t, "id", None) == "SOURCE_NOISE" for t in node.targets)
         )
@@ -873,13 +875,20 @@ class SourceBoundaryTests(unittest.TestCase):
             "**/.venv",
             "__pycache__",
             ".ruff_cache",
+            "**/.ruff_cache",
         ):
             self.assertIn(required_noise, source_noise)
 
         repo_text = (MODULES / "repository.py").read_text(encoding="utf-8")
-        self.assertIn("HOST_SECRET_EXCLUDES", repo_text)
-        self.assertIn("HOST_LOCAL_EXCLUDES", repo_text)
-        self.assertIn("WEAVER_DEFAULT_EXCLUDES", repo_text)
+        self.assertIn("from engineering_ci.ci_check_inputs import", repo_text)
+        for shared_name in (
+            "HOST_SECRET_EXCLUDES",
+            "HOST_LOCAL_EXCLUDES",
+            "SOURCE_EXCLUDES",
+            "WEAVER_DEFAULT_EXCLUDES",
+            "WORKSPACE_SCRATCH",
+        ):
+            self.assertIn(shared_name, repo_text)
         for host_only in (
             ".env.*",
             ".docker",
@@ -892,7 +901,7 @@ class SourceBoundaryTests(unittest.TestCase):
             ".DS_Store",
             "Thumbs.db",
         ):
-            self.assertIn(host_only, repo_text)
+            self.assertIn(host_only, contract_text)
 
         main_text = (MODULES / "main.py").read_text(encoding="utf-8")
         main_ast = ast.parse(main_text)

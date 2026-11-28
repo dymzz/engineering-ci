@@ -67,6 +67,7 @@ def main(argv=None):
             "hooks",
             "cicd-telemetry",
             "dagger-telemetry",
+            "ci-applicability",
         ),
     )
     if not argv or argv[0] in {"-h", "--help"}:
@@ -96,6 +97,8 @@ def main(argv=None):
         from engineering_ci.cicd_telemetry import main as invoke
     elif namespace.command == "dagger-telemetry":
         from engineering_ci.dagger_telemetry import main as invoke
+    elif namespace.command == "ci-applicability":
+        from engineering_ci.ci_applicability import main as invoke
     else:
         from .download import main as invoke
     return invoke(args)

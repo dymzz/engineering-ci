@@ -1,6 +1,10 @@
 """Pinned native tool assets used by Dagger checks."""
 
 from engineering_ci import semconv_registry, weaver_tool
+from engineering_ci.ci_check_inputs import SOURCE_NOISE
+
+# SOURCE_NOISE stays a re-export: standalone check entrypoints import it here.
+__all__ = ["SOURCE_NOISE"]
 
 # Re-export the single engineering_ci.weaver_tool authority for Dagger download.
 WEAVER_VERSION = weaver_tool.VERSION
@@ -24,15 +28,7 @@ UV_IMAGE = "ghcr.io/astral-sh/uv:python3.14-trixie-slim"
 # Host secret/local/scratch/cache excludes belong in repository.py so public
 # standalone entrypoints (e.g. python_test, python_lint, python_pyright, tach_check,
 # lychee_check, weaver_report) never drop declared consumer inputs by directory name.
-SOURCE_NOISE = [
-    ".git",
-    ".venv",
-    "**/.venv",
-    "__pycache__",
-    "**/__pycache__",
-    ".ruff_cache",
-    "**/.ruff_cache",
-]
+# SOURCE_NOISE itself is the shared engineering_ci.ci_check_inputs authority.
 
 # Root Git Context (controlled ODB/Index attached beside a verified Git Tree for
 # Git-native checks). Source Content ID never covers it, so ordinary consumers of
