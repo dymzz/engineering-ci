@@ -25,7 +25,7 @@ Dagger 模块从它构造容器 Source 排除集，`engineering_ci.ci_applicabil
 | --- | --- | --- |
 | 1. Workflow 触发 | GitHub Actions | `push` main、`pull_request` main、`workflow_dispatch`、`workflow_call`；不新增触发事件 |
 | 2. 候选范围 | `ci_applicability` | 按**累积**变更集决定 5 个既有 Check 的计划范围与原因 |
-| 3. 执行范围 | Workflow Job/step | 只有计划为适用且本 Job 前置步骤成功时才调用原生 `dagger check`；不适用仅记录，不伪造结果 |
+| 3. 执行范围 | Workflow Job/step | 独立全量信号、失败回退和适用计划决定调用范围，本 Job 前置步骤成功后调用原生 `dagger check` |
 
 PR 与 push 的累积差分确定候选完整义务；相对既有有效证据的“实际增量”当前**未计算**，
 报告显式记录 `increment.status = unavailable`、原因
@@ -44,7 +44,7 @@ PR 与 push 的累积差分确定候选完整义务；相对既有有效证据�
 | `format-check` | 同上，另加 `.md`（含 Markdown 代码块；Dagger Source 内的 Markdown 才可被容器读取） |
 | `tests` | Dagger Repository Source 内任一非排除路径（完整 pytest 义务） |
 | `version` | 两个项目的 `pyproject.toml`/`uv.lock`、`src/engineering_ci/release/`、`_paths.py`、包 `__init__.py` |
-| `lock` | 任意 `pyproject.toml`（含 workspace 成员）与两份 `uv.lock` |
+| `lock` | 任意 `pyproject.toml`（含 workspace 成员），根与 `.dagger/` 的 `uv.lock`、`uv.toml` |
 
 已用锁定 Ruff `0.16.10` 实测（2026-11-27）：`ruff check .` 解析 `.py/.pyi/.ipynb`
 与 Ruff 配置、遵循 `.gitignore`，但不 lint Markdown；`ruff format --check .` 还会格式化
@@ -56,7 +56,7 @@ Markdown 代码块。故 `format-check` 与 `lint` 的 Markdown 输入不同，�
 `SOURCE_EXCLUDES` 的一致性由 `tests/test_ci_applicability.py` 校验。
 
 共享执行基础设施（`.dagger/src/engineering_ci_module/`、`.dagger/sdk/`、Dagger/根
-manifests、Workflow、`ci_check_inputs.py`/`ci_applicability.py`）变化时升级为全部 Check；
+manifests、根与 `.dagger/` 的 `uv.toml`、Workflow、`ci_check_inputs.py`/`ci_applicability.py`）变化时升级为全部 Check；
 无法精确判定的非文档输入至少触发完整 `tests`，不会静默跳过。
 
 ## 决策规则
@@ -77,11 +77,11 @@ Git 路径身份原样保留：POSIX 上文件名中的反斜杠不是分隔符�
 
 ## 自验证不可由候选策略取消
 
-自验证路径（`ci_check_inputs.py`、`ci_applicability.py`、`tests/test_ci_applicability.py`、
-`.github/workflows/ci.yml`、`.dagger/src/engineering_ci_module/`）在**Workflow 内硬编码**：
-即使候选把自身改判为文档，`change-applicability` 仍强制 `--full
---full-reason self_verification_inputs`。模块自身也对同一集合升级，二者独立。验证消费者
-`tests/test_ci_applicability.py` 同时校验该硬编码列表，防止删除。
+自验证路径包括共享 Check 合同、适用性分类器、ChangeSet 生产者 `selection.py`、CLI 入口
+`cli/__init__.py`、适用性测试、`ci.yml` 和 Dagger 模块源码。Workflow 的独立 Git/Bash step
+从实际累积差分识别这些路径，将 `force_full` 作为独立 Job output 交给下游，并给分类器传入
+`--full --full-reason self_verification_inputs`。分类器自身也对这组路径升级。回归测试执行真实守卫，
+再用五项全部为 `false` 的分类器输出核对下游 checkout、安装和 Check 条件。
 
 ## Workflow 接线
 
@@ -92,8 +92,8 @@ Git 路径身份原样保留：POSIX 上文件名中的反斜杠不是分隔符�
   并把原生 Check 全部执行（保留决策失败事实，Workflow 仍为失败）。
 - **本 Job 前置**：每个 checkout/安装/Check step 使用 `success() && !cancelled()`，本 Job
   的 checkout 或工具安装失败后不会继续尝试 Check。
-- **计划跳过**：仅当决策成功且该 Check 明确输出 `false` 时才跳过；输出缺失、命名漂移或
-  决策失败都重新执行（fail-closed）。
+- **计划跳过**：仅在决策成功、独立 `force_full` 明确为 `false`、该调用涉及的全部 Check
+  都明确输出 `false` 时才跳过。独立全量、输出缺失和决策失败均触发原生检查。
 
 `dagger-native-telemetry` 不受计划 gate：A.1 离线合同回归是宿主 pytest，输入域不等于
 Dagger Source，不能借 Source 排除减少；其 live/offline 选择仍由既有 telemetry 范围与
@@ -107,7 +107,7 @@ Dispatch 也保持全量；`coverage: true` 额外强制全量。`core_artifact_
 ## 报告与查询
 
 - Actions Artifact `ci-applicability`（保留 7 天）保存计划报告；
-- `change-applicability` Job Summary 打印每个 Check 的计划状态、原因与输入数；
+- `change-applicability` Job Summary 打印单项适用性、原因、输入数及成组调用计划；
 - 本地只读复算：
 
 ```sh
@@ -115,8 +115,11 @@ uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
   --event pull_request --base origin/main --head HEAD --json
 ```
 
-报告字段：`layer_1_trigger`、`layer_2_candidate`（含 `requested_base`/`requested_head`/
-`identity_status`）、`layer_3_planned_scope`、`execution_observation`、`increment`。
+`layer_2_candidate` 保留实际请求的 base/head（push 为 before/after）和已解析的 commit/Tree。
+无比较基线的全量运行仍记录可解析的目标。`generator.contract.target_binding` 核对加载的合同
+文本、目标 Tree 中的合同文本和当前 checkout Tree。不同目标 Tree 上的查询记录为当前合同复算。
+`layer_3_planned_scope.checks` 表示独立适用义务，`invocations` 表示原生调用计划。version 或 lock
+任一项适用时，`version-metadata` 计划同时调用两项。
 `execution_observation` 明确 `not_observed_in_this_report` 并指向 #52/#75/#86；查询历史 Run
 只下载既有 Artifact 与 Job 日志，不重跑 Workflow 或 pytest。
 

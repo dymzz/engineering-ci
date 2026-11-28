@@ -3,9 +3,11 @@
 import ast
 import fnmatch
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -147,7 +149,7 @@ def test_nested_gitignore_is_a_ruff_discovery_input(tmp_path):
 
 def test_python_change_runs_ruff_and_tests_only(tmp_path):
     root = _repo(tmp_path / "repo")
-    _commit(root, "src/engineering_ci/selection.py", "VALUE = 1\n")
+    _commit(root, "src/engineering_ci/hook_checks.py", "VALUE = 1\n")
     report = _report(root)
     assert _statuses(report) == _only("lint", "format-check", "tests")
 
@@ -174,6 +176,8 @@ def test_workspace_member_pyproject_is_a_lock_input(tmp_path):
         ".dagger/src/engineering_ci_module/tooling.py",
         ".dagger/sdk/src/dagger/client/gen.py",
         "pyproject.toml",
+        "uv.toml",
+        ".dagger/uv.toml",
         ".github/workflows/ci.yml",
     ],
 )
@@ -190,6 +194,8 @@ def test_shared_toolchain_change_escalates_to_every_check(tmp_path, relative):
     [
         "src/engineering_ci/ci_check_inputs.py",
         "src/engineering_ci/ci_applicability.py",
+        "src/engineering_ci/cli/__init__.py",
+        "src/engineering_ci/selection.py",
         "tests/test_ci_applicability.py",
     ],
 )
@@ -350,15 +356,6 @@ def test_ci_checks_match_native_definitions_and_workflow_jobs():
         assert f"needs.change-applicability.outputs.{check.github_output}" in workflow
 
 
-def test_workflow_paths_match_the_self_verification_contract():
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "self_verification_inputs" in workflow
-    for path in ci_check_inputs.SELF_VERIFICATION_FILES:
-        assert path in workflow, path
-    for prefix in ci_check_inputs.SELF_VERIFICATION_PREFIXES:
-        assert prefix in workflow, prefix
-
-
 def _job_block(workflow, job):
     match = re.search(
         rf"^  {re.escape(job)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
@@ -383,6 +380,86 @@ def test_workflow_jobs_run_after_a_failed_decision_and_require_prior_steps():
 
 def _step_conditions(block):
     return re.findall(r"^        if: \$\{\{ (.+) \}\}$", block, re.MULTILINE)
+
+
+@pytest.mark.parametrize(
+    ("path", "force_full"),
+    [
+        *((path, "true") for path in ci_check_inputs.SELF_VERIFICATION_FILES),
+        *(
+            (prefix + "main.py", "true")
+            for prefix in ci_check_inputs.SELF_VERIFICATION_PREFIXES
+        ),
+        ("src/engineering_ci/selection.py.bak", "false"),
+        ("guides/common-tasks.md", "false"),
+    ],
+)
+def test_native_workflow_guard_and_classifier_outputs_are_independent(
+    tmp_path, path, force_full
+):
+    root = _repo(tmp_path / "repo")
+    _commit(root, path)
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    decision = _job_block(workflow, "change-applicability")
+    assert "force_full: ${{ steps.guard.outputs.force_full }}" in decision
+    guard = re.search(
+        r"^        id: guard\n[\s\S]*?^        run: \|\n((?:^ {10}[^\n]*\n|^\n)+)",
+        decision,
+        re.MULTILINE,
+    )
+    assert guard is not None
+    output = tmp_path / "github-output.txt"
+    bash = "bash"
+    if os.name == "nt":
+        git_exec = Path(_git(root, "--exec-path").stdout.strip())
+        bash = str(git_exec.parents[2] / "bin" / "bash.exe")
+    subprocess.run(
+        [bash, "-c", dedent(guard.group(1))],
+        cwd=root,
+        env={
+            **os.environ,
+            "EVENT_NAME": "pull_request",
+            "PR_BASE_SHA": _git(root, "rev-parse", "HEAD^").stdout.strip(),
+            "HEAD_SHA": _git(root, "rev-parse", "HEAD").stdout.strip(),
+            "PUSH_BEFORE_SHA": "",
+            "FULL_INPUT": "",
+            "COVERAGE_INPUT": "",
+            "RUNNER_TEMP": tmp_path.as_posix(),
+            "GITHUB_OUTPUT": output.as_posix(),
+        },
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    guard_outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert guard_outputs == {
+        "force_full": force_full,
+        "full_reason": "self_verification_inputs" if force_full == "true" else "",
+    }
+    classifier_outputs = {
+        check.github_output: "false" for check in ci_check_inputs.CI_CHECKS
+    }
+    outputs = {**classifier_outputs, **guard_outputs}
+    for job, number_of_gates in (
+        ("python-ci", 4),
+        ("sync-tool-tests", 3),
+        ("version-metadata", 3),
+    ):
+        conditions = [
+            condition
+            for condition in _step_conditions(_job_block(workflow, job))
+            if "needs.change-applicability" in condition
+        ]
+        assert len(conditions) == number_of_gates
+        for condition in conditions:
+            assert _evaluate_condition(
+                condition,
+                cancelled=False,
+                setup_ok=True,
+                decision_ok=True,
+                outputs=outputs,
+            ) is (force_full == "true")
 
 
 def _evaluate_condition(condition, *, cancelled, setup_ok, decision_ok, outputs=None):
@@ -462,7 +539,7 @@ def test_step_fallback_truth_table():
                 cancelled=cancelled,
                 setup_ok=setup_ok,
                 decision_ok=decision_ok,
-                outputs=outputs,
+                outputs={"force_full": "false", **outputs},
             )
             is expected
         ), (cancelled, setup_ok, decision_ok, outputs)
@@ -483,15 +560,57 @@ def test_version_metadata_runs_when_either_check_is_applicable():
         cancelled=False,
         setup_ok=True,
         decision_ok=True,
-        outputs={"version": "false", "lock": "true"},
+        outputs={"force_full": "false", "version": "false", "lock": "true"},
+    )
+    assert _evaluate_condition(
+        condition,
+        cancelled=False,
+        setup_ok=True,
+        decision_ok=True,
+        outputs={"force_full": "false", "version": "true", "lock": "false"},
     )
     assert not _evaluate_condition(
         condition,
         cancelled=False,
         setup_ok=True,
         decision_ok=True,
+        outputs={"force_full": "false", "version": "false", "lock": "false"},
+    )
+    assert _evaluate_condition(
+        condition,
+        cancelled=False,
+        setup_ok=True,
+        decision_ok=True,
         outputs={"version": "false", "lock": "false"},
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "version", "lock"),
+    [
+        ("src/engineering_ci/release/version.py", True, False),
+        ("packages/member/pyproject.toml", False, True),
+        ("guides/common-tasks.md", False, False),
+    ],
+)
+def test_plan_distinguishes_metadata_obligations_and_grouped_command(
+    tmp_path, path, version, lock
+):
+    root = _repo(tmp_path / "repo")
+    _commit(root, path)
+    scope = _report(root)["layer_3_planned_scope"]
+    obligations = {
+        check["name"]: check["status"] == "applicable" for check in scope["checks"]
+    }
+    assert (obligations["version"], obligations["lock"]) == (version, lock)
+    block = _job_block(WORKFLOW.read_text(encoding="utf-8"), "version-metadata")
+    flags = re.findall(r"--check=([\w-]+)", block)
+    assert flags == ["version", "lock"]
+    assert [
+        invocation
+        for invocation in scope["invocations"]
+        if invocation["job"] == "version-metadata"
+    ] == [{"job": "version-metadata", "checks": flags, "planned": version or lock}]
 
 
 def test_reusable_call_requires_explicit_full_intent():
@@ -621,9 +740,12 @@ def test_cli_requires_a_base_commit(tmp_path):
     assert code == 2
 
 
-def test_cli_full_without_base_records_requested_head(tmp_path):
+@pytest.mark.parametrize("resolvable", [False, True])
+def test_cli_full_without_base_records_requested_head(tmp_path, resolvable):
     root = _repo(tmp_path / "repo")
     output = tmp_path / "report.json"
+    commit = _git(root, "rev-parse", "HEAD").stdout.strip()
+    target = commit if resolvable else "a" * 40
     code = ci_applicability.main(
         [
             "--root",
@@ -634,7 +756,7 @@ def test_cli_full_without_base_records_requested_head(tmp_path):
             "--full-reason",
             "explicit_caller_full",
             "--head",
-            "a" * 40,
+            target,
             "--output",
             str(output),
             "--json",
@@ -644,8 +766,98 @@ def test_cli_full_without_base_records_requested_head(tmp_path):
     report = json.loads(output.read_text(encoding="utf-8"))
     candidate = report["layer_2_candidate"]
     assert candidate["complete"] is None
-    assert candidate["requested_head"] == "a" * 40
-    assert candidate["identity_status"] == "not_bound_to_change_set"
+    assert candidate["requested_base"] is None
+    assert candidate["requested_head"] == target
+    assert candidate["head_commit"] == (commit if resolvable else None)
+    assert candidate["tree"] == (
+        _git(root, "rev-parse", "HEAD^{tree}").stdout.strip() if resolvable else None
+    )
+    assert candidate["identity_status"] == (
+        "target_resolved_without_comparison"
+        if resolvable
+        else "not_bound_to_change_set"
+    )
     assert {check["status"] for check in report["layer_3_planned_scope"]["checks"]} == {
         "applicable"
     }
+
+
+@pytest.mark.parametrize("new_ref", [False, True])
+def test_cli_push_binds_before_and_after_even_if_full(tmp_path, new_ref):
+    root = _repo(tmp_path / "repo")
+    before = _git(root, "rev-parse", "HEAD").stdout.strip()
+    _commit(root, "guides/first.md")
+    _commit(root, "guides/second.md")
+    after = _git(root, "rev-parse", "HEAD^").stdout.strip()
+    before = "0" * 40 if new_ref else before
+    output = tmp_path / "report.json"
+    assert (
+        ci_applicability.main(
+            [
+                "--root",
+                str(root),
+                "--event",
+                "push",
+                "--snapshot",
+                "push",
+                "--before",
+                before,
+                "--after",
+                after,
+                "--full",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    candidate = json.loads(output.read_text(encoding="utf-8"))["layer_2_candidate"]
+    assert candidate["requested_base"] == before
+    assert candidate["requested_head"] == candidate["head_commit"] == after
+    assert (
+        candidate["tree"] == _git(root, "rev-parse", f"{after}^{{tree}}").stdout.strip()
+    )
+    assert candidate["complete"] is (not new_ref)
+    assert candidate["changed_paths"] == ([] if new_ref else ["guides/first.md"])
+
+
+def test_cli_identifies_loaded_contract_and_historical_target_separately(tmp_path):
+    root = _repo(tmp_path / "repo")
+    relative = CONTRACT.relative_to(ROOT).as_posix()
+    _commit(root, relative, "# historical contract\n")
+    different = _git(root, "rev-parse", "HEAD").stdout.strip()
+    _commit(root, relative, CONTRACT.read_text(encoding="utf-8"))
+    same_contract = _git(root, "rev-parse", "HEAD").stdout.strip()
+    _commit(root, "guides/revision.md")
+    output = tmp_path / "report.json"
+    for target, status, digest_matches in (
+        (different, "loaded_contract_differs", False),
+        (same_contract, "checkout_tree_differs", True),
+        ("HEAD", "matches_checked_out_target", True),
+    ):
+        assert (
+            ci_applicability.main(
+                [
+                    "--root",
+                    str(root),
+                    "--base",
+                    "HEAD~3",
+                    "--head",
+                    target,
+                    "--output",
+                    str(output),
+                ]
+            )
+            == 0
+        )
+        report = json.loads(output.read_text(encoding="utf-8"))
+        contract = report["generator"]["contract"]
+        binding = contract["target_binding"]
+        assert binding["status"] == status
+        assert (
+            binding["target_source_sha256"] == contract["source_sha256"]
+        ) is digest_matches
+        assert (
+            report["layer_2_candidate"]["head_commit"]
+            == _git(root, "rev-parse", target).stdout.strip()
+        )

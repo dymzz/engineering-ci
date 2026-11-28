@@ -134,11 +134,13 @@ TOOLCHAIN_FILES = (
     ".gitignore",
     ".dagger/pyproject.toml",
     ".dagger/uv.lock",
+    ".dagger/uv.toml",
     "dagger-module.toml",
     "dagger.lock",
     "dagger.toml",
     "pyproject.toml",
     "uv.lock",
+    "uv.toml",
 )
 TOOLCHAIN_PREFIXES = (
     ".github/workflows/",
@@ -153,6 +155,8 @@ SELF_VERIFICATION_FILES = (
     ".github/workflows/ci.yml",
     "src/engineering_ci/ci_applicability.py",
     "src/engineering_ci/ci_check_inputs.py",
+    "src/engineering_ci/cli/__init__.py",
+    "src/engineering_ci/selection.py",
     "tests/test_ci_applicability.py",
 )
 SELF_VERIFICATION_PREFIXES = (".dagger/src/engineering_ci_module/",)
@@ -220,6 +224,8 @@ CI_CHECKS = (
         files=(
             "uv.lock",
             ".dagger/uv.lock",
+            "uv.toml",
+            ".dagger/uv.toml",
             "pyproject.toml",
             ".dagger/pyproject.toml",
         ),

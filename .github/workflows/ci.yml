@@ -38,6 +38,7 @@ jobs:
   change-applicability:
     name: change-applicability / candidate scope
     outputs:
+      force_full: ${{ steps.guard.outputs.force_full }}
       lint: ${{ steps.decide.outputs.lint }}
       format_check: ${{ steps.decide.outputs.format_check }}
       tests: ${{ steps.decide.outputs.tests }}
@@ -51,14 +52,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
-        with:
-          version: '0.12.23'
-          python-version: '3.14'
-      - name: Sync locked host dependencies
-        run: uv sync --locked
-      - name: Decide planned check scope for the cumulative candidate
-        id: decide
+      - name: Determine independent full verification scope
+        id: guard
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -71,18 +66,15 @@ jobs:
           set -euo pipefail
           changed_file="$RUNNER_TEMP/applicability-changed-files.txt"
           : > "$changed_file"
-          full=0
+          full=false
           reason=""
           force_full() {
-            full=1
+            full=true
             if [[ -z "$reason" ]]; then reason="$1"; fi
           }
-          change_args=()
           case "$EVENT_NAME" in
             pull_request)
-              test -n "$PR_BASE_SHA"
-              change_args=(--snapshot commit --base "$PR_BASE_SHA" --head "$HEAD_SHA")
-              if ! git -c core.quotePath=false diff --no-renames --name-only \
+              if [[ -z "$PR_BASE_SHA" ]] || ! git diff --no-renames --name-only -z \
                 "${PR_BASE_SHA}...${HEAD_SHA}" > "$changed_file"; then
                 force_full "changeset_diff_unavailable"
               fi
@@ -91,9 +83,7 @@ jobs:
               if [[ -z "$PUSH_BEFORE_SHA" || "$PUSH_BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
                 force_full "new_ref_baseline_unknown"
               else
-                change_args=(--snapshot push --before "$PUSH_BEFORE_SHA"
-                        --after "$HEAD_SHA" --previous-commit "$PUSH_BEFORE_SHA")
-                if ! git -c core.quotePath=false diff --no-renames --name-only \
+                if ! git diff --no-renames --name-only -z \
                   "${PUSH_BEFORE_SHA}..${HEAD_SHA}" > "$changed_file"; then
                   force_full "changeset_diff_unavailable"
                 fi
@@ -116,15 +106,38 @@ jobs:
           if [[ "$FULL_INPUT" == "true" || "$COVERAGE_INPUT" == "true" ]]; then
             force_full "explicit_caller_full"
           fi
-          if [[ "$full" != "1" ]]; then
-            # Self-verification inputs: src/engineering_ci/ci_applicability.py,
-            # src/engineering_ci/ci_check_inputs.py, tests/test_ci_applicability.py,
-            # .github/workflows/ci.yml and .dagger/src/engineering_ci_module/.
-            if grep -Eq '^(src/engineering_ci/ci_applicability\.py|src/engineering_ci/ci_check_inputs\.py|tests/test_ci_applicability\.py|\.github/workflows/ci\.yml)$' "$changed_file" ||
-              grep -Eq '^\.dagger/src/engineering_ci_module/' "$changed_file"; then
-              force_full "self_verification_inputs"
-            fi
+          if [[ "$full" == "false" ]]; then
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                .github/workflows/ci.yml|src/engineering_ci/ci_applicability.py|\
+                src/engineering_ci/ci_check_inputs.py|src/engineering_ci/cli/__init__.py|\
+                src/engineering_ci/selection.py|tests/test_ci_applicability.py|\
+                .dagger/src/engineering_ci_module/*)
+                  force_full "self_verification_inputs"
+                  break
+                  ;;
+              esac
+            done < "$changed_file"
           fi
+          printf 'force_full=%s\nfull_reason=%s\n' "$full" "$reason" >> "$GITHUB_OUTPUT"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+          python-version: '3.14'
+      - name: Sync locked host dependencies
+        run: uv sync --locked
+      - name: Decide planned check scope for the cumulative candidate
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          FORCE_FULL: ${{ steps.guard.outputs.force_full }}
+          FULL_REASON: ${{ steps.guard.outputs.full_reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
           args=(
             python -m engineering_ci.cli ci-applicability
             --root .
@@ -133,16 +146,22 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
             --summary "$GITHUB_STEP_SUMMARY"
           )
-          if [[ "${#change_args[@]}" -gt 0 ]]; then
-            args+=("${change_args[@]}")
-          fi
-          if [[ "$full" == "1" ]]; then
-            args+=(--full --full-reason "$reason")
-            # A forced full run keeps its concrete base/head when available, so
-            # the report still records the candidate identity and paths.
-            if [[ "${#change_args[@]}" -eq 0 ]]; then
-              args+=(--head "$HEAD_SHA")
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            args+=(--snapshot push --after "$HEAD_SHA")
+            if [[ -n "$PUSH_BEFORE_SHA" ]]; then
+              args+=(--before "$PUSH_BEFORE_SHA")
+              if [[ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+                args+=(--previous-commit "$PUSH_BEFORE_SHA")
+              fi
             fi
+          else
+            args+=(--head "$HEAD_SHA")
+            if [[ "$EVENT_NAME" == "pull_request" && -n "$PR_BASE_SHA" ]]; then
+              args+=(--base "$PR_BASE_SHA")
+            fi
+          fi
+          if [[ "$FORCE_FULL" != "false" ]]; then
+            args+=(--full --full-reason "${FULL_REASON:-workflow_guard_unavailable}")
           fi
           uv run --locked --no-sync "${args[@]}"
       - name: Upload applicability decision
@@ -164,11 +183,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.lint != 'false' || needs.change-applicability.outputs.format_check != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.lint != 'false' || needs.change-applicability.outputs.format_check != 'false') }}
         with:
           persist-credentials: false
       - name: Install pinned Dagger CLI
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.lint != 'false' || needs.change-applicability.outputs.format_check != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.lint != 'false' || needs.change-applicability.outputs.format_check != 'false') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -177,10 +196,10 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Ruff Lint
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.lint != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.lint != 'false') }}
         run: dagger check --engineering-ci --check=lint
       - name: Ruff Format Check
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.format_check != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.format_check != 'false') }}
         run: dagger check --engineering-ci --check=format-check
       - name: Record release Ruff tool versions
         if: ${{ inputs.coverage }}
@@ -203,11 +222,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.tests != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.tests != 'false') }}
         with:
           persist-credentials: false
       - name: Install pinned Dagger CLI
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.tests != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.tests != 'false') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -216,7 +235,7 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Run all core unit and process tests
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.tests != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.tests != 'false') }}
         env:
           EXPORT_COVERAGE: ${{ inputs.coverage }}
         shell: bash
@@ -249,11 +268,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.version != 'false' || needs.change-applicability.outputs.lock != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.version != 'false' || needs.change-applicability.outputs.lock != 'false') }}
         with:
           persist-credentials: false
       - name: Install pinned Dagger CLI
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.version != 'false' || needs.change-applicability.outputs.lock != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.version != 'false' || needs.change-applicability.outputs.lock != 'false') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -262,7 +281,7 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Validate release metadata and root lock consistency
-        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.version != 'false' || needs.change-applicability.outputs.lock != 'false') }}
+        if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.version != 'false' || needs.change-applicability.outputs.lock != 'false') }}
         run: dagger check --engineering-ci --check=version --check=lock
 
   dagger-native-telemetry:

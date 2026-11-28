@@ -34,6 +34,7 @@ from . import selection
 SCHEMA_VERSION = 1
 KIND = "engineering-ci-ci-applicability"
 WORKFLOW = ".github/workflows/ci.yml"
+CONTRACT_PATH = "src/engineering_ci/ci_check_inputs.py"
 MAX_ENTRIES = 256
 
 
@@ -54,6 +55,37 @@ def _digest_text():
     except (OSError, TypeError):
         return None
     return "sha256:" + hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _contract_target_binding(root, tree, loaded_digest):
+    checkout_tree = selection._tree_of(root, "HEAD") if root is not None else None
+    target_digest = None
+    if root is not None and tree is not None:
+        blob = selection._git_bytes(root, "show", f"{tree}:{CONTRACT_PATH}")
+        if blob.returncode == 0:
+            try:
+                text = blob.stdout.decode("utf-8").replace("\r\n", "\n")
+            except UnicodeDecodeError:
+                pass
+            else:
+                target_digest = (
+                    "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+                )
+    if tree is None:
+        status = "target_tree_unresolved"
+    elif target_digest is None or loaded_digest is None:
+        status = "contract_source_unavailable"
+    elif loaded_digest != target_digest:
+        status = "loaded_contract_differs"
+    elif checkout_tree != tree:
+        status = "checkout_tree_differs"
+    else:
+        status = "matches_checked_out_target"
+    return {
+        "status": status,
+        "target_source_sha256": target_digest,
+        "checkout_tree": checkout_tree,
+    }
 
 
 def _bounded(values):
@@ -173,6 +205,28 @@ def decide(changes, *, full=False, full_reason=None):
     return results, status, reason
 
 
+def _planned_invocations(checks):
+    """Describe the existing Workflow's commands, keeping version and lock together."""
+    invocations = [
+        {
+            "job": check["job"],
+            "checks": [check["dagger_check"]],
+            "planned": check["status"] == "applicable",
+        }
+        for check in checks
+        if check["job"] != "version-metadata"
+    ]
+    metadata = [check for check in checks if check["job"] == "version-metadata"]
+    invocations.append(
+        {
+            "job": "version-metadata",
+            "checks": [check["dagger_check"] for check in metadata],
+            "planned": any(check["status"] == "applicable" for check in metadata),
+        }
+    )
+    return invocations
+
+
 def build_report(
     changes,
     *,
@@ -182,6 +236,7 @@ def build_report(
     requested_base=None,
     requested_head=None,
     previous_commit=None,
+    root=None,
 ):
     """Build the planned-scope report; never claims a check ran."""
     checks, candidate_status, candidate_reason = decide(
@@ -191,6 +246,23 @@ def build_report(
     deleted = changes.deleted_paths if changes is not None else ()
     listed, count = _bounded(paths)
     deleted_listed, deleted_count = _bounded(deleted)
+    head_commit = None
+    tree = None
+    identity_status = "not_bound_to_change_set"
+    if changes is not None:
+        root = changes.root
+        head_commit = changes.head_commit
+        tree = changes.execution_tree
+        if changes.complete and tree is not None:
+            identity_status = "bound_to_change_set"
+        elif tree is not None:
+            identity_status = "target_resolved_without_complete_change_set"
+    elif root is not None and requested_head is not None:
+        head_commit = selection._resolve(root, requested_head)
+        tree = selection._tree_of(root, head_commit) if head_commit else None
+        if tree is not None:
+            identity_status = "target_resolved_without_comparison"
+    loaded_digest = _digest_text()
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": KIND,
@@ -201,7 +273,8 @@ def build_report(
                 "kind": check_inputs.KIND,
                 "version": check_inputs.CONTRACT_VERSION,
                 "module": "engineering_ci.ci_check_inputs",
-                "source_sha256": _digest_text(),
+                "source_sha256": loaded_digest,
+                "target_binding": _contract_target_binding(root, tree, loaded_digest),
             },
         },
         "layer_1_trigger": {
@@ -217,13 +290,9 @@ def build_report(
             "requested_base": requested_base,
             "requested_head": requested_head,
             "base_commit": changes.base_commit if changes is not None else None,
-            "head_commit": changes.head_commit if changes is not None else None,
-            "tree": changes.tree if changes is not None else None,
-            "identity_status": (
-                "bound_to_change_set"
-                if changes is not None and changes.complete
-                else "not_bound_to_change_set"
-            ),
+            "head_commit": head_commit,
+            "tree": tree,
+            "identity_status": identity_status,
             "changed_path_count": count,
             "changed_paths": listed,
             "changed_paths_truncated": count > len(listed),
@@ -238,19 +307,20 @@ def build_report(
         "layer_3_planned_scope": {
             "claim": "planned_scope_only",
             "checks": checks,
+            "invocations": _planned_invocations(checks),
             "note": (
-                "A skipped native step records not_applicable here; no exit code, "
-                "artifact or PASS is fabricated for it. Actual Job/step/native "
-                "results are observed by the existing Actions/Dagger authorities."
+                "Check applicability and grouped commands describe the plan. "
+                "Workflow fallback, prerequisites and execution outcomes are "
+                "observed by the existing Actions/Dagger authorities."
             ),
         },
         "execution_observation": {
             "status": "not_observed_in_this_report",
             "authority": ["#52", "#75", "#86"],
             "note": (
-                "This report is produced before any Job starts. It cannot prove a "
-                "Job/step began, passed, failed, skipped or was cancelled; that "
-                "remains the original Run/Job/Attempt and native Result evidence."
+                "This report records the planned native checks. Job/step start, "
+                "pass, failure, skip and cancellation come from the original "
+                "Run/Job/Attempt and native Result evidence."
             ),
         },
         "increment": {
@@ -310,6 +380,17 @@ def _summary_markdown(report):
             f"| `{check['name']}` | `{check['job']}` | {check['status']} "
             f"| `{check['reason']}` | {check['input_count']} |"
         )
+    lines.extend(
+        [
+            "",
+            "| Job | Native checks in one invocation | Planned |",
+            "| --- | --- | --- |",
+        ]
+    )
+    for invocation in report["layer_3_planned_scope"]["invocations"]:
+        checks = ", ".join(f"`{check}`" for check in invocation["checks"])
+        planned = "yes" if invocation["planned"] else "no"
+        lines.append(f"| `{invocation['job']}` | {checks} | {planned} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -326,10 +407,8 @@ def _print_summary(report):
 
 
 def _changes(root, args):
-    if args.full and not args.base and not args.before:
-        return None
     if args.snapshot == "push":
-        if not args.before or not args.after:
+        if not args.after or (not args.full and not args.before):
             raise ApplicabilityError("push_commits_required")
         return selection.changeset(
             root,
@@ -339,6 +418,8 @@ def _changes(root, args):
             before=args.before,
             after=args.after,
         )
+    if args.full and not args.base:
+        return None
     if not args.base:
         raise ApplicabilityError("base_commit_required")
     return selection.changeset(
@@ -377,9 +458,10 @@ def main(argv=None):
             event=args.event,
             full=args.full,
             full_reason=args.full_reason,
-            requested_base=args.base,
-            requested_head=args.head,
+            requested_base=args.before if args.snapshot == "push" else args.base,
+            requested_head=args.after if args.snapshot == "push" else args.head,
             previous_commit=args.previous_commit,
+            root=root,
         )
     except (ApplicabilityError, selection.SelectionError, OSError) as error:
         print(f"ci-applicability: {error}", file=sys.stderr)
