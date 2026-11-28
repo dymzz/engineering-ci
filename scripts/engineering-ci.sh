@@ -75,11 +75,17 @@ shift
 
 case "$operation" in
   verify)
-    scope=verify
+    case "${1:-}" in
+      -h|--help) scope=runtime ;;
+      *) scope=verify ;;
+    esac
     ;;
   cli)
     if [ "${1:-}" = "verify" ]; then
-      scope=verify
+      case "${2:-}" in
+        report|-h|--help) scope=runtime ;;
+        *) scope=verify ;;
+      esac
     else
       scope=runtime
     fi
@@ -103,7 +109,7 @@ fi
 
 eci_entry_resolve normal "$environment" || exit $?
 eci_entry_validate "$scope" || exit $?
-eci_entry_export
+eci_entry_export "$scope"
 
 case "$operation" in
   verify)
@@ -113,9 +119,9 @@ case "$operation" in
     exec "$ECI_PYTHON" -P -m engineering_ci.cli "$@"
     ;;
   pytest)
-    exec "$ECI_PYTHON" -P -m pytest "$@"
+    exec "$ECI_PYTEST_BIN" "$@"
     ;;
   ruff)
-    exec "$ECI_PYTHON" -P -m ruff "$@"
+    exec "$ECI_RUFF_BIN" "$@"
     ;;
 esac

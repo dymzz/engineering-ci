@@ -252,50 +252,77 @@ _eci_lock_version() {
   ' "$_eci_lock"
 }
 
-_eci_require_module_tool() {
-  _eci_module=$1
+_eci_require_distribution_tool() {
+  _eci_dist_name=$1
   _eci_lock_name=$2
-  _eci_version_output=$(PYTHONPATH='' "$ECI_PYTHON" -P -m "$_eci_module" --version </dev/null 2>&1) || {
-    _eci_error "$_eci_module is not available from $ECI_PYTHON; the selected environment is not ready"
+  _eci_bin_name=$3
+  _eci_version_cmd=$4
+  _eci_bin=$(eci_entry_bin_dir)
+  _eci_tool=""
+  for _eci_candidate in "$_eci_bin/$_eci_bin_name.exe" "$_eci_bin/$_eci_bin_name"; do
+    if [ -f "$_eci_candidate" ]; then
+      _eci_tool=$_eci_candidate
+      break
+    fi
+  done
+  if [ -z "$_eci_tool" ]; then
+    _eci_error "$_eci_bin_name is not available in $_eci_bin; the selected environment is not ready"
+    return 1
+  fi
+  _eci_dist_result=$(PYTHONPATH='' "$ECI_PYTHON" -P -c '
+import importlib.metadata as metadata
+import pathlib
+import sys
+
+try:
+    distribution = metadata.distribution(sys.argv[1])
+except metadata.PackageNotFoundError as exc:
+    print(f"ERROR {exc}")
+    raise SystemExit(2) from None
+root = pathlib.Path(sys.argv[2]).resolve()
+location = distribution.locate_file("").resolve()
+if not (location == root or location.is_relative_to(root)):
+    print(f"ERROR {sys.argv[1]} is installed outside {root}: {location}")
+    raise SystemExit(3)
+print(distribution.version)
+' "$_eci_dist_name" "$(_eci_native_path "$ECI_ENV_DIR")" </dev/null 2>&1) || {
+    _eci_error "$_eci_dist_name is not installed from $ECI_ENV_DIR: $_eci_dist_result"
     return 1
   }
-  _eci_actual_version=$(printf '%s\n' "$_eci_version_output" | awk 'NF { value=$NF } END { print value }')
   _eci_expected_version=$(_eci_lock_version "$ECI_PROJECT_ROOT/uv.lock" "$_eci_lock_name")
   if [ -z "$_eci_expected_version" ]; then
     _eci_error "cannot read the locked $_eci_lock_name version from $ECI_PROJECT_ROOT/uv.lock"
     return 1
   fi
-  if [ "$_eci_actual_version" != "$_eci_expected_version" ]; then
-    _eci_error "$_eci_module version mismatch: environment has $_eci_actual_version, uv.lock requires $_eci_expected_version"
+  if [ "$_eci_dist_result" != "$_eci_expected_version" ]; then
+    _eci_error "$_eci_dist_name distribution version mismatch: environment has $_eci_dist_result, uv.lock requires $_eci_expected_version"
     return 1
   fi
-  return 0
-}
-
-_eci_require_lefthook() {
-  _eci_bin=$(eci_entry_bin_dir)
-  _eci_lefthook=""
-  for _eci_candidate in "$_eci_bin/lefthook.exe" "$_eci_bin/lefthook"; do
-    if [ -f "$_eci_candidate" ]; then
-      _eci_lefthook=$_eci_candidate
-      break
-    fi
-  done
-  if [ -z "$_eci_lefthook" ]; then
-    _eci_error "lefthook is not available in $_eci_bin; the selected environment is not ready"
-    return 1
-  fi
-  _eci_version_output=$("$_eci_lefthook" version </dev/null 2>&1) || {
-    _eci_error "lefthook version check failed for $_eci_lefthook"
+  _eci_version_output=$("$_eci_tool" "$_eci_version_cmd" </dev/null 2>&1) || {
+    _eci_error "$_eci_bin_name version check failed for $_eci_tool"
     return 1
   }
   _eci_actual_version=$(printf '%s\n' "$_eci_version_output" | awk 'NF { value=$NF } END { print value }')
-  _eci_expected_version=$(_eci_lock_version "$ECI_PROJECT_ROOT/uv.lock" lefthook)
-  if [ -z "$_eci_expected_version" ] || [ "$_eci_actual_version" != "$_eci_expected_version" ]; then
-    _eci_error "lefthook version mismatch: environment has ${_eci_actual_version:-unknown}, uv.lock requires ${_eci_expected_version:-unknown}"
+  if [ "$_eci_actual_version" != "$_eci_expected_version" ]; then
+    _eci_error "$_eci_bin_name version mismatch: $_eci_tool reports $_eci_actual_version, uv.lock requires $_eci_expected_version"
     return 1
   fi
+  ECI_TOOL_BIN=$_eci_tool
   return 0
+}
+
+_eci_require_pytest() {
+  # shellcheck disable=SC2034
+  _eci_require_distribution_tool pytest pytest pytest --version && ECI_PYTEST_BIN=$ECI_TOOL_BIN
+}
+
+_eci_require_ruff() {
+  # shellcheck disable=SC2034
+  _eci_require_distribution_tool ruff ruff ruff --version && ECI_RUFF_BIN=$ECI_TOOL_BIN
+}
+
+_eci_require_lefthook() {
+  _eci_require_distribution_tool lefthook lefthook lefthook version
 }
 
 _eci_validate_environment() {
@@ -369,14 +396,37 @@ print("OK" if actual == expected / "__init__.py" else f"MISMATCH {actual}")
   return 0
 }
 
-_eci_project_disables_cache() {
-  for _eci_file in "$ECI_PROJECT_ROOT/uv.toml" "$ECI_PROJECT_ROOT/pyproject.toml"; do
-    if [ -f "$_eci_file" ] && grep -Eq '^[[:space:]]*no-cache[[:space:]]*=[[:space:]]*true' "$_eci_file"; then
-      printf '%s\n' "$_eci_file"
-      return 0
-    fi
-  done
-  return 1
+_eci_require_persistent_cache() {
+  _eci_native_project=$(_eci_native_path "$ECI_PROJECT_ROOT")
+  # shellcheck disable=SC2030
+  _eci_cache_first=$(
+    (
+      unset UV_CACHE_DIR UV_NO_CACHE UV_CONFIG_FILE UV_NO_CONFIG
+      uv cache dir --project "$_eci_native_project" </dev/null
+    ) 2>&1
+  ) || {
+    _eci_error "cannot resolve the effective uv cache for $ECI_PROJECT_ROOT: $_eci_cache_first"
+    _eci_maintenance_hint
+    return 1
+  }
+  _eci_cache_second=$(
+    (
+      unset UV_CACHE_DIR UV_NO_CACHE UV_CONFIG_FILE UV_NO_CONFIG
+      uv cache dir --project "$_eci_native_project" </dev/null
+    ) 2>&1
+  ) || {
+    _eci_error "cannot recheck the effective uv cache for $ECI_PROJECT_ROOT: $_eci_cache_second"
+    _eci_maintenance_hint
+    return 1
+  }
+  if [ "$_eci_cache_first" != "$_eci_cache_second" ]; then
+    _eci_error "effective uv configuration disables or randomizes the cache (no stable cache directory); the normal entry requires a persistent host cache"
+    _eci_error "first cache: $_eci_cache_first"
+    _eci_error "second cache: $_eci_cache_second"
+    _eci_maintenance_hint
+    return 1
+  fi
+  return 0
 }
 
 _eci_sync_check() {
@@ -390,19 +440,22 @@ _eci_sync_check() {
     return 1
   fi
   case "$_eci_scope" in
-    runtime) _eci_group_args="--no-dev" ;;
-    *) _eci_group_args="--group dev" ;;
+    verify) _eci_group_args="--group dev" ;;
+    *) _eci_group_args="--no-dev" ;;
   esac
   _eci_native_env=$(_eci_native_path "$ECI_ENV_DIR")
   _eci_native_project=$(_eci_native_path "$ECI_PROJECT_ROOT")
+  _eci_native_python=$(_eci_native_path "$ECI_PYTHON")
   # shellcheck disable=SC2030
   # The group choice is one of two fixed flags; intentional word splitting.
   # shellcheck disable=SC2086
   _eci_check_output=$(
     (
       unset UV_CACHE_DIR UV_NO_CACHE UV_CONFIG_FILE UV_NO_CONFIG
+      unset UV_NO_DEV UV_NO_GROUP UV_PYTHON UV_PYTHON_PREFERENCE UV_NO_SYNC
       UV_PROJECT_ENVIRONMENT="$_eci_native_env" UV_PROJECT="$_eci_native_project" \
-        uv sync --project "$_eci_native_project" --locked --check --no-install-project --inexact --offline $_eci_group_args </dev/null
+        UV_PYTHON_DOWNLOADS=never \
+        uv sync --project "$_eci_native_project" --python "$_eci_native_python" --no-python-downloads --locked --check --no-install-project --inexact --offline $_eci_group_args </dev/null
     ) 2>&1
   )
   _eci_check_rc=$?
@@ -427,21 +480,17 @@ _eci_maintenance_hint() {
 eci_entry_validate() {
   _eci_scope=$1
   _eci_validate_environment || return 1
-  if _eci_cache_conflict=$(_eci_project_disables_cache); then
-    _eci_error "project configuration disables the uv cache ($_eci_cache_conflict); the normal entry requires host cache use"
-    _eci_maintenance_hint
-    return 1
-  fi
+  _eci_require_persistent_cache || return 1
   case "$_eci_scope" in
     pytest)
-      _eci_require_module_tool pytest pytest || return 1
+      _eci_require_pytest || return 1
       ;;
     ruff)
-      _eci_require_module_tool ruff ruff || return 1
+      _eci_require_ruff || return 1
       ;;
     verify)
-      _eci_require_module_tool pytest pytest || return 1
-      _eci_require_module_tool ruff ruff || return 1
+      _eci_require_pytest || return 1
+      _eci_require_ruff || return 1
       _eci_require_lefthook || return 1
       ;;
   esac
@@ -450,14 +499,22 @@ eci_entry_validate() {
 }
 
 eci_entry_export() {
+  _eci_scope=$1
   _eci_native_env=$(_eci_native_path "$ECI_ENV_DIR")
   _eci_native_project=$(_eci_native_path "$ECI_PROJECT_ROOT")
-  _eci_native_src=$(_eci_native_path "$ECI_SRC_DIR")
   # shellcheck disable=SC2031
   export UV_PROJECT_ENVIRONMENT="$_eci_native_env"
   # shellcheck disable=SC2031
   export UV_PROJECT="$_eci_native_project"
-  export PYTHONPATH="$_eci_native_src"
+  case "$_eci_scope" in
+    pytest|ruff)
+      unset PYTHONPATH
+      ;;
+    *)
+      _eci_native_src=$(_eci_native_path "$ECI_SRC_DIR")
+      export PYTHONPATH="$_eci_native_src"
+      ;;
+  esac
   export VIRTUAL_ENV="$_eci_native_env"
   _eci_bin=$(eci_entry_bin_dir)
   if _eci_is_windows && command -v cygpath >/dev/null 2>&1; then
@@ -465,7 +522,7 @@ eci_entry_export() {
   fi
   _eci_entry_path="$_eci_bin$(_eci_path_sep)$PATH"
   export PATH="$_eci_entry_path"
-  export UV_PYTHON_DOWNLOADS=never
-  export UV_NO_SYNC=1
   unset UV_CACHE_DIR UV_NO_CACHE UV_CONFIG_FILE UV_NO_CONFIG
+  unset UV_NO_DEV UV_NO_GROUP UV_PYTHON UV_PYTHON_PREFERENCE UV_NO_SYNC
+  unset UV_PYTHON_DOWNLOADS
 }

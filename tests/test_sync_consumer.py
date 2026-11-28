@@ -294,6 +294,8 @@ class VersionSyncTests(unittest.TestCase):
             targeted_env["UV_PROJECT"] = str(consumer)
             targeted_env["UV_PROJECT_ENVIRONMENT"] = str(custom_venv)
             targeted_env["VIRTUAL_ENV"] = str(eci_venv)
+            targeted_env["UV_NO_SYNC"] = "1"
+            targeted_env["UV_PYTHON_DOWNLOADS"] = "never"
             targeted_env["PYTHONPATH"] = os.pathsep.join(
                 [str(eci_linked / "src"), str(custom_lib)]
             )
@@ -308,6 +310,8 @@ class VersionSyncTests(unittest.TestCase):
                 custom_venv.resolve(),
             )
             self.assertNotIn("VIRTUAL_ENV", sanitized_target)
+            self.assertNotIn("UV_NO_SYNC", sanitized_target)
+            self.assertNotIn("UV_PYTHON_DOWNLOADS", sanitized_target)
             self.assertEqual(
                 Path(sanitized_target["PYTHONPATH"]).resolve(), custom_lib.resolve()
             )

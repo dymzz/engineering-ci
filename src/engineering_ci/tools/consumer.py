@@ -81,7 +81,9 @@ def consumer_subprocess_env(
     The active interpreter prefix is the host environment running this tool, so a
     shared environment resolving to that prefix is stripped even when it lives
     outside the ECI checkout family. Any other ``UV_PROJECT_ENVIRONMENT`` path
-    remains the consumer's intentional target.
+    remains the consumer's intentional target. Host-only ``UV_NO_SYNC`` and
+    ``UV_PYTHON_DOWNLOADS`` restrictions are also removed so independent consumer
+    preparation and uvx materialization keep their original contract.
     """
     env = dict(os.environ if base_env is None else base_env)
     src_root = source.resolve()
@@ -93,6 +95,10 @@ def consumer_subprocess_env(
         if sys.prefix != getattr(sys, "base_prefix", sys.prefix)
         else None
     )
+
+    for target in ("UV_NO_SYNC", "UV_PYTHON_DOWNLOADS"):
+        for key in _matching_env_keys(env, target):
+            env.pop(key, None)
 
     for target in ("UV_PROJECT", "UV_PROJECT_ENVIRONMENT"):
         for key in _matching_env_keys(env, target):

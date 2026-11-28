@@ -876,7 +876,14 @@ def _clean_uv_env(hook_env, *, extra_path=None):
         key: value
         for key, value in hook_env.items()
         if key.upper()
-        not in {"UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "PYTHONPATH", "VIRTUAL_ENV"}
+        not in {
+            "UV_PROJECT",
+            "UV_PROJECT_ENVIRONMENT",
+            "PYTHONPATH",
+            "VIRTUAL_ENV",
+            "UV_NO_SYNC",
+            "UV_PYTHON_DOWNLOADS",
+        }
     }
     if extra_path is not None:
         env["PATH"] = os.pathsep.join([str(extra_path), env.get("PATH", "")])

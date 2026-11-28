@@ -43,10 +43,12 @@ UV_PROJECT_ENVIRONMENT=<共享环境路径> uv sync --locked --check --no-instal
 ```
 
 普通薄入口会在调用上述只读校验前先核实环境目录、实际解释器 `sys.prefix`、候选源码及
-所需工具版本/路径；`uv sync --check` 的退出 0 单独不构成“环境存在且就绪”。入口使用
-宿主 uv 默认 cache，不把继承的 `UV_CACHE_DIR` / `UV_NO_CACHE` / 调用方 config 覆盖当作
-宿主权威，也不自动创建、同步或清理环境。维护操作仍显式执行上述 `uv sync` 命令，并按
-实际需要选择 `--group dev`；不要为普通操作重新指定临时 cache。
+所需工具的实际安装来源（发行版元数据、控制台脚本与 `uv.lock` 版本）；`uv sync --check`
+的退出 0 单独不构成“环境存在且就绪”。入口使用 uv 原生有效 cache 配置，保留合法宿主
+自定义 `cache-dir`；若项目/用户配置实际禁用 cache（包括带引号键或 `uv.toml` 覆盖），
+入口明确拒绝，而不 grep 猜测。它不把继承的 `UV_CACHE_DIR` / `UV_NO_CACHE` / 调用方
+config 覆盖当作宿主权威，也不自动创建、同步或清理环境。维护操作仍显式执行上述
+`uv sync` 命令，并按实际需要选择 `--group dev`；不要为普通操作重新指定临时 cache。
 
 若分支引入与共享环境不兼容的锁定版本冲突，通过显式独立的
 `UV_PROJECT_ENVIRONMENT=<独立环境路径> uv sync --locked --group dev` 隔离管理，
@@ -78,11 +80,16 @@ uv 通过绝对路径 `UV_PROJECT_ENVIRONMENT` 指定共享项目环境，通过
   ```
   操作类型为 `verify` / `cli` / `pytest` / `ruff`。普通 entry 使用确定性默认：linked
   worktree 复用主管理 checkout 的 `.venv`，候选源码固定为当前检出 `src/`；也可用
-  `--environment <已准备路径>` 选择显式隔离环境。环境缺失、解释器不匹配、工具版本/
-  路径不符或锁定检查失败时，入口在实际操作前以非零退出并打印维护命令；**不会**创建
-  `.venv`、执行 `uv sync`、改 cache 或回退系统工具。Windows 的 `engineering-ci.ps1`
-  定位 Git for Windows 的 Bash（可用 `ECI_GIT_BASH` 显式指定），不会回退到 WSL 的
-  `bash`；找不到时明确失败。Hook 仍自动走
+  `--environment <已准备路径>` 选择显式隔离环境。就绪范围按实际操作确定：runtime
+  CLI/help/只读报告只要求 runtime 依赖，`pytest` 只要求 pytest，`ruff` 只要求 Ruff；
+  完整 `verify` 才要求 dev 组、pytest、Ruff 与 Lefthook。pytest/Ruff 以所选环境中实际
+  安装的发行版、控制台脚本及 `uv.lock` 版本为准并执行同一脚本，不因候选 `src/` 同名
+  模块换源。环境缺失、解释器不匹配、工具来源/版本不符、有效 cache 不稳定或锁定检查
+  失败时，入口在实际操作前以非零退出并打印维护命令；**不会**创建 `.venv`、执行写式
+  `uv sync`、改 cache 或回退系统工具。入口使用 uv 原生参数绑定实际解释器与依赖组，
+  清除会改变该请求的继承覆盖，并保留合法宿主自定义 cache-dir；有效配置禁用 cache 时
+  明确拒绝。Windows 的 `engineering-ci.ps1` 定位 Git for Windows 的 Bash（可用
+  `ECI_GIT_BASH` 显式指定），不会回退到 WSL 的 `bash`；找不到时明确失败。Hook 仍自动走
   [`scripts/lefthook-arguments.sh`](../scripts/lefthook-arguments.sh)。
 - 维护或使用未受管原生命令时仍可手工会话绑定：设置
   `UV_PROJECT_ENVIRONMENT=<共享环境路径>`，执行 ECI 自身 CLI / `verify` 时同时设置

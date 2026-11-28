@@ -244,19 +244,27 @@ checkout 的反向路径，不隐式推导 `.venv`，须显式传入 `UV_PROJECT
   - 标准入口为 [`scripts/engineering-ci.sh`](../scripts/engineering-ci.sh)（Windows 可直接
     `pwsh -NoProfile -File scripts/engineering-ci.ps1 ...`）。入口先经共享
     [`scripts/eci-env.sh`](../scripts/eci-env.sh) 解析主管理 checkout、共享环境、候选
-    `src/`、解释器与工具，再按操作范围执行一次只读
-    `uv sync --locked --check --no-install-project --inexact --offline`（runtime 用
-    `--no-dev`，pytest/ruff/verify 用 `--group dev`），随后分派原生操作；
-  - 环境缺失、实际解释器 `sys.prefix` 不符、工具缺失/版本与 `uv.lock` 不符、候选源码
-    绑定错误或锁定检查失败时，入口在实际操作前非零退出并给出维护命令。入口不创建
+    `src/`、实际解释器与工具，再按操作的实际边界执行一次只读
+    `uv sync --locked --check --no-install-project --inexact --offline`：
+    - `cli`、`verify --help`、`cli verify report` 等 runtime 操作只要求 runtime 依赖；
+    - `pytest` 只要求 pytest，`ruff` 只要求 Ruff，不因无关开发工具缺失阻断；
+    - 完整 `verify` 要求 pytest、Ruff、Lefthook 与 dev 依赖组。
+    检查使用 `--python <实际解释器>`、`--no-python-downloads`，并清除继承的
+    `UV_PYTHON` / `UV_NO_DEV` / `UV_NO_GROUP` / `UV_NO_SYNC` 等会改变已确定请求的覆盖。
+  - pytest/Ruff 以所选环境中实际安装的发行版、控制台脚本及其 `uv.lock` 版本为准；
+    正式分派执行同一已验证脚本，不因候选 `src/` 存在同名模块而换用其他来源。
+  - 环境缺失、实际解释器 `sys.prefix` 不符、工具缺失/来源或版本不符、候选源码绑定错误、
+    有效 cache 不稳定或锁定检查失败时，入口在实际操作前非零退出并给出维护命令。入口不创建
     `.venv`、不执行写式 `uv sync`、不改 cache、不回退系统 PATH 工具；不要把
-    `uv sync --check` 的退出 0 单独当作环境存在或工具就绪；
+    `uv sync --check` 的退出 0 单独当作环境存在或工具就绪。
   - linked worktree 默认使用主管理 checkout 的 `.venv`；普通入口不采用任意继承的
     `UV_PROJECT_ENVIRONMENT` / `UV_CACHE_DIR` / `UV_NO_CACHE` / uv config 覆盖，显式隔离
-    环境通过 `--environment <已准备路径>` 选择。维护或直接调试原生命令时仍可按上节手工
-    绑定，但必须自行保证同一有效绑定；
+    环境通过 `--environment <已准备路径>` 选择。合法宿主自定义 cache-dir 保留；项目/用户
+    有效配置使 cache 失效时明确拒绝，而不是 grep 猜测。维护或直接调试原生命令时仍可按上节
+    手工绑定，但必须自行保证同一有效绑定。
   - 入口只分派 `verify` / `cli` / `pytest` / `ruff` 四类原生操作，不新建总 Runner，也不
-    强迫原生 `git` / `dagger` 经过 Python CLI。
+    强迫原生 `git` / `dagger` 经过 Python CLI；不会向独立消费者或测试 fixture 传播
+    `UV_NO_SYNC` / `UV_PYTHON_DOWNLOADS` 等宿主限制。
 
 `git commit` 唤醒 Lefthook 的 Index 采集 Job。采集一次本次 Index 和基线，
 再把 Invocation 引用传给 `pre-commit-checks` 的准备、检查及最终对账 Job。
