@@ -27,6 +27,8 @@ worktree (`PYTHONPATH=<baseline>/src`, import path recorded in
 Note: the repository whitespace hook rejects trailing spaces, so trailing
 whitespace inside the captured logs was stripped; every other byte is verbatim.
 
+Update: the third case was fixed after this record. Commit e407d5b asserts the bound pytest contract (report/exit/native input refs/argv) instead of the stub stdout rendering, so only the two environment-caused producer failures remain.
+
 Raw files: `candidate-0ec77a1-full.txt` (22,454 bytes, complete `-vv` output),
 `baseline-941a2f4-producer.txt` (14,228 bytes), `baseline-941a2f4-lossless-absent.txt`
 (collect/exit-4 record), `lossless-failure-excerpt.txt`, and the two env files.
