@@ -2178,7 +2178,7 @@ def test_index_plan_checks_read_staged_bytes_across_check_families(
             root=materialized,
             tach_validation={
                 "status": "passed",
-                "tach_sha256": selection._digest(materialized / cfg.tach),
+                "tach_sha256": _tach_validation_sha(materialized, cfg.tach),
                 "source_tree": chosen.changeset.execution_tree or chosen.changeset.tree,
             },
         )
@@ -3299,7 +3299,7 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -3377,7 +3377,7 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -3590,7 +3590,7 @@ require_text_unset = false
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -3706,7 +3706,7 @@ def test_a1_a2_real_producer_profile_and_source_closure_reconcile_end_to_end(
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -3815,6 +3815,24 @@ def test_a1_a2_real_producer_profile_and_source_closure_reconcile_end_to_end(
         assert rec_by[name]["binding_status"] == "matched", rec_by[name]
 
 
+def _tach_validation_sha(path, tach_rel):
+    """Digest the inspected Git blob, falling back to the file.
+
+    The Plan digest is the raw inspected Tree blob; a Windows checkout with
+    core.autocrlf rewrites CRLF, so hashing the file would not match.
+    """
+    for spec in (f":{tach_rel}", f"HEAD:{tach_rel}"):
+        proc = subprocess.run(
+            ["git", "cat-file", "blob", spec],
+            cwd=path,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return hashlib.sha256(proc.stdout).hexdigest()
+    return selection._digest(path / tach_rel)
+
+
 def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
     path, _base = repo
     (path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
@@ -3836,7 +3854,7 @@ def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": idx_sel.changeset.execution_tree or idx_sel.changeset.tree,
         },
     )
@@ -3870,7 +3888,7 @@ def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": cmt_sel.changeset.execution_tree or cmt_sel.changeset.tree,
         },
     )
@@ -3935,7 +3953,7 @@ def test_a1_profile_reference_fail_closed_converged_contract(repo):
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -4035,7 +4053,7 @@ def test_a2_real_non_mocked_host_execution_and_reconciliation(repo):
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -4234,7 +4252,7 @@ def test_a2_real_non_mocked_tach_and_vulture_host_e2e(repo):
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -4379,7 +4397,7 @@ def test_a2_real_non_mocked_tach_and_vulture_host_e2e(repo):
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": adv_sel.changeset.execution_tree or adv_sel.changeset.tree,
         },
     )
@@ -4445,7 +4463,7 @@ def test_a2_negative_index_b_worktree_c_divergence_and_resolution_refusals(
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": idx_sel.changeset.execution_tree or idx_sel.changeset.tree,
         },
     )
@@ -4518,7 +4536,7 @@ def _hygiene_worktree_plan(path, base):
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -4796,7 +4814,7 @@ def test_raw_execution_reports_carry_plan_authorization_for_reconciliation(repo)
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -5416,7 +5434,7 @@ def test_source_resolution_deleted_paths_and_forged_deletion_refusal(repo):
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -5753,7 +5771,7 @@ def test_host_git_snapshot_retains_unmaterialized_and_unreadable_members(
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -5858,7 +5876,7 @@ def test_deleted_path_resolution_with_overlays_and_ignored_reappearance(tmp_path
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -6153,7 +6171,7 @@ def test_execution_always_runs_native_tach_independently_of_plan_validation(repo
         "tach_path": "tach.toml",
         "stdout": "Modules validated\n",
         "stderr": "",
-        "tach_sha256": selection._digest(path / "tach.toml"),
+        "tach_sha256": _tach_validation_sha(path, "tach.toml"),
         "source_tree": changes.execution_tree or changes.tree,
         "snapshot": changes.snapshot,
     }
