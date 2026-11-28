@@ -10,4 +10,4 @@ Agent 本地工程调用与 GitHub 认证排查见[常用操作](guides/common-t
 
 - [用户指南](guides/README.md) — 首次使用、常用操作、命令和输出参考。
 - [技术文档](docs/README.md) — 文档约定、架构、接口契约和验证记录。
-- [用户脚本](scripts/README.md) — Release 与 Download 两个入口的范围和维护说明。
+- [用户脚本](scripts/README.md) — 薄本地入口、环境前置、Release 与 Download 的范围和维护说明。

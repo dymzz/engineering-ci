@@ -2,11 +2,24 @@
 
 本页说明实际保留的用户入口。准备环境见[开始使用](getting-started.md)，连续操作见[常用操作](common-tasks.md)。
 
+## 本地薄入口
+
+`scripts/engineering-ci.sh`（Windows 可直接 `pwsh -NoProfile -File scripts/engineering-ci.ps1 ...`）
+在操作前解析宿主环境与候选 `src/`，执行只读锁定就绪检查，失败即停止；它不创建或同步环境。
+`--environment <path>` 可选择已准备的显式隔离环境。
+
+| 操作 | 用途 |
+| --- | --- |
+| `verify ...` | 分派 `engineering-ci verify`，要求 dev 工具及 Lefthook 就绪 |
+| `cli ...` | 分派现有 `engineering-ci` CLI（如 `version show`、`verify report`） |
+| `pytest ...` | 分派绑定解释器的 `pytest` |
+| `ruff ...` | 分派绑定解释器的 `ruff` |
+
 ## 用户入口
 
-`engineering-ci` 提供 `version / release / download`。`scripts/` 只保留 `release.py` 与 `download.py`；
-它们加载当前 checkout 的 `src/`。无参数或 `--help` 只显示帮助，不访问 GitHub。
-模块内部文件不作为直接运行的脚本。检查使用原生 `dagger check`。
+`engineering-ci` 提供 `version / release / download`。`scripts/` 保留 `release.py` 与 `download.py`
+两个业务 CLI，以及上述薄入口/环境前置；业务脚本加载当前 checkout 的 `src/`。无参数或
+`--help` 只显示帮助，不访问 GitHub。模块内部文件不作为直接运行的脚本。检查使用原生 `dagger check`。
 
 | 命令 | 用途 | 远端修改 |
 | --- | --- | --- |
@@ -68,15 +81,16 @@ PowerShell 查看 `$LASTEXITCODE`，Linux 查看 `$?`。fine-grained PAT 不支�
 
 在复用主管理 checkout 共享 `.venv` 的 linked worktree 中直接执行下述命令或 `scripts/` 入口时，
 应在开发会话或命令作用域设置 `UV_PROJECT_ENVIRONMENT=<共享 .venv 绝对路径>` 且始终携带 `--no-sync`；
-调用 `engineering-ci ...` 或 `python -P -m engineering_ci...` 时同时设置 `PYTHONPATH=<当前检出>/src`
+普通入口见上节 `scripts/engineering-ci.sh`；手工调用 `engineering-ci ...` 或
+`python -P -m engineering_ci...` 时同时设置 `PYTHONPATH=<当前检出>/src`
 （`scripts/release.py` 与 `scripts/download.py` 已内置注入所在检出 `src/`，会话切换、离开到独立消费者仓前清理 ECI 变量与更新约定见[常用操作](common-tasks.md)）。
 `engineering_ci.tools.consumer` 跨仓操作独立消费者时会过滤继承自 ECI 检出的 `UV_PROJECT*` / `VIRTUAL_ENV` / `PYTHONPATH`。等于当前解释器前缀的共享环境是宿主环境，不传给消费者子进程；显式指向其他路径的 `UV_PROJECT_ENVIRONMENT` 仍保留。调用方式见[常用操作](common-tasks.md)。
 
 | 功能 | 调用 |
 | --- | --- |
-| 本仓综合验证 | `uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`。用 `verify report --verify-dir <Invocation>` 核验核心测试产物。用 `--test-records`、`--test-node`、`--test-module`、`--test-phase` 查询记录，或用 `--compare-tests` 比较兼容的历史 Invocation。见[显式本地综合验证](common-tasks.md#显式本地综合验证)。 |
+| 本仓综合验证 | `scripts/engineering-ci.sh verify --out .artifacts/verify`。用 `cli verify report --verify-dir <Invocation>` 核验核心测试产物。用 `--test-records`、`--test-node`、`--test-module`、`--test-phase` 查询记录，或用 `--compare-tests` 比较兼容的历史 Invocation。见[显式本地综合验证](common-tasks.md#显式本地综合验证)。 |
 | 原生定向检查 | `dagger check` / `dagger check --engineering-ci --check=...`；选择与报告见[本地检查](../docs/architecture/local-checks.md) |
-| 版本 | `uv run --locked --no-sync engineering-ci version show` / `check` / `set v0.7.0` |
+| 版本 | `scripts/engineering-ci.sh cli version show` / `check` / `set v0.7.0` |
 | Actions 内部发布/证据 | `python -m engineering_ci.workflow_actions release ...` / `manifest ...` |
 | 依赖安全 | `uv run --locked --no-sync python -P -m engineering_ci.tools.security ...` |
 | 性能采样 | `uv run --locked --no-sync python -P -m engineering_ci.tools.performance ...` |
