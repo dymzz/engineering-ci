@@ -92,6 +92,35 @@ class PytestReportTests(unittest.TestCase):
                 self.assertEqual(data["status"], "error")
                 self.assertFalse(data["report_available"])
 
+    def test_producer_and_consumer_reject_inconsistent_counts(self):
+        from engineering_ci import pytest_contracts
+
+        for xml in (
+            '<testsuite tests="1"/>',
+            '<testsuite tests="1" failures="2" errors="0" skipped="0"/>',
+            '<testsuite tests="-1" failures="0" errors="0" skipped="0"/>',
+        ):
+            data = report.summarize_pytest(xml, 0, "")
+            self.assertFalse(data["report_available"])
+            self.assertIsNone(pytest_contracts.validate_native_pytest_v1(data))
+
+        valid = report.summarize_pytest(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"/>', 0, ""
+        )
+        self.assertIsNotNone(
+            pytest_contracts.validate_native_pytest_v1({**valid, "status": []})
+        )
+        self.assertIsNotNone(
+            pytest_contracts.validate_native_pytest_v1(
+                {**valid, "schema_version": True}
+            )
+        )
+        self.assertIsNotNone(
+            pytest_contracts.validate_native_pytest_v1(
+                {**valid, "counts": {**valid["counts"], "passed": 99}}
+            )
+        )
+
     def test_no_tests(self):
         data = report.summarize_pytest(
             '<testsuite tests="0" failures="0" errors="0" skipped="0"/>',

@@ -11,7 +11,37 @@ from pathlib import Path
 
 import pytest
 
+from engineering_ci import verify_report
 from engineering_ci.cli import main, verify
+
+
+def _make_fake_popen(handler):
+    class _FakePopen:
+        def __init__(self, cmd, *, stdout, stderr, env):
+            self.cmd = cmd
+            self.stdout = stdout
+            self.stderr = stderr
+            self._rc = None
+            self._finished = False
+            self.terminated = False
+            self.killed = False
+
+        def wait(self, timeout=None):
+            if not self._finished:
+                self._finished = True
+                self._rc = handler(self.cmd, stdout=self.stdout, stderr=self.stderr)
+            return self._rc
+
+        def poll(self):
+            return self._rc
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    return _FakePopen
 
 
 @pytest.mark.parametrize(
@@ -32,17 +62,19 @@ def test_verify_preserves_native_output_and_completion(
     monkeypatch.setattr(verify.subprocess, "check_output", outputs.__getitem__)
     native_outputs = {"stdout": b"raw \xff\r\n", "stderr": b"diagnostic\n"}
 
-    def run(command, *, stdout, check, stderr=None):
-        if command[0] == "git":
-            return subprocess.CompletedProcess(command, 0, b"a" * 40 + b"\n")
+    def run_git(command, **kwargs):
+        assert command[0] == "git"
+        return subprocess.CompletedProcess(command, 0, b"a" * 40 + b"\n")
+
+    def popen_handler(command, *, stdout, stderr):
         assert command == ("lefthook", "run", "verify", "--no-auto-install")
-        assert check is False
         assert not list(tmp_path.glob("*/verify-timing.json"))
         stdout.write(native_outputs["stdout"])
         stderr.write(native_outputs["stderr"])
-        return subprocess.CompletedProcess(command, exit_code)
+        return exit_code
 
-    monkeypatch.setattr(verify.subprocess, "run", run)
+    monkeypatch.setattr(verify.subprocess, "run", run_git)
+    monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_handler))
     assert main(["verify", "--out", str(tmp_path)]) == exit_code
     (path,) = tmp_path.glob("*/verify-timing.json")
     receipt = json.loads(path.read_bytes())
@@ -70,13 +102,16 @@ def test_interrupted_verify_has_no_completed_receipt(tmp_path, monkeypatch, caps
     }
     monkeypatch.setattr(verify.subprocess, "check_output", outputs.__getitem__)
 
-    def run(command, **kwargs):
-        if command[0] == "git":
-            return subprocess.CompletedProcess(command, 1, b"")
-        kwargs["stdout"].write(b"partial output\n")
+    def run_git(command, **kwargs):
+        assert command[0] == "git"
+        return subprocess.CompletedProcess(command, 1, b"")
+
+    def popen_interrupt(command, *, stdout, stderr):
+        stdout.write(b"partial output\n")
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(verify.subprocess, "run", run)
+    monkeypatch.setattr(verify.subprocess, "run", run_git)
+    monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_interrupt))
     assert main(["verify", "--out", str(tmp_path)]) == 130
     (stdout,) = tmp_path.glob("*/lefthook.stdout")
     assert stdout.read_bytes() == b"partial output\n"
@@ -127,7 +162,20 @@ def test_verify_rejects_config_without_verify_hook(tmp_path, monkeypatch, capsys
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
     )
     assert main(["verify", "--out", str(tmp_path)]) == 1
-    assert not list(tmp_path.iterdir())
+    assert not list(tmp_path.glob("*/verify-timing.json"))
+    (status_path,) = tmp_path.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "preflight_failed"
+    assert "declared_verify_jobs" not in status_data
+    source = verify_report.build_verify_report(verify_dir=status_path.parent)[
+        "sources"
+    ][0]
+    assert source["core_test_delivery_obligation"] == "undeclared"
+    assert status_data["native_started"] is False
+    assert status_data["native_exit_code"] is None
+    assert status_data["time_source_verified"] is False
+    assert status_data["stages"]["cli_preflight"]["elapsed_seconds"] >= 0
+    assert "no 'verify' hook" in status_data["error"]["message"]
     assert "no 'verify' hook" in capsys.readouterr().err
 
 
@@ -266,8 +314,884 @@ time.sleep(30)
     (stderr_log,) = out.glob("*/lefthook.stderr")
     assert stdout_log.parent == stderr_log.parent
     assert not list(out.glob("*/verify-timing.json"))
+    (status_path,) = out.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "interrupted"
+    assert status_data["native_started"] is True
+    assert status_data["outer_exit_code"] == 130
+    assert status_data["native_exit_source"] in {
+        "observed_before_terminate",
+        "observed_after_terminate",
+        "unobserved_after_terminate",
+    }
+    if status_data["native_exit_source"] == "unobserved_after_terminate":
+        assert status_data["native_exit_code"] is None
+    else:
+        assert isinstance(status_data["native_exit_code"], int)
+    assert status_data["time_source_verified"] is False
+    assert status_data["elapsed_seconds"] >= 0
     err_text = stderr_bytes.decode("utf-8", "replace")
     assert "verify interrupted; partial outputs in" in err_text
     assert str(stdout_log.parent) in err_text
     assert not stdout_bytes.strip()
     assert marker.is_file()
+
+
+def test_verify_monotonic_stages_boundaries_and_clock_backward_jump(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"parallel":false,"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+
+    def run_git(cmd, **kwargs):
+        assert cmd[0] == "git"
+        return subprocess.CompletedProcess(cmd, 0, b"b" * 40 + b"\n")
+
+    def popen_handler(cmd, *, stdout, stderr):
+        stdout.write(
+            b"summary: (done in 0.12 seconds)\n\xe2\x9c\x93 lint (0.12 seconds)\n"
+        )
+        return 0
+
+    monkeypatch.setattr(verify.subprocess, "run", run_git)
+    monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_handler))
+    timestamps = iter([500, 100])
+    monkeypatch.setattr(verify, "time_ns", lambda: next(timestamps))
+
+    assert main(["verify", "--out", str(tmp_path)]) == 0
+    (timing_path,) = tmp_path.glob("*/verify-timing.json")
+    data = json.loads(timing_path.read_text(encoding="utf-8"))
+    assert data["schema_version"] == 2
+    assert data["timing_clock"] == "monotonic_perf_counter"
+    assert data["time_source_verified"] is False
+    assert data["started_at_ns"] == 500
+    assert data["completed_at_ns"] is None
+    assert data["clock_diagnostics"]["wall_clock_regression_observed"] is True
+    assert data["clock_diagnostics"]["utc_elapsed_ns"] is None
+    assert data["elapsed_seconds"] >= 0
+    assert set(data["stages"]) == {
+        "cli_preflight",
+        "lefthook_native",
+        "report_preparation",
+    }
+    for stage in data["stages"].values():
+        assert stage["elapsed_seconds"] >= 0
+    assert data["timing_boundaries"]["post_seal_io_excluded"] is True
+    assert data["timing_boundaries"]["outer_launcher_startup_excluded"] is True
+    assert not list(tmp_path.glob("*/verify-status.json"))
+
+
+@pytest.mark.parametrize(
+    ("seal_error", "report_status"),
+    [("disk full", "verified"), ("replace failed", "missing")],
+)
+def test_verify_seal_failure_records_status_without_timing_receipt(
+    tmp_path, monkeypatch, capsys, seal_error, report_status
+):
+    from test_pytest_report import report as producer
+
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"core-tests"}]}}\n'
+        ),
+    )
+
+    def run_git(cmd, **kwargs):
+        assert cmd[0] == "git"
+        return subprocess.CompletedProcess(cmd, 0, b"c" * 40 + b"\n")
+
+    report_bytes = json.dumps(
+        producer.summarize_pytest("", 0, "report unavailable")
+    ).encode("utf-8")
+
+    def popen_handler(cmd, *, stdout, stderr):
+        stdout.write(b"summary: (done in 0.05 seconds)\n")
+        export = Path(stdout.name).parent / "core-tests"
+        export.mkdir()
+        (export / "exit-code.txt").write_bytes(b"0\n")
+        (export / "report.json").write_bytes(report_bytes)
+        return 0
+
+    monkeypatch.setattr(verify.subprocess, "run", run_git)
+    monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_handler))
+    original_native_output = verify._native_output
+    hashed_children = []
+
+    def track_native_output(path):
+        if path.parent.name == "core-tests":
+            hashed_children.append(path.name)
+        return original_native_output(path)
+
+    monkeypatch.setattr(verify, "_native_output", track_native_output)
+
+    if report_status == "verified":
+        original_write = verify._write_json_atomic
+
+        def fail_on_receipt(path, payload):
+            if path.name == "verify-timing.json":
+                raise OSError(seal_error)
+            return original_write(path, payload)
+
+        monkeypatch.setattr(verify, "_write_json_atomic", fail_on_receipt)
+    else:
+        original_replace = verify.Path.replace
+
+        def fail_timing_replace(self, target):
+            if Path(target).name == "verify-timing.json":
+                os.unlink(Path(target).parent / "core-tests" / "report.json")
+                raise OSError(seal_error)
+            return original_replace(self, target)
+
+        monkeypatch.setattr(verify.Path, "replace", fail_timing_replace)
+        monkeypatch.setattr(
+            verify.Path,
+            "unlink",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("unlink failed")),
+        )
+
+    assert main(["verify", "--out", str(tmp_path)]) == 1
+    assert not list(tmp_path.glob("*/verify-timing.json"))
+    (status_path,) = tmp_path.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "seal_failed"
+    assert status_data["native_started"] is True
+    assert status_data["native_exit_code"] == 0
+    assert status_data["outer_exit_code"] == 1
+    assert status_data["declared_verify_jobs"] == ["core-tests"]
+    assert {
+        ref["path"]: ref["sha256"]
+        for ref in status_data["child_references"]["references"]
+    } == {
+        "core-tests/exit-code.txt": hashlib.sha256(b"0\n").hexdigest(),
+        "core-tests/report.json": hashlib.sha256(report_bytes).hexdigest(),
+    }
+    assert sorted(hashed_children) == ["exit-code.txt", "report.json"]
+    source = verify_report.build_verify_report(verify_dir=status_path.parent)[
+        "sources"
+    ][0]
+    assert source["core_test_delivery_obligation"] == "required"
+    child = source["child_references"]
+    assert child["files"]["core-tests/report.json"]["status"] == report_status
+    assert child["verification"] == (
+        "verified" if report_status == "verified" else "file_verification_failed"
+    )
+    assert child["native_exit_code"] == 0
+    assert source["evidence_complete"] is False
+    assert status_data["time_source_verified"] is False
+    assert status_data["elapsed_seconds"] >= 0
+    assert status_data["error"]["message"] == seal_error
+    assert f"timing receipt unavailable: {seal_error}" in capsys.readouterr().err
+
+
+def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "verify@example.invalid"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Verify Test"], cwd=repo, check=True)
+    (repo / "lefthook.yml").write_text(
+        """verify:
+  parallel: true
+  jobs:
+    - name: pass-job
+      run: echo pass
+    - name: fail-job
+      run: exit 2
+    - name: skip-job
+      skip: true
+      run: echo never
+    - name: outer-grp
+      group:
+        parallel: false
+        jobs:
+          - name: inner-ok
+            run: echo inner
+          - name: subgrp
+            group:
+              parallel: true
+              jobs:
+                - name: core-tests
+                  run: echo deep
+                - name: deep-skip
+                  skip: true
+                  run: echo deep-skip
+    - group:
+        parallel: true
+        jobs:
+          - name: unnamed-inner
+            run: echo unnamed
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "lefthook.yml"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    (repo / "lefthook-local.yml").write_text(
+        "verify:\n  jobs:\n    - name: pass-job\n      run: echo local-override\n",
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "out"
+    monkeypatch.chdir(repo)
+    code = main(["verify", "--out", str(out)])
+    assert code == 1
+    (receipt_path,) = out.glob("*/verify-timing.json")
+    data = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert data["native_exit_code"] == 1
+    summary = data["lefthook_summary"]
+    assert summary["summary_present"] is True
+    assert summary["root_parallel"] is True
+    assert isinstance(summary["total_duration_seconds"], float)
+    assert summary["total_duration_precision_seconds"] == 0.01
+
+    by_name = {node["name"]: node for node in summary["items"]}
+    assert by_name["pass-job"]["status"] == "passed"
+    assert isinstance(by_name["pass-job"]["duration_seconds"], float)
+    assert by_name["fail-job"]["status"] == "failed"
+    assert isinstance(by_name["fail-job"]["duration_seconds"], float)
+    assert by_name["skip-job"]["status"] == "skipped"
+    assert by_name["skip-job"]["duration_seconds"] == "unknown"
+    assert by_name["skip-job"]["skip_reason"] == "by condition"
+
+    outer = by_name["outer-grp"]
+    assert outer["kind"] == "group"
+    assert outer["parallel"] is False
+    outer_children = {c["name"]: c for c in outer["children"]}
+    assert outer_children["inner-ok"]["status"] == "passed"
+    subgrp = outer_children["subgrp"]
+    assert subgrp["kind"] == "group"
+    assert subgrp["parallel"] is True
+    sub_children = {c["name"]: c for c in subgrp["children"]}
+    assert sub_children["core-tests"]["path"] == ["outer-grp", "subgrp", "core-tests"]
+    assert sub_children["core-tests"]["status"] == "passed"
+    assert sub_children["deep-skip"]["status"] == "skipped"
+    assert sub_children["deep-skip"]["duration_seconds"] == "unknown"
+
+    unnamed = by_name["group (4)"]
+    assert unnamed["kind"] == "group"
+    assert unnamed["parallel"] is True
+    assert [c["name"] for c in unnamed["children"]] == ["unnamed-inner"]
+    assert summary["counts"] == {
+        "passed": 4,
+        "failed": 1,
+        "skipped": 2,
+        "unknown": 0,
+    }
+    assert "local-override" in (receipt_path.parent / "lefthook.stdout").read_text(
+        encoding="utf-8"
+    )
+    assert "outer-grp/subgrp/core-tests" in data["declared_verify_jobs"]
+    assert "core-tests" not in data["declared_verify_jobs"]
+    source = verify_report.build_verify_report(verify_dir=receipt_path.parent)[
+        "sources"
+    ][0]
+    assert source["core_test_delivery_obligation"] == "not_required"
+
+
+def test_verify_output_open_and_spawn_failures_never_mark_native_started(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+
+    def run_git_ok(cmd, **kwargs):
+        assert cmd[0] == "git"
+        return subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n")
+
+    class _SpawnFailPopen:
+        def __init__(self, cmd, *, stdout, stderr, env):
+            raise FileNotFoundError("lefthook binary disappeared")
+
+    monkeypatch.setattr(verify.subprocess, "run", run_git_ok)
+    monkeypatch.setattr(verify.subprocess, "Popen", _SpawnFailPopen)
+    out_spawn = tmp_path / "spawn-fail"
+    assert main(["verify", "--out", str(out_spawn)]) == 1
+    assert not list(out_spawn.glob("*/verify-timing.json"))
+    (spawn_status_path,) = out_spawn.glob("*/verify-status.json")
+    spawn_status = json.loads(spawn_status_path.read_text(encoding="utf-8"))
+    assert spawn_status["status"] == "spawn_failed"
+    assert spawn_status["native_started"] is False
+    assert spawn_status["native_exit_code"] is None
+    assert spawn_status["declared_verify_jobs"] == ["lint"]
+    assert "child_references" not in spawn_status
+
+    orig_open = verify.Path.open
+
+    def fail_stderr_open(self, *args, **kwargs):
+        if self.name == "lefthook.stderr" and "x" in (args[0] if args else ""):
+            raise PermissionError("stderr blocked")
+        return orig_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(verify.subprocess, "run", run_git_ok)
+    monkeypatch.setattr(verify.Path, "open", fail_stderr_open)
+    out_open = tmp_path / "open-fail"
+    assert main(["verify", "--out", str(out_open)]) == 1
+    assert not list(out_open.glob("*/verify-timing.json"))
+    (open_status_path,) = out_open.glob("*/verify-status.json")
+    open_status = json.loads(open_status_path.read_text(encoding="utf-8"))
+    assert open_status["status"] == "output_open_failed"
+    assert open_status["native_started"] is False
+    assert open_status["native_exit_code"] is None
+    assert open_status["declared_verify_jobs"] == ["lint"]
+    assert "child_references" not in open_status
+
+
+def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"core-tests"}]}}\n'
+        ),
+    )
+
+    def run_git(cmd, **kwargs):
+        assert cmd[0] == "git"
+        return subprocess.CompletedProcess(cmd, 0, b"d" * 40 + b"\n")
+
+    original_report = b'{"state":"original"}\n'
+    rewritten_report = b'{"state":"rewritten"}\n'
+
+    def popen_exit_two(cmd, *, stdout, stderr):
+        stdout.write(b"raw stdout\n")
+        export = Path(stdout.name).parent / "core-tests"
+        export.mkdir()
+        (export / "exit-code.txt").write_bytes(b"2\n")
+        (export / "report.json").write_bytes(original_report)
+        return 2
+
+    def interrupt_report_preparation(stdout_path, stderr_path, **kwargs):
+        (stdout_path.parent / "core-tests" / "report.json").write_bytes(
+            rewritten_report
+        )
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(verify.subprocess, "run", run_git)
+    monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_exit_two))
+    monkeypatch.setattr(
+        verify,
+        "parse_lefthook_output",
+        interrupt_report_preparation,
+    )
+
+    out = tmp_path / "prep-interrupt"
+    assert main(["verify", "--out", str(out)]) == 130
+    assert not list(out.glob("*/verify-timing.json"))
+    (status_path,) = out.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "report_preparation_interrupted"
+    assert status_data["native_started"] is True
+    assert status_data["native_exit_code"] == 2
+    assert status_data["native_exit_source"] == "observed_before_report_preparation"
+    assert status_data["outer_exit_code"] == 130
+    assert status_data["declared_verify_jobs"] == ["core-tests"]
+    assert status_data["child_references"]["status"] == "recorded"
+    original_digest = hashlib.sha256(original_report).hexdigest()
+    assert {
+        ref["path"]: ref["sha256"]
+        for ref in status_data["child_references"]["references"]
+    }["core-tests/report.json"] == original_digest
+    source = verify_report.build_verify_report(verify_dir=status_path.parent)[
+        "sources"
+    ][0]
+    assert source["core_test_delivery_obligation"] == "required"
+    child = source["child_references"]
+    assert child["verification"] == "file_verification_failed"
+    report = child["files"]["core-tests/report.json"]
+    assert report["status"] == "digest_mismatch"
+    assert report["expected_sha256"] == original_digest
+    assert report["observed_sha256"] == hashlib.sha256(rewritten_report).hexdigest()
+    assert child["native_exit_code"] == 2
+    assert source["evidence_complete"] is False
+    assert status_data["stages"]["report_preparation"]["status"] == "interrupted"
+    assert "verify interrupted; partial outputs in" in capsys.readouterr().err
+
+
+def test_verify_unconfirmed_spawn_interrupt_reports_unknown_started(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+
+    def run_git(cmd, **kwargs):
+        assert cmd[0] == "git"
+        return subprocess.CompletedProcess(cmd, 0, b"e" * 40 + b"\n")
+
+    class _InterruptSpawnPopen:
+        def __init__(self, cmd, *, stdout, stderr, env):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(verify.subprocess, "run", run_git)
+    monkeypatch.setattr(verify.subprocess, "Popen", _InterruptSpawnPopen)
+    out = tmp_path / "unknown-interrupt"
+    assert main(["verify", "--out", str(out)]) == 130
+    (status_path,) = out.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "interrupted"
+    assert status_data["native_started"] == "unknown"
+    assert status_data["started_at_ns"] is None
+    assert status_data["native_exit_code"] is None
+    assert status_data["native_exit_source"] == "unknown_spawn"
+    assert status_data["outer_exit_code"] == 130
+    assert status_data["declared_verify_jobs"] == ["lint"]
+    assert status_data["stages"]["lefthook_native"]["status"] == "unknown"
+
+
+def test_verify_post_spawn_wait_failure_marks_native_started_and_wait_failed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(verify, "time_ns", lambda: 777)
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"core-tests"}]}}\n'
+        ),
+    )
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"f" * 40 + b"\n"),
+    )
+    instances = []
+
+    class _WaitFailPopen:
+        def __init__(self, cmd, *, stdout, stderr, env):
+            self.terminated = False
+            self.killed = False
+            self._rc = None
+            instances.append(self)
+            export = Path(env["ECI_VERIFY_CORE_TESTS_OUT"])
+            export.mkdir()
+            (export / "exit-code.txt").write_bytes(b"2\n")
+
+        def wait(self, timeout=None):
+            if timeout is None:
+                raise OSError("wait broken")
+            return self._rc
+
+        def poll(self):
+            return self._rc
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+            self._rc = -9
+
+    monkeypatch.setattr(verify.subprocess, "Popen", _WaitFailPopen)
+    out = tmp_path / "wait-fail"
+    assert main(["verify", "--out", str(out)]) == 1
+    assert not list(out.glob("*/verify-timing.json"))
+    (status_path,) = out.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "wait_failed"
+    assert status_data["native_started"] is True
+    assert status_data["started_at_ns"] == 777
+    assert status_data["native_exit_code"] == -9
+    assert status_data["native_exit_source"] == "observed_after_terminate"
+    assert status_data["stages"]["lefthook_native"]["status"] == "wait_failed"
+    assert status_data["declared_verify_jobs"] == ["core-tests"]
+    assert status_data["child_references"]["status"] == "incomplete"
+    assert status_data["child_references"]["references"] == [
+        {
+            "path": "core-tests/exit-code.txt",
+            "sha256": hashlib.sha256(b"2\n").hexdigest(),
+        }
+    ]
+    assert instances[0].terminated is True
+    assert instances[0].killed is True
+
+
+def test_verify_post_spawn_interrupt_reaps_timeout_without_losing_interrupted_status(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(verify, "time_ns", lambda: 888)
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"f" * 40 + b"\n"),
+    )
+    instances = []
+
+    class _ReapTimeoutPopen:
+        def __init__(self, cmd, *, stdout, stderr, env):
+            self.cmd = cmd
+            self.terminated = False
+            self.killed = False
+            instances.append(self)
+
+        def wait(self, timeout=None):
+            if timeout is None:
+                raise KeyboardInterrupt()
+            raise subprocess.TimeoutExpired(self.cmd, timeout)
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(verify.subprocess, "Popen", _ReapTimeoutPopen)
+    out = tmp_path / "reap-timeout"
+    assert main(["verify", "--out", str(out)]) == 130
+    (status_path,) = out.glob("*/verify-status.json")
+    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status_data["status"] == "interrupted"
+    assert status_data["native_started"] is True
+    assert status_data["started_at_ns"] == 888
+    assert status_data["native_exit_code"] is None
+    assert status_data["native_exit_source"] == "unobserved_after_terminate"
+    assert status_data["outer_exit_code"] == 130
+    assert status_data["stages"]["lefthook_native"]["status"] == "interrupted"
+    assert instances[0].terminated is True
+    assert instances[0].killed is True
+
+
+def test_verify_interrupt_preserves_observed_exit_before_and_after_terminate(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(verify, "time_ns", lambda: 999)
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"parallel":false,"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+        ),
+    )
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
+    )
+
+    terminated_instances = []
+
+    class _ObservedAfterTerminatePopen:
+        def __init__(self, cmd, *, stdout, stderr, env):
+            stdout.write(b"\xe2\x94\x83 lint \xe2\x9d\xaf \n")
+            stdout.flush()
+            self._rc = None
+            self.terminated = False
+            terminated_instances.append(self)
+
+        def wait(self, timeout=None):
+            if timeout is None:
+                raise KeyboardInterrupt()
+            return self._rc
+
+        def poll(self):
+            return self._rc
+
+        def terminate(self):
+            self.terminated = True
+            self._rc = -15
+
+        def kill(self):
+            self._rc = -9
+
+    monkeypatch.setattr(verify.subprocess, "Popen", _ObservedAfterTerminatePopen)
+    out_term = tmp_path / "after-term"
+    assert main(["verify", "--out", str(out_term)]) == 130
+    (status_term_path,) = out_term.glob("*/verify-status.json")
+    status_term = json.loads(status_term_path.read_text(encoding="utf-8"))
+    assert status_term["native_exit_code"] == -15
+    assert status_term["native_exit_source"] == "observed_after_terminate"
+    assert status_term["outer_exit_code"] == 130
+    assert status_term["lefthook_summary"]["jobs"][0]["status"] == "unknown"
+    assert status_term["lefthook_summary"]["counts"]["unknown"] == 1
+    assert terminated_instances[0].terminated is True
+
+    pre_exit_instances = []
+
+    class _ObservedBeforeTerminatePopen:
+        def __init__(self, cmd, *, stdout, stderr, env):
+            self.terminated = False
+            self.killed = False
+            pre_exit_instances.append(self)
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt()
+
+        def poll(self):
+            return 2
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr(verify.subprocess, "Popen", _ObservedBeforeTerminatePopen)
+    out_pre = tmp_path / "before-term"
+    assert main(["verify", "--out", str(out_pre)]) == 130
+    (status_pre_path,) = out_pre.glob("*/verify-status.json")
+    status_pre = json.loads(status_pre_path.read_text(encoding="utf-8"))
+    assert status_pre["native_exit_code"] == 2
+    assert status_pre["native_exit_source"] == "observed_before_terminate"
+    assert status_pre["outer_exit_code"] == 130
+    assert pre_exit_instances[0].terminated is False
+    assert pre_exit_instances[0].killed is False
+
+
+def test_verify_report_projects_native_exit_source_and_started(tmp_path):
+    natural_dir = tmp_path / "natural-exit"
+    natural_dir.mkdir()
+    (natural_dir / "verify-timing.json").write_text(
+        json.dumps(
+            {
+                "kind": "engineering-ci-verify-timing",
+                "schema_version": 1,
+                "exit_code": 0,
+                "native_exit_code": 0,
+                "native_exit_source": "natural_exit",
+                "outer_exit_code": 0,
+                "native_started": True,
+                "elapsed_seconds": 0.25,
+                "stages": {
+                    "lefthook_native": {"status": "passed", "elapsed_seconds": 0.2}
+                },
+                "lefthook_summary": {"status": "parsed", "counts": {"passed": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    natural_rep = verify_report.build_verify_report(verify_dir=natural_dir)
+    natural_src = natural_rep["sources"][0]
+    assert natural_src["native_started"] is True
+    assert natural_src["native_exit_code"] == 0
+    assert natural_src["native_exit_source"] == "natural_exit"
+    assert natural_src["outer_exit_code"] == 0
+    assert natural_src.get("signal") is None
+    assert natural_src.get("error") is None
+
+    for label, status_payload in (
+        (
+            "before_term",
+            {
+                "kind": "engineering-ci-verify-status",
+                "schema_version": 1,
+                "status": "interrupted",
+                "native_started": True,
+                "native_exit_code": 2,
+                "native_exit_source": "observed_before_terminate",
+                "outer_exit_code": 130,
+                "signal": "SIGINT",
+                "error": None,
+                "elapsed_seconds": 0.1,
+            },
+        ),
+        (
+            "after_term",
+            {
+                "kind": "engineering-ci-verify-status",
+                "schema_version": 1,
+                "status": "interrupted",
+                "native_started": True,
+                "native_exit_code": -15,
+                "native_exit_source": "observed_after_terminate",
+                "outer_exit_code": 130,
+                "signal": "SIGINT",
+                "error": None,
+                "elapsed_seconds": 0.1,
+            },
+        ),
+        (
+            "unobserved_after_term",
+            {
+                "kind": "engineering-ci-verify-status",
+                "schema_version": 1,
+                "status": "interrupted",
+                "native_started": True,
+                "native_exit_code": None,
+                "native_exit_source": "unobserved_after_terminate",
+                "outer_exit_code": 130,
+                "signal": "SIGINT",
+                "error": "terminate timed out",
+                "elapsed_seconds": 0.2,
+            },
+        ),
+        (
+            "unknown_spawn",
+            {
+                "kind": "engineering-ci-verify-status",
+                "schema_version": 1,
+                "status": "interrupted",
+                "native_started": "unknown",
+                "native_exit_code": None,
+                "native_exit_source": "unknown_spawn",
+                "outer_exit_code": 130,
+                "signal": "SIGINT",
+                "error": None,
+                "elapsed_seconds": 0.01,
+            },
+        ),
+    ):
+        vdir = tmp_path / label
+        vdir.mkdir()
+        (vdir / "verify-status.json").write_text(
+            json.dumps(status_payload), encoding="utf-8"
+        )
+        rep = verify_report.build_verify_report(verify_dir=vdir)
+        src = rep["sources"][0]
+        assert src["native_started"] == status_payload["native_started"], label
+        assert src["native_exit_code"] == status_payload["native_exit_code"], label
+        assert src["native_exit_source"] == status_payload["native_exit_source"], label
+        assert src["outer_exit_code"] == status_payload["outer_exit_code"], label
+        assert src.get("signal") == status_payload["signal"], label
+        assert src.get("error") == status_payload["error"], label
+
+
+def test_verify_records_explicit_native_exit_fields_and_non_emission_child_refs(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"parallel":true,"jobs":[{"name":"lint","run":"dagger check --check=lint"}]}}\n'
+        ),
+    )
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
+    )
+
+    def popen_ok(cmd, *, stdout, stderr):
+        stdout.write(
+            b"summary: (done in 0.10 seconds)\n\xe2\x9c\x93 lint (0.10 seconds)\n"
+        )
+        return 0
+
+    monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_ok))
+    out = tmp_path / "native-refs"
+    assert main(["verify", "--out", str(out)]) == 0
+    (inv_dir,) = [p for p in out.iterdir() if p.is_dir()]
+    timing = json.loads((inv_dir / "verify-timing.json").read_text(encoding="utf-8"))
+    assert timing["native_started"] is True
+    assert timing["native_exit_source"] == "natural_exit"
+    assert timing["outer_exit_code"] == 0
+    assert timing["declared_verify_jobs"] == ["lint"]
+    assert timing["child_references"]["status"] == "not_emitted"
+    assert timing["child_references"]["job"] == "core-tests"
+    assert timing["child_references"]["references"] == []
+
+    rep = verify_report.build_verify_report(verify_dir=inv_dir)
+    vsrc = rep["sources"][0]
+    assert vsrc["native_started"] is True
+    assert vsrc["native_exit_source"] == "natural_exit"
+    assert vsrc["outer_exit_code"] == 0
+    assert vsrc["timing_receipt_present"] is True
+    assert vsrc["status_receipt_present"] is False
+    assert vsrc["child_references"]["status"] == "not_emitted"
+
+
+def test_verify_consumes_its_core_artifact_and_checks_the_original_exit(
+    tmp_path, monkeypatch
+):
+    from test_pytest_report import report as producer
+
+    monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
+    monkeypatch.setattr(
+        verify.subprocess,
+        "check_output",
+        lambda cmd: (
+            b"2.2.2\n"
+            if cmd[1] == "version"
+            else b'{"verify":{"jobs":[{"name":"core-tests"}]}}'
+        ),
+    )
+    monkeypatch.setattr(
+        verify.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"a" * 40 + b"\n"),
+    )
+    calls = []
+
+    class CoreExport(_make_fake_popen(lambda *args, **kwargs: 1)):
+        def __init__(self, cmd, *, stdout, stderr, env):
+            super().__init__(cmd, stdout=stdout, stderr=stderr, env=env)
+            calls.append(cmd)
+            bundle = Path(env["ECI_VERIFY_CORE_TESTS_OUT"])
+            bundle.mkdir()
+            (bundle / "exit-code.txt").write_text("1\n", encoding="utf-8")
+            report = producer.summarize_pytest(
+                "", 1, "pytest failed before writing JUnit"
+            )
+            (bundle / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    monkeypatch.setattr(verify.subprocess, "Popen", CoreExport)
+    assert main(["verify", "--out", str(tmp_path)]) == 1
+    assert len(calls) == 1
+    (invocation,) = tmp_path.iterdir()
+    source = verify_report.build_verify_report(verify_dir=invocation)["sources"][0]
+    child = source["child_references"]
+    assert child["verification"] == "verified"
+    assert child["native_exit_code"] == 1
+    assert child["report"]["report_available"] is False
+    native_exit = invocation / "core-tests" / "exit-code.txt"
+    native_exit.write_text("0\n", encoding="utf-8")
+    source = verify_report.build_verify_report(verify_dir=invocation)["sources"][0]
+    assert source["child_references"]["verification"] == "file_verification_failed"
+    assert source["native_exit_code"] == 1

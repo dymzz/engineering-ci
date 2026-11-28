@@ -160,7 +160,7 @@ class MatrixResultTests(unittest.TestCase):
             self.assertIsNone(row["pytest"])
 
     def test_collection_and_assertion_classification(self):
-        xml = '<testsuite tests="1" errors="1"><testcase name="collect"><error message="SyntaxError"/></testcase></testsuite>'
+        xml = '<testsuite tests="1" failures="0" errors="1" skipped="0"><testcase name="collect"><error message="SyntaxError"/></testcase></testsuite>'
         self.assertEqual(
             self.row(code=2, xml=xml)["failure_category"], "collection_error"
         )
@@ -196,7 +196,7 @@ class MatrixResultTests(unittest.TestCase):
 
     def test_failure_truncation_retains_omitted_count(self):
         xml = (
-            '<testsuite tests="4" failures="4">'
+            '<testsuite tests="4" failures="4" errors="0" skipped="0">'
             + "".join(
                 f'<testcase name="test_{i}"><failure message="assert False"/></testcase>'
                 for i in range(4)

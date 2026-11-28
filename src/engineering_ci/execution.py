@@ -2476,7 +2476,11 @@ def _validate_producer_execution_claim(plan, edge, record, handoff):
         raise ExecutionError("producer_execution_not_verified")
 
     p_type = p_exec.get("type")
-    declared = _prerequisite_actions(plan, None).get(edge["producer_ref"].get("name"))
+    declared = (
+        _prerequisite_actions(plan, None).get(edge["producer_ref"].get("name"))
+        if isinstance(plan, dict)
+        else None
+    )
     if isinstance(declared, dict) and declared.get("type"):
         if p_type != declared.get("type"):
             raise ExecutionError("producer_execution_inconsistent")
@@ -2523,21 +2527,14 @@ def _validate_producer_execution_claim(plan, edge, record, handoff):
     return p_exec, prereq_sha, closure_sha
 
 
-def _verify_retained_bundle_artifact(
-    plan,
-    record,
-    edge,
-    *,
-    bundle_root,
-    check_name,
-    authority,
-    handoff,
-    expected_run_ref=None,
-    expected_attempt_ref=None,
-):
-    p_exec, prereq_sha, closure_sha = _validate_producer_execution_claim(
-        plan, edge, record, handoff
-    )
+def _validate_retained_record_metadata(record, *, output_ref=None, producer_ref=None):
+    """Validate common retention, output identity, digest, and bundle path metadata."""
+    if not isinstance(record, dict):
+        raise ExecutionError("producer_handoff_invalid")
+    p_ref = producer_ref if producer_ref is not None else record.get("producer_ref")
+    o_ref = output_ref if output_ref is not None else record.get("output_ref")
+    if not isinstance(p_ref, dict) or not isinstance(o_ref, dict):
+        raise ExecutionError("producer_handoff_invalid")
 
     retention = record.get("retention")
     if not isinstance(retention, dict):
@@ -2548,7 +2545,6 @@ def _verify_retained_bundle_artifact(
     if r_status != "retained" or retention.get("valid") is False:
         raise ExecutionError("producer_artifact_retention_invalid")
 
-    o_ref = edge["output_ref"]
     kind = o_ref.get("kind")
     rel = o_ref.get("path")
     if record.get("kind") != kind:
@@ -2564,39 +2560,28 @@ def _verify_retained_bundle_artifact(
         raise ExecutionError("producer_handoff_output_ref_mismatch")
 
     norm_rel = _normalize_rel_artifact_path(rel)
-    expected_bundle_path = f"produced/{edge['producer_ref']['kind']}/{edge['producer_ref']['name']}/{norm_rel}"
+    expected_bundle_path = (
+        f"produced/{p_ref.get('kind')}/{p_ref.get('name')}/{norm_rel}"
+    )
     if record.get("bundle_path") != expected_bundle_path:
         raise ExecutionError("producer_artifact_path_invalid")
+    return p_ref, o_ref, kind, rel, norm_rel, expected_sha, expected_bundle_path
 
-    if authority is None:
-        raise ExecutionError("producer_artifact_authority_unverified")
+
+def verify_retained_artifact_record(
+    record, *, bundle_root, output_ref=None, producer_ref=None
+):
+    """Verify one #86 retained artifact record against files under ``produced/``."""
+    p_ref, o_ref, kind, rel, norm_rel, expected_sha, expected_bundle_path = (
+        _validate_retained_record_metadata(
+            record, output_ref=output_ref, producer_ref=producer_ref
+        )
+    )
 
     bundle_path = Path(bundle_root)
     if not bundle_path.exists():
         raise ExecutionError("producer_artifact_missing")
-    bundle_producer_root = retained_producer_root(bundle_path, edge["producer_ref"])
-    claim = {
-        "handoff_id": handoff.get("handoff_digest"),
-        "producer_ref": record["producer_ref"],
-        "producer_execution": dict(p_exec),
-        "prerequisite_result_sha256": prereq_sha,
-        "closure_sha256": closure_sha,
-        "consumer_ref": record["consumer_ref"],
-        "output_ref": o_ref,
-        "kind": kind,
-        "path": rel,
-        "sha256": expected_sha,
-        "bundle_path": expected_bundle_path,
-        "resolved_bundle_root": str(bundle_producer_root),
-        "candidate": handoff.get("candidate"),
-        "execution_context": handoff.get("execution_context"),
-        "execution_identity": handoff.get("execution_identity"),
-        "expected_run_ref": expected_run_ref,
-        "expected_attempt_ref": expected_attempt_ref,
-    }
-    if not authority("producer_artifact", check_name, claim):
-        raise ExecutionError("producer_artifact_authority_unverified")
-
+    bundle_producer_root = retained_producer_root(bundle_path, p_ref)
     actual = _inspect_artifact_entries(bundle_producer_root, rel, kind)
     exp_files = list(record.get("materialized_files") or ())
     exp_dirs = list(record.get("materialized_dirs") or ())
@@ -2635,6 +2620,480 @@ def _verify_retained_bundle_artifact(
         )
     if actual["sha256"] != expected_sha or checked.get("sha256") != expected_sha:
         raise ExecutionError("producer_artifact_digest_mismatch")
+    return {
+        "producer_root": bundle_producer_root,
+        "bundle_path": expected_bundle_path,
+        "rel": norm_rel,
+        "kind": kind,
+        "expected_sha": expected_sha,
+        "actual": actual,
+    }
+
+
+def _diagnose_unretained_data_edge(edge, handoff, *, report=None):
+    """Distinguish honest producer failure/blocking from silent handoff omission."""
+    p_ref = edge["producer_ref"]
+    p_kind = p_ref.get("kind")
+    p_name = p_ref.get("name")
+    key = _edge_retention_key(p_ref, edge.get("consumer_ref"), edge.get("output_ref"))
+
+    closure_rec = None
+    if isinstance(report, dict):
+        for item in report.get("artifact_closure") or ():
+            if (
+                isinstance(item, dict)
+                and _edge_retention_key(
+                    item.get("producer_ref"),
+                    item.get("consumer_ref"),
+                    item.get("output_ref"),
+                )
+                == key
+            ):
+                closure_rec = item
+                break
+    if closure_rec is not None and closure_rec.get("verified") is True:
+        raise ExecutionError("producer_handoff_missing")
+
+    handoff_exec = None
+    for item in handoff.get("producer_executions") or ():
+        if (
+            isinstance(item, dict)
+            and item.get("kind") == p_kind
+            and item.get("name") == p_name
+        ):
+            if handoff_exec is not None and item != handoff_exec:
+                raise ExecutionError("producer_execution_inconsistent")
+            handoff_exec = item
+
+    prereq_rec = None
+    if isinstance(report, dict) and p_kind == "prerequisite_action":
+        for item in report.get("prerequisites") or ():
+            if isinstance(item, dict) and item.get("name") == p_name:
+                prereq_rec = item
+                break
+
+    handoff_status = handoff_exec.get("status") if handoff_exec else None
+    prereq_status = prereq_rec.get("status") if prereq_rec else None
+    if (
+        handoff_status is not None
+        and prereq_status is not None
+        and handoff_status != prereq_status
+    ):
+        raise ExecutionError("producer_execution_inconsistent")
+
+    observed_status = handoff_status or prereq_status
+    if isinstance(report, dict) and report.get("status") == "passed":
+        raise ExecutionError("producer_handoff_missing")
+
+    non_pass_statuses = {"failed", "not_executed", "blocked"}
+    closure_failed = closure_rec is not None and closure_rec.get("verified") is False
+    if observed_status in non_pass_statuses or (
+        closure_failed and observed_status is None
+    ):
+        effective_status = observed_status or (
+            "failed"
+            if (closure_rec or {}).get("reason") == "producer_execution_failed"
+            else "not_executed"
+        )
+        return {
+            "producer_ref": dict(p_ref),
+            "consumer_ref": dict(edge["consumer_ref"]),
+            "output_ref": dict(edge["output_ref"]),
+            "producer_status": effective_status,
+            "closure_verified": False,
+            "closure_reason": (
+                (closure_rec or {}).get("reason")
+                or (handoff_exec or {}).get("reason")
+                or (prereq_rec or {}).get("reason")
+            ),
+            "retention_status": "not_retained",
+        }
+    if observed_status == "passed" and closure_failed:
+        return {
+            "producer_ref": dict(p_ref),
+            "consumer_ref": dict(edge["consumer_ref"]),
+            "output_ref": dict(edge["output_ref"]),
+            "producer_status": "passed",
+            "closure_verified": False,
+            "closure_reason": (
+                (closure_rec or {}).get("reason")
+                or (handoff_exec or {}).get("reason")
+                or (prereq_rec or {}).get("reason")
+                or "artifact_closure_failed"
+            ),
+            "retention_status": "not_retained_closure_failed",
+        }
+    raise ExecutionError("producer_handoff_missing")
+
+
+def _verify_handoff_outer_report_binding(
+    handoff,
+    *,
+    report=None,
+    expected_execution_ref=None,
+):
+    """Verify #86 Handoff binds to outer report execution_ref and prerequisite/closure digests."""
+    outer_exec_ref = expected_execution_ref
+    if isinstance(report, dict):
+        rep_ident = report.get("execution_identity")
+        if isinstance(rep_ident, dict):
+            rep_exec_ref = rep_ident.get("execution_ref") or None
+            if (
+                outer_exec_ref is not None
+                and rep_exec_ref is not None
+                and outer_exec_ref != rep_exec_ref
+            ):
+                raise ExecutionError("producer_handoff_execution_mismatch")
+            outer_exec_ref = outer_exec_ref or rep_exec_ref
+
+    if outer_exec_ref is not None:
+        h_ident = handoff.get("execution_identity")
+        h_exec_ref = h_ident.get("execution_ref") if isinstance(h_ident, dict) else None
+        if h_exec_ref != outer_exec_ref:
+            raise ExecutionError("producer_handoff_execution_mismatch")
+        for p_exec in handoff.get("producer_executions") or ():
+            if (
+                isinstance(p_exec, dict)
+                and p_exec.get("execution_ref") != outer_exec_ref
+            ):
+                raise ExecutionError("producer_handoff_execution_mismatch")
+        for rec in handoff.get("artifacts") or ():
+            if not isinstance(rec, dict):
+                continue
+            p_exec = rec.get("producer_execution")
+            if (
+                isinstance(p_exec, dict)
+                and p_exec.get("execution_ref") != outer_exec_ref
+            ):
+                raise ExecutionError("producer_handoff_execution_mismatch")
+
+    if not isinstance(report, dict):
+        return
+
+    rep_prereqs = {
+        item.get("name"): item
+        for item in (report.get("prerequisites") or ())
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    p_exec_entries = [
+        item
+        for item in (handoff.get("producer_executions") or ())
+        if isinstance(item, dict)
+    ]
+    for rec in handoff.get("artifacts") or ():
+        if isinstance(rec, dict) and isinstance(rec.get("producer_execution"), dict):
+            p_exec_entries.append(rec["producer_execution"])
+    for p_exec in p_exec_entries:
+        if p_exec.get("kind", "prerequisite_action") != "prerequisite_action":
+            continue
+        prereq_sha = p_exec.get("prerequisite_result_sha256")
+        if prereq_sha is None:
+            continue
+        pname = p_exec.get("name")
+        rep_item = rep_prereqs.get(pname)
+        if rep_item is None or _canonical_sha256(rep_item) != prereq_sha:
+            raise ExecutionError("producer_handoff_prerequisite_mismatch")
+
+    rep_closures = {
+        _edge_retention_key(
+            c.get("producer_ref"), c.get("consumer_ref"), c.get("output_ref")
+        ): c
+        for c in (report.get("artifact_closure") or ())
+        if isinstance(c, dict)
+    }
+    for rec in handoff.get("artifacts") or ():
+        if not isinstance(rec, dict):
+            continue
+        c_sha = rec.get("closure_sha256")
+        if c_sha is None:
+            continue
+        ckey = _edge_retention_key(
+            rec.get("producer_ref"), rec.get("consumer_ref"), rec.get("output_ref")
+        )
+        rep_c = rep_closures.get(ckey)
+        if rep_c is None or _canonical_sha256(rep_c) != c_sha:
+            raise ExecutionError("producer_handoff_closure_mismatch")
+
+
+def verify_producer_handoff_bundle(
+    bundle_root,
+    handoff,
+    *,
+    plan=None,
+    report=None,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
+    expected_execution_ref=None,
+    allow_failed_producers=False,
+):
+    """Read-only verification of a #86 Producer Artifact Handoff bundle (non-#63 admission)."""
+    if not isinstance(handoff, dict):
+        raise ExecutionError("producer_handoff_invalid")
+    if handoff.get("kind") != PRODUCER_HANDOFF_KIND:
+        raise ExecutionError("producer_handoff_invalid")
+    if handoff.get("schema_version") != PRODUCER_HANDOFF_VERSION:
+        raise ExecutionError("producer_handoff_version_unsupported")
+    recorded_digest = handoff.get("handoff_digest")
+    if not isinstance(recorded_digest, str) or not recorded_digest:
+        raise ExecutionError("producer_handoff_invalid")
+    body = {k: v for k, v in handoff.items() if k != "handoff_digest"}
+    if _canonical_sha256(body) != recorded_digest:
+        raise ExecutionError("producer_handoff_digest_mismatch")
+    _verify_handoff_outer_report_binding(
+        handoff,
+        report=report,
+        expected_execution_ref=expected_execution_ref,
+    )
+
+    matched_records = []
+    non_produced_edges = []
+    data_edge_keys = set()
+    if isinstance(plan, dict):
+        _validate_handoff_envelope(
+            plan,
+            handoff,
+            expected_run_ref=expected_run_ref,
+            expected_attempt_ref=expected_attempt_ref,
+        )
+        for edge in (plan.get("dependency_contract") or {}).get("edges") or ():
+            if not (isinstance(edge, dict) and edge.get("dependency_kind") == "data"):
+                continue
+            data_edge_keys.add(
+                _edge_retention_key(
+                    edge.get("producer_ref"),
+                    edge.get("consumer_ref"),
+                    edge.get("output_ref"),
+                )
+            )
+            try:
+                rec = _match_handoff_record(edge, handoff)
+            except ExecutionError as exc:
+                if allow_failed_producers and exc.code in {
+                    "producer_execution_failed",
+                    "producer_execution_not_verified",
+                    "producer_handoff_missing",
+                }:
+                    non_produced_edges.append(
+                        _diagnose_unretained_data_edge(edge, handoff, report=report)
+                    )
+                else:
+                    raise
+            else:
+                matched_records.append(rec)
+    elif not isinstance(handoff.get("artifacts"), list):
+        raise ExecutionError("producer_handoff_invalid")
+
+    verified = []
+    seen_artifact_keys = set()
+    for rec in handoff.get("artifacts") or ():
+        if not isinstance(rec, dict):
+            raise ExecutionError("producer_handoff_invalid")
+        p_ref = rec.get("producer_ref")
+        c_ref = rec.get("consumer_ref")
+        o_ref = rec.get("output_ref")
+        if (
+            not isinstance(p_ref, dict)
+            or not isinstance(c_ref, dict)
+            or not isinstance(o_ref, dict)
+        ):
+            raise ExecutionError("producer_handoff_invalid")
+        rec_key = _edge_retention_key(p_ref, c_ref, o_ref)
+        if rec_key in seen_artifact_keys:
+            raise ExecutionError("producer_handoff_duplicate_artifact")
+        seen_artifact_keys.add(rec_key)
+        if isinstance(plan, dict) and rec_key not in data_edge_keys:
+            raise ExecutionError("producer_handoff_unexpected_artifact")
+        edge = {"producer_ref": p_ref, "consumer_ref": c_ref, "output_ref": o_ref}
+        _validate_producer_execution_claim(plan, edge, rec, handoff)
+        retained = verify_retained_artifact_record(
+            rec, bundle_root=bundle_root, output_ref=o_ref, producer_ref=p_ref
+        )
+        verified.append(
+            {
+                "producer_ref": dict(p_ref),
+                "output_ref": dict(o_ref),
+                "bundle_path": retained["bundle_path"],
+                "kind": retained["kind"],
+                "sha256": retained["expected_sha"],
+                "file_digests": dict(retained["actual"]["file_digests"]),
+            }
+        )
+
+    prereq_statuses = [
+        {
+            "kind": item.get("kind", "prerequisite_action"),
+            "name": item.get("name"),
+            "status": item.get("status"),
+            "exit_code": item.get("exit_code"),
+            "reason": item.get("reason"),
+        }
+        for item in (handoff.get("producer_executions") or ())
+        if isinstance(item, dict)
+    ]
+    if not prereq_statuses and isinstance(report, dict):
+        prereq_statuses = [
+            {
+                "kind": "prerequisite_action",
+                "name": item.get("name"),
+                "status": item.get("status"),
+                "exit_code": item.get("exit_code"),
+                "reason": item.get("reason"),
+            }
+            for item in (report.get("prerequisites") or ())
+            if isinstance(item, dict)
+        ]
+    closure_statuses = [
+        {
+            "producer_ref": item.get("producer_ref"),
+            "consumer_ref": item.get("consumer_ref"),
+            "output_ref": item.get("output_ref"),
+            "verified": item.get("verified"),
+            "reason": item.get("reason"),
+        }
+        for item in (
+            (report.get("artifact_closure") or ()) if isinstance(report, dict) else ()
+        )
+        if isinstance(item, dict)
+    ]
+
+    if non_produced_edges:
+        has_failed = any(
+            item["producer_status"] == "failed" for item in non_produced_edges
+        )
+        has_closure_failed = any(
+            item["producer_status"] == "passed" and not item["closure_verified"]
+            for item in non_produced_edges
+        )
+        if verified:
+            retention_status = "partial_retained"
+            delivery_status = (
+                "partial_with_failed_producer"
+                if has_failed
+                else (
+                    "partial_with_closure_failure"
+                    if has_closure_failed
+                    else "partial_with_blocked_producer"
+                )
+            )
+        elif has_failed:
+            retention_status = "not_retained_producer_failed"
+            delivery_status = "not_delivered_producer_failed"
+        elif has_closure_failed:
+            retention_status = "not_retained_closure_failed"
+            delivery_status = "not_delivered_closure_failed"
+        else:
+            retention_status = "not_retained_producer_blocked"
+            delivery_status = "not_delivered_producer_blocked"
+    elif verified:
+        retention_status = "retained"
+        delivery_status = (
+            "verified" if isinstance(plan, dict) else "unverified_missing_plan"
+        )
+    else:
+        failed_prereq = any(p.get("status") == "failed" for p in prereq_statuses)
+        blocked_prereq = any(
+            p.get("status") in {"not_executed", "blocked"} for p in prereq_statuses
+        )
+        if (
+            allow_failed_producers
+            and failed_prereq
+            and (not isinstance(report, dict) or report.get("status") != "passed")
+        ):
+            retention_status = "not_retained_producer_failed"
+            delivery_status = "not_delivered_producer_failed"
+        elif (
+            allow_failed_producers
+            and blocked_prereq
+            and (not isinstance(report, dict) or report.get("status") != "passed")
+        ):
+            retention_status = "not_retained_producer_blocked"
+            delivery_status = "not_delivered_producer_blocked"
+        else:
+            retention_status = "none"
+            delivery_status = (
+                "verified" if isinstance(plan, dict) else "unverified_missing_plan"
+            )
+
+    consumer_delivery = (
+        dict(report["artifact_delivery"])
+        if isinstance(report, dict)
+        and isinstance(report.get("artifact_delivery"), dict)
+        else None
+    )
+
+    return {
+        "handoff_id": recorded_digest,
+        "plan_envelope_verified": isinstance(plan, dict),
+        "admission_authority_63": "not_evaluated",
+        "delivery_status": delivery_status,
+        "retention_status": retention_status,
+        "prerequisite_statuses": prereq_statuses,
+        "closure_statuses": closure_statuses,
+        "consumer_delivery": consumer_delivery,
+        "non_produced_edges": non_produced_edges,
+        "verified_artifacts": verified,
+    }
+
+
+def _verify_retained_bundle_artifact(
+    plan,
+    record,
+    edge,
+    *,
+    bundle_root,
+    check_name,
+    authority,
+    handoff,
+    expected_run_ref=None,
+    expected_attempt_ref=None,
+):
+    p_exec, prereq_sha, closure_sha = _validate_producer_execution_claim(
+        plan, edge, record, handoff
+    )
+    _, o_ref, kind, rel, norm_rel, expected_sha, expected_bundle_path = (
+        _validate_retained_record_metadata(
+            record, output_ref=edge["output_ref"], producer_ref=edge["producer_ref"]
+        )
+    )
+
+    if authority is None:
+        raise ExecutionError("producer_artifact_authority_unverified")
+
+    bundle_path = Path(bundle_root)
+    if not bundle_path.exists():
+        raise ExecutionError("producer_artifact_missing")
+    bundle_producer_root = retained_producer_root(bundle_path, edge["producer_ref"])
+    claim = {
+        "handoff_id": handoff.get("handoff_digest"),
+        "producer_ref": record["producer_ref"],
+        "producer_execution": dict(p_exec),
+        "prerequisite_result_sha256": prereq_sha,
+        "closure_sha256": closure_sha,
+        "consumer_ref": record["consumer_ref"],
+        "output_ref": o_ref,
+        "kind": kind,
+        "path": rel,
+        "sha256": expected_sha,
+        "bundle_path": expected_bundle_path,
+        "resolved_bundle_root": str(bundle_producer_root),
+        "candidate": handoff.get("candidate"),
+        "execution_context": handoff.get("execution_context"),
+        "execution_identity": handoff.get("execution_identity"),
+        "expected_run_ref": expected_run_ref,
+        "expected_attempt_ref": expected_attempt_ref,
+    }
+    if not authority("producer_artifact", check_name, claim):
+        raise ExecutionError("producer_artifact_authority_unverified")
+
+    retained = verify_retained_artifact_record(
+        record,
+        bundle_root=bundle_root,
+        output_ref=o_ref,
+        producer_ref=edge["producer_ref"],
+    )
+    actual = retained["actual"]
+    bundle_producer_root = retained["producer_root"]
+    norm_rel = retained["rel"]
 
     return {
         "producer_root": bundle_producer_root,
@@ -6998,6 +7457,7 @@ def execute(
             "generator": plan.get("generator"),
             "git": plan.get("git"),
         },
+        "requested_check_names": sorted(requested) if check_names is not None else None,
         "targets": list(tests),
         "framework": framework,
         "checks": [],

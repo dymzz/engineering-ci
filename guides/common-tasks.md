@@ -151,6 +151,9 @@ reportlog/JUnit 选项不会提交，显式路径仍由原生 writer 使用。`-
 
 当前交付边界：本地 pytest 自动生产已接入；综合 Verify、Dagger 及 Actions 使用各自实际导出和引用，不能将容器内报告生成当作宿主交付。新增原生报告的同次导出、CI 出口与外层关联分别沿 [#167 R3/#86 原交接](https://github.com/dymzz/engineering-ci/issues/167#issuecomment-7226828756)和 [#169 消费交接](https://github.com/dymzz/engineering-ci/pull/169#issuecomment-7226830766)维护，按实际已采用版本消费，不以本地报告宣称所有入口已贯通。Live Collector 专项仍按其 opt-in 入口选择，不扩大默认验证范围。
 
+已保存的本地 pytest Invocation 可用 `engineering-ci verify report --pytest-invocation <dir>` 查询。
+该入口读取最终生产合同并进行独立对账。节点、阶段及历史查询参数见[显式本地综合验证](#显式本地综合验证)。
+
 ### 提交与交付
 
 检查当前目录快照。完成修改后用原生 Git 审阅并提交本次内容；
@@ -187,7 +190,9 @@ UV_PROJECT_ENVIRONMENT=<共享环境路径> uv run --locked --no-sync lefthook v
 
 已有 `core.hooksPath` 时，默认安装会返回 Lefthook 的冲突诊断，已有 Hook
 文件保持原字节。普通仓和它的 linked worktree 共享安装的 Git Hook，各次
-调用各自保留 Invocation。
+调用各自保留 Invocation（若 linked worktree 共享主仓的 editable `.venv`，
+默认 `python` 仍解析主仓源码而非候选 worktree 源码；该候选环境绑定归口
+`#66` / `#152` / `#162 A0` 入口维护）。
 
 并行开发使用 linked worktree 时，默认统一复用主管理 checkout 维护的共享 `.venv`，不在每个
 worktree 重复维护环境（支持标准 `.git` 及配置了 `core.worktree` 的 `--separate-git-dir`
@@ -341,17 +346,87 @@ uv run --locked --no-sync engineering-ci verify --out .artifacts/verify
 `uv run --locked --no-sync python -P -m engineering_ci.cli verify --out .artifacts/verify`），
 确保实际运行当前 worktree 的候选 `cli/verify.py` 而非共享环境里另一检出的 editable `.pth`。
 
-该入口启动一次原生 `lefthook run verify --no-auto-install`（Lefthook 仍是调度权威），
-运行 `lefthook.yml` 中的 verify Jobs（Dagger lint、format、version/lock、核心测试），
-在独立 Invocation 目录保存 `lefthook.stdout`、`lefthook.stderr` 和引用二者摘要的
-`verify-timing.json`。保存的是当次 Lefthook 调用的宿主时钟读数，
-`time_source_verified=false`；HEAD/config 为启动前观察，不认证工作区 Tree。
-返回原生检查退出状态；被中断时返回 `130`、保留已写入的部分输出并在 `stderr`
-打印目录路径，不写出完成回执。原始输出写文件而非实时透传终端，请从 stderr
-提示的本次目录定位输出。
+该入口启动一次原生 `lefthook run verify --no-auto-install`。Lefthook 并行调度 lint、
+format、version/lock、核心测试四组。前三组运行原生 Dagger Check。核心测试组调用
+`repository-test-artifacts` 导出同一次 pytest 的原始退出、JSON、可用的 JUnit 与摘要，
+随后运行导出产物的原生 `ci.py gate`。裸 Lefthook 调用仍使用 `tests` Check。
+本次 Invocation 目录保存 `lefthook.stdout`、`lefthook.stderr` 和 `verify-timing.json`。
+`child_references` 记录 `core-tests/` 中实际导出的相对路径与 SHA-256。查询从回执直接定位，
+并分别核验原始退出、引用和报告交付。报告声明 JUnit 可用时，必须存在实际引用，且
+JUnit 的摘要、格式和计数与原生 JSON 一致。报告不可用时仍可查看已核验的原始退出。
+预检从 Lefthook 生效配置取得完整 Job 路径，并保存在成功、失败和中断回执中。封存失败或报告准备中断时，
+已取得的实际子产物引用仍可核验。顶层 `core-tests` 声明具有交付义务，缺少整个子记录、记录类型错误或生产者不符均使证据不完整。
+预检尚未取得声明或历史回执缺少声明时，查询显示该义务未声明。其他 Job 按其完整路径核验。
+`verify-timing.json` 同时记录过程内 `perf_counter` 单调耗时
+（按 `cli_preflight`、`lefthook_native`、`report_preparation` 拆分，显式标注排除
+`seal` 后写盘与外层 `uv`/Shell 启动耗时）、有界解析得到的 Lefthook Job/嵌套 Group
+分级与跳过/失败耗时明细（区分 Group 的原生 `cumulative_child_durations` 累计和、`wall_clock_seconds="unknown"` 与根部 `lefthook_reported_wall_seconds` 及 `bytes_parsed`；缺失 summary 或缺项显式记为 `"unknown"`），以及宿主 UTC
+起止边界（发生时钟回拨时 `completed_at_ns=null` 并保持单调耗时与
+`time_source_verified=false`）；HEAD/config 为启动前观察，不认证工作区 Tree。
+
+若准备工作失败（含输出文件打开或进程拉起失败 `output_open_failed` / `spawn_failed`）、
+收到中断信号（含统一 `subprocess.Popen` 启动后等待异常 `wait_failed`、原生返回后报告准备阶段中断 `report_preparation_interrupted`，以及 `Popen` 前后尚未观察到任何子进程输出即中断时记 `native_started="unknown"` 与 `started_at_ns=null`）或最终回执落盘失败（`seal_failed`），
+会在同目录写入 `verify-status.json`（按实际进展区分 `native_started`、已有观察事实、`native_exit_code`、明确来源 `native_exit_source` 及 `outer_exit_code=130`，不将已捕获/reap 的子进程退出码盲目抹成 `null`，亦不写虚假完成回执 `verify-timing.json`）；若 `verify-timing.json` 与 `verify-status.json` 并存或 timing 文件损坏，`verify report` 会显式记录 `verify_timing_status_conflict`/`verify_timing_invalid` 而不掩盖封存失败。其中
+`seal_failed` 会保留真实的 `native_exit_code`，而 `verify` CLI 以 `native_exit_code or 1`
+退出（即原生检查退 `0` 但无法封存回执时返回 `1`）；`SIGKILL` 等不可捕获强杀仅保证强杀前已落盘字节。
+返回原生检查退出状态；被中断时返回 `130`、保留已写入的部分输出并在 `stderr` 打印目录路径。原始输出写文件而非实时透传终端，
+请从 `stderr` 提示的 Invocation 目录定位输出。
+
+真实 Git Hook（`pre-commit` / `pre-push`）沿用已有 Invocation、Plan、Execution 和 Receipt。
+`.timing-*` 记录实际 prepare、run、reconcile、consume 阶段，保留首次有效激活计时。
+pre-push 逐 Ref 记录耗时及已观察的退出。后验 Source 校验失败或 Execution 封存失败时，
+`.observation*` 尽力保存原始报告，计时记录保留已知退出。生产对账只读取完成 Source
+校验后封存的 `.execution*`。外层 Git、Shell 和 uv 启动成本由单独测量记录（#162 R17）。
+
+`verify report` 从显式路径读取原始证据。传入 `--verify-dir` 可查询该次核心测试交接。
+Hook 支持 `--hook-root` 与 `--invocation-ref` 成对使用，或单独使用 `--hook-invocation`。
+历史 Hook 的字节、Plan、激活、执行包络与 Receipt 检验复用生产端校验。查询分别显示
+Plan 预期单元、观察单元、缺失单元和未封存观察。Git 实时 Source 检验由 Hook 自身完成。
+
+报告分别显示具体执行身份、Artifact 成员关系、内容等价和 Run/Attempt/Trace 上下文。
+Hook 和独立 Report 共用原生结果发生判定。封存的报告仍保留未执行状态和结果拒绝原因。
+Plan 范围声明与观察到的兼容投影分别记录。#87 A.1 保留原 Trace 和 isolation，
+B 执行绑定保持未知。GitHub 性能汇总保留原始指标，固定 Attempt 的 Job 清册由 #131/#75 提供。
+Dagger 和查询共用标准库 pytest/JUnit 计数规则。`--pytest-invocation` 读取[本仓 pytest 调用报告](#本仓-pytest-调用报告)
+所声明的文件，并保留其 selection、collection、execution、report_delivery、封存状态和
+`sessionfinish_hook_exception`。
+生产者的 Hook 阶段退出与外层进程退出分别记录。ReportLog 的独立解析状态、节点实例与阶段结果计数对账均可查询。
+阶段计数差异进入完整性冲突，保留原始节点观察。历史比较要求节点和阶段计数均已对账，
+缺少阶段事实的旧报告仍可查询。查阅 Invocation 外的文件时，显式传 `--junit-xml` 或
+`--pytest-reportlog`。查询保留原始文件，完整性冲突或输出路径覆盖输入时退出 2。
+
+```powershell
+uv run --locked --no-sync engineering-ci verify report `
+  --verify-dir .artifacts/verify/<verify-invocation> `
+  --hook-root . `
+  --invocation-ref invocation:<32hex> `
+  --execution-report <bundle-dir-or-report.json> `
+  --pytest-invocation <pytest-invocation-dir> `
+  --junit-xml <junit.xml> `
+  --pytest-reportlog <pytest-reportlog.jsonl> `
+  --dagger-telemetry <dagger-trace-receipt.json> `
+  --ci-performance <ci-performance-report.json>
+```
 
 验证范围、证据复用和各入口的区别见[工程验证入口与选择](#工程验证入口与选择)。
 裸 `lefthook run verify --no-auto-install` 可用于原生诊断，不代替 ECI verify 的同次输出记录。
+
+可对已保存的产物使用 `--test-records`、`--test-node`、`--test-module` 和
+`--test-phase setup|call|teardown|case_total`。记录受原始读取上限约束，结果保留
+重复实例的观察顺序、阶段结果及未知耗时。ReportLog 用 pytest node ID 和模块路径，
+JUnit 用 `classname::name` 和 `case_total`。模块/阶段的统计为实际可见记录累计。
+
+```powershell
+uv run --locked --no-sync engineering-ci verify report `
+  --pytest-invocation <baseline-invocation-dir> `
+  --pytest-invocation <candidate-invocation-dir> `
+  --test-node 'tests/test_sample.py::test_case' --test-phase call --compare-tests
+```
+
+`--compare-tests` 以第一份 ReportLog 样本为基线。比较要求每份样本各有一个边界完整的
+Session，并要求不同 Invocation、相同的经对账选中实例范围和一致的 pytest/Python/插件版本、
+平台、根目录及调用参数。来源冲突、交付不完整、范围未知或实例无法配对时，查询保留原始记录
+及不可比原因。查询不启动测试。
 
 Windows 终端下若遇到 Dagger 非交互调用无输出挂起（历史观察与诊断见
 [上游观察](../.agent/upstream-observations.md#dagger-beta-windows-非交互版本探测挂起)），

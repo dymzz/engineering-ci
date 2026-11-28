@@ -134,4 +134,9 @@ verify:
     - name: metadata
       run: dagger check --engineering-ci --check=version --check=lock
     - name: core-tests
-      run: dagger check --engineering-ci --check=tests
+      run: |
+        if [ -z "${ECI_VERIFY_CORE_TESTS_OUT:-}" ]; then
+          exec dagger check --engineering-ci --check=tests
+        fi
+        dagger api call repository-test-artifacts --core-evidence=false export --path "$ECI_VERIFY_CORE_TESTS_OUT" || exit $?
+        uv run --locked --no-sync python "$ECI_VERIFY_CORE_TESTS_OUT/ci.py" gate "$ECI_VERIFY_CORE_TESTS_OUT"

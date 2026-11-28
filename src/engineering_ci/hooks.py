@@ -346,6 +346,50 @@ def _active_index_path(root, environ, *, git_dir=None):
     return Path(root) / index_file
 
 
+def _is_index_lock_error(detail, index_path):
+    """Return True only when Git failed specifically on the active Index lock."""
+    lock_name = f"{index_path.name}.lock"
+    if lock_name not in detail and "index.lock" not in detail:
+        return False
+    lowered = detail.lower()
+    return (
+        "unable to create" in lowered
+        or "file exists" in lowered
+        or "another git process" in lowered
+        or index_path.with_name(lock_name).exists()
+    )
+
+
+def _write_index_tree(root, index_path, env, *, index_bytes=None):
+    """Return ``git write-tree`` for the active Index.
+
+    ``git commit`` holds ``index.lock`` across the pre-commit hook. On Windows
+    that exclusive lock makes a second ``write-tree`` unable to lock the live
+    Index, so fall back to a private copy of the already-read bytes only when
+    Git reports lock contention on the active Index.
+    """
+    tree = _git(root, "write-tree", env=env)
+    if tree.returncode == 0:
+        return tree
+    detail = f"{tree.stderr or ''}{tree.stdout or ''}"
+    if not _is_index_lock_error(detail, index_path):
+        return tree
+    snapshot_dir = Path(tempfile.mkdtemp())
+    snapshot = snapshot_dir / "index"
+    try:
+        raw = index_path.read_bytes() if index_bytes is None else index_bytes
+        snapshot.write_bytes(raw)
+        return _git(
+            root,
+            "write-tree",
+            env={**env, "GIT_INDEX_FILE": str(snapshot)},
+        )
+    finally:
+        with suppress(OSError):
+            snapshot.unlink(missing_ok=True)
+            snapshot_dir.rmdir()
+
+
 def capture_pre_commit(root, *, environ=None):
     """Capture the actual Index used by a pre-commit invocation.
 
@@ -370,7 +414,9 @@ def capture_pre_commit(root, *, environ=None):
     # mutated concurrently and must be refused.
     for _attempt in range(3):
         before = index_path.read_bytes()
-        tree = _git(root, "write-tree", env={**os.environ, **environ})
+        tree = _write_index_tree(
+            root, index_path, {**os.environ, **environ}, index_bytes=before
+        )
         if tree.returncode != 0:
             raise HookEventError("index_tree_unavailable")
         after = index_path.read_bytes()
@@ -508,10 +554,30 @@ def event_path(root, event):
     return _git_dir(root) / "eci-hooks" / "events" / f"{digest}.json"
 
 
-def load_event(path):
+def _read_payload_bytes(path, *, max_bytes=None, symlink_error, oversized_error):
+    """Read an Event/Invocation file using an optional strict stream ceiling."""
+    if max_bytes is None:
+        return path.read_bytes()
+    if path.is_symlink():
+        raise HookEventError(symlink_error)
+    if max_bytes <= 0:
+        raise HookEventError(oversized_error)
+    with path.open("rb") as stream:
+        raw = stream.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise HookEventError(oversized_error)
+    return raw
+
+
+def load_event(path, *, max_bytes=None):
     """Read an Event and verify canonical bytes plus its filename identity."""
     path = Path(path)
-    raw = path.read_bytes()
+    raw = _read_payload_bytes(
+        path,
+        max_bytes=max_bytes,
+        symlink_error="event_path_invalid",
+        oversized_error="event_payload_oversized",
+    )
     try:
         event = json.loads(raw)
     except ValueError:
@@ -559,15 +625,21 @@ def _controlled_event_path(git_dir, event_file):
     return candidate
 
 
-def load_invocation_binding(path):
+def load_invocation_binding(path, *, max_bytes=None):
     """Read an Invocation and verify its Event content/reference linkage.
 
     The referenced Event must be a direct child of this repository's
     ``eci-hooks/events`` namespace; absolute paths, ``..`` escapes and
-    cross-repository references are rejected.
+    cross-repository references are rejected. When ``max_bytes`` is given,
+    both Invocation and Event reads share that strict byte ceiling.
     """
     path = Path(path)
-    raw = path.read_bytes()
+    raw = _read_payload_bytes(
+        path,
+        max_bytes=max_bytes,
+        symlink_error="invocation_path_invalid",
+        oversized_error="invocation_payload_oversized",
+    )
     try:
         invocation = json.loads(raw)
     except ValueError:
@@ -584,7 +656,7 @@ def load_invocation_binding(path):
         raise HookEventError("invocation_ref_mismatch")
     git_dir = _invocation_git_dir(path)
     event_path = _controlled_event_path(git_dir, invocation.get("event_file"))
-    event = load_event(event_path)
+    event = load_event(event_path, max_bytes=max_bytes)
     hook = invocation.get("hook")
     if hook not in HOOKS or event.get("hook") != hook:
         raise HookEventError("invocation_hook_mismatch")
@@ -720,6 +792,89 @@ def persist_event(root, event):
         )
 
 
+def _record_stage_timing(
+    invocation_path,
+    *,
+    invocation_ref,
+    event_payload_ref,
+    hook,
+    stage,
+    started_ns,
+    completed_ns,
+    elapsed_seconds,
+    status,
+    job_ref=None,
+    suffix=None,
+    extra=None,
+    exclusive_activation=False,
+):
+    """Record a bounded monotonic stage timing sidecar inside the invocation dir."""
+    stage_suffix = suffix or f".timing-{stage}"
+    path = invocation_path.with_suffix(stage_suffix)
+    if path.is_symlink() or path.resolve().parent != invocation_path.parent:
+        raise HookEventError("hook_artifact_outside_invocation")
+    wall_clock_monotonic = (
+        started_ns is not None
+        and completed_ns is not None
+        and completed_ns >= started_ns
+    )
+    payload = {
+        "schema_version": 1,
+        "invocation_ref": invocation_ref,
+        "event_payload_ref": event_payload_ref,
+        "hook": hook,
+        "stage": stage,
+        "timing_clock": "monotonic_perf_counter",
+        "started_at_ns": started_ns,
+        "completed_at_ns": completed_ns if wall_clock_monotonic else None,
+        "time_source_verified": False,
+        "elapsed_seconds": elapsed_seconds,
+        "status": status,
+        "attempt_count": 1,
+    }
+    if job_ref is not None:
+        payload["job_ref"] = job_ref
+    if extra:
+        payload.update(extra)
+    git_dir = _invocation_git_dir(invocation_path)
+    with _capture_lock(git_dir):
+        if path.exists():
+            if exclusive_activation:
+                return path
+            existing = None
+            with suppress(OSError, ValueError):
+                loaded_existing = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded_existing, dict):
+                    existing = loaded_existing
+            if isinstance(existing, dict):
+                prior_attempts = existing.get("attempt_count")
+                attempt_count = prior_attempts + 1 if type(prior_attempts) is int else 2
+                if existing.get("status") in ("ok", "passed"):
+                    # Keep the first successful consumed stage sample intact and
+                    # count duplicate calls without introducing a stage FSM.
+                    updated = {
+                        **existing,
+                        "attempt_count": attempt_count,
+                        "duplicate_attempts": attempt_count - 1,
+                        "last_duplicate_status": status,
+                        "primary_record_policy": "first_success_preserved",
+                    }
+                    _write_private_file(path, canonical_event_bytes(updated))
+                    return path
+                payload["attempt_count"] = attempt_count
+                prior_failed = existing.get("prior_failed_attempts")
+                payload["prior_failed_attempts"] = (
+                    prior_failed + 1 if type(prior_failed) is int else 1
+                )
+                payload["primary_record_policy"] = (
+                    "latest_success_after_failure"
+                    if status in ("ok", "passed")
+                    else "latest_failed_attempt"
+                )
+        _write_private_file(path, canonical_event_bytes(payload))
+    return path
+
+
 def _invocation_event_path(path, git_dir):
     try:
         invocation = json.loads(path.read_text(encoding="utf-8"))
@@ -780,6 +935,7 @@ def prune_events(root, *, now=None, retention_seconds=EVENT_RETENTION_SECONDS):
                             sidecars.extend(
                                 path.parent.glob(f"{path.stem}.{suffix}-check-*")
                             )
+                        sidecars.extend(path.parent.glob(f"{path.stem}.timing-*"))
                         for sidecar in sidecars:
                             with suppress(OSError):
                                 sidecar.unlink(missing_ok=True)
@@ -854,17 +1010,21 @@ def _capture_details(event, reference):
 
 def _active_index_matches(root, path, captured):
     try:
-        if _active_index_path(root, os.environ).resolve() != path or _digest_bytes(
-            path.read_bytes()
-        ) != captured.get("sha256"):
+        expected_sha = captured.get("sha256")
+        if _active_index_path(root, os.environ).resolve() != path:
             return False
-        current_tree = _git(root, "write-tree")
-        return (
-            current_tree.returncode == 0
-            and current_tree.stdout.strip() == captured["tree"]
-            and _active_index_path(root, os.environ).resolve() == path
-            and _digest_bytes(path.read_bytes()) == captured["sha256"]
-        )
+        before = path.read_bytes()
+        if _digest_bytes(before) != expected_sha:
+            return False
+        current_tree = _write_index_tree(root, path, os.environ, index_bytes=before)
+        if (
+            current_tree.returncode != 0
+            or current_tree.stdout.strip() != captured["tree"]
+            or _active_index_path(root, os.environ).resolve() != path
+        ):
+            return False
+        after = path.read_bytes()
+        return after == before and _digest_bytes(after) == expected_sha
     except (OSError, HookEventError):
         return False
 
@@ -1028,6 +1188,8 @@ def main(argv=None):
                 if report["reason"] is not None:
                     print(report["reason"], file=sys.stderr)
             return report["exit_code"]
+        capture_started_mono = time.perf_counter()
+        capture_started_ns = time.time_ns()
         if args.hook == "pre-push":
             if args.framed_stdin:
                 if (
@@ -1057,6 +1219,19 @@ def main(argv=None):
         else:
             event = capture_pre_commit(Path(args.root))
         reference = persist_event(Path(args.root), event)
+        with suppress(OSError, HookEventError):
+            _record_stage_timing(
+                reference.invocation_path,
+                invocation_ref=reference.invocation_ref,
+                event_payload_ref=reference.event_payload_ref,
+                hook=event.get("hook"),
+                stage="capture",
+                job_ref="capture",
+                started_ns=capture_started_ns,
+                completed_ns=time.time_ns(),
+                elapsed_seconds=time.perf_counter() - capture_started_mono,
+                status="ok",
+            )
     except (OSError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 2

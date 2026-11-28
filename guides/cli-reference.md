@@ -74,7 +74,7 @@ PowerShell 查看 `$LASTEXITCODE`，Linux 查看 `$?`。fine-grained PAT 不支�
 
 | 功能 | 调用 |
 | --- | --- |
-| 本仓综合验证 | `uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`；默认入口见[显式本地综合验证](common-tasks.md#显式本地综合验证) |
+| 本仓综合验证 | `uv run --locked --no-sync engineering-ci verify --out .artifacts/verify`。用 `verify report --verify-dir <Invocation>` 核验核心测试产物。用 `--test-records`、`--test-node`、`--test-module`、`--test-phase` 查询记录，或用 `--compare-tests` 比较兼容的历史 Invocation。见[显式本地综合验证](common-tasks.md#显式本地综合验证)。 |
 | 原生定向检查 | `dagger check` / `dagger check --engineering-ci --check=...`；选择与报告见[本地检查](../docs/architecture/local-checks.md) |
 | 版本 | `uv run --locked --no-sync engineering-ci version show` / `check` / `set v0.7.0` |
 | Actions 内部发布/证据 | `python -m engineering_ci.workflow_actions release ...` / `manifest ...` |
