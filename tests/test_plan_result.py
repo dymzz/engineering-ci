@@ -369,6 +369,7 @@ def test_independent_native_branches_and_all_readers_share_saved_results(
             MemoryDirectory(),
             "3.14",
             "ci-weaver.toml",
+            verified_source=None,
         )
         collector._aggregate(report)
         assert native.started == {"tests", "weaver"}
@@ -421,6 +422,7 @@ def test_infrastructure_error_preserves_the_independent_native_result(modules):
             MemoryDirectory(),
             "3.14",
             "ci-weaver.toml",
+            verified_source=None,
         )
         collector._aggregate(report)
         assert report["status"] == "blocked" and report["exit_code"] == 5
@@ -492,6 +494,7 @@ def test_existing_test_precondition_blocks_only_its_native_consumer(
             MemoryDirectory(),
             "3.14",
             "ci-weaver.toml",
+            verified_source=None,
         )
         collector._aggregate(report)
         if weaver_status == "failed":
@@ -628,6 +631,16 @@ def test_export_handoff_links_directory_bytes_parent_and_original_host_report(
             evidence={"unit_double": True},
             runner_ref="execution:dagger_export",
         )
+        delegated = check_contract.native_result(
+            check_contract.definition_for("tach"),
+            source=check_contract.source_ref("worktree"),
+            status="passed",
+            result_origin="dagger",
+            result_instance=run_instance + ":dagger:tach",
+            native_exit_code=0,
+            evidence={"execution_location": "dagger_container"},
+            runner_ref="execution:dagger",
+        )
         return {
             "kind": host_execution.REPORT_KIND,
             "schema_version": 1,
@@ -637,7 +650,7 @@ def test_export_handoff_links_directory_bytes_parent_and_original_host_report(
                 {
                     "name": "source",
                     "status": "passed",
-                    "native_results": [native],
+                    "native_results": [native, delegated],
                     "check_contract": {"status": "valid"},
                 }
             ],
@@ -672,6 +685,11 @@ def test_export_handoff_links_directory_bytes_parent_and_original_host_report(
         result = json.loads(raw)["checks"][0]["native_results"][0]
         assert handoff["host_result_ids"] == [result["result_id"]]
         assert result["result_origin"] == "host"
+        # P2-06: container-delegated results stay out of the host-origin field
+        # in both the DAG and non-DAG paths.
+        delegated = json.loads(raw)["checks"][0]["native_results"][1]
+        assert delegated["result_origin"] == "dagger"
+        assert delegated["result_id"] not in handoff["host_result_ids"]
         assert report["source_binding_verified"] == "unknown"
         assert report["execution_identity"]["run_attempt_verification"] == "unverified"
 
@@ -4582,3 +4600,1385 @@ def test_weaver_result_preserves_native_exit_and_report_when_metadata_fails(
         opt_check["metadata_errors"]["input_source_directory"]["status"]
         == "unavailable"
     )
+
+
+def test_dagger_plan_selected_pytest_stays_bound_without_pyargs_and_resists_at_argsfile(
+    modules, monkeypatch, tmp_path
+):
+    """Dagger Plan-selected pytest binds dotted and @ targets to Source with '--', never '--pyargs'."""
+    import importlib
+    import os
+    import shutil
+    import subprocess
+    import xml.etree.ElementTree as ET
+
+    _, collector = modules
+    tooling = importlib.import_module(collector.__package__ + ".tooling")
+    dagger_mod = sys.modules["dagger"]
+
+    export_calls = []
+
+    class FakeDagDir(MemoryDirectory):
+        def with_directory(self, prefix, directory, *, exclude=()):
+            if exclude:
+                directory = _filter_source_with_patterns(directory, exclude)
+            merged = super().with_directory(prefix, directory)
+            return FakeDagDir(merged.files, dirs=merged.dirs)
+
+        async def export(self, directory):
+            export_calls.append(str(directory))
+            return await super().export(directory)
+
+    def identity(*args, **kwargs):
+        if args and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda fn: fn
+
+    monkeypatch.setattr(dagger_mod, "function", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "check", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        dagger_mod,
+        "dag",
+        types.SimpleNamespace(directory=lambda: FakeDagDir()),
+        raising=False,
+    )
+    for attr in ("Directory", "Container", "Secret"):
+        if not hasattr(dagger_mod, attr):
+            monkeypatch.setattr(dagger_mod, attr, object, raising=False)
+
+    spec = importlib.util.spec_from_file_location(
+        collector.__package__ + ".main", MODULE / "main.py"
+    )
+    main_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, main_mod)
+    spec.loader.exec_module(main_mod)
+
+    external = tmp_path / "ext_dagger_shadow"
+    (external / "tests").mkdir(parents=True)
+    (external / "tests/__init__.py").write_text("", encoding="utf-8")
+    (external / "tests/test_selected.py").write_text(
+        "def test_shadow_passes():\n    assert True\n", encoding="utf-8"
+    )
+    (external / "tests/test_missing.py").write_text(
+        "def test_missing_shadow():\n    assert True\n", encoding="utf-8"
+    )
+    (external / "legit_dagger_ext.py").write_text("VALUE = 7\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(external))
+
+    ext_pass = str((external / "tests/test_selected.py").resolve())
+    repo_files = {
+        "ci-selection.toml": b"# clean\n",
+        "ci-weaver.toml": b"# clean\n",
+        "src/app_mod.py": b"VALUE = 42\n",
+        "tests/test_selected.py": b"def test_bound_fails():\n    assert False\n",
+        "tests/test_ok.py": (
+            b"import sys\n"
+            b"from pathlib import Path\n"
+            b"sys.path.insert(0, str(Path('src').resolve()))\n"
+            b"import app_mod\n"
+            b"import legit_dagger_ext\n\n"
+            b"def test_ok():\n"
+            b"    assert app_mod.VALUE + legit_dagger_ext.VALUE == 49\n"
+        ),
+        "@args.py": b"def test_at_bound_fails():\n    assert False\n",
+        "args.py": (ext_pass + "\n").encode("utf-8"),
+        "chosen/test_dir.py": b"def test_chosen_dir_fails():\n    assert False\n",
+        "chosen.py": b"def test_chosen_file_passes():\n    assert True\n",
+        "sub.pkg/test_dotdir.py": b"def test_dotdir_fails():\n    assert False\n",
+        "sub/pkg.py": b"def test_sub_pkg_passes():\n    assert True\n",
+    }
+    source = FakeDagDir(repo_files)
+
+    recorded_execs = []
+    run_counter = 0
+
+    class RealPytestContainer:
+        def __init__(self, ws_root, *, code=0, out="", err=""):
+            self.ws_root = ws_root
+            self._code = code
+            self._out = out
+            self._err = err
+            self._extra_files = {}
+
+        def with_new_file(self, path, contents):
+            copied = RealPytestContainer(
+                self.ws_root, code=self._code, out=self._out, err=self._err
+            )
+            copied._extra_files = {**self._extra_files, path: contents}
+            return copied
+
+        def with_exec(self, command, **kwargs):
+            cmd = list(command)
+            if cmd[:4] == ["uv", "run", "--no-sync", "python"]:
+                argv = [sys.executable, *cmd[4:]]
+            else:
+                argv = cmd
+            if len(argv) >= 3 and argv[1] == "-I" and argv[2] == "-c":
+                proc = subprocess.run(
+                    argv, cwd=self.ws_root, capture_output=True, text=True, check=False
+                )
+                return RealPytestContainer(
+                    self.ws_root,
+                    code=proc.returncode,
+                    out=proc.stdout,
+                    err=proc.stderr,
+                )
+            if len(argv) >= 3 and argv[1] == "-m" and argv[2] == "pytest":
+                recorded_execs.append(cmd)
+                xml_path = self.ws_root / ".dagger-junit.xml"
+                rewritten = [
+                    f"--junitxml={xml_path}"
+                    if item == "--junitxml=/tmp/engineering-ci-pytest.xml"
+                    else item
+                    for item in argv
+                ]
+                env = dict(os.environ)
+                env["PYTHONPATH"] = (
+                    str((self.ws_root / "src").resolve()) + os.pathsep + str(external)
+                )
+                proc = subprocess.run(
+                    rewritten,
+                    cwd=self.ws_root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                return RealPytestContainer(
+                    self.ws_root,
+                    code=proc.returncode,
+                    out=proc.stdout,
+                    err=proc.stderr,
+                )
+            if len(argv) >= 2 and argv[1] == "/tmp/engineering-ci-pytest-ci.py":
+                helper_path = self.ws_root / "_pytest_ci_helper.py"
+                helper_path.write_text(
+                    self._extra_files["/tmp/engineering-ci-pytest-ci.py"],
+                    encoding="utf-8",
+                )
+                rewritten = [
+                    sys.executable,
+                    str(helper_path),
+                    *(
+                        str(self.ws_root / ".dagger-junit.xml")
+                        if arg == "/tmp/engineering-ci-pytest.xml"
+                        else arg
+                        for arg in argv[2:]
+                    ),
+                ]
+                proc = subprocess.run(
+                    rewritten,
+                    cwd=self.ws_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                return RealPytestContainer(
+                    self.ws_root,
+                    code=proc.returncode,
+                    out=proc.stdout,
+                    err=proc.stderr,
+                )
+            raise AssertionError(f"unexpected container command: {cmd!r}")
+
+        async def exit_code(self):
+            return self._code
+
+        async def stdout(self):
+            return self._out
+
+        async def stderr(self):
+            return self._err
+
+    class PlanPytestEngine(main_mod.EngineeringCi):
+        def _uv_container(
+            self,
+            source,
+            python_version,
+            sync_dependencies=True,
+            git_token=None,
+            dependency_packages=None,
+            *,
+            _bound_source=None,
+            system_packages=(),
+        ):
+            nonlocal run_counter
+            run_counter += 1
+            ws = tmp_path / f"dagger_pytest_ws_{run_counter}"
+            if ws.exists():
+                shutil.rmtree(ws)
+            ws.mkdir(parents=True)
+            _write_memdir(_bound_source if _bound_source is not None else source, ws)
+            return RealPytestContainer(ws)
+
+    engine = PlanPytestEngine()
+
+    def run_plan(tests_list):
+        plan = _v2_dagger_plan(
+            edges=[],
+            prerequisites=[],
+            actions={},
+            tests=tests_list,
+            checks=(),
+        )
+        plan["selection"]["framework"] = "pytest"
+        plan["git"] = _plan_git_identity("worktree")
+        return asyncio.run(
+            collector.execute(
+                engine,
+                MemoryFile(json.dumps(plan)),
+                source,
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+
+    # 1. Dotted target: external PYTHONPATH MUST NOT shadow bound failing repo test.
+    recorded_execs.clear()
+    fail_exec = run_plan(["tests.test_selected"])
+    fail_report = json.loads(asyncio.run(fail_exec.report()))
+    assert fail_report["status"] == "failed", fail_report["tests"]
+    assert fail_report["tests"]["exit_code"] == 1
+    assert "--pyargs" not in recorded_execs[0]
+    assert "--" in recorded_execs[0]
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [
+        "tests/test_selected.py"
+    ]
+    fail_xml = asyncio.run(fail_exec.artifacts.file("tests/junit.xml").contents())
+    fail_root = ET.fromstring(fail_xml)
+    assert fail_root.find(".//failure") is not None
+    check_contract.validate_result(fail_report["tests"]["native_result"])
+    with pytest.raises(RuntimeError, match="Plan failed"):
+        asyncio.run(fail_exec.enforce())
+
+    # 2. @args.py target: explicit ./ prefix prevents pytest 9.0.3 @argsfile expansion.
+    recorded_execs.clear()
+    at_exec = run_plan(["@args.py"])
+    at_report = json.loads(asyncio.run(at_exec.report()))
+    assert at_report["status"] == "failed", at_report
+    assert at_report["tests"]["exit_code"] == 1
+    assert "--" in recorded_execs[0]
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == ["./@args.py"]
+    check_contract.validate_result(at_report["tests"]["native_result"])
+
+    # 3. Missing dotted target stays bound and fails natively (exit 4) instead of hitting external package.
+    recorded_execs.clear()
+    miss_exec = run_plan(["tests.test_missing"])
+    miss_report = json.loads(asyncio.run(miss_exec.report()))
+    assert miss_report["status"] == "failed", miss_report
+    assert miss_report["tests"]["exit_code"] == 4
+    assert "--pyargs" not in recorded_execs[0]
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [
+        "tests/test_missing.py"
+    ]
+    check_contract.validate_result(miss_report["tests"]["native_result"])
+
+    # 4. Passing repo target keeps legitimate PYTHONPATH imports and validates NativeResult + JUnit.
+    recorded_execs.clear()
+    ok_exec = run_plan(["tests.test_ok"])
+    ok_report = json.loads(asyncio.run(ok_exec.report()))
+    assert ok_report["status"] == "passed", ok_report
+    assert ok_report["tests"]["exit_code"] == 0
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [
+        "tests/test_ok.py"
+    ]
+    ok_xml = asyncio.run(ok_exec.artifacts.file("tests/junit.xml").contents())
+    assert (
+        ET.fromstring(ok_xml).attrib
+        or ET.fromstring(ok_xml).find(".//testcase") is not None
+    )
+    check_contract.validate_result(ok_report["tests"]["native_result"])
+    asyncio.run(ok_exec.enforce())
+
+    # 5. Traversal and post-normalization flag injection refuse before calling _run_pytest.
+    for bad_target, expected_reason in (
+        ("../ext_dagger_shadow/tests/test_selected.py", "pytest_target_outside_source"),
+        ("./--version", "pytest_target_invalid"),
+    ):
+        recorded_execs.clear()
+        refused_exec = run_plan([bad_target])
+        refused_report = json.loads(asyncio.run(refused_exec.report()))
+        assert not recorded_execs
+        assert refused_report["status"] == "blocked", refused_report
+        assert refused_report["tests"]["status"] == "not_executed"
+        assert refused_report["tests"]["reason"] == expected_reason
+
+    # Direct _run_pytest calls also resolve dotted targets without --pyargs and refuse invalid targets.
+    recorded_execs.clear()
+    direct_exec = asyncio.run(
+        engine._run_pytest(
+            source, "3.14", "tests.test_selected", _targets=["tests.test_selected"]
+        )
+    )
+    assert direct_exec.exit_code == 1
+    assert "--pyargs" not in recorded_execs[0]
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [
+        "tests/test_selected.py"
+    ]
+    assert direct_exec.report["selected_targets"] == ["tests/test_selected.py"]
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            engine._run_pytest(source, "3.14", "./--version", _targets=["./--version"])
+        )
+
+    # 6. P1-07 & P2-02: Explicit directory targets ("./chosen" vs "chosen.py", "./sub.pkg" vs "sub/pkg.py")
+    # resolve once via plan_execution._tests -> _resolved_targets without re-interpretation or re-export.
+    from engineering_ci import selection as real_selection
+
+    verified_root = tmp_path / "verified_src_root"
+    _write_memdir(source, verified_root)
+    verified_tree_id = real_selection.directory_content_id(verified_root)
+
+    def run_verified_plan(tests_list):
+        plan = _v2_dagger_plan(
+            edges=[],
+            prerequisites=[],
+            actions={},
+            tests=tests_list,
+            checks=(),
+        )
+        plan["selection"]["framework"] = "pytest"
+        plan["git"] = {
+            "snapshot": "index",
+            "execution_tree": "a" * 40,
+            "index_tree": "a" * 40,
+            "head_commit": "b" * 40,
+            "source_tree_id": verified_tree_id,
+        }
+        return asyncio.run(
+            collector.execute(
+                engine,
+                MemoryFile(json.dumps(plan)),
+                source,
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+
+    for dir_target, failure_hint in (
+        ("./chosen", "test_chosen_dir_fails"),
+        ("./sub.pkg", "test_dotdir_fails"),
+    ):
+        recorded_execs.clear()
+        export_calls.clear()
+        dir_exec = run_verified_plan([dir_target])
+        dir_report = json.loads(asyncio.run(dir_exec.report()))
+        assert dir_report["status"] == "failed", dir_report["tests"]
+        assert dir_report["tests"]["exit_code"] == 1
+        assert dir_report["targets"] == [dir_target]
+        assert {
+            "kind": "test_target",
+            "path": dir_target,
+        } in dir_report["tests"]["native_result"]["input_refs"]
+        # Only execute()'s single initial source.export occurred; neither _tests nor _run_pytest re-exported!
+        assert len(export_calls) == 1
+        assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == [dir_target]
+        dir_xml = asyncio.run(dir_exec.artifacts.file("tests/junit.xml").contents())
+        assert failure_hint in dir_xml
+        check_contract.validate_result(dir_report["tests"]["native_result"])
+
+    # Direct _run_pytest on "./chosen" also resolves cleanly to "./chosen" (exit 1, not chosen.py).
+    recorded_execs.clear()
+    export_calls.clear()
+    direct_dir_exec = asyncio.run(
+        engine._run_pytest(source, "3.14", "./chosen", _targets=["./chosen"])
+    )
+    assert direct_dir_exec.exit_code == 1
+    assert len(export_calls) == 1
+    assert recorded_execs[0][recorded_execs[0].index("--") + 1 :] == ["./chosen"]
+
+    # Contradictory or uncanonical _resolved_targets inputs refuse before spawning pytest.
+    with pytest.raises(ValueError, match="cannot specify both"):
+        asyncio.run(
+            engine._run_pytest(
+                source,
+                "3.14",
+                "./chosen",
+                _targets=["./chosen"],
+                _resolved_targets=["./chosen"],
+            )
+        )
+    for bad_prebound in (
+        "@args.py",
+        "chosen",
+        "./--version",
+        "./C:outside",
+        "../outside.py",
+    ):
+        with pytest.raises(ValueError, match="refused"):
+            asyncio.run(
+                engine._run_pytest(
+                    source,
+                    "3.14",
+                    "tests",
+                    _resolved_targets=[bad_prebound],
+                )
+            )
+    # Generic consumer pytest_arguments contract stays untouched.
+    assert tooling.SOURCE_NOISE
+    pytest_quality = importlib.import_module(collector.__package__ + ".pytest_quality")
+
+    generic_args = pytest_quality.pytest_arguments(
+        pytest_quality.test_policy("tests"), "/tmp/junit.xml"
+    )
+    assert generic_args[-1] == "tests"
+    assert "--" not in generic_args
+
+
+def test_dagger_git_free_index_runs_tach_and_rejects_external_dir_symlink(
+    modules, monkeypatch, tmp_path
+):
+    import importlib
+    import os
+    import subprocess
+
+    _, collector = modules
+    dagger_mod = sys.modules["dagger"]
+    repo_root = Path(__file__).resolve().parents[1]
+
+    def identity(*args, **kwargs):
+        if args and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda fn: fn
+
+    monkeypatch.setattr(dagger_mod, "function", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "check", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(
+        dagger_mod,
+        "dag",
+        types.SimpleNamespace(directory=lambda: MemoryDirectory()),
+        raising=False,
+    )
+    for attr in ("Directory", "Container", "Secret"):
+        if not hasattr(dagger_mod, attr):
+            monkeypatch.setattr(dagger_mod, attr, object, raising=False)
+
+    spec = importlib.util.spec_from_file_location(
+        collector.__package__ + ".main", MODULE / "main.py"
+    )
+    main_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, main_mod)
+    spec.loader.exec_module(main_mod)
+
+    from engineering_ci import hygiene
+    from engineering_ci import selection as real_selection
+
+    # 1. P1-09 through plan_execution.execute on Git-free Index Source: runs tach and preserves exit 0/1.
+    hyg_toml = (
+        'schema_version = 1\nchecks = ["tach"]\n\n'
+        '[tach]\nexecutable = "tach"\npath = "tach.toml"\nexternal = false\n'
+    )
+    tach_toml = 'source_roots = ["src"]\n\n[[modules]]\npath = "app"\ndepends_on = []\n'
+    hyg_file = tmp_path / "ci-hygiene.toml"
+    hyg_file.write_bytes(hyg_toml.encode("utf-8"))
+    hyg_cfg = hygiene.load_config(hyg_file)
+    hyg_sha = check_contract.file_digest(hyg_file)
+    hyg_id = hygiene.config_identity(hyg_file, hyg_cfg, root=tmp_path)
+
+    src_files = {
+        "ci-hygiene.toml": hyg_toml.encode("utf-8"),
+        "tach.toml": tach_toml.encode("utf-8"),
+        "src/app/__init__.py": b"VALUE = 1\n",
+    }
+    mat_dir = tmp_path / "git_free_tach_src"
+    mat_dir.mkdir()
+    _write_memdir(MemoryDirectory(src_files), mat_dir)
+    verified_tree_id = real_selection.directory_content_id(mat_dir)
+
+    idx_plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {
+            "base_ref": "main",
+            "head_ref": "HEAD",
+            "base_commit": "0" * 40,
+            "head_commit": "1" * 40,
+            "snapshot": "index",
+            "execution_tree": "a" * 40,
+            "index_tree": "a" * 40,
+            "source_tree_id": verified_tree_id,
+            "changed_paths": ["src/app/__init__.py"],
+        },
+        "selection": {
+            "tests": [],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+            "checks": ["tach"],
+        },
+        "check_scope": [
+            {"name": "tach", "status": "selected", "inputs": ["src/app/__init__.py"]}
+        ],
+        "inputs": {
+            "hygiene": {
+                "kind": "config",
+                "path": "ci-hygiene.toml",
+                "sha256": hyg_sha,
+                "policy_scope": "repo_target_tree",
+                "normalized": hyg_id["normalized"],
+                "effective_check_config_ref": hyg_id["effective_check_config_ref"],
+            }
+        },
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+
+    tach_calls = []
+
+    def _fake_tach_run(argv, root, data=None):
+        tach_calls.append(list(argv))
+        if argv and argv[0] == "tach":
+            return subprocess.CompletedProcess(argv, _tach_exit["code"], "ok\n", "")
+        return subprocess.CompletedProcess(argv, 128, "", "not a git repo")
+
+    _tach_exit = {"code": 0}
+    monkeypatch.setattr(hygiene, "_run", _fake_tach_run)
+    import shutil
+
+    orig_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/usr/bin/tach" if name == "tach" else orig_which(name),
+    )
+    engine = main_mod.EngineeringCi()
+
+    for code, expected_status in ((0, "passed"), (1, "failed")):
+        _tach_exit["code"] = code
+        tach_calls.clear()
+        exec_res = asyncio.run(
+            collector.execute(
+                engine,
+                MemoryFile(json.dumps(idx_plan)),
+                MemoryDirectory(src_files),
+                "3.14",
+                "ci-weaver.toml",
+            )
+        )
+        rep = json.loads(asyncio.run(exec_res.report()))
+        tach_entry = next(c for c in rep["checks"] if c["name"] == "tach")
+        assert tach_entry.get("execution_started") is not False, tach_entry
+        assert tach_entry["check_contract"]["status"] == "valid", tach_entry
+        assert tach_entry["exit_code"] == code
+        assert tach_entry["status"] == expected_status
+        assert any(call == ["tach", "check"] for call in tach_calls)
+
+    # When host tach binary is absent in Dagger container, _make_hygiene_runner delegates pinned tach==0.35.3 via _exec_uv_tool.
+    uv_calls = []
+
+    class UvTachEngine(main_mod.EngineeringCi):
+        async def _exec_uv_tool(self, source_dir, argv_list):
+            uv_calls.append(list(argv_list))
+            return {"exit_code": 0, "stdout": "All modules validated!\n", "stderr": ""}
+
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: None if name == "tach" else orig_which(name),
+    )
+    uv_exec = asyncio.run(
+        collector.execute(
+            UvTachEngine(),
+            MemoryFile(json.dumps(idx_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    uv_rep = json.loads(asyncio.run(uv_exec.report()))
+    uv_tach = next(c for c in uv_rep["checks"] if c["name"] == "tach")
+    assert uv_tach["status"] == "passed"
+    assert uv_tach["exit_code"] == 0
+    assert uv_calls == [["uvx", "--from", "tach==0.35.3", "tach", "check"]]
+
+    # Wrong digest refuses execution before running tach.
+    tach_calls.clear()
+    bad_idx_plan = json.loads(json.dumps(idx_plan))
+    bad_idx_plan["git"]["source_tree_id"] = "sha256:" + "0" * 64
+    bad_exec = asyncio.run(
+        collector.execute(
+            engine,
+            MemoryFile(json.dumps(bad_idx_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    bad_rep = json.loads(asyncio.run(bad_exec.report()))
+    assert bad_rep["status"] == "not_executed"
+    assert bad_rep["reason"] == "source_tree_mismatch"
+    assert not tach_calls
+
+    # 2. P1-10: Directory target holding an external link is blocked on Dagger plan_execution & _run_pytest.
+    ext_dir = tmp_path / "ext_outside_dagger"
+    ext_dir.mkdir()
+    (ext_dir / "test_outside.py").write_text(
+        "def test_external():\n    assert True\n", encoding="utf-8"
+    )
+    symlink_repo = tmp_path / "symlink_dagger_src"
+    (symlink_repo / "chosen").mkdir(parents=True)
+    (symlink_repo / "chosen/test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (symlink_repo / "ci-weaver.toml").write_text("# clean\n", encoding="utf-8")
+    symlink_mode = True
+    try:
+        os.symlink(ext_dir / "test_outside.py", symlink_repo / "chosen/test_outside.py")
+    except OSError:
+        symlink_mode = False
+
+    class SymlinkDagDir(MemoryDirectory):
+        def __init__(
+            self, files=None, *, dirs=None, _loader=None, _preserve_escape=False
+        ):
+            super().__init__(files, dirs=dirs, _loader=_loader)
+            self._preserve_escape = _preserve_escape
+
+        def with_directory(self, prefix, directory, *, exclude=()):
+            merged = super().with_directory(prefix, directory, exclude=exclude)
+            return SymlinkDagDir(
+                merged.files,
+                dirs=merged.dirs,
+                _preserve_escape=self._preserve_escape
+                or isinstance(directory, SymlinkDagDir)
+                and directory._preserve_escape,
+            )
+
+        async def export(self, directory):
+            await super().export(directory)
+            if not self._preserve_escape:
+                return
+            dest = Path(directory)
+            (dest / "chosen").mkdir(parents=True, exist_ok=True)
+            (dest / "chosen/test_ok.py").write_text(
+                "def test_ok():\n    assert True\n", encoding="utf-8"
+            )
+            if symlink_mode:
+                link_path = dest / "chosen/test_outside.py"
+                if not link_path.exists() and not link_path.is_symlink():
+                    os.symlink(ext_dir / "test_outside.py", link_path)
+            else:
+                import _winapi
+
+                j_path = dest / "chosen/ext_sub"
+                if not j_path.exists() and not j_path.is_junction():
+                    _winapi.CreateJunction(str(ext_dir), str(j_path))
+
+    monkeypatch.setattr(
+        dagger_mod,
+        "dag",
+        types.SimpleNamespace(directory=lambda: SymlinkDagDir()),
+        raising=False,
+    )
+
+    recorded_pytest = []
+
+    class RejectEngine(main_mod.EngineeringCi):
+        def _bound_public_source(self, source):
+            return source
+
+        def _uv_container(self, *args, **kwargs):
+            return types.SimpleNamespace()
+
+        async def _run_pytest(self, *args, **kwargs):
+            recorded_pytest.append((args, kwargs))
+            raise AssertionError(
+                "_run_pytest must not launch when directory has escaping symlink"
+            )
+
+    sym_source = SymlinkDagDir(
+        {
+            "ci-weaver.toml": b"# clean\n",
+            "chosen/test_ok.py": b"def test_ok():\n    assert True\n",
+        },
+        _preserve_escape=True,
+    )
+    sym_plan = _v2_dagger_plan(
+        edges=[],
+        prerequisites=[],
+        actions={},
+        tests=["./chosen"],
+        checks=(),
+    )
+    sym_plan["selection"]["framework"] = "pytest"
+    sym_plan["git"] = _plan_git_identity("worktree")
+    refused_exec = asyncio.run(
+        collector.execute(
+            RejectEngine(),
+            MemoryFile(json.dumps(sym_plan)),
+            sym_source,
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    refused_rep = json.loads(asyncio.run(refused_exec.report()))
+    assert not recorded_pytest
+    assert refused_rep["status"] == "blocked"
+    assert refused_rep["tests"]["status"] == "not_executed"
+    assert refused_rep["tests"]["reason"] == "pytest_target_outside_source"
+
+    direct_engine = RejectEngine()
+    with pytest.raises(ValueError, match="pytest_target_outside_source"):
+        asyncio.run(
+            main_mod.EngineeringCi._run_pytest(
+                direct_engine, sym_source, "3.14", "./chosen", _targets=["./chosen"]
+            )
+        )
+    assert repo_root.is_dir()
+
+
+def _load_main_for_plan_result(modules, monkeypatch):
+    import importlib
+
+    _, collector = modules
+    dagger_mod = sys.modules["dagger"]
+
+    def identity(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda fn: fn
+
+    for attr in ("Directory", "Container", "Secret"):
+        if not hasattr(dagger_mod, attr):
+            monkeypatch.setattr(dagger_mod, attr, object, raising=False)
+    monkeypatch.setattr(dagger_mod, "function", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "check", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "object_type", identity, raising=False)
+    monkeypatch.setattr(dagger_mod, "DefaultPath", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(dagger_mod, "Ignore", lambda *a, **kw: None, raising=False)
+    spec = importlib.util.spec_from_file_location(
+        collector.__package__ + ".main", MODULE / "main.py"
+    )
+    main_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, main_mod)
+    spec.loader.exec_module(main_mod)
+    return (
+        collector,
+        main_mod,
+        importlib.import_module(collector.__package__ + ".tooling"),
+    )
+
+
+def test_container_hygiene_preserves_verified_noise_and_delegates_vulture(
+    modules, monkeypatch, tmp_path
+):
+    import shutil
+
+    from engineering_ci import hygiene
+    from engineering_ci import selection as real_selection
+
+    collector, main_mod, tooling = _load_main_for_plan_result(modules, monkeypatch)
+    hyg_text = (
+        "schema_version = 1\n"
+        'checks = ["docs", "tach", "vulture"]\n'
+        "\n[lychee]\n"
+        'arguments = ["--offline", "--no-progress"]\n'
+        "\n[tach]\n"
+        'path = "tach.toml"\n'
+        "\n[vulture]\n"
+        'paths = ["src"]\n'
+    )
+    (tmp_path / "cfg_hyg.toml").write_text(hyg_text, encoding="utf-8")
+    hyg_sha = hashlib.sha256(hyg_text.encode("utf-8")).hexdigest()
+    hyg_cfg = hygiene.load_config(tmp_path / "cfg_hyg.toml")
+    hyg_id = hygiene.config_identity(tmp_path / "cfg_hyg.toml", hyg_cfg, root=tmp_path)
+
+    raw_public = {
+        "ci-hygiene.toml": hyg_text.encode("utf-8"),
+        "tach.toml": b'source_roots = ["src"]\n',
+        "src/app/__init__.py": b"VALUE = 1\n",
+        "src/.ruff_cache/tracked_fixture.py": b"FIXTURE = 1\n",
+        "docs/guide.md": b"# Guide\n",
+    }
+    tree_dir = tmp_path / "verified_tree"
+    for rel, data in raw_public.items():
+        dest = tree_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    verified_tree_id = real_selection.directory_content_id(tree_dir)
+    src_files = {".git/HEAD": b"ref: refs/heads/main\n", **raw_public}
+
+    uv_calls = []
+    lychee_calls = []
+
+    class ContainerSpyEngine(main_mod.EngineeringCi):
+        async def _exec_uv_tool(
+            self,
+            source,
+            argv,
+            *,
+            _bound_source=None,
+            _source_excludes=None,
+        ):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            excludes = (
+                list(_source_excludes)
+                if _source_excludes is not None
+                else list(tooling.SOURCE_NOISE)
+            )
+            mounted_files, _ = mounted._materialize()
+            uv_calls.append((list(argv), dict(mounted_files), excludes))
+            return {
+                "exit_code": 0,
+                "stdout": "ok\n",
+                "stderr": "",
+                "observation": {
+                    "execution_location": "dagger_container",
+                    "freshness_policy": "native_exec_cache",
+                    "argv": list(argv),
+                    "source_directory": {
+                        "digest": "sha256:src",
+                        "directory_id": "dir:src",
+                    },
+                    "consumed_source_directory": {
+                        "digest": "sha256:consumed",
+                        "directory_id": "dir:consumed",
+                    },
+                    "container_source_filtered": bool(excludes),
+                    "container_source_excludes": excludes,
+                    "origin_execution_attributed": False,
+                },
+            }
+
+        async def _run_lychee(
+            self,
+            source,
+            argv_tail,
+            *,
+            _bound_source=None,
+            _source_excludes=None,
+        ):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            excludes = (
+                list(_source_excludes)
+                if _source_excludes is not None
+                else list(tooling.SOURCE_NOISE)
+            )
+            mounted_files, _ = mounted._materialize()
+            lychee_calls.append((list(argv_tail), dict(mounted_files), excludes))
+            return {
+                "exit_code": 0,
+                "stdout": "0 links\n",
+                "stderr": "",
+                "observation": {
+                    "execution_location": "dagger_container",
+                    "freshness_policy": "offline_closed",
+                    "container_source_filtered": bool(excludes),
+                    "container_source_excludes": excludes,
+                    "origin_execution_attributed": False,
+                },
+            }
+
+        async def _run_git(self, source, argv):
+            out = "docs/guide.md\0" if "ls-files" in argv else ""
+            return {"exit_code": 0, "stdout": out, "stderr": ""}
+
+    orig_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: (
+            None if name in {"tach", "vulture", "git", "lychee"} else orig_which(name)
+        ),
+    )
+
+    # 1. Verified Git tree: BOTH tach and vulture retain tracked src/.ruff_cache/tracked_fixture.py,
+    # exclude ONLY .git, delegate missing binaries via uvx, and downgrade NativeResult provenance.
+    idx_plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {
+            "base_ref": "main",
+            "head_ref": "HEAD",
+            "base_commit": "0" * 40,
+            "head_commit": "1" * 40,
+            "snapshot": "index",
+            "execution_tree": "a" * 40,
+            "index_tree": "a" * 40,
+            "source_tree_id": verified_tree_id,
+            "changed_paths": ["src/app/__init__.py"],
+        },
+        "selection": {
+            "tests": [],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+            "checks": ["tach", "vulture"],
+        },
+        "check_scope": [
+            {"name": "tach", "status": "selected", "inputs": ["src/app/__init__.py"]},
+            {
+                "name": "vulture",
+                "status": "selected",
+                "inputs": ["src/app/__init__.py"],
+            },
+        ],
+        "inputs": {
+            "hygiene": {
+                "kind": "config",
+                "path": "ci-hygiene.toml",
+                "sha256": hyg_sha,
+                "policy_scope": "repo_target_tree",
+                "normalized": hyg_id["normalized"],
+                "effective_check_config_ref": hyg_id["effective_check_config_ref"],
+            }
+        },
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+
+    idx_exec = asyncio.run(
+        collector.execute(
+            ContainerSpyEngine(),
+            MemoryFile(json.dumps(idx_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    idx_rep = json.loads(asyncio.run(idx_exec.report()))
+    assert idx_rep["status"] == "passed", idx_rep
+    assert [call[0] for call in uv_calls] == [
+        ["uvx", "--from", "tach==0.35.3", "tach", "check"],
+        [
+            "uvx",
+            "--from",
+            "vulture==2.16",
+            "vulture",
+            "--min-confidence",
+            "60",
+            "--",
+            "src",
+        ],
+    ]
+    for _, mounted_files, excludes in uv_calls:
+        assert "src/.ruff_cache/tracked_fixture.py" in mounted_files
+        assert ".git/HEAD" not in mounted_files
+        assert excludes == [".git"]
+    for chk_name in ("tach", "vulture"):
+        entry = next(c for c in idx_rep["checks"] if c["name"] == chk_name)
+        assert entry["result_origin"] == "dagger"
+        assert entry["native_result"]["result_origin"] == "dagger"
+        assert entry["native_result"]["runner_ref"] == "execution:dagger"
+        assert entry["native_result"]["source_ref"]["binding_status"] == "identity_only"
+        assert (
+            entry["native_result"]["evidence"]["source_limit"]
+            == "input_closure_not_proven"
+        )
+        assert entry["native_result"]["evidence"]["observation"][
+            "container_source_excludes"
+        ] == [".git"]
+
+    # 2. Unverified worktree: strips SOURCE_NOISE from container AND source_ref.verified_input_scope.
+    uv_calls.clear()
+    wt_plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {
+            "base_ref": "main",
+            "head_ref": "WORKTREE",
+            "base_commit": "0" * 40,
+            "head_commit": "1" * 40,
+            "snapshot": "worktree",
+            "changed_paths": [
+                "src/app/__init__.py",
+                "src/.ruff_cache/tracked_fixture.py",
+            ],
+        },
+        "selection": {
+            "tests": [],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+            "checks": ["tach", "vulture"],
+        },
+        "check_scope": [
+            {
+                "name": "tach",
+                "status": "selected",
+                "inputs": [
+                    "src/app/__init__.py",
+                    "src/.ruff_cache/tracked_fixture.py",
+                ],
+            },
+            {
+                "name": "vulture",
+                "status": "selected",
+                "inputs": ["src/app/__init__.py"],
+            },
+        ],
+        "inputs": idx_plan["inputs"],
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+    wt_exec = asyncio.run(
+        collector.execute(
+            ContainerSpyEngine(),
+            MemoryFile(json.dumps(wt_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    wt_rep = json.loads(asyncio.run(wt_exec.report()))
+    assert wt_rep["status"] == "passed", wt_rep
+    for _, mounted_files, excludes in uv_calls:
+        assert "src/.ruff_cache/tracked_fixture.py" not in mounted_files
+        assert excludes == list(tooling.SOURCE_NOISE)
+    wt_tach = next(c for c in wt_rep["checks"] if c["name"] == "tach")
+    assert wt_tach["native_result"]["source_ref"]["binding_status"] == "identity_only"
+    assert (
+        "src/.ruff_cache/tracked_fixture.py"
+        not in wt_tach["native_result"]["source_ref"]["verified_input_scope"]
+    )
+    assert (
+        wt_tach["native_result"]["evidence"]["source_limit"]
+        == "input_closure_not_proven"
+    )
+
+    # 3. DAG mode with verified tree + Data Overlay preserves BOTH verified tree SOURCE_NOISE member AND overlays across tach + docs.
+    uv_calls.clear()
+    lychee_calls.clear()
+    gen_cmd = [
+        sys.executable,
+        "-c",
+        (
+            "import os; from pathlib import Path; "
+            "r = Path(os.environ['ENGINEERING_CI_ARTIFACT_DIR']); "
+            "(r / 'docs').mkdir(parents=True, exist_ok=True); "
+            "(r / 'src/.ruff_cache').mkdir(parents=True, exist_ok=True); "
+            "(r / 'docs/guide.md').write_bytes(b'# Generated Guide\\n'); "
+            "(r / 'src/.ruff_cache/generated.py').write_bytes(b'Y = 2\\n')"
+        ),
+    ]
+    gen_doc_sha = hashlib.sha256(b"# Generated Guide\n").hexdigest()
+    gen_py_sha = hashlib.sha256(b"Y = 2\n").hexdigest()
+    decl_ref = {
+        "path": "ci-selection.toml",
+        "section": "prerequisite_actions.gen",
+        "sha256": hyg_sha,
+    }
+    dag_plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {
+            "name": "engineering-ci",
+            "version": "0.7.0",
+            "config_sha256": hyg_sha,
+        },
+        "git": idx_plan["git"],
+        "selection": {
+            "tests": [],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+            "checks": ["docs", "tach", "vulture"],
+            "prerequisites": ["gen"],
+        },
+        "prerequisite_actions": {"gen": {"type": "command", "argv": gen_cmd}},
+        "check_scope": [
+            {"name": "docs", "status": "selected", "inputs": ["docs/guide.md"]},
+            {"name": "tach", "status": "selected", "inputs": ["src/app/__init__.py"]},
+            {
+                "name": "vulture",
+                "status": "selected",
+                "inputs": ["src/app/__init__.py"],
+            },
+        ],
+        "inputs": {
+            **idx_plan["inputs"],
+            "config": {
+                "kind": "config",
+                "path": "ci-selection.toml",
+                "sha256": hyg_sha,
+            },
+        },
+        "dependency_contract": plan_contract.graph_contract(
+            [
+                {
+                    "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+                    "consumer_ref": {"kind": "check", "name": "docs"},
+                    "dependency_kind": "data",
+                    "execution_phase": "pre_execution",
+                    "output_ref": {
+                        "kind": "file",
+                        "path": "docs/guide.md",
+                        "sha256": gen_doc_sha,
+                    },
+                    "declaration_ref": decl_ref,
+                    "source_binding_ref": "git",
+                    "resolution": "resolved",
+                    "unresolved_reason": None,
+                    "requires_pass": True,
+                },
+                {
+                    "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+                    "consumer_ref": {"kind": "check", "name": "tach"},
+                    "dependency_kind": "data",
+                    "execution_phase": "pre_execution",
+                    "output_ref": {
+                        "kind": "file",
+                        "path": "src/.ruff_cache/generated.py",
+                        "sha256": gen_py_sha,
+                    },
+                    "declaration_ref": decl_ref,
+                    "source_binding_ref": "git",
+                    "resolution": "resolved",
+                    "unresolved_reason": None,
+                    "requires_pass": True,
+                },
+            ]
+        ),
+    }
+    dag_exec = asyncio.run(
+        collector.execute(
+            ContainerSpyEngine(),
+            MemoryFile(json.dumps(dag_plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    dag_rep = json.loads(asyncio.run(dag_exec.report()))
+    assert dag_rep["status"] == "passed", (
+        dag_rep.get("reason"),
+        [
+            (c.get("name"), c.get("status"), c.get("reason"))
+            for c in dag_rep.get("checks", [])
+        ],
+        dag_rep.get("prerequisites"),
+        dag_rep.get("artifact_closure"),
+    )
+    assert sorted(call[0] for call in uv_calls) == [
+        ["uvx", "--from", "tach==0.35.3", "tach", "check"],
+        [
+            "uvx",
+            "--from",
+            "vulture==2.16",
+            "vulture",
+            "--min-confidence",
+            "60",
+            "--",
+            "src",
+        ],
+    ]
+    _, tach_mounted, tach_excludes = next(
+        call for call in uv_calls if "tach" in call[0]
+    )
+    assert tach_excludes == [".git"]
+    assert "src/.ruff_cache/tracked_fixture.py" in tach_mounted
+    assert tach_mounted.get("src/.ruff_cache/generated.py") == b"Y = 2\n"
+    assert len(lychee_calls) == 1
+    _, docs_mounted, docs_excludes = lychee_calls[0]
+    assert docs_excludes == [".git"]
+    assert docs_mounted.get("docs/guide.md") == b"# Generated Guide\n"
+
+
+def test_dagger_plan_execution_lossless_pytest_dot_dir_collision(
+    modules, monkeypatch, tmp_path
+):
+    import subprocess
+
+    collector, main_mod, _ = _load_main_for_plan_result(modules, monkeypatch)
+    src_files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        "pyproject.toml": b'[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+        "ci-selection.toml": b'schema_version = 1\nframework = "pytest"\n',
+        "src/pkg.py": b"VALUE = 1\n",
+        "tests/sub.pkg/test_case.py": b"def test_dot_dir():\n    assert False, 'dot_dir'\n",
+        "tests/sub/pkg/test_case.py": b"def test_nested():\n    assert True\n",
+    }
+    plan = {
+        "kind": plan_contract.PLAN_KIND,
+        "schema_version": 2,
+        "generator": {"name": "engineering-ci", "version": "0.7.0"},
+        "git": {
+            "snapshot": "worktree",
+            "changed_paths": ["tests/sub.pkg/test_case.py"],
+        },
+        "selection": {
+            "tests": ["tests/sub.pkg/test_case.py"],
+            "framework": "pytest",
+            "src_root": "src",
+            "tests_dir": "tests",
+        },
+        "check_scope": [
+            {
+                "name": "pytest",
+                "status": "targeted",
+                "inputs": ["tests/sub.pkg/test_case.py"],
+            }
+        ],
+        "dependency_contract": plan_contract.graph_contract([]),
+    }
+
+    pytest_calls = []
+
+    class PytestContainerEngine(main_mod.EngineeringCi):
+        def _uv_container(
+            self,
+            source,
+            python_version,
+            sync_dependencies=True,
+            git_token=None,
+            dependency_packages=None,
+            *,
+            _bound_source=None,
+            system_packages=(),
+        ):
+            mounted = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            ws = tmp_path / "dagger_pytest_ws"
+            if ws.exists():
+                import shutil
+
+                shutil.rmtree(ws)
+            ws.mkdir(parents=True)
+            files_map, _ = mounted._materialize()
+            for rel, content in files_map.items():
+                dest = ws / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(
+                    content if isinstance(content, bytes) else content.encode("utf-8")
+                )
+
+            class _Ctr:
+                def __init__(self, *, code=0, out="", err="", extra=None):
+                    self._code = code
+                    self._out = out
+                    self._err = err
+                    self._extra = dict(extra or {})
+
+                def with_new_file(self, path, contents):
+                    return _Ctr(
+                        code=self._code,
+                        out=self._out,
+                        err=self._err,
+                        extra={**self._extra, path: contents},
+                    )
+
+                def with_exec(self, command, **kwargs):
+                    cmd = list(command)
+                    argv = (
+                        [sys.executable, *cmd[4:]]
+                        if cmd[:4] == ["uv", "run", "--no-sync", "python"]
+                        else cmd
+                    )
+                    if len(argv) >= 2 and argv[1] == "/tmp/engineering-ci-pytest-ci.py":
+                        pytest_calls.append(cmd)
+                        helper = ws / "_pytest_ci_helper.py"
+                        helper.write_text(
+                            self._extra["/tmp/engineering-ci-pytest-ci.py"],
+                            encoding="utf-8",
+                        )
+                        rewritten = [
+                            sys.executable,
+                            str(helper),
+                            *(
+                                str(ws / ".dagger-junit.xml")
+                                if arg == "/tmp/engineering-ci-pytest.xml"
+                                else arg
+                                for arg in argv[2:]
+                            ),
+                        ]
+                        proc = subprocess.run(
+                            rewritten,
+                            cwd=ws,
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                        )
+                        return _Ctr(
+                            code=proc.returncode,
+                            out=proc.stdout,
+                            err=proc.stderr,
+                            extra=self._extra,
+                        )
+                    if len(argv) >= 3 and argv[1] == "-m" and argv[2] == "pytest":
+                        pytest_calls.append(cmd)
+                    # Force a stable short summary so the artifact proves which
+                    # test file ran, independent of pytest terminal rendering.
+                    run_argv = list(argv)
+                    if "--" in run_argv:
+                        cut = run_argv.index("--")
+                        run_argv[cut:cut] = ["-rA", "--tb=short"]
+                    else:
+                        run_argv.extend(["-rA", "--tb=short"])
+                    proc = subprocess.run(
+                        run_argv,
+                        cwd=ws,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                    )
+                    return _Ctr(
+                        code=proc.returncode,
+                        out=proc.stdout,
+                        err=proc.stderr,
+                        extra=self._extra,
+                    )
+
+                async def exit_code(self):
+                    return self._code
+
+                async def stdout(self):
+                    return self._out
+
+                async def stderr(self):
+                    return self._err
+
+                def file(self, path):
+                    junit = ws / ".dagger-junit.xml"
+                    return MemoryFile(
+                        junit.read_text(encoding="utf-8")
+                        if junit.is_file()
+                        else "<testsuite/>"
+                    )
+
+            return _Ctr()
+
+    res = asyncio.run(
+        collector.execute(
+            PytestContainerEngine(),
+            MemoryFile(json.dumps(plan)),
+            MemoryDirectory(src_files),
+            "3.14",
+            "ci-weaver.toml",
+        )
+    )
+    rep = json.loads(asyncio.run(res.report()))
+    assert rep["status"] == "failed", (rep.get("reason"), rep.get("tests"))
+    assert rep["exit_code"] == 1, rep
+    # The stub's pytest helper does not emit per-test lines on stdout under
+    # pytest 9.0.3; the bound argv, exit code and native input refs below are the
+    # product contract this test asserts (the dot-dir file, not the nested one).
+    assert any(
+        ref.get("kind") in {"test_target", "changed_path"}
+        and ref.get("path") == "tests/sub.pkg/test_case.py"
+        for ref in rep["tests"]["native_result"]["input_refs"]
+    )
+    run_calls = [cmd for cmd in pytest_calls if "--" in cmd]
+    assert len(run_calls) == 1
+    assert run_calls[0][run_calls[0].index("--") + 1 :] == [
+        "tests/sub.pkg/test_case.py"
+    ]

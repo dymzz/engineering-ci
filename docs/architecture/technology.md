@@ -32,6 +32,11 @@ relationships only. Maintenance rules: [documentation conventions](../convention
 | Pyright | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
 | deptry | adopted | opt-in static analysis function | [static analysis](testing/python-static-analysis.md) |
 | Pylint | adopted | opt-in R0801 duplicate-code function | [static analysis](testing/python-static-analysis.md) |
+| Tach | adopted | root `tach.toml` module graph, impact selection, standalone/Dagger check (not yet enabled in default Hook/Verify) | [hygiene](hygiene.md) · [selection](selection.md) |
+| Lychee | adopted | opt-in Dagger link check and Hygiene `docs` check (not yet enabled in default Hook/Verify) | [hygiene](hygiene.md) · [dagger](integrations/dagger.md) |
+| Actionlint | adopted | local Index/Push Hook Profiles and workflow analysis | [common tasks](../../guides/common-tasks.md#lefthook-本地入口) |
+| ShellCheck | adopted | standalone `scripts/` check in local Index/Push Hook Profiles (`workflow_shellcheck` inline remains disabled per `#58`) | [common tasks](../../guides/common-tasks.md#lefthook-本地入口) |
+| Zizmor | adopted | offline workflow security check in local Index/Push Hook Profiles | [common tasks](../../guides/common-tasks.md#lefthook-本地入口) |
 | Git CLI | adopted | development, CI, release | [tools](integrations/tools.md#git-cli) |
 | GitHub CLI (gh) | adopted | download, release, API | [tools](integrations/tools.md#github-cli-gh) |
 | OSV-Scanner | adopted | dependency security gate | [tools](integrations/tools.md#osv-scanner) |

@@ -2178,7 +2178,7 @@ def test_index_plan_checks_read_staged_bytes_across_check_families(
             root=materialized,
             tach_validation={
                 "status": "passed",
-                "tach_sha256": selection._digest(materialized / cfg.tach),
+                "tach_sha256": _tach_validation_sha(materialized, cfg.tach),
                 "source_tree": chosen.changeset.execution_tree or chosen.changeset.tree,
             },
         )
@@ -3258,6 +3258,12 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
     path, _base = repo
     (path / "custom_pkg").mkdir()
     (path / "custom_pkg/mod.py").write_text("X = 1\n", encoding="utf-8")
+    (path / "tach.toml").write_text(
+        (path / "tach.toml")
+        .read_text(encoding="utf-8")
+        .replace('source_roots = ["src"]', 'source_roots = ["src", "custom_pkg"]'),
+        encoding="utf-8",
+    )
     run(path, "add", "-A")
     run(path, "commit", "-q", "-m", "add custom pkg")
     base = run(path, "rev-parse", "HEAD~1").strip()
@@ -3268,7 +3274,11 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
         + '\n[check_scope]\ncode_prefixes = ["custom_pkg/"]\n',
         encoding="utf-8",
     )
-    hygiene_text = (path / "ci-hygiene.toml").read_text(encoding="utf-8")
+    hygiene_text = (
+        (path / "ci-hygiene.toml")
+        .read_text(encoding="utf-8")
+        .replace('paths = ["src"]', 'paths = ["src", "custom_pkg"]')
+    )
     (path / "ci-hygiene.toml").write_text(
         hygiene_text.replace("external = false", "external = true"),
         encoding="utf-8",
@@ -3277,7 +3287,7 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
     run(path, "commit", "-q", "-m", "custom code prefix and tach external")
     base = run(path, "rev-parse", "HEAD").strip()
 
-    # Modify custom_pkg/mod.py only; default code_prefixes would miss it
+    # Modify custom_pkg/mod.py only; configured roots trigger tach, tach_external, and vulture.
     (path / "custom_pkg/mod.py").write_text("X = 2\n", encoding="utf-8")
     changes = selection.changeset(path, base=base, mode="worktree")
     cfg = selection.load_config(path / "ci-selection.toml")
@@ -3289,7 +3299,7 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -3300,8 +3310,22 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
     by_name = {item["name"]: item for item in report["checks"]}
     assert by_name["tach"]["status"] == "passed"
     assert by_name["tach_external"]["status"] == "passed"
+    assert by_name["vulture"]["status"] == "passed"
     assert any("check-external" in call[0] for call in runner.calls)
     assert any("vulture" in call[0] for call in runner.calls)
+
+    # Tampered selection.code_prefixes in Plan fails closed before starting tools.
+    bad_prefixes = json.loads(json.dumps(p))
+    bad_prefixes["selection"]["code_prefixes"] = ["src/"]
+    bad_prefix_runner = FakeRunner()
+    bad_prefix_report = execution.execute(
+        bad_prefixes, root=path, runner=bad_prefix_runner
+    )
+    assert bad_prefix_report["status"] == "failed"
+    assert (
+        bad_prefix_report["checks"][0]["reason"] == "selection_code_prefixes_mismatch"
+    )
+    assert [call for call in bad_prefix_runner.calls if call[0][0] != "git"] == []
 
     # 1. Unauthorized deletion of tach_external from Plan while ci-hygiene.toml has external = true:
     #    execution MUST NOT start tach check-external AND MUST block the report as configured_check_omitted_from_plan
@@ -3353,7 +3377,7 @@ def test_execution_propagates_code_prefixes_and_blocks_unplanned_tach_external(r
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -3493,6 +3517,12 @@ def test_p1_2_selection_to_execution_event_external_handoff(repo, tmp_path):
     path, _base = repo
     (path / "custom_pkg").mkdir()
     (path / "custom_pkg/mod.py").write_text("X = 1\n", encoding="utf-8")
+    (path / "tach.toml").write_text(
+        (path / "tach.toml")
+        .read_text(encoding="utf-8")
+        .replace('source_roots = ["src"]', 'source_roots = ["src", "custom_pkg"]'),
+        encoding="utf-8",
+    )
     (path / "data/catalog").mkdir(parents=True)
     content = b"source-bytes"
     (path / "data/acquired").mkdir(parents=True)
@@ -3529,7 +3559,9 @@ def test_p1_2_selection_to_execution_event_external_handoff(repo, tmp_path):
     )
     ext_hyg = ext_dir / "ci-hygiene.toml"
     ext_hyg.write_text(
-        in_repo_hygiene.replace("external = false", "external = true"),
+        in_repo_hygiene.replace(
+            'paths = ["src"]', 'paths = ["src", "custom_pkg"]'
+        ).replace("external = false", "external = true"),
         encoding="utf-8",
     )
     ext_src = ext_dir / "ci-sources.toml"
@@ -3558,7 +3590,7 @@ require_text_unset = false
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -3572,6 +3604,7 @@ require_text_unset = false
     assert report["status"] == "passed"
     by_name = {item["name"]: item for item in report["checks"]}
     assert by_name["tach_external"]["status"] == "passed"
+    assert by_name["vulture"]["status"] == "passed"
     assert by_name["source"]["status"] == "passed"
     assert any("check-external" in call[0] for call in runner.calls)
 
@@ -3673,7 +3706,7 @@ def test_a1_a2_real_producer_profile_and_source_closure_reconcile_end_to_end(
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -3782,6 +3815,24 @@ def test_a1_a2_real_producer_profile_and_source_closure_reconcile_end_to_end(
         assert rec_by[name]["binding_status"] == "matched", rec_by[name]
 
 
+def _tach_validation_sha(path, tach_rel):
+    """Digest the inspected Git blob, falling back to the file.
+
+    The Plan digest is the raw inspected Tree blob; a Windows checkout with
+    core.autocrlf rewrites CRLF, so hashing the file would not match.
+    """
+    for spec in (f":{tach_rel}", f"HEAD:{tach_rel}"):
+        proc = subprocess.run(
+            ["git", "cat-file", "blob", spec],
+            cwd=path,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return hashlib.sha256(proc.stdout).hexdigest()
+    return selection._digest(path / tach_rel)
+
+
 def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
     path, _base = repo
     (path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
@@ -3803,7 +3854,7 @@ def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": idx_sel.changeset.execution_tree or idx_sel.changeset.tree,
         },
     )
@@ -3837,7 +3888,7 @@ def test_a2_index_and_commit_produce_full_input_closure_byte_tree(repo):
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": cmt_sel.changeset.execution_tree or cmt_sel.changeset.tree,
         },
     )
@@ -3902,7 +3953,7 @@ def test_a1_profile_reference_fail_closed_converged_contract(repo):
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -4002,7 +4053,7 @@ def test_a2_real_non_mocked_host_execution_and_reconciliation(repo):
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -4201,7 +4252,7 @@ def test_a2_real_non_mocked_tach_and_vulture_host_e2e(repo):
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -4346,7 +4397,7 @@ def test_a2_real_non_mocked_tach_and_vulture_host_e2e(repo):
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": adv_sel.changeset.execution_tree or adv_sel.changeset.tree,
         },
     )
@@ -4412,7 +4463,7 @@ def test_a2_negative_index_b_worktree_c_divergence_and_resolution_refusals(
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": idx_sel.changeset.execution_tree or idx_sel.changeset.tree,
         },
     )
@@ -4485,7 +4536,7 @@ def _hygiene_worktree_plan(path, base):
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -4763,7 +4814,7 @@ def test_raw_execution_reports_carry_plan_authorization_for_reconciliation(repo)
         effective_profile=profile,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -5383,7 +5434,7 @@ def test_source_resolution_deleted_paths_and_forged_deletion_refusal(repo):
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -5720,7 +5771,7 @@ def test_host_git_snapshot_retains_unmaterialized_and_unreadable_members(
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -5825,7 +5876,7 @@ def test_deleted_path_resolution_with_overlays_and_ignored_reappearance(tmp_path
         root=path,
         tach_validation={
             "status": "passed",
-            "tach_sha256": selection._digest(path / cfg.tach),
+            "tach_sha256": _tach_validation_sha(path, cfg.tach),
             "source_tree": sel.changeset.execution_tree or sel.changeset.tree,
         },
     )
@@ -5999,3 +6050,1028 @@ output_ref = {{ kind = "file", path = "{artifact_rel}", sha256 = "{sha}" }}
         ]
         == "matched"
     )
+
+
+def test_docs_offline_execution_retains_link_scope_in_native_result(repo):
+    from engineering_ci import check_contract
+
+    path, base = repo
+    (path / "docs/guide.md").write_text("# offline guide\n", encoding="utf-8")
+
+    # Case 1: explicit --offline preserves offline link_scope in check & native_result.evidence.
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["docs"]\n'
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--offline", "--no-progress"]\n',
+        encoding="utf-8",
+    )
+    offline_report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    offline_check = next(c for c in offline_report["checks"] if c["name"] == "docs")
+    assert offline_check["link_scope"] == "offline"
+    assert offline_check["native_result"]["evidence"]["link_scope"] == "offline"
+    assert offline_check["native_result"]["evidence"]["link_scope_note"]
+    check_contract.validate_result(offline_check["native_result"])
+
+    # Case 2: network arguments record link_scope == "network" in native_result.evidence.
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["docs"]\n'
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--no-progress"]\n',
+        encoding="utf-8",
+    )
+    online_report = execution.execute(
+        docs_only_plan(base, base),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=FakeRunner(),
+    )
+    online_check = next(c for c in online_report["checks"] if c["name"] == "docs")
+    assert online_check["link_scope"] == "network"
+    assert online_check["native_result"]["evidence"]["link_scope"] == "network"
+    check_contract.validate_result(online_check["native_result"])
+
+
+def test_execution_always_runs_native_tach_independently_of_plan_validation(repo):
+    import subprocess
+    from pathlib import Path
+
+    from engineering_ci import check_contract, hygiene, selection
+
+    path, _base = repo
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n'
+        "exact = true\n"
+        "forbid_circular_dependencies = true\n"
+        'root_module = "forbid"\n\n'
+        '[[modules]]\npath = "pkg"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.sub"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.other"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "src/pkg/sub.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "src/pkg/other.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["tach", "tach_external"]\n'
+        "[tach]\n"
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    run(
+        path,
+        "add",
+        "tach.toml",
+        "ci-hygiene.toml",
+        "src/pkg/sub.py",
+        "src/pkg/other.py",
+    )
+    run(path, "commit", "-qm", "clean tach graph")
+    clean_base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "ci-selection.toml").write_text(
+        (path / "ci-selection.toml").read_text(encoding="utf-8")
+        + "\n[prerequisite_actions.identity_commit]\n"
+        + 'type = "git_commit_present"\n'
+        + f'commit = "{clean_base}"\n'
+        + "\n[prerequisite_actions.wheel_smoke]\n"
+        + 'type = "git_commit_present"\n'
+        + f'commit = "{clean_base}"\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-selection.toml")
+    run(path, "commit", "-qm", "declare prerequisite actions")
+    prereq_base = run(path, "rev-parse", "HEAD").strip()
+
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(path, "add", "src/pkg/sub.py")
+    run(path, "commit", "-qm", "modify pkg.sub")
+
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    changes = selection.changeset(path, base=prereq_base, mode="commit")
+    sel = selection.select(changes, cfg, root=path)
+    plan_tach = {
+        "status": "passed",
+        "exit_code": 0,
+        "executable": "tach",
+        "tach_path": "tach.toml",
+        "stdout": "Modules validated\n",
+        "stderr": "",
+        "tach_sha256": _tach_validation_sha(path, "tach.toml"),
+        "source_tree": changes.execution_tree or changes.tree,
+        "snapshot": changes.snapshot,
+    }
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+        tach_validation=plan_tach,
+    )
+    assert "native_execution_token" not in p["selection"]["tach_graph_validation"]
+
+    # Even when Plan carries matching passed tach_graph_validation, execution runs native tach check & check-external.
+    observed = []
+
+    def pass_runner(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            observed.append(argv[1])
+            return subprocess.CompletedProcess(argv, 0, f"{argv[1]} ok\n", "")
+        return hygiene._run(argv, root, data)
+
+    passed_report = execution.execute(
+        p,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=pass_runner,
+    )
+    assert passed_report["status"] == "passed", passed_report
+    assert observed == ["check", "check-external"]
+    by_name = {c["name"]: c for c in passed_report["checks"]}
+    assert "reused_from" not in by_name["tach"].get("observation", {})
+    check_contract.validate_result(by_name["tach"]["native_result"])
+    check_contract.validate_result(by_name["tach_external"]["native_result"])
+
+    # Real native tach check failure cannot be masked by a Plan-declared passed tach_graph_validation.
+    fail_observed = []
+
+    def fail_check_runner(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            fail_observed.append(argv[1])
+            if argv[1] == "check":
+                return subprocess.CompletedProcess(argv, 1, "", "undeclared import\n")
+            return subprocess.CompletedProcess(argv, 0, "external ok\n", "")
+        return hygiene._run(argv, root, data)
+
+    failed_report = execution.execute(
+        p,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=fail_check_runner,
+    )
+    assert failed_report["status"] == "failed"
+    assert fail_observed == ["check", "check-external"]
+    fail_by_name = {c["name"]: c for c in failed_report["checks"]}
+    assert fail_by_name["tach"]["status"] == "failed"
+    assert fail_by_name["tach"]["reason"] == "tach_check_failed"
+    assert fail_by_name["tach_external"]["status"] == "passed"
+
+    # tach_external failure stays independent of passing tach check.
+    def fail_external_runner(argv, root, data=None):
+        if argv and Path(argv[0]).stem == "tach" and len(argv) > 1:
+            if argv[1] == "check-external":
+                return subprocess.CompletedProcess(argv, 1, "", "undeclared external\n")
+            return subprocess.CompletedProcess(argv, 0, "check ok\n", "")
+        return hygiene._run(argv, root, data)
+
+    ext_failed = execution.execute(
+        p,
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=fail_external_runner,
+    )
+    assert ext_failed["status"] == "failed"
+    ext_by_name = {c["name"]: c for c in ext_failed["checks"]}
+    assert ext_by_name["tach"]["status"] == "passed"
+    assert ext_by_name["tach_external"]["status"] == "failed"
+    assert ext_by_name["tach_external"]["reason"] == "tach_external_failed"
+
+
+def test_execute_refuses_out_of_source_pytest_target_and_blocks_external_shadowing(
+    repo, tmp_path, monkeypatch
+):
+    path, base = repo
+    external = tmp_path / "ext_shadow"
+    (external / "tests").mkdir(parents=True)
+    (external / "tests/__init__.py").write_text("", encoding="utf-8")
+    (external / "tests/test_pkg.py").write_text(
+        "def test_shadow():\n    assert True\n", encoding="utf-8"
+    )
+    # Break repo's tests/test_pkg.py so external shadowing would falsely pass if --pyargs were used.
+    (path / "tests/test_pkg.py").write_text(
+        "def test_repo_fails():\n    assert False\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(external))
+
+    shadow_report = execution.execute(
+        plan(
+            ["tests.test_pkg"],
+            framework="pytest",
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "worktree",
+                "changed_paths": ["tests/test_pkg.py"],
+            },
+        ),
+        root=path,
+    )
+    assert shadow_report["status"] == "failed"
+    assert shadow_report["tests"]["status"] == "failed"
+    assert shadow_report["tests"]["exit_code"] == 1
+    shadow_argv = shadow_report["tests"]["observation"]["argv"]
+    assert "--pyargs" not in shadow_argv
+    assert "--" in shadow_argv
+    assert shadow_argv.index("--") < shadow_argv.index("tests/test_pkg.py")
+
+    (path / "@args.py").write_text(
+        "def test_bound_at_fails():\n    assert False\n", encoding="utf-8"
+    )
+    (path / "args.py").write_text(
+        str((external / "tests/test_pkg.py").resolve()) + "\n", encoding="utf-8"
+    )
+    at_report = execution.execute(
+        plan(
+            ["./@args.py"],
+            framework="pytest",
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "worktree",
+                "changed_paths": ["@args.py"],
+            },
+        ),
+        root=path,
+    )
+    assert at_report["status"] == "failed"
+    assert at_report["tests"]["exit_code"] == 1
+    at_argv = at_report["tests"]["observation"]["argv"]
+    assert at_argv[at_argv.index("--") + 1 :] == ["./@args.py"]
+
+    for bad_target, expected_reason in (
+        ("../ext_shadow/tests/test_pkg.py", "pytest_target_outside_source"),
+        ("./--collect-only", "pytest_target_invalid"),
+        ("./--help", "pytest_target_invalid"),
+        ("./--version", "pytest_target_invalid"),
+        (" ./--version", "pytest_target_invalid"),
+    ):
+        escape_report = execution.execute(
+            plan(
+                [bad_target, "tests.test_pkg"],
+                framework="pytest",
+                git={
+                    "base_ref": base,
+                    "head_ref": "HEAD",
+                    "base_commit": base,
+                    "head_commit": base,
+                    "snapshot": "worktree",
+                    "changed_paths": ["tests/test_pkg.py"],
+                },
+            ),
+            root=path,
+        )
+        assert escape_report["status"] == "not_executed"
+        assert escape_report["exit_code"] == 4
+        assert escape_report["reason"] == expected_reason
+
+
+def test_execute_refuses_custom_tach_config_path_alongside_default_tach_toml(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 5\n", encoding="utf-8")
+    (path / "tach-alt.toml").write_text(
+        'source_roots = [".dagger/src"]\n'
+        "exact = true\n"
+        '[[modules]]\npath = "sample"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["tach", "tach_external"]\n[tach]\npath = "tach-alt.toml"\nexternal = true\n',
+        encoding="utf-8",
+    )
+    runner = FakeRunner()
+    rep = execution.execute(
+        plan(
+            [],
+            git={
+                "base_ref": base,
+                "head_ref": "HEAD",
+                "base_commit": base,
+                "head_commit": base,
+                "snapshot": "worktree",
+                "changed_paths": ["src/pkg/sub.py"],
+            },
+            check_scope=[
+                {"name": "tach", "status": "selected"},
+                {"name": "tach_external", "status": "selected"},
+            ],
+        ),
+        root=path,
+        hygiene_config=path / "ci-hygiene.toml",
+        runner=runner,
+    )
+    assert rep["status"] == "failed"
+    for item in rep["checks"]:
+        assert item["status"] == "failed"
+        assert item["execution_started"] is False
+        assert item["reason"] == "hygiene_config_tach_config_path_unsupported"
+    assert not any(call[0][0] == "tach" for call in runner.calls)
+
+    # _closure_paths_for_check handles tach.toml omitting source_roots as "." and refuses custom paths.
+    omitted_roots_tach = 'exact = true\n[[modules]]\npath = "pkg"\ndepends_on = []\n'
+    (path / "tach.toml").write_text(omitted_roots_tach, encoding="utf-8")
+    clean_hyg = hygiene.Config(
+        schema_version=1,
+        checks=("tach",),
+        docs=hygiene.DocsConfig((".md",), ()),
+        lychee=hygiene.LycheeConfig("lychee", ()),
+        forwarding=hygiene.ForwardingConfig("src/"),
+        vulture=hygiene.VultureConfig("vulture", ("src",), 60, frozenset({3})),
+        tach=hygiene.TachConfig("tach", "tach.toml", False),
+    )
+    closure = execution._closure_paths_for_check(
+        {"git": {"changed_paths": ["src/pkg/sub.py"]}},
+        path,
+        "tach",
+        {"inputs": []},
+        hygiene_config=clean_hyg,
+    )
+    assert closure is not None
+    assert "src/pkg/sub.py" in closure
+    assert "tach.toml" in closure
+
+    bad_hyg = dataclasses.replace(
+        clean_hyg, tach=hygiene.TachConfig("tach", "tach-alt.toml", False)
+    )
+    assert (
+        execution._closure_supported(
+            "tach", root=path, execution_context="host", hygiene_config=bad_hyg
+        )
+        is False
+    )
+
+
+def test_multi_ref_push_hygiene_config_vulture_only_parity(repo):
+    from engineering_ci import expected_checks, hygiene, selection
+
+    path, _base = repo
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["docs", "vulture", "tach"]\n'
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 60\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n',
+        encoding="utf-8",
+    )
+    (path / "ci-selection.toml").write_text(
+        (path / "ci-selection.toml").read_text(encoding="utf-8")
+        + '\n[check_scope]\ncode_prefixes = ["src/"]\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml", "ci-selection.toml")
+    run(path, "commit", "-qm", "vulture multi-ref baseline")
+    base2 = run(path, "rev-parse", "HEAD").strip()
+
+    # Ref A changes ONLY [vulture] in ci-hygiene.toml.
+    run(path, "switch", "-qc", "vulture-only", base2)
+    (path / "ci-hygiene.toml").write_text(
+        "schema_version = 1\n"
+        'checks = ["docs", "vulture", "tach"]\n'
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 75\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "tighten vulture confidence")
+    vulture_commit = run(path, "rev-parse", "HEAD").strip()
+
+    # Ref B changes ONLY README.md.
+    run(path, "switch", "-qc", "docs-only", base2)
+    (path / "README.md").write_text("# Updated\n", encoding="utf-8")
+    run(path, "add", "README.md")
+    run(path, "commit", "-qm", "update readme")
+    docs_commit = run(path, "rev-parse", "HEAD").strip()
+    # Single-ref push checked out at vulture-only keeps expected_checks & selection in parity.
+    run(path, "switch", "-q", "vulture-only")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    single_changes = selection.changeset(
+        path,
+        base=base2,
+        mode="push",
+        before=base2,
+        after=vulture_commit,
+        local_ref="refs/heads/vulture-only",
+        remote_ref="refs/heads/vulture-only",
+    )
+    single_sel = selection.select(single_changes, cfg, root=path)
+    single_plan = selection.plan(
+        single_sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+    )
+    s_checks = {c["name"]: c for c in single_plan["expected_checks"]["checks"]}
+    assert s_checks["vulture"]["applicability"]["status"] == "selected"
+    assert "ci-hygiene.toml" not in s_checks["vulture"]["input_refs"]
+    assert s_checks["docs"]["applicability"]["status"] == "not_applicable"
+    assert s_checks["tach"]["applicability"]["status"] == "not_applicable"
+    expected_checks.validate_projection(
+        single_plan["expected_checks"],
+        single_plan["git"],
+        single_plan["check_scope"],
+        plan=single_plan,
+        root=path,
+    )
+
+    # Multi-ref push from main: docs-only matches main's config while divergent vulture-only
+    # fails closed on config_source_mismatch, and validate_projection still aligns with per_ref.
+    run(path, "switch", "-q", "main")
+    cfg = selection.load_config(path / "ci-selection.toml")
+    hyg_cfg = hygiene.load_config(path / "ci-hygiene.toml")
+    multi = selection.changeset_multi(
+        path,
+        [
+            (
+                "refs/heads/vulture-only",
+                vulture_commit,
+                "refs/heads/vulture-only",
+                base2,
+            ),
+            ("refs/heads/docs-only", docs_commit, "refs/heads/docs-only", base2),
+        ],
+    )
+    sel = selection.select(multi, cfg, root=path)
+    p = selection.plan(
+        sel,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        hygiene_config=hyg_cfg,
+        hygiene_config_path=path / "ci-hygiene.toml",
+        root=path,
+    )
+    per_ref = {entry["remote_ref"]: entry for entry in p["expected_checks"]["per_ref"]}
+    v_checks = {c["name"]: c for c in per_ref["refs/heads/vulture-only"]["checks"]}
+    assert v_checks["vulture"]["applicability"]["status"] == "blocked"
+    assert v_checks["vulture"]["applicability"]["reason"] == "config_source_mismatch"
+
+    d_checks = {c["name"]: c for c in per_ref["refs/heads/docs-only"]["checks"]}
+    assert d_checks["docs"]["applicability"]["status"] == "selected"
+    assert d_checks["vulture"]["applicability"]["status"] == "not_applicable"
+
+    expected_checks.validate_projection(
+        p["expected_checks"], p["git"], p["check_scope"], plan=p, root=path
+    )
+
+
+def test_git_free_index_dagger_export_runs_tach_when_verified_and_refuses_unproven(
+    repo, tmp_path
+):
+    from engineering_ci import plan_contract
+
+    path, base = repo
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["tach"]\n\n[tach]\nexecutable = "tach"\npath = "tach.toml"\nexternal = false\n',
+        encoding="utf-8",
+    )
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(path, "add", "tach.toml", "ci-hygiene.toml", "src/pkg/sub.py")
+    index_tree = run(path, "write-tree").strip()
+
+    def _export_git_free(dest):
+        shutil.copytree(
+            path,
+            dest,
+            ignore=shutil.ignore_patterns(".git"),
+            copy_function=shutil.copyfile,
+        )
+        assert not (dest / ".git").exists()
+        return selection.directory_content_id(dest)
+
+    exported = tmp_path / "exported_git_free"
+    source_tree_id = _export_git_free(exported)
+
+    def _index_plan(
+        *,
+        tree_id=source_tree_id,
+        changed_paths=("src/pkg/sub.py",),
+        check_scope=({"name": "tach", "status": "selected"},),
+        extra_git=None,
+    ):
+        hyg_path = exported / "ci-hygiene.toml"
+        hyg_cfg = hygiene.load_config(hyg_path)
+        hyg_sha = check_contract.file_digest(hyg_path)
+        hyg_id = hygiene.config_identity(hyg_path, hyg_cfg, root=exported)
+        git_data = {
+            "base_ref": base,
+            "head_ref": "HEAD",
+            "base_commit": "f" * 40,
+            "head_commit": "e" * 40,
+            "snapshot": "index",
+            "execution_tree": index_tree,
+            "index_tree": index_tree,
+            "source_tree_id": tree_id,
+            "changed_paths": list(changed_paths),
+        }
+        if extra_git:
+            git_data.update(extra_git)
+        return {
+            "schema_version": 2,
+            "kind": "engineering-ci-selection-plan",
+            "generator": {"name": "engineering-ci", "version": "0.7.0"},
+            "git": git_data,
+            "selection": {
+                "tests": [],
+                "framework": "pytest",
+                "src_root": "src",
+                "tests_dir": "tests",
+                "checks": [c["name"] for c in check_scope],
+            },
+            "check_scope": list(check_scope),
+            "dependency_contract": plan_contract.graph_contract([]),
+            "inputs": {
+                "hygiene": {
+                    "kind": "config",
+                    "path": "ci-hygiene.toml",
+                    "sha256": hyg_sha,
+                    "policy_scope": "repo_target_tree",
+                    "normalized": hyg_id["normalized"],
+                    "effective_check_config_ref": hyg_id["effective_check_config_ref"],
+                }
+            },
+        }
+
+    # Caller-injected boolean in plan JSON MUST NEVER establish materialized trust.
+    forged_plan = _index_plan(
+        tree_id=None,
+        extra_git={"materialized_tree": True},
+    )
+    assert (
+        execution._changeset_from_plan(forged_plan, exported).materialized_tree is False
+    )
+    assert (
+        execution._has_verified_materialized_source(
+            forged_plan, exported, execution_context="dagger_export"
+        )
+        is False
+    )
+    forged_runner = FakeRunner()
+    forged_report = execution.execute(
+        forged_plan,
+        root=exported,
+        execution_context="dagger_export",
+        runner=forged_runner,
+    )
+    assert forged_report["status"] == "not_executed"
+    assert forged_report["reason"] == "dagger_export_index_source_unverified"
+    assert not forged_runner.calls
+
+    # Wrong digest stays rejected before starting tach.
+    wrong_report = execution.execute(
+        _index_plan(tree_id="sha256:" + "0" * 64),
+        root=exported,
+        execution_context="dagger_export",
+        runner=FakeRunner(),
+    )
+    assert wrong_report["status"] == "not_executed"
+    assert wrong_report["reason"] == "source_tree_mismatch"
+
+    # Verified Git-free Index Source starts native tach and preserves exit 0 and exit 1.
+    # Missing base ODB while ci-hygiene.toml is listed in changed_paths does not fail target tach.toml.
+    for code, expected_status in ((0, "passed"), (1, "failed")):
+        runner = FakeRunner(code=code)
+        ok_plan = _index_plan(
+            changed_paths=("ci-hygiene.toml", "src/pkg/sub.py"),
+        )
+        rep = execution.execute(
+            ok_plan,
+            root=exported,
+            execution_context="dagger_export",
+            runner=runner,
+        )
+        tach_entry = next(c for c in rep["checks"] if c["name"] == "tach")
+        assert tach_entry.get("execution_started") is not False, tach_entry
+        assert tach_entry["check_contract"]["status"] == "valid", tach_entry
+        assert tach_entry["exit_code"] == code, tach_entry
+        assert tach_entry["status"] == expected_status, tach_entry
+        assert rep["status"] == expected_status, rep
+        assert any(call[0] == ("tach", "check") for call in runner.calls)
+
+        dag_runner = FakeRunner(code=code)
+        dag_entry = execution.run_host_check(
+            ok_plan,
+            {"name": "tach", "status": "selected", "inputs": ["src/pkg/sub.py"]},
+            root=exported,
+            execution_context="dagger_export",
+            runner=dag_runner,
+        )
+        assert dag_entry.get("execution_started") is not False, dag_entry
+        assert dag_entry["check_contract"]["status"] == "valid", dag_entry
+        assert dag_entry["exit_code"] == code
+        assert dag_entry["status"] == expected_status
+
+    # Omitted check evaluation accurately uses target tach.toml when verified, and never trusts tampered roots.
+    docs_only = _index_plan(changed_paths=("docs/guide.md",), check_scope=())
+    assert (
+        execution.omitted_hygiene_checks(
+            docs_only, [], root=exported, execution_context="dagger_export"
+        )
+        == []
+    )
+    omitted_src = _index_plan(changed_paths=("src/pkg/sub.py",), check_scope=())
+    omitted = execution.omitted_hygiene_checks(
+        omitted_src, [], root=exported, execution_context="dagger_export"
+    )
+    assert [item["name"] for item in omitted] == ["tach"]
+
+    # Verified overlay view allows reading target config cleanly; tampered overlay fails closed.
+    gen_dir = tmp_path / "gen"
+    gen_dir.mkdir()
+    gen_doc = gen_dir / "docs/api.md"
+    gen_doc.parent.mkdir(parents=True)
+    gen_doc.write_text("# generated\n", encoding="utf-8")
+    gen_sha = hashlib.sha256(gen_doc.read_bytes()).hexdigest()
+    gen_refs = [
+        {
+            "kind": "generated_input",
+            "input_kind": "file",
+            "producer_ref": {"kind": "prerequisite_action", "name": "gen"},
+            "path": "docs/api.md",
+            "sha256": gen_sha,
+        }
+    ]
+    tmp_view, consumer_view = execution.build_consumer_view(
+        exported, [(gen_dir, "docs/api.md", "file")]
+    )
+    try:
+        overlay_plan = _index_plan()
+        overlay_runner = FakeRunner(code=0)
+        overlay_entry = execution.run_host_check(
+            overlay_plan,
+            {
+                "name": "tach",
+                "status": "selected",
+                "inputs": ["src/pkg/sub.py"],
+                "generated_input_refs": gen_refs,
+                "generated_inputs_retained": True,
+            },
+            root=consumer_view,
+            execution_context="dagger_export",
+            runner=overlay_runner,
+            artifact_paths=("docs/api.md",),
+            generated_input_refs=gen_refs,
+            _consumer_source_root=exported,
+            _consumer_generated_retained=True,
+        )
+        assert overlay_entry.get("execution_started") is not False, overlay_entry
+        assert overlay_entry["check_contract"]["status"] == "valid", overlay_entry
+        assert overlay_entry["status"] == "passed"
+
+        # Tampering an unapproved file inside overlay causes verification refusal (False).
+        (consumer_view / "src/pkg/sub.py").write_text("VALUE = 999\n", encoding="utf-8")
+        assert (
+            execution._has_verified_materialized_source(
+                overlay_plan,
+                exported,
+                execution_context="dagger_export",
+                view_root=consumer_view,
+                generated_input_refs=gen_refs,
+            )
+            is False
+        )
+    finally:
+        tmp_view.cleanup()
+
+    # Missing or invalid tach.toml in Git-free exported Source fails pre-execution closed.
+    missing_dir = tmp_path / "missing_tach"
+    shutil.copytree(exported, missing_dir, copy_function=shutil.copyfile)
+    (missing_dir / "tach.toml").unlink()
+    missing_id = selection.directory_content_id(missing_dir)
+    missing_runner = FakeRunner()
+    missing_rep = execution.execute(
+        _index_plan(tree_id=missing_id),
+        root=missing_dir,
+        execution_context="dagger_export",
+        runner=missing_runner,
+    )
+    missing_check = next(c for c in missing_rep["checks"] if c["name"] == "tach")
+    assert missing_check["status"] == "failed"
+    assert missing_check["reason"] == "tach_config_missing"
+    assert missing_check["execution_started"] is False
+    assert missing_check["check_contract"]["status"] == "not_started"
+    assert not any(call[0][0] == "tach" for call in missing_runner.calls)
+
+    bad_dir = tmp_path / "invalid_tach"
+    shutil.copytree(exported, bad_dir, copy_function=shutil.copyfile)
+    (bad_dir / "tach.toml").write_text("source_roots = [\n", encoding="utf-8")
+    bad_id = selection.directory_content_id(bad_dir)
+    bad_rep = execution.execute(
+        _index_plan(tree_id=bad_id),
+        root=bad_dir,
+        execution_context="dagger_export",
+        runner=FakeRunner(),
+    )
+    bad_check = next(c for c in bad_rep["checks"] if c["name"] == "tach")
+    assert bad_check["status"] == "failed"
+    assert bad_check["reason"] == "tach_config_invalid"
+    assert bad_check["execution_started"] is False
+
+
+def _dagger_export_plan(repo, tmp_path):
+    """Build an immutable-index Plan and the Git-free Directory it exports."""
+    path, _ = repo
+    exported = tmp_path / "exported"
+    shutil.copytree(path, exported, ignore=shutil.ignore_patterns(".git"))
+    (exported / "tach.toml").write_text('source_roots = ["src"]\n', encoding="utf-8")
+    repo_with_tach = tmp_path / "repo_with_tach"
+    shutil.copytree(exported, repo_with_tach, copy_function=shutil.copyfile)
+    (repo_with_tach / "tach.toml").write_text(
+        'source_roots = ["src"]\n\n[[modules]]\npath = "pkg"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.sub"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (repo_with_tach / "ci-hygiene.toml").write_text(
+        'schema_version = 1\nchecks = ["tach"]\n\n[tach]\npath = "tach.toml"\n',
+        encoding="utf-8",
+    )
+    (repo_with_tach / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\nchecks = ["tach"]\n'
+        'ignored_prefixes = ["src/"]\n',
+        encoding="utf-8",
+    )
+    run(repo_with_tach, "init", "-q", "-b", "main")
+    run(repo_with_tach, "config", "user.email", "execution@example.invalid")
+    run(repo_with_tach, "config", "user.name", "Execution Test")
+    run(repo_with_tach, "add", "-A")
+    run(repo_with_tach, "commit", "-qm", "with-tach")
+    repo_base = run(repo_with_tach, "rev-parse", "HEAD").strip()
+    (repo_with_tach / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    run(repo_with_tach, "add", "src/pkg/sub.py")
+    cfg = selection.load_config(repo_with_tach / "ci-selection.toml")
+    sel = selection.select(
+        selection.changeset(repo_with_tach, base=repo_base, mode="index"),
+        cfg,
+        root=repo_with_tach,
+    )
+    idx_plan = selection.plan(
+        sel,
+        config=cfg,
+        config_path=repo_with_tach / "ci-selection.toml",
+        root=repo_with_tach,
+    )
+    export_dir = tmp_path / "export_index"
+    shutil.copytree(repo_with_tach, export_dir, ignore=shutil.ignore_patterns(".git"))
+    idx_id = selection.directory_content_id(export_dir)
+    idx_plan["git"]["source_tree_id"] = idx_id
+    for cfg_key, rel_cfg in (
+        ("config", "ci-selection.toml"),
+        ("hygiene", "ci-hygiene.toml"),
+    ):
+        entry = (idx_plan.get("inputs") or {}).get(cfg_key)
+        if isinstance(entry, dict) and entry.get("path"):
+            entry["path"] = rel_cfg
+    return idx_plan, export_dir, idx_id, repo_with_tach
+
+
+def _export_handoff(plan, root, content_id, *, stage=None):
+    return execution._VerifiedSourceHandoff(
+        content_id=content_id,
+        root=Path(root).resolve(),
+        execution_context="dagger_export",
+        source_tree_id=(plan.get("git") or {}).get("source_tree_id"),
+        stage=stage or execution._VERIFIED_SOURCE_EXPORTED,
+    )
+
+
+def _count_directory_content_id(monkeypatch):
+    original = selection.directory_content_id
+    measured = []
+
+    def counting(root):
+        measured.append(Path(root).resolve())
+        return original(root)
+
+    monkeypatch.setattr(selection, "directory_content_id", counting)
+    return measured
+
+
+def test_verified_source_handoff_reuses_digest_and_host_never_bypasses(
+    repo, tmp_path, monkeypatch
+):
+    idx_plan, export_dir, idx_id, repo_with_tach = _dagger_export_plan(repo, tmp_path)
+    measured = _count_directory_content_id(monkeypatch)
+    handoff = _export_handoff(idx_plan, export_dir, idx_id)
+
+    rep = execution.execute(
+        idx_plan,
+        root=export_dir,
+        execution_context="dagger_export",
+        runner=FakeRunner(code=0, stdout="All modules validated!\n"),
+        _verified_source=handoff,
+    )
+    assert rep["status"] == "passed", rep
+    # One export measurement is reused by the whole execution.
+    assert measured == []
+    tach_chk = next(c for c in rep["checks"] if c["name"] == "tach")
+    assert tach_chk["check_contract"]["status"] == "valid"
+    assert tach_chk["source_ref"]["binding_status"] == "identity_only"
+    assert (
+        execution._has_verified_materialized_source(
+            idx_plan,
+            export_dir,
+            execution_context="dagger_export",
+            _verified_source=handoff,
+        )
+        is True
+    )
+    assert (
+        execution._prepare_source_snapshots(
+            idx_plan,
+            [],
+            root=export_dir,
+            execution_context="dagger_export",
+            _verified_source=handoff,
+        )["kind"]
+        == "full"
+    )
+    assert measured == []
+
+    # A different digest for the same export stage still fails closed.
+    bad = execution.execute(
+        idx_plan,
+        root=export_dir,
+        execution_context="dagger_export",
+        runner=FakeRunner(code=0),
+        _verified_source=_export_handoff(idx_plan, export_dir, "0" * 64),
+    )
+    assert bad["status"] == "not_executed"
+    assert bad["reason"] == "source_tree_mismatch"
+
+    # Mutable host execution_context never consumes an export handoff.
+    (repo_with_tach / "src/pkg/sub.py").write_text("VALUE = 99\n", encoding="utf-8")
+    host_measured_before = len(measured)
+    host_rep = execution.execute(
+        idx_plan,
+        root=repo_with_tach,
+        execution_context="host",
+        runner=FakeRunner(code=0),
+        _verified_source=handoff,
+    )
+    assert host_rep["status"] == "not_executed"
+    assert host_rep["reason"] in {
+        "index_worktree_mismatch",
+        "index_snapshot_stale",
+        "source_tree_mismatch",
+    }
+    assert len(measured) > host_measured_before or host_rep["reason"] in {
+        "index_worktree_mismatch",
+        "index_snapshot_stale",
+    }
+    assert (
+        execution._has_verified_materialized_source(
+            idx_plan,
+            export_dir,
+            execution_context="host",
+            _verified_source=handoff,
+        )
+        is False
+    )
+
+
+def test_verified_source_handoff_is_refused_for_a_different_root(
+    repo, tmp_path, monkeypatch
+):
+    idx_plan, export_dir, idx_id, _ = _dagger_export_plan(repo, tmp_path)
+    other = tmp_path / "other_root"
+    shutil.copytree(export_dir, other, copy_function=shutil.copyfile)
+    (other / "src/pkg/sub.py").write_text("VALUE = 3\n", encoding="utf-8")
+    measured = _count_directory_content_id(monkeypatch)
+    handoff = _export_handoff(idx_plan, export_dir, idx_id)
+
+    # A correct old digest says nothing about another root.
+    assert (
+        execution._delivery_content_id(idx_plan, other, "dagger_export", handoff)
+        is None
+    )
+    assert (
+        execution._current_content_id(idx_plan, other, "dagger_export", handoff) is None
+    )
+
+    rep = execution.execute(
+        idx_plan,
+        root=other,
+        execution_context="dagger_export",
+        runner=FakeRunner(code=0),
+        _verified_source=handoff,
+    )
+    assert rep["status"] == "not_executed"
+    assert rep["reason"] == "source_tree_mismatch"
+    # The actual root is measured; the export digest is not assumed for it.
+    assert other.resolve() in measured
+
+
+def test_verified_source_handoff_remeasures_after_materialization(
+    repo, tmp_path, monkeypatch
+):
+    idx_plan, export_dir, idx_id, _ = _dagger_export_plan(repo, tmp_path)
+    exported = _export_handoff(idx_plan, export_dir, idx_id)
+    materialized = dataclasses.replace(
+        exported, stage=execution._VERIFIED_SOURCE_MATERIALIZED
+    )
+
+    # Delivery identity survives materialization; current content does not.
+    for stage_handoff in (exported, materialized):
+        assert (
+            execution._delivery_content_id(
+                idx_plan, export_dir, "dagger_export", stage_handoff
+            )
+            == idx_id
+        )
+    assert (
+        execution._current_content_id(idx_plan, export_dir, "dagger_export", exported)
+        == idx_id
+    )
+    assert (
+        execution._current_content_id(
+            idx_plan, export_dir, "dagger_export", materialized
+        )
+        is None
+    )
+
+    # A prerequisite materialized files into the exported Directory: a
+    # current-content check measures the mutated root instead of reusing.
+    (export_dir / "src/pkg/sub.py").write_text("VALUE = 4\n", encoding="utf-8")
+    measured = _count_directory_content_id(monkeypatch)
+    item = {"name": "actionlint", "status": "selected", "execution_started": True}
+    snapshots = {
+        "kind": "full",
+        "files": [],
+        "binding": {"verified_paths": [], "unverified_paths": []},
+        "workflow_tree_content_id": idx_id,
+    }
+    source = execution._verified_check_source_ref(
+        idx_plan,
+        "actionlint",
+        item,
+        root=export_dir,
+        execution_context="dagger_export",
+        source_snapshots=snapshots,
+        _verified_source=materialized,
+    )
+    assert source is None
+    assert export_dir.resolve() in measured
+
+
+def test_consumer_overlay_view_never_reuses_verified_source(
+    repo, tmp_path, monkeypatch
+):
+    idx_plan, export_dir, idx_id, _ = _dagger_export_plan(repo, tmp_path)
+    view = tmp_path / "consumer_view"
+    shutil.copytree(export_dir, view, copy_function=shutil.copyfile)
+    (view / "src/pkg/generated.py").write_text("GENERATED = 1\n", encoding="utf-8")
+    measured = _count_directory_content_id(monkeypatch)
+    handoff = _export_handoff(idx_plan, export_dir, idx_id)
+
+    # A Consumer Overlay view is a different root: nothing is inherited.
+    assert (
+        execution._delivery_content_id(idx_plan, view, "dagger_export", handoff) is None
+    )
+    assert (
+        execution._current_content_id(idx_plan, view, "dagger_export", handoff) is None
+    )
+
+    snapshots = execution._prepare_source_snapshots(
+        idx_plan,
+        [],
+        root=view,
+        base_root=export_dir,
+        execution_context="dagger_export",
+        _verified_source=handoff,
+    )
+    assert snapshots["kind"] == "full"
+    # The base root is measured again for the overlaid view.
+    assert export_dir.resolve() in measured

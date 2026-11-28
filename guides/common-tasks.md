@@ -51,7 +51,50 @@ uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
 ```
 
 相对既有有效证据的增量复用仍属 #63 接纳，未实现前不因此跳过 Required 义务；
-测试目标选择仍用 #66/#165 的 Selection 入口，不把本决策当作受影响测试清单。
+本决策不是受影响测试清单，目标选择见下节。
+
+### 受影响测试目标（Selection）
+
+`engineering-ci select` 从实际受检 Git 快照（`worktree`/`index`/`commit`/`push`/`multi`）
+取 ChangeSet，经 `selection.select` → `selection.plan`：
+
+- `--json`：只产出绑定 Plan（可加 `--validate-tach`），供下游消费；退出 0 表示
+  Plan 产出，不代表 Plan 已执行。
+- `--json` 与 `--run` 互斥；`--run` 是直接对选中目标运行原生 pytest 的诊断入口，
+  保留原生 pytest 退出，但不消费 Plan 的 graph gate/Execution Report。
+- 实际 Plan 消费由既有公共入口完成，完整可操作组合：
+  ```sh
+  mkdir -p .artifacts
+
+  # 1) 让后续独立进程中的裸 `tach check` 绑定固定版本（_tach_check 调裸 tach）
+  uv tool install tach==0.35.3
+  tach --version
+
+  # 2) 在受检快照上产出 Plan 与 Tach 验证事实（不执行测试）
+  uv run --locked --no-sync python -m engineering_ci.cli select \
+    --mode commit --base <base> --head <head> --validate-tach \
+    --json > .artifacts/plan.json
+
+  # 3) 在同一 Source 上消费同一 Plan，保存结构化报告与 JUnit
+  uv run --locked --no-sync python -m engineering_ci.cli execute \
+    --plan .artifacts/plan.json --json > .artifacts/execution-report.json \
+    --junit .artifacts/plan-junit.xml
+  ```
+  `select` 退出 0 只表示 Plan 产出；`execute` 的原生退出与 JUnit/report 是执行证据。
+  选择语义按 Source 区分：`worktree`/`commit` 可选择目标；完整 `index`/`push` 默认
+  `select_tests=false`；`multi` 是逐 Ref 聚合，公共执行器要求逐 Ref 执行；显式
+  `--full` 覆盖关闭条件。不要把五种 Source 当作五种 affected 执行。
+
+它回答“改了什么、跑哪些受影响目标”；与 `ci-applicability`（既有 Dagger Check 的
+Job 是否执行）及 Full/Required（完整义务/授权）是不同语义，不能互相替代。未知或
+不可判定范围按 Plan 的升级语义扩大到全量测试，不静默缩小。
+
+本地只读复算（不执行测试）：
+
+```sh
+uv run --locked --no-sync python -m engineering_ci.cli select \
+  --mode commit --base <merge-base> --head HEAD --json
+```
 
 ## 开发、审查与合并
 
@@ -251,7 +294,7 @@ ShellCheck 分域）。`workflow_shellcheck` 仍在引擎合同与既有单测�
 timeout / 进程树清理，也不按宿主 OS 抹除适用输入或伪造 inline PASS。PR/main 上的正式
 Workflow 安全 Check 接线仍属 #63，不把本切片的本地 Profile 或 fixture 测试冒充生产
 Source 覆盖。
-`docs` / `vulture` / `tach` 仍未纳入本仓默认 Hygiene，留给后续 A2/B 切片。无 Profile
+根目录已交付 `tach.toml` 与 `ci-selection.toml`（全模块 `[module_tests]`、`[[non_code_rules]]` 与显式 `.dagger/src/` 选择范围），可用于影响选择及独立执行 `tach check` / `tach check-external`；但 `docs`（Lychee）/ `vulture` / `tach` / `tach_external` 以及默认增量测试 `select_tests = true` **均尚未纳入本仓默认 Index/Push Profile 与 Verify Jobs**，`AC-06` Tach 等价去重仍留待后续消费切片。无 Profile
 的兼容路径仍可只跑本地暂存空白检查。
 准备 Job 从隔离检出读取暂存策略；
 该检出采用 Git blob 的原始字节，原生 Git 检查采用受检 Tree 内的 `.gitattributes`

@@ -498,7 +498,7 @@ def test_default_pre_push_uses_the_repository_profiles(tmp_path, hook_env):
 
     excluded = {**hook_env, "LEFTHOOK_EXCLUDE": "reconcile-push"}
     binding, result = push("main:next", env=excluded, exit_code=1)
-    assert "hook_final_result_missing" in result.stderr
+    assert "hook_final_result_missing" in _diagnostic(result)
     assert not binding.invocation_path.with_suffix(".receipt").exists()
     assert not git(remote, "branch", "--list", "next", env=hook_env)
 

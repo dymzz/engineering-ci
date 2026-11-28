@@ -12,6 +12,7 @@ import argparse
 import ast
 import hashlib
 import json
+import ntpath
 import os
 import re
 import subprocess
@@ -23,6 +24,7 @@ from pathlib import Path
 from . import check_contract, git_source
 from ._paths import (
     SourcePathError,
+    has_windows_or_absolute_root,
     read_internal_linked_source,
     read_source_file,
     source_file_present,
@@ -35,6 +37,7 @@ MAX_CONFIG_BYTES = 1024 * 1024
 MAX_OUTPUT = 8000
 _DEFAULT_CHECKS = ("whitespace", "forwarding", "docs", "vulture", "tach")
 SUPPORTED_CHECKS = (*_DEFAULT_CHECKS, "tach_external")
+DEFAULT_CODE_PREFIXES = ("src/", "scripts/", "tests/")
 _DEPENDENCY_FILES = frozenset(
     {"uv.lock", "poetry.lock", "pdm.lock", "requirements.txt"}
 )
@@ -123,12 +126,7 @@ def _table(value, name, keys):
     return value
 
 
-def load_config(path):
-    path = Path(path)
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        raise HygieneError("config_missing") from None
+def _parse_config_bytes(raw):
     if len(raw) > MAX_CONFIG_BYTES:
         raise HygieneError("config_too_large")
     try:
@@ -157,7 +155,7 @@ def load_config(path):
         raise HygieneError("checks_invalid")
     docs = _table(value.get("docs", {}), "docs", ("suffixes", "excluded_prefixes"))
     suffixes = tuple(
-        value for value in _texts(docs.get("suffixes", [".md", ".html"]), "suffixes")
+        item for item in _texts(docs.get("suffixes", [".md", ".html"]), "suffixes")
     )
     if any(not suffix.startswith(".") for suffix in suffixes):
         raise HygieneError("docs_invalid")
@@ -176,6 +174,10 @@ def load_config(path):
         type(code) is not int or not 0 <= code <= 255 for code in advisory
     ):
         raise HygieneError("vulture_invalid")
+    tach_path_raw = _text(tach.get("path", "tach.toml"), "tach_path")
+    tach_path, tach_path_err = _supported_tach_config_rel(tach_path_raw)
+    if tach_path_err is not None:
+        raise HygieneError(tach_path_err)
     return Config(
         schema_version=SCHEMA_VERSION,
         checks=checks,
@@ -205,9 +207,46 @@ def load_config(path):
         ),
         tach=TachConfig(
             executable=_text(tach.get("executable", "tach"), "tach_executable"),
-            path=_text(tach.get("path", "tach.toml"), "tach_path"),
+            path=tach_path,
             external=tach.get("external", False),
         ),
+    )
+
+
+def load_config(path):
+    path = Path(path)
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise HygieneError("config_missing") from None
+    return _parse_config_bytes(raw)
+
+
+def _run_bytes(argv, root):
+    clean_env = {k: v for k, v in os.environ.items() if k != "SHELLCHECK_OPTS"}
+    try:
+        return subprocess.run(
+            [str(item) for item in argv],
+            cwd=root,
+            env=clean_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            argv, 127, b"", f"Command not found: {argv[0]}".encode()
+        )
+
+
+def is_offline_lychee_arguments(arguments):
+    """Return True only when Lychee CLI options enable offline mode cleanly."""
+    args = list(arguments or ())
+    separator = args.index("--") if "--" in args else len(args)
+    options = args[:separator]
+    return (
+        any(arg in {"--offline", "--offline=true"} for arg in options)
+        and "--offline=false" not in options
     )
 
 
@@ -472,6 +511,9 @@ def config_from_identity(identity):
         forwarding_raw = normalized["forwarding"]
         vulture_raw = normalized["vulture"]
         tach_raw = normalized["tach"]
+        tach_path, tach_path_err = _supported_tach_config_rel(str(tach_raw["path"]))
+        if tach_path_err is not None:
+            raise HygieneError(tach_path_err)
         return Config(
             schema_version=int(normalized["schema_version"]),
             checks=tuple(str(item) for item in normalized["checks"]),
@@ -496,7 +538,7 @@ def config_from_identity(identity):
             ),
             tach=TachConfig(
                 executable=str(tach_raw["executable"]),
-                path=str(tach_raw["path"]),
+                path=tach_path,
                 external=bool(tach_raw["external"]),
             ),
         )
@@ -515,6 +557,15 @@ def _deleted_paths(changes, paths, root):
     snapshot = getattr(changes, "snapshot", "worktree")
     if snapshot == "worktree":
         return {path for path in paths if not source_file_present(root, path)}
+    if getattr(changes, "materialized_tree", False):
+        if getattr(changes, "deleted_paths_resolved", False):
+            deleted = {
+                str(path).replace("\\", "/")
+                for path in (getattr(changes, "deleted_paths", ()) or ())
+                if isinstance(path, str)
+            }
+            return deleted & set(paths)
+        return {path for path in paths if not source_file_present(root, path)}
     target_tree = getattr(changes, "execution_tree", None) or getattr(
         changes, "tree", None
     )
@@ -531,7 +582,245 @@ def _deleted_paths(changes, paths, root):
     return set(paths).difference(entries) if entries is not None else set()
 
 
-def check_applicability(changes, config, *, root=None, full=False, code_prefixes=None):
+_HYGIENE_CONFIG = "ci-hygiene.toml"
+_HYGIENE_RULES = ("docs", "vulture", "tach", "tach_external", "forwarding")
+
+
+def _resolved_hygiene_relpath(root, hygiene_config_path):
+    if hygiene_config_path is None:
+        return _HYGIENE_CONFIG
+    raw = Path(hygiene_config_path)
+    resolved_root = Path(root).resolve()
+    candidate = raw if raw.is_absolute() else resolved_root / raw
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if not resolved.is_relative_to(resolved_root):
+        return None
+    return resolved.relative_to(resolved_root).as_posix()
+
+
+def _normalized_hygiene_rule_slice(normalized, name):
+    if name == "docs":
+        return (normalized.get("docs"), normalized.get("lychee"))
+    if name == "vulture":
+        return normalized.get("vulture")
+    tach = normalized.get("tach") if isinstance(normalized.get("tach"), dict) else {}
+    if name == "tach":
+        return (tach.get("executable"), tach.get("path"))
+    if name == "tach_external":
+        return (
+            bool(tach.get("external", False)),
+            tach.get("executable"),
+            tach.get("path"),
+        )
+    if name == "forwarding":
+        return normalized.get("forwarding")
+    return None
+
+
+def _read_hygiene_config_at_snapshot(root, rel_cfg, changes):
+    snapshot = getattr(changes, "snapshot", "worktree")
+    if snapshot == "worktree" or getattr(changes, "materialized_tree", False):
+        try:
+            return read_source_file(root, rel_cfg)
+        except (SourcePathError, OSError):
+            return None
+    target_tree = getattr(changes, "execution_tree", None) or getattr(
+        changes, "tree", None
+    )
+    if not isinstance(target_tree, str) or not _GIT_OID.fullmatch(target_tree):
+        return None
+    shown = _run_bytes(["git", "cat-file", "-p", f"{target_tree}:{rel_cfg}"], root)
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def _hygiene_config_triggers(paths, root, changes, *, hygiene_config_path=None):
+    """Select only the hygiene rules whose normalized slice or enablement changed.
+
+    Unreadable or unprovable snapshots select every rule rather than treating an
+    unknown edit as irrelevant; source/doc candidate `inputs` stay unpolluted.
+    """
+    rel_cfg = _resolved_hygiene_relpath(root, hygiene_config_path)
+    if rel_cfg is None or rel_cfg not in paths:
+        return {}
+    all_triggered = {name: True for name in _HYGIENE_RULES}
+    current_raw = _read_hygiene_config_at_snapshot(root, rel_cfg, changes)
+    if current_raw is None:
+        return all_triggered
+    base = getattr(changes, "base_commit", None)
+    if not isinstance(base, str) or not base.strip():
+        return all_triggered
+    shown = _run_bytes(["git", "show", f"{base.strip()}:{rel_cfg}"], root)
+    if shown.returncode != 0:
+        return all_triggered
+    try:
+        current_norm = _normalize_config(_parse_config_bytes(current_raw))
+        previous_norm = _normalize_config(_parse_config_bytes(shown.stdout))
+    except HygieneError:
+        return all_triggered
+    triggers = {
+        name: _normalized_hygiene_rule_slice(current_norm, name)
+        != _normalized_hygiene_rule_slice(previous_norm, name)
+        for name in _HYGIENE_RULES
+    }
+    current_checks = set(current_norm.get("checks") or ())
+    previous_checks = set(previous_norm.get("checks") or ())
+    for name in current_checks - previous_checks:
+        if name in triggers:
+            triggers[name] = True
+    return triggers
+
+
+def _normalize_scan_root(value):
+    """Normalize a repo-relative scan root; return ``""`` for ``.`` or ``None`` if invalid."""
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or any(ch in value for ch in "\0\r\n")
+        or value.startswith("-")
+        or has_windows_or_absolute_root(value)
+    ):
+        return None
+    raw = value.replace("\\", "/")
+    raw_parts = raw.split("/")
+    if ".." in raw_parts:
+        return None
+    parts = [part for part in raw_parts if part and part != "."]
+    if any(part.lower() == ".git" for part in parts):
+        return None
+    normalized = "/".join(parts)
+    # Reject option-like targets ("./--help") and drive/UNC paths exposed by normalization
+    # ("./C:/outside", "./C:outside") against cross-platform repository path semantics.
+    if normalized.startswith("-"):
+        return None
+    if normalized and (
+        has_windows_or_absolute_root(normalized)
+        or any(ntpath.splitdrive(part)[0] or ":" in part for part in parts)
+    ):
+        return None
+    return normalized
+
+
+def _supported_tach_config_rel(value):
+    """Return normalized root ``tach.toml`` relpath, or ``(None, reason)`` if unsupported.
+
+    Pinned ``tach check`` and ``tach check-external`` (0.35.3) discover only
+    ``tach.toml`` at the project root and accept no custom config path option.
+    """
+    norm = _normalize_scan_root(value)
+    if not norm:
+        return None, "tach_config_path_invalid"
+    if norm != "tach.toml":
+        return None, "tach_config_path_unsupported"
+    return norm, None
+
+
+def _path_under_roots(path, roots):
+    norm = _normalize_scan_root(path)
+    if norm is None:
+        return False
+    for root in roots:
+        if root == "":
+            return True
+        if norm == root or norm.startswith(root + "/"):
+            return True
+    return False
+
+
+def _resolve_vulture_roots(config):
+    if not config.vulture.paths:
+        return None, "vulture_paths_invalid"
+    normalized = []
+    for item in config.vulture.paths:
+        root_norm = _normalize_scan_root(item)
+        if root_norm is None:
+            return None, "vulture_paths_invalid"
+        normalized.append(root_norm)
+    return tuple(normalized), None
+
+
+def _parse_tach_source_roots_bytes(raw):
+    try:
+        text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        data = tomllib.loads(text)
+    except (UnicodeError, tomllib.TOMLDecodeError, ValueError):
+        return None, "tach_config_invalid"
+    if "source_roots" not in data:
+        # Tach defaults omitted source_roots to ["."] (repository root).
+        return ("",), None
+    roots = data["source_roots"]
+    if not isinstance(roots, list) or not roots:
+        return None, "tach_source_roots_invalid"
+    normalized = []
+    for item in roots:
+        root_norm = _normalize_scan_root(item)
+        if root_norm is None:
+            return None, "tach_source_roots_invalid"
+        normalized.append(root_norm)
+    return tuple(normalized), None
+
+
+def _resolve_tach_roots_from_tree(root, rel, target_tree):
+    if not isinstance(target_tree, str) or not _GIT_OID.fullmatch(target_tree):
+        return None, "tach_config_unreadable"
+    shown = _run_bytes(["git", "cat-file", "-p", f"{target_tree}:{rel}"], root)
+    if shown.returncode != 0:
+        return None, "tach_config_missing"
+    return _parse_tach_source_roots_bytes(shown.stdout)
+
+
+def _resolve_tach_roots(root, config, changes):
+    """Resolve bound ``tach.toml`` ``source_roots``; fail closed on missing/corrupt/invalid config."""
+    rel, err = _supported_tach_config_rel(config.tach.path)
+    if err is not None:
+        return None, err
+    snapshot = getattr(changes, "snapshot", "worktree")
+    if snapshot == "worktree" or getattr(changes, "materialized_tree", False):
+        try:
+            raw = read_source_file(root, rel)
+        except (FileNotFoundError, NotADirectoryError):
+            return None, "tach_config_missing"
+        except (SourcePathError, OSError):
+            return None, "tach_config_invalid"
+        return _parse_tach_source_roots_bytes(raw)
+    if snapshot == "multi":
+        refs = getattr(changes, "references", ()) or ()
+        active_refs = [
+            ref
+            for ref in refs
+            if isinstance(ref, dict) and ref.get("ref_action") != "delete"
+        ]
+        if not active_refs:
+            return (), None
+        combined = []
+        seen = set()
+        for ref in active_refs:
+            ref_roots, err = _resolve_tach_roots_from_tree(root, rel, ref.get("tree"))
+            if err is not None:
+                return None, err
+            for item in ref_roots:
+                if item not in seen:
+                    seen.add(item)
+                    combined.append(item)
+        return tuple(combined), None
+    target_tree = getattr(changes, "execution_tree", None) or getattr(
+        changes, "tree", None
+    )
+    return _resolve_tach_roots_from_tree(root, rel, target_tree)
+
+
+def check_applicability(
+    changes,
+    config,
+    *,
+    root=None,
+    full=False,
+    code_prefixes=None,
+    hygiene_config_path=None,
+):
     """One authoritative applicability model shared by selection and hygiene."""
     root = Path(root) if root is not None else Path(".")
     names = effective_checks(config)
@@ -566,21 +855,43 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
     )
     docs_paths = sorted(set(paths) | set(generated_paths))
     deleted = _deleted_paths(changes, paths, root)
-    prefixes = tuple(code_prefixes or ("src/", "scripts/", "tests/"))
-    vulture_prefixes = tuple(item.rstrip("/") + "/" for item in config.vulture.paths)
-    tach_path = config.tach.path.replace("\\", "/")
+    # Selection code_prefixes (may include .dagger/src/) are not Tach/Vulture
+    # scan roots. Tool applicability follows configured tool coverage only.
+    _ = code_prefixes
+    vulture_roots = None
+    vulture_error = None
+    if "vulture" in names:
+        vulture_roots, vulture_error = _resolve_vulture_roots(config)
+    tach_path, _ = _supported_tach_config_rel(config.tach.path)
+    tach_roots = None
+    tach_error = None
+    if "tach" in names or "tach_external" in names:
+        tach_roots, tach_error = _resolve_tach_roots(root, config, changes)
 
-    def is_code_path(path):
-        if path.startswith(prefixes) or path in {tach_path, "pyproject.toml"}:
-            return True
-        return path.endswith(".py") and any(
-            path == item.rstrip("/") or path.startswith(pfx)
-            for item, pfx in zip(config.vulture.paths, vulture_prefixes, strict=True)
-        )
-
-    code_inputs = [path for path in paths if is_code_path(path)]
+    vulture_inputs = (
+        [
+            path
+            for path in paths
+            if path == "pyproject.toml" or _path_under_roots(path, vulture_roots)
+        ]
+        if vulture_roots is not None
+        else []
+    )
+    tach_inputs = (
+        [
+            path
+            for path in paths
+            if path in {tach_path, "pyproject.toml"}
+            or _path_under_roots(path, tach_roots)
+        ]
+        if tach_roots is not None
+        else []
+    )
+    rule_triggers = _hygiene_config_triggers(
+        paths, root, changes, hygiene_config_path=hygiene_config_path
+    )
     dep_inputs = [path for path in paths if _is_dependency_input(path)]
-    ext_inputs = sorted(set(code_inputs) | set(dep_inputs))
+    ext_inputs = sorted(set(tach_inputs) | set(dep_inputs))
     changed_docs = sorted(_changed_documents(set(docs_paths), config))
     removed = bool(deleted)
     forwarding_inputs = [
@@ -602,44 +913,108 @@ def check_applicability(changes, config, *, root=None, full=False, code_prefixes
                 "reason": "changed files" if selected else "no_changes",
             }
         elif name == "forwarding":
-            selected = full or bool(forwarding_inputs)
+            cfg_triggered = bool(rule_triggers.get(name))
+            selected = bool(forwarding_inputs)
+            if selected:
+                reason = (
+                    "hygiene_forwarding_config_changed"
+                    if cfg_triggered
+                    else "python source changed"
+                )
+            elif cfg_triggered:
+                reason = "hygiene_forwarding_config_changed_no_targets"
+            else:
+                reason = "no_python_changes"
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
                 "inputs": forwarding_inputs,
-                "reason": "python source changed" if selected else "no_python_changes",
+                "reason": reason,
             }
         elif name == "docs":
-            selected = full or bool(changed_docs) or removed
+            cfg_triggered = bool(rule_triggers.get(name))
+            recheck_all = removed or cfg_triggered
+            selected = full or bool(changed_docs) or recheck_all
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
                 "inputs": changed_docs,
-                "recheck_all": removed,
+                "recheck_all": recheck_all,
                 "reason": (
                     "deleted path may break unchanged documents"
                     if removed
+                    else "hygiene_docs_config_changed"
+                    if cfg_triggered and not changed_docs
                     else "changed documents"
                     if changed_docs
                     else "no document changes"
                 ),
             }
-        elif name in {"vulture", "tach"}:
-            selected = full or bool(code_inputs)
+        elif name == "vulture":
+            if vulture_error is not None:
+                scopes[name] = {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": vulture_error,
+                }
+                continue
+            cfg_triggered = bool(rule_triggers.get(name))
+            selected = full or bool(vulture_inputs) or cfg_triggered
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
-                "inputs": code_inputs,
-                "reason": "code changed" if selected else "no code changes",
+                "inputs": vulture_inputs,
+                "reason": (
+                    "hygiene_vulture_config_changed"
+                    if cfg_triggered and not vulture_inputs
+                    else "code changed"
+                    if selected
+                    else "no code changes"
+                ),
+            }
+        elif name == "tach":
+            if tach_error is not None:
+                scopes[name] = {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": tach_error,
+                }
+                continue
+            cfg_triggered = bool(rule_triggers.get(name))
+            selected = full or bool(tach_inputs) or cfg_triggered
+            scopes[name] = {
+                "name": name,
+                "status": "selected" if selected else "not_applicable",
+                "inputs": tach_inputs,
+                "reason": (
+                    "hygiene_tach_config_changed"
+                    if cfg_triggered and not tach_inputs
+                    else "code changed"
+                    if selected
+                    else "no code changes"
+                ),
             }
         elif name == "tach_external":
-            selected = full or bool(ext_inputs)
+            if tach_error is not None:
+                scopes[name] = {
+                    "name": name,
+                    "status": "unknown",
+                    "inputs": [],
+                    "reason": tach_error,
+                }
+                continue
+            cfg_triggered = bool(rule_triggers.get("tach_external"))
+            selected = full or bool(ext_inputs) or cfg_triggered
             scopes[name] = {
                 "name": name,
                 "status": "selected" if selected else "not_applicable",
                 "inputs": ext_inputs,
                 "reason": (
-                    "code or dependency inputs changed"
+                    "hygiene_tach_external_config_changed"
+                    if cfg_triggered and not ext_inputs
+                    else "code or dependency inputs changed"
                     if selected
                     else "no code or dependency changes"
                 ),
@@ -1102,12 +1477,24 @@ def _forwarding(candidates, changes, root, runner):
     return result("passed")
 
 
-def _docs(paths, tracked, changes, root, runner, config, full, *, inventory_ok=True):
-    changed_docs = _changed_documents(set(paths), config)
-    removed = any(not (root / path).exists() for path in paths)
+def _docs(
+    paths,
+    tracked,
+    changes,
+    root,
+    runner,
+    config,
+    full,
+    *,
+    inventory_ok=True,
+    recheck_all=False,
+):
+    normalized_paths = [path.replace("\\", "/") for path in paths]
+    changed_docs = _changed_documents(set(normalized_paths), config)
+    removed = bool(recheck_all) or bool(_deleted_paths(changes, normalized_paths, root))
     if not (full or changed_docs or removed):
         return _result("docs", "not_applicable", reason="no_document_changes")
-    documents = _active_documents(root, tracked, set(paths), config)
+    documents = _active_documents(root, tracked, set(normalized_paths), config)
     targets = documents if (full or removed) else documents & changed_docs
     if not targets:
         if not inventory_ok:
@@ -1122,23 +1509,39 @@ def _docs(paths, tracked, changes, root, runner, config, full, *, inventory_ok=T
         return _result("docs", "not_applicable", reason="no_applicable_documents")
     # Lychee requires explicit inputs; passing the document set as stdin is
     # not an accepted invocation and fails before any link is checked.
-    return _tool(
+    result = _tool(
         "docs",
         [config.lychee.executable, *config.lychee.arguments, *sorted(targets)],
         root,
         runner,
         failure_reason="lychee_findings",
     )
+    offline = is_offline_lychee_arguments(config.lychee.arguments)
+    # Offline mode does not request external URLs, so a pass is not full coverage.
+    result["link_scope"] = "offline" if offline else "network"
+    if offline:
+        result["link_scope_note"] = (
+            "offline lychee check; external URLs were not requested"
+        )
+    return result
 
 
 def _vulture(root, runner, config, code_changed):
     if not code_changed:
         return _result("vulture", "not_applicable", reason="no_code_changes")
+    roots, error = _resolve_vulture_roots(config)
+    if error is not None:
+        return {
+            **_result("vulture", "failed", reason=error),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
     argv = [
         config.vulture.executable,
-        *config.vulture.paths,
         "--min-confidence",
         str(config.vulture.min_confidence),
+        "--",
+        *(item or "." for item in roots),
     ]
     return _tool(
         "vulture",
@@ -1151,17 +1554,37 @@ def _vulture(root, runner, config, code_changed):
     )
 
 
-def _tach(paths, root, runner, config, code_changed):
-    if not code_changed:
-        return _result("tach", "not_applicable", reason="no_code_changes")
-    if not (root / config.tach.path).is_file():
-        # Tool has not started: preserve the preparation failure separately
-        # from a native Tach execution verdict.
+def _prepare_tach_execution(check_name, root, config):
+    tach_rel, err = _supported_tach_config_rel(config.tach.path)
+    if err is not None:
         return {
-            **_result("tach", "failed", reason="tach_config_missing"),
+            **_result(check_name, "failed", reason=err),
             "execution_started": False,
             "execution_kind": "not_started",
         }
+    try:
+        stat_source_file(root, tach_rel)
+    except (FileNotFoundError, NotADirectoryError):
+        return {
+            **_result(check_name, "failed", reason="tach_config_missing"),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
+    except (SourcePathError, OSError):
+        return {
+            **_result(check_name, "failed", reason="tach_config_invalid"),
+            "execution_started": False,
+            "execution_kind": "not_started",
+        }
+    return None
+
+
+def _tach(paths, root, runner, config, code_changed):
+    if not code_changed:
+        return _result("tach", "not_applicable", reason="no_code_changes")
+    pre_failure = _prepare_tach_execution("tach", root, config)
+    if pre_failure is not None:
+        return pre_failure
     return _tool(
         "tach",
         [config.tach.executable, "check"],
@@ -1174,12 +1597,9 @@ def _tach(paths, root, runner, config, code_changed):
 def _tach_external(root, runner, config, applicable):
     if not applicable:
         return _result("tach_external", "not_applicable", reason="no_code_changes")
-    if not (root / config.tach.path).is_file():
-        return {
-            **_result("tach_external", "failed", reason="tach_config_missing"),
-            "execution_started": False,
-            "execution_kind": "not_started",
-        }
+    pre_failure = _prepare_tach_execution("tach_external", root, config)
+    if pre_failure is not None:
+        return pre_failure
     return _tool(
         "tach_external",
         [config.tach.executable, "check-external"],
@@ -1189,7 +1609,16 @@ def _tach_external(root, runner, config, applicable):
     )
 
 
-def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
+def run(
+    changes,
+    config,
+    *,
+    root,
+    runner=_run,
+    full=False,
+    code_prefixes=None,
+    hygiene_config_path=None,
+):
     """Run the configured checks once and return native evidence."""
     root = Path(root)
     paths = [path.replace("\\", "/") for path in changes.paths]
@@ -1252,15 +1681,22 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
         root=root,
         full=full,
         code_prefixes=code_prefixes,
+        hygiene_config_path=hygiene_config_path,
     )
     results = []
     for name in effective_checks(config):
-        applicable = applicability.get(name, {}).get("status") == "selected"
+        app_entry = applicability.get(name, {})
+        applicable = app_entry.get("status") == "selected"
         if name == "whitespace":
             results.append(_whitespace(changes, root, runner, None if full else paths))
         elif name == "forwarding":
             results.append(
-                _forwarding(applicability[name]["inputs"], changes, root, runner)
+                _forwarding(
+                    app_entry.get("inputs") or [],
+                    changes,
+                    root,
+                    runner,
+                )
             )
         elif name == "docs":
             results.append(
@@ -1273,14 +1709,54 @@ def run(changes, config, *, root, runner=_run, full=False, code_prefixes=None):
                     config,
                     full,
                     inventory_ok=inventory_ok,
+                    recheck_all=bool(app_entry.get("recheck_all")),
                 )
             )
         elif name == "vulture":
-            results.append(_vulture(root, runner, config, applicable))
+            if app_entry.get("status") == "unknown":
+                results.append(
+                    {
+                        **_result(
+                            "vulture",
+                            "failed",
+                            reason=app_entry.get("reason") or "vulture_paths_invalid",
+                        ),
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                    }
+                )
+            else:
+                results.append(_vulture(root, runner, config, applicable))
         elif name == "tach":
-            results.append(_tach(paths, root, runner, config, applicable))
+            if app_entry.get("status") == "unknown":
+                results.append(
+                    {
+                        **_result(
+                            "tach",
+                            "failed",
+                            reason=app_entry.get("reason") or "tach_config_invalid",
+                        ),
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                    }
+                )
+            else:
+                results.append(_tach(paths, root, runner, config, applicable))
         elif name == "tach_external":
-            results.append(_tach_external(root, runner, config, applicable))
+            if app_entry.get("status") == "unknown":
+                results.append(
+                    {
+                        **_result(
+                            "tach_external",
+                            "failed",
+                            reason=app_entry.get("reason") or "tach_config_invalid",
+                        ),
+                        "execution_started": False,
+                        "execution_kind": "not_started",
+                    }
+                )
+            else:
+                results.append(_tach_external(root, runner, config, applicable))
     report["checks"] = results
     statuses = {item["status"] for item in results}
     if "failed" in statuses:
@@ -1327,6 +1803,7 @@ def main(argv=None):
         config,
         root=root,
         full=args.full,
+        hygiene_config_path=config_path,
     )
     if args.json:
         _print(report)

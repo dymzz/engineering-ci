@@ -615,6 +615,67 @@ def test_omitted_checks_respects_tach_external_flag_without_silent_expansion(tmp
     assert hygiene.effective_checks(loaded_ext).count("tach_external") == 1
 
 
+def test_configured_dagger_scan_roots_select_code_checks(repo):
+    path, _base = repo
+    (path / "tach.toml").write_text(
+        (path / "tach.toml")
+        .read_text(encoding="utf-8")
+        .replace('source_roots = ["src"]', 'source_roots = ["src", ".dagger/src"]'),
+        encoding="utf-8",
+    )
+    (path / "ci-hygiene.toml").write_text(
+        (path / "ci-hygiene.toml")
+        .read_text(encoding="utf-8")
+        .replace('paths = ["src"]', 'paths = ["src", ".dagger/src"]'),
+        encoding="utf-8",
+    )
+    run(path, "add", "tach.toml", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "configure dagger scan roots")
+    mid = run(path, "rev-parse", "HEAD").strip()
+
+    module = path / ".dagger/src/tool.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    app = hygiene.check_applicability(
+        changes(path, mid), config(path, ("vulture", "tach")), root=path
+    )
+    assert app["tach"]["status"] == "selected"
+    assert ".dagger/src/tool.py" in app["tach"]["inputs"]
+    assert app["vulture"]["status"] == "selected"
+    assert ".dagger/src/tool.py" in app["vulture"]["inputs"]
+
+
+def test_vulture_config_change_does_not_select_docs_or_tach(repo):
+    path, base = repo
+    cfg_path = path / "ci-hygiene.toml"
+    cfg_path.write_text(
+        cfg_path.read_text(encoding="utf-8").replace(
+            "min_confidence = 60", "min_confidence = 80"
+        ),
+        encoding="utf-8",
+    )
+    loaded = hygiene.load_config(cfg_path)
+    loaded = dataclasses.replace(loaded, checks=("vulture", "docs", "tach"))
+    app = hygiene.check_applicability(changes(path, base), loaded, root=path)
+    assert app["vulture"]["reason"] == "hygiene_vulture_config_changed"
+    assert app["docs"]["status"] == "not_applicable"
+    assert app["tach"]["status"] == "not_applicable"
+
+
+def test_offline_lychee_does_not_claim_external_coverage(repo):
+    path, base = repo
+    (path / "docs/guide.md").write_text("# changed\n", encoding="utf-8")
+    loaded = config(path, ("docs",))
+    loaded = dataclasses.replace(
+        loaded, lychee=dataclasses.replace(loaded.lychee, arguments=("--offline",))
+    )
+    result = hygiene.run(changes(path, base), loaded, root=path, runner=FakeRunner())
+    docs = by_name(result)["docs"]
+    assert docs["status"] == "passed"
+    assert docs["link_scope"] == "offline"
+    assert "external URLs were not requested" in docs["link_scope_note"]
+
+
 def test_shared_applicability_and_config_identity(repo):
     path, base = repo
     cfg_path = path / "ci-hygiene.toml"
@@ -638,3 +699,649 @@ def test_shared_applicability_and_config_identity(repo):
     assert app["tach"]["status"] == "not_applicable"
     assert app["tach_external"]["status"] == "selected"
     assert app["tach_external"]["inputs"] == ["requirements-dev.txt"]
+
+
+def test_docs_config_trigger_rechecks_all_without_contaminating_inputs(repo):
+    path, _base = repo
+    hyg = path / "ci-hygiene.toml"
+    hyg.write_text(
+        "schema_version = 1\n"
+        "[docs]\n"
+        'suffixes = [".md"]\n'
+        'excluded_prefixes = ["docs/archive/"]\n\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--no-progress"]\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "baseline docs config")
+    cfg_base = run(path, "rev-parse", "HEAD").strip()
+
+    hyg.write_text(
+        "schema_version = 1\n"
+        "[docs]\n"
+        'suffixes = [".md", ".html"]\n'
+        'excluded_prefixes = ["docs/archive/"]\n\n'
+        "[lychee]\n"
+        'executable = "lychee"\n'
+        'arguments = ["--offline", "--no-progress"]\n',
+        encoding="utf-8",
+    )
+    cfg = hygiene.load_config(hyg)
+    value = changes(path, cfg_base)
+    app = hygiene.check_applicability(value, cfg, root=path, hygiene_config_path=hyg)
+    assert app["docs"]["status"] == "selected"
+    assert app["docs"]["recheck_all"] is True
+    assert "ci-hygiene.toml" not in app["docs"]["inputs"]
+    assert app["forwarding"]["status"] == "not_applicable"
+
+    fake = FakeRunner()
+    result = hygiene.run(value, cfg, root=path, runner=fake, hygiene_config_path=hyg)
+    docs_check = by_name(result)["docs"]
+    assert result["status"] == "passed"
+    assert docs_check["status"] == "passed"
+    lychee_calls = [argv for argv, _ in fake.calls if argv and argv[0] == "lychee"]
+    assert len(lychee_calls) == 1
+    assert any(arg.endswith("docs/guide.md") for arg in lychee_calls[0])
+    assert any(arg.endswith("README.md") for arg in lychee_calls[0])
+    assert "ci-hygiene.toml" not in lychee_calls[0]
+
+
+def test_forwarding_config_trigger_keeps_python_inputs_and_normalizes_equivalence(
+    repo,
+):
+    path, _base = repo
+    hyg = path / "ci-hygiene.toml"
+    hyg.write_text(
+        'schema_version = 1\n[forwarding]\nsource_prefix = "src/"\n',
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "explicit forwarding defaults")
+    cfg_base = run(path, "rev-parse", "HEAD").strip()
+
+    # Rewriting an equivalent config (comment + omitted default section) must not false-trigger.
+    hyg.write_text("# comment only\nschema_version = 1\n", encoding="utf-8")
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "equivalent normalized hygiene config")
+    equiv_cfg = hygiene.load_config(hyg)
+    equiv_changes = changes(path, cfg_base)
+    equiv_app = hygiene.check_applicability(
+        equiv_changes, equiv_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert equiv_app["forwarding"]["status"] == "not_applicable"
+    assert equiv_app["forwarding"]["reason"] == "no_python_changes"
+    assert equiv_app["docs"]["status"] == "not_applicable"
+    assert equiv_app["tach"]["status"] == "not_applicable"
+
+    # Config-only [forwarding] prefix change without Python changes stays not_applicable — never empty PASS or whole-tree scan.
+    head_base = run(path, "rev-parse", "HEAD").strip()
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["forwarding"]\n'
+        "[forwarding]\n"
+        'source_prefix = "src/pkg/"\n',
+        encoding="utf-8",
+    )
+    cfg_only_cfg = hygiene.load_config(hyg)
+    cfg_only_changes = changes(path, head_base)
+    cfg_only_app = hygiene.check_applicability(
+        cfg_only_changes, cfg_only_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert cfg_only_app["forwarding"]["status"] == "not_applicable"
+    assert cfg_only_app["forwarding"]["inputs"] == []
+    assert cfg_only_app["forwarding"]["reason"] == (
+        "hygiene_forwarding_config_changed_no_targets"
+    )
+    cfg_only_runner = FakeRunner()
+    cfg_only_res = hygiene.run(
+        cfg_only_changes,
+        cfg_only_cfg,
+        root=path,
+        runner=cfg_only_runner,
+        hygiene_config_path=hyg,
+    )
+    assert by_name(cfg_only_res)["forwarding"]["status"] == "not_applicable"
+    assert [argv for argv, _ in cfg_only_runner.calls] == [("git", "ls-files", "-z")]
+
+    # Incomplete source stays unknown instead of not_applicable.
+    incomplete_app = hygiene.check_applicability(
+        dataclasses.replace(cfg_only_changes, complete=False),
+        cfg_only_cfg,
+        root=path,
+        hygiene_config_path=hyg,
+    )
+    assert incomplete_app["forwarding"]["status"] == "unknown"
+
+    # Real [forwarding] prefix change together with a changed Python module analyzes that real candidate.
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    changed_changes = changes(path, head_base)
+    changed_app = hygiene.check_applicability(
+        changed_changes, cfg_only_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert changed_app["forwarding"]["status"] == "selected"
+    assert changed_app["forwarding"]["reason"] == "hygiene_forwarding_config_changed"
+    assert changed_app["forwarding"]["inputs"] == ["src/pkg/sub.py"]
+
+    res = hygiene.run(
+        changed_changes,
+        cfg_only_cfg,
+        root=path,
+        runner=FakeRunner(),
+        hygiene_config_path=hyg,
+    )
+    assert res["status"] == "passed"
+    assert by_name(res)["forwarding"]["status"] == "passed"
+
+    (path / "src/pkg/sub.py").write_text(
+        "from pkg.other import VALUE\n\n__all__ = ['VALUE']\n", encoding="utf-8"
+    )
+    advisory_res = hygiene.run(
+        changes(path, head_base),
+        cfg_only_cfg,
+        root=path,
+        runner=FakeRunner(),
+        hygiene_config_path=hyg,
+    )
+    assert by_name(advisory_res)["forwarding"]["status"] == "advisory"
+
+
+def test_tach_config_trigger_and_snapshot_isolation_and_fail_closed_fallback(repo):
+    from engineering_ci import selection
+
+    path, _base = repo
+    hyg = path / "ci-hygiene.toml"
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["vulture", "tach", "tach_external"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 60\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "tach and vulture baseline")
+    cfg_base = run(path, "rev-parse", "HEAD").strip()
+
+    # Commit a [tach] rule change, then dirty worktree differently and evaluate commit snapshot.
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["vulture", "tach", "tach_external"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 60\n\n"
+        "[tach]\n"
+        'executable = "custom-tach"\n'
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    run(path, "add", "ci-hygiene.toml")
+    run(path, "commit", "-qm", "change tach executable")
+    commit_cfg = hygiene.load_config(hyg)
+
+    # Dirty worktree alters [vulture] instead of [tach]; commit snapshot must read execution_tree!
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["vulture", "tach", "tach_external"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 80\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    commit_changes = selection.changeset(path, base=cfg_base, mode="commit")
+    app = hygiene.check_applicability(
+        commit_changes, commit_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert app["tach"]["status"] == "selected"
+    assert app["tach_external"]["status"] == "selected"
+    assert "ci-hygiene.toml" not in app["tach"]["inputs"]
+    assert app["vulture"]["status"] == "not_applicable"
+
+    # Unreadable/corrupt base config or missing base_commit falls back conservatively.
+    corrupt_base = dataclasses.replace(
+        changes(path, cfg_base),
+        base_commit="0" * 40,
+        paths=("ci-hygiene.toml",),
+    )
+    conservative = hygiene.check_applicability(
+        corrupt_base, commit_cfg, root=path, hygiene_config_path=hyg
+    )
+    assert conservative["tach"]["status"] == "selected"
+    assert conservative["tach_external"]["status"] == "selected"
+    assert conservative["vulture"]["status"] == "selected"
+
+
+def test_dagger_source_change_does_not_claim_src_only_tach_or_vulture(repo):
+    """Selection may map `.dagger/src/` tests; Tach/Vulture follow tool roots only."""
+    path, _base = repo
+    hyg = path / "ci-hygiene.toml"
+    hyg.write_text(
+        "schema_version = 1\n"
+        'checks = ["vulture", "tach", "tach_external", "whitespace"]\n'
+        "[vulture]\n"
+        'paths = ["src"]\n'
+        "min_confidence = 60\n\n"
+        "[tach]\n"
+        'path = "tach.toml"\n'
+        "external = true\n",
+        encoding="utf-8",
+    )
+    dagger_file = path / ".dagger/src/engineering_ci_module/sample.py"
+    dagger_file.parent.mkdir(parents=True, exist_ok=True)
+    dagger_file.write_text("VALUE = 1\n", encoding="utf-8")
+    run(path, "add", "ci-hygiene.toml", ".dagger/src/engineering_ci_module/sample.py")
+    run(path, "commit", "-qm", "add dagger module sample")
+    mid = run(path, "rev-parse", "HEAD").strip()
+
+    dagger_file.write_text("VALUE = 2\n", encoding="utf-8")
+    cfg = hygiene.load_config(hyg)
+    value = changes(path, mid)
+    assert ".dagger/src/engineering_ci_module/sample.py" in value.paths
+    app = hygiene.check_applicability(
+        value,
+        cfg,
+        root=path,
+        code_prefixes=("src/", "scripts/", "tests/", ".dagger/src/"),
+        hygiene_config_path=hyg,
+    )
+    assert app["whitespace"]["status"] == "selected"
+    assert app["vulture"]["status"] == "not_applicable"
+    assert app["tach"]["status"] == "not_applicable"
+    assert app["tach_external"]["status"] == "not_applicable"
+
+    run(path, "checkout", "--", ".dagger/src/engineering_ci_module/sample.py")
+    (path / "src/pkg/sub.py").write_text("VALUE = 9\n", encoding="utf-8")
+    src_value = changes(path, mid)
+    src_app = hygiene.check_applicability(
+        src_value,
+        cfg,
+        root=path,
+        code_prefixes=("src/", "scripts/", "tests/", ".dagger/src/"),
+        hygiene_config_path=hyg,
+    )
+    assert src_app["vulture"]["status"] == "selected"
+    assert src_app["tach"]["status"] == "selected"
+    assert "src/pkg/sub.py" in src_app["tach"]["inputs"]
+
+
+def test_is_offline_lychee_arguments_respects_overrides_and_separator():
+    assert hygiene.is_offline_lychee_arguments(["--offline", "--no-progress"]) is True
+    assert hygiene.is_offline_lychee_arguments(["--offline=true"]) is True
+    assert hygiene.is_offline_lychee_arguments(["--offline=false"]) is False
+    assert (
+        hygiene.is_offline_lychee_arguments(["--offline", "--offline=false"]) is False
+    )
+    assert (
+        hygiene.is_offline_lychee_arguments(["--offline=false", "--offline"]) is False
+    )
+    assert hygiene.is_offline_lychee_arguments(["--", "--offline"]) is False
+    assert hygiene.is_offline_lychee_arguments(["--no-progress"]) is False
+
+
+def test_tool_scan_roots_normalization_lazy_tach_and_fail_closed_unknown(repo):
+    path, base = repo
+
+    # 1. Normalization of ".", "./src", and Windows separators; rejection of invalid/escaping roots.
+    assert hygiene._normalize_scan_root(".") == ""
+    assert hygiene._normalize_scan_root("./") == ""
+    assert hygiene._normalize_scan_root("./src") == "src"
+    assert hygiene._normalize_scan_root(".\\src\\") == "src"
+    assert hygiene._path_under_roots("src/pkg.py", ("",)) is True
+    assert hygiene._path_under_roots("src/pkg.py", ("src",)) is True
+    assert hygiene._path_under_roots("src/pkg/sub.py", ("src",)) is True
+    for bad in (
+        "",
+        "   ",
+        "../outside",
+        "/etc",
+        "C:/src",
+        "./C:/outside",
+        "./C:outside",
+        ".\\C:\\outside",
+        ".\\C:outside",
+        "./C:\\outside",
+        ".\\C:/outside",
+        "./c:outside",
+        "//server/share",
+        "\\\\server\\share",
+        " /etc",
+        " ./C:/outside",
+        "--min-confidence",
+        "./--help",
+        "./--version",
+        ".\\.\\--version",
+        "./-h",
+        ".git",
+    ):
+        assert hygiene._normalize_scan_root(bad) is None
+
+    # 2. Vulture with "." and "./src" selects src/pkg/sub.py and isolates normalized roots behind "--".
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    src_changes = changes(path, base)
+    for configured_paths, expected_arg in (((".",), "."), (("./src",), "src")):
+        v_cfg = dataclasses.replace(
+            config(path, ("vulture",)),
+            vulture=dataclasses.replace(config(path).vulture, paths=configured_paths),
+        )
+        app = hygiene.check_applicability(src_changes, v_cfg, root=path)
+        assert app["vulture"]["status"] == "selected"
+        assert "src/pkg/sub.py" in app["vulture"]["inputs"]
+        fake = FakeRunner()
+        res = hygiene.run(src_changes, v_cfg, root=path, runner=fake)
+        assert res["status"] == "passed"
+        v_calls = [call[0] for call in fake.calls if call[0][0] == "vulture"]
+        assert v_calls == [("vulture", "--min-confidence", "60", "--", expected_arg)]
+
+    # Invalid/escaping/option-like Vulture paths fail closed (unknown -> failed/not_started), never false N/A.
+    for invalid_v_paths in (
+        ("../outside",),
+        ("./--help",),
+        ("./--version",),
+        ("./C:/outside",),
+        ("./C:outside",),
+        (".\\C:\\outside",),
+    ):
+        bad_v_cfg = dataclasses.replace(
+            config(path, ("vulture",)),
+            vulture=dataclasses.replace(config(path).vulture, paths=invalid_v_paths),
+        )
+        bad_v_app = hygiene.check_applicability(src_changes, bad_v_cfg, root=path)
+        assert bad_v_app["vulture"]["status"] == "unknown"
+        assert bad_v_app["vulture"]["reason"] == "vulture_paths_invalid"
+        bad_v_runner = FakeRunner()
+        bad_v_res = hygiene.run(src_changes, bad_v_cfg, root=path, runner=bad_v_runner)
+        assert bad_v_res["status"] == "failed"
+        assert by_name(bad_v_res)["vulture"]["reason"] == "vulture_paths_invalid"
+        assert by_name(bad_v_res)["vulture"]["execution_started"] is False
+        assert not any(call[0][0] == "vulture" for call in bad_v_runner.calls)
+
+    # 3. Lazy Tach config reading: corrupt UTF-8 tach.toml does not affect runs with Tach disabled.
+    original_tach = (path / "tach.toml").read_text(encoding="utf-8")
+    (path / "tach.toml").write_bytes(b"\xff\xfe\x00not-utf8")
+    no_tach_app = hygiene.check_applicability(
+        src_changes, config(path, ("whitespace", "forwarding")), root=path
+    )
+    assert no_tach_app["whitespace"]["status"] == "selected"
+    assert no_tach_app["forwarding"]["status"] == "selected"
+
+    # When Tach is enabled, corrupt UTF-8 fails closed as unknown -> failed/not_started (no crash, no N/A).
+    tach_cfg = dataclasses.replace(
+        config(path, ("tach", "tach_external")),
+        tach=dataclasses.replace(config(path).tach, external=True),
+    )
+    bad_tach_app = hygiene.check_applicability(src_changes, tach_cfg, root=path)
+    assert bad_tach_app["tach"]["status"] == "unknown"
+    assert bad_tach_app["tach"]["reason"] == "tach_config_invalid"
+    assert bad_tach_app["tach_external"]["status"] == "unknown"
+    bad_tach_res = hygiene.run(src_changes, tach_cfg, root=path, runner=FakeRunner())
+    assert bad_tach_res["status"] == "failed"
+    assert by_name(bad_tach_res)["tach"]["reason"] == "tach_config_invalid"
+    assert by_name(bad_tach_res)["tach"]["execution_started"] is False
+
+    # Invalid source_roots in tach.toml fails closed as unknown -> failed/not_started.
+    for bad_roots_toml in (
+        'source_roots = ["../escape"]\n',
+        'source_roots = ["./C:outside"]\n',
+    ):
+        (path / "tach.toml").write_text(bad_roots_toml, encoding="utf-8")
+        bad_roots_app = hygiene.check_applicability(src_changes, tach_cfg, root=path)
+        assert bad_roots_app["tach"]["status"] == "unknown"
+        assert bad_roots_app["tach"]["reason"] == "tach_source_roots_invalid"
+        bad_roots_res = hygiene.run(
+            src_changes, tach_cfg, root=path, runner=FakeRunner()
+        )
+        assert bad_roots_res["status"] == "failed"
+        assert by_name(bad_roots_res)["tach"]["reason"] == "tach_source_roots_invalid"
+
+    # Missing tach.toml with only non-src doc change still fails closed (never false N/A).
+    run(path, "checkout", "--", "src/pkg/sub.py")
+    (path / "docs/guide.md").write_text("# changed doc\n", encoding="utf-8")
+    (path / "tach.toml").unlink()
+    doc_only_changes = changes(path, base)
+    missing_app = hygiene.check_applicability(doc_only_changes, tach_cfg, root=path)
+    assert missing_app["tach"]["status"] == "unknown"
+    assert missing_app["tach"]["reason"] == "tach_config_missing"
+    missing_res = hygiene.run(
+        doc_only_changes, tach_cfg, root=path, runner=FakeRunner()
+    )
+    assert missing_res["status"] == "failed"
+    assert by_name(missing_res)["tach"]["reason"] == "tach_config_missing"
+
+    # 4. Explicit multi-root vs single-root Dagger positive/negative applicability + omitted default (".").
+    run(path, "checkout", "--", "docs/guide.md")
+    dagger_file = path / ".dagger/src/engineering_ci_module/sample.py"
+    dagger_file.parent.mkdir(parents=True, exist_ok=True)
+    dagger_file.write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "tach.toml").write_text(original_tach, encoding="utf-8")
+    run(path, "add", ".dagger/src/engineering_ci_module/sample.py", "tach.toml")
+    run(path, "commit", "-qm", "add dagger sample")
+    dagger_base = run(path, "rev-parse", "HEAD").strip()
+
+    dagger_file.write_text("VALUE = 2\n", encoding="utf-8")
+    dagger_changes = changes(path, dagger_base)
+    single_app = hygiene.check_applicability(
+        dagger_changes, config(path, ("tach",)), root=path
+    )
+    assert single_app["tach"]["status"] == "not_applicable"
+
+    # Multi-root config explicitly covering ./src and .dagger/src selects tach on Dagger edit.
+    (path / "tach.toml").write_text(
+        original_tach.replace(
+            'source_roots = ["src"]', 'source_roots = ["./src", ".dagger/src"]'
+        ),
+        encoding="utf-8",
+    )
+    multi_app = hygiene.check_applicability(
+        dagger_changes, config(path, ("tach",)), root=path
+    )
+    assert multi_app["tach"]["status"] == "selected"
+    assert ".dagger/src/engineering_ci_module/sample.py" in multi_app["tach"]["inputs"]
+
+    # Valid tach.toml omitting source_roots uses Tach's native repo-root default (".").
+    (path / "tach.toml").write_text(
+        original_tach.replace('source_roots = ["src"]\n', ""), encoding="utf-8"
+    )
+    omitted_app = hygiene.check_applicability(
+        dagger_changes, config(path, ("tach",)), root=path
+    )
+    assert omitted_app["tach"]["status"] == "selected"
+
+    # 5. Multi-ref push resolves per-ref tach.toml union cleanly and fails closed if any active ref is corrupt.
+    from engineering_ci import selection
+
+    (path / "tach.toml").write_text(original_tach, encoding="utf-8")
+    run(path, "checkout", "--", ".dagger/src/engineering_ci_module/sample.py")
+    run(path, "switch", "-qc", "multi-ok", dagger_base)
+    (path / "docs/guide.md").write_text("# ref a doc\n", encoding="utf-8")
+    run(path, "add", "docs/guide.md")
+    run(path, "commit", "-qm", "ref a doc")
+    ok_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "switch", "-qc", "multi-corrupt", dagger_base)
+    (path / "tach.toml").write_bytes(b"\xff\xfe\x00bad")
+    run(path, "add", "tach.toml")
+    run(path, "commit", "-qm", "ref b corrupt tach")
+    bad_commit = run(path, "rev-parse", "HEAD").strip()
+
+    run(path, "switch", "-q", "main")
+    ok_multi = selection.changeset_multi(
+        path, [("refs/heads/multi-ok", ok_commit, "refs/heads/multi-ok", dagger_base)]
+    )
+    ok_multi_app = hygiene.check_applicability(
+        ok_multi, config(path, ("tach",)), root=path
+    )
+    assert ok_multi_app["tach"]["status"] == "not_applicable"
+
+    bad_multi = selection.changeset_multi(
+        path,
+        [
+            ("refs/heads/multi-ok", ok_commit, "refs/heads/multi-ok", dagger_base),
+            (
+                "refs/heads/multi-corrupt",
+                bad_commit,
+                "refs/heads/multi-corrupt",
+                dagger_base,
+            ),
+        ],
+    )
+    bad_multi_app = hygiene.check_applicability(
+        bad_multi, config(path, ("tach",)), root=path
+    )
+    assert bad_multi_app["tach"]["status"] == "unknown"
+    assert bad_multi_app["tach"]["reason"] == "tach_config_invalid"
+
+
+def test_tach_custom_config_path_is_refused_fail_closed_and_argparse_delimiter(repo):
+    import sys
+
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text("VALUE = 2\n", encoding="utf-8")
+    # Default clean tach.toml exists alongside custom failing tach-alt.toml with different roots.
+    (path / "tach-alt.toml").write_text(
+        'source_roots = [".dagger/src"]\n'
+        "exact = true\n"
+        '[[modules]]\npath = "sample"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    norm_hyg = path / "ci-hygiene-norm.toml"
+    norm_hyg.write_text(
+        'schema_version = 1\nchecks = ["tach"]\n[tach]\npath = "./tach.toml"\n',
+        encoding="utf-8",
+    )
+    assert hygiene.load_config(norm_hyg).tach.path == "tach.toml"
+
+    for custom in ("tach-alt.toml", "sub/tach.toml", "pyproject.toml"):
+        bad_hyg = path / "ci-hygiene-custom.toml"
+        bad_hyg.write_text(
+            f'schema_version = 1\nchecks = ["tach", "tach_external"]\n[tach]\npath = "{custom}"\nexternal = true\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(hygiene.HygieneError, match="tach_config_path_unsupported"):
+            hygiene.load_config(bad_hyg)
+
+        # Even if constructed directly in Python, neither applicability nor run falls back to tach.toml.
+        direct_cfg = dataclasses.replace(
+            config(path, ("tach", "tach_external")),
+            tach=hygiene.TachConfig(executable="tach", path=custom, external=True),
+        )
+        app = hygiene.check_applicability(changes(path, base), direct_cfg, root=path)
+        assert app["tach"]["status"] == "unknown"
+        assert app["tach"]["reason"] == "tach_config_path_unsupported"
+        assert app["tach_external"]["status"] == "unknown"
+        assert app["tach_external"]["reason"] == "tach_config_path_unsupported"
+        runner = FakeRunner()
+        res = hygiene.run(changes(path, base), direct_cfg, root=path, runner=runner)
+        assert res["status"] == "failed"
+        assert by_name(res)["tach"]["reason"] == "tach_config_path_unsupported"
+        assert by_name(res)["tach"]["execution_started"] is False
+        assert by_name(res)["tach_external"]["reason"] == "tach_config_path_unsupported"
+        assert not any(call[0][0] == "tach" for call in runner.calls)
+
+    # Real subprocess check verifying argparse option delimiter "--" before positional scan roots.
+    arg_script = path / "vulture_probe.py"
+    arg_script.write_text(
+        "import argparse, json, sys\n"
+        "p = argparse.ArgumentParser()\n"
+        "p.add_argument('--min-confidence', type=int, required=True)\n"
+        "p.add_argument('paths', nargs='+')\n"
+        "ns = p.parse_args()\n"
+        "print(json.dumps({'min_confidence': ns.min_confidence, 'paths': ns.paths}))\n",
+        encoding="utf-8",
+    )
+
+    recorded_probe_argv = []
+
+    def real_subprocess_wrapper(argv, cwd, data=None):
+        recorded_probe_argv.append(list(argv))
+        if argv[0] == "git":
+            return hygiene._run(argv, cwd, data)
+        return hygiene._run([sys.executable, str(arg_script), *argv[1:]], cwd, data)
+
+    v_cfg = dataclasses.replace(
+        config(path, ("vulture",)),
+        vulture=dataclasses.replace(config(path).vulture, paths=("./src", ".")),
+    )
+    probe_res = hygiene.run(
+        changes(path, base), v_cfg, root=path, runner=real_subprocess_wrapper
+    )
+    assert probe_res["status"] == "passed"
+    v_entry = by_name(probe_res)["vulture"]
+    assert [
+        "vulture",
+        "--min-confidence",
+        "60",
+        "--",
+        "src",
+        ".",
+    ] in recorded_probe_argv
+    assert json.loads(v_entry["stdout"]) == {
+        "min_confidence": 60,
+        "paths": ["src", "."],
+    }
+
+
+@pytest.mark.skipif(
+    shutil.which("vulture") is None,
+    reason="vulture binary unavailable on PATH",
+)
+def test_real_vulture_cli_scans_normalized_roots_with_delimiter(repo):
+    path, base = repo
+    (path / "src/pkg/sub.py").write_text(
+        "def _unused_helper():\n    unused_var = 1\n    return unused_var\n",
+        encoding="utf-8",
+    )
+    v_cfg = dataclasses.replace(
+        config(path, ("vulture",)),
+        vulture=dataclasses.replace(
+            config(path).vulture, paths=("./src", "."), min_confidence=60
+        ),
+    )
+    recorded_argv = []
+
+    def real_runner(argv, cwd, data=None):
+        recorded_argv.append(list(argv))
+        return hygiene._run(argv, cwd, data)
+
+    res = hygiene.run(changes(path, base), v_cfg, root=path, runner=real_runner)
+    assert res["status"] == "passed"
+    v_entry = by_name(res)["vulture"]
+    assert v_entry["status"] == "advisory"
+    assert v_entry["exit_code"] == 3
+    assert ["vulture", "--min-confidence", "60", "--", "src", "."] in recorded_argv
+    assert "_unused_helper" in v_entry["stdout"]
+
+
+@pytest.mark.skipif(
+    shutil.which("tach") is None,
+    reason="tach binary unavailable on PATH",
+)
+def test_real_tach_cli_checks_default_tach_toml_and_external_independently(repo):
+    path, base = repo
+    (path / "tach.toml").write_text(
+        'source_roots = ["src"]\n'
+        "exact = true\n"
+        "forbid_circular_dependencies = true\n"
+        'root_module = "forbid"\n\n'
+        '[[modules]]\npath = "pkg"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.sub"\ndepends_on = []\n\n'
+        '[[modules]]\npath = "pkg.other"\ndepends_on = []\n',
+        encoding="utf-8",
+    )
+    (path / "src/pkg/sub.py").write_text("import pkg.other\n", encoding="utf-8")
+    t_cfg = dataclasses.replace(
+        config(path, ("tach", "tach_external")),
+        tach=dataclasses.replace(config(path).tach, external=True),
+    )
+    res = hygiene.run(changes(path, base), t_cfg, root=path, runner=hygiene._run)
+    assert res["status"] == "failed"
+    assert by_name(res)["tach"]["status"] == "failed"
+    assert by_name(res)["tach"]["reason"] == "tach_check_failed"
+    assert by_name(res)["tach_external"]["status"] == "passed"

@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import re
+import tempfile
 import time
 import tomllib
 from dataclasses import dataclass
@@ -852,9 +853,60 @@ class EngineeringCi:
             .with_workdir("/workspace")
         )
 
-    async def _exec_uv_tool(self, source: dagger.Directory, argv: list[str]) -> dict:
-        container = self._uv_tool_container(source)
-        return await _exec_capture(container, argv)
+    async def _exec_uv_tool(
+        self,
+        source: dagger.Directory,
+        argv: list[str],
+        *,
+        _bound_source: dagger.Directory | None = None,
+        _source_excludes: list[str] | tuple[str, ...] | None = None,
+    ) -> dict:
+        from . import native_results
+
+        bound = (
+            _bound_source
+            if _bound_source is not None
+            else self._bound_public_source(source)
+        )
+        metadata_errors = {}
+        try:
+            input_ref = await native_results.directory_reference(source)
+        except Exception as error:  # noqa: BLE001 - retain container exit on optional metadata failure
+            input_ref = {"status": "unavailable", "reason": str(error)}
+            metadata_errors["source_directory"] = input_ref
+        try:
+            consumed_ref = await native_results.directory_reference(bound)
+        except Exception as error:  # noqa: BLE001 - retain container exit on optional metadata failure
+            consumed_ref = {"status": "unavailable", "reason": str(error)}
+            metadata_errors["consumed_source_directory"] = consumed_ref
+        filtered = (
+            consumed_ref["digest"] != input_ref["digest"]
+            if "digest" in input_ref and "digest" in consumed_ref
+            else None
+        )
+        excludes = list(
+            tooling.SOURCE_NOISE if _source_excludes is None else _source_excludes
+        )
+        container = self._uv_tool_container(source, _bound_source=bound)
+        result = await _exec_capture(container, argv)
+        observation = {
+            "execution_location": "dagger_container",
+            "freshness_policy": "native_exec_cache",
+            "process_started_at": result["process_started_at"],
+            "process_finished_at": result["process_finished_at"],
+            "argv": list(argv),
+            "source_directory": input_ref,
+            "consumed_source_directory": consumed_ref,
+            "container_source_filtered": filtered,
+            "origin_execution_attributed": False,
+        }
+        if filtered and excludes:
+            observation["container_source_excludes"] = excludes
+        if metadata_errors:
+            observation["metadata_status"] = "unavailable"
+            observation["metadata_errors"] = metadata_errors
+        result["observation"] = observation
+        return result
 
     async def _run_repository_script(self, source, policy, arguments, tool_key):
         from engineering_ci import workflow_analysis
@@ -1204,6 +1256,8 @@ class EngineeringCi:
         *,
         installed: dagger.Container | None = None,
         capture=None,
+        _bound_source: dagger.Directory | None = None,
+        _source_excludes: list[str] | tuple[str, ...] | None = None,
     ) -> dict:
         """Run pinned Lychee inside a container over an immutable Directory."""
         if installed is None:
@@ -1224,6 +1278,8 @@ class EngineeringCi:
             argv_tail,
             capture=capture or _exec_capture,
             source_noise=tooling.SOURCE_NOISE,
+            _bound_source=_bound_source,
+            _source_excludes=_source_excludes,
         )
 
     def _git_container(self, source: dagger.Directory) -> dagger.Container:
@@ -1428,6 +1484,7 @@ class EngineeringCi:
         git_token: dagger.Secret | None = None,
         dependency_packages: dagger.Directory | None = None,
         _targets: list[str] | None = None,
+        _resolved_targets: list[str] | None = None,
         _bound_source: dagger.Directory | None = None,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
@@ -1447,22 +1504,61 @@ class EngineeringCi:
             )
         )
         arguments = pytest_arguments(policy, report_path)
-        if _targets is not None:
-            if not _targets:
+        resolved_targets: list[str] | None = None
+        if _targets is not None and _resolved_targets is not None:
+            raise ValueError("cannot specify both _targets and _resolved_targets")
+        if _resolved_targets is not None:
+            from engineering_ci import selection
+
+            if not _resolved_targets:
                 raise ValueError("selected pytest targets must not be empty")
             selected = []
-            for target in _targets:
+            for target in _resolved_targets:
+                ok, refusal = selection._validate_bound_pytest_cli_target(target)
+                if not ok:
+                    raise ValueError(
+                        f"selected pytest target refused ({refusal}): {target}"
+                    )
                 test_policy(target)
-                if target.endswith(".py") or "/" in target or "::" in target:
-                    selected.append(target)
-                else:
-                    selected.extend(["--pyargs", target])
-            # Running pytest as a module keeps the actual workspace on sys.path
-            # for --pyargs targets in projects that do not install their tests.
+                selected.append(target)
+            resolved_targets = selected
+            # Pre-bound CLI paths from plan_execution._tests avoid re-export and
+            # avoid re-interpreting path directories (e.g. ./chosen) as dotted modules.
             arguments = (
                 ["uv", "run", "--no-sync", "python", "-m", "pytest"]
                 + arguments[4:-1]
-                + selected
+                + ["--", *selected]
+            )
+        elif _targets is not None:
+            from engineering_ci import selection
+
+            if not _targets:
+                raise ValueError("selected pytest targets must not be empty")
+            bound_dir = (
+                _bound_source
+                if _bound_source is not None
+                else self._bound_public_source(source)
+            )
+            with tempfile.TemporaryDirectory() as resolve_tmp:
+                if hasattr(bound_dir, "export"):
+                    await bound_dir.export(resolve_tmp)
+                resolved_targets, refusal, bad_target = (
+                    selection._resolve_pytest_targets(_targets, Path(resolve_tmp))
+                )
+            if refusal:
+                raise ValueError(
+                    f"selected pytest target refused ({refusal}): {bad_target}"
+                )
+            selected = []
+            for target in resolved_targets:
+                test_policy(target)
+                selected.append(target)
+            # Running pytest as a module keeps cwd (/workspace) on sys.path while
+            # "--" and bound repository paths block external PYTHONPATH shadowing.
+            arguments = (
+                ["uv", "run", "--no-sync", "python", "-m", "pytest"]
+                + arguments[4:-1]
+                + ["--", *selected]
             )
         if _matrix_runtime:
             prepared = prepared.with_new_file(
@@ -1506,8 +1602,8 @@ class EngineeringCi:
         report = summarize_pytest(
             xml, exit_code, output + "\n" + stderr, max_failures=max_failures
         )
-        if _targets is not None:
-            report["selected_targets"] = list(_targets)
+        if resolved_targets is not None:
+            report["selected_targets"] = list(resolved_targets)
         if evidence["diagnostic"]:
             report["diagnostic"] = evidence["diagnostic"]
         coverage = None

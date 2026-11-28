@@ -372,6 +372,7 @@ async def _tests(
     generated_inputs=(),
     binding_root=None,
     consumed_source=None,
+    verified_source=None,
 ):
     """Use the existing pytest computation, or native unittest, exactly once."""
     from . import native_results, tooling
@@ -396,13 +397,18 @@ async def _tests(
 
         bound_plan = _plan_with_repo_relative_configs(plan)
         snapshots = execution._prepare_source_snapshots(
-            bound_plan, [], root=binding_root, execution_context="dagger_export"
+            bound_plan,
+            [],
+            root=binding_root,
+            execution_context="dagger_export",
+            _verified_source=verified_source,
         )
         binding = execution.test_input_binding(
             bound_plan,
             root=binding_root,
             execution_context="dagger_export",
             source_snapshots=snapshots,
+            _verified_source=verified_source,
         )
 
     (
@@ -433,20 +439,23 @@ async def _tests(
         else {}
     )
 
-    if not delivery_ok:
-        reason = (pre_execution_proof or {}).get(
-            "source_equivalence_status"
-        ) or "bound_source_delivery_failed"
+    async def _refused_test_branch(reason):
         refused_item = {
             "status": "not_executed",
             "exit_code": None,
             "reason": reason,
-            "source_delivery": pre_execution_proof,
+            **(
+                {"source_delivery": pre_execution_proof}
+                if pre_execution_proof is not None
+                else {}
+            ),
         }
-        files = dag.directory().with_new_file(
-            "source-delivery.json",
-            json.dumps(pre_execution_proof, sort_keys=True) + "\n",
-        )
+        files = dag.directory()
+        if pre_execution_proof is not None:
+            files = files.with_new_file(
+                "source-delivery.json",
+                json.dumps(pre_execution_proof, sort_keys=True) + "\n",
+            )
         tests_result = await native_results.test_result(
             refused_item,
             None,
@@ -465,21 +474,70 @@ async def _tests(
         )
         return {"tests": tests_result, "stdout": "", "stderr": ""}, files
 
+    if not delivery_ok:
+        reason = (pre_execution_proof or {}).get(
+            "source_equivalence_status"
+        ) or "bound_source_delivery_failed"
+        return await _refused_test_branch(reason)
+
     if framework == "pytest":
-        if consumed_source is not None and _accepts_bound_source_kwarg(
+        from engineering_ci import selection
+
+        if binding_root is not None and not generated_inputs:
+            resolved_targets, target_refusal = selection.resolve_pytest_targets(
+                targets, Path(binding_root)
+            )
+        else:
+            resolve_source = (
+                consumed_source
+                if (consumed_source is not None and hasattr(consumed_source, "export"))
+                else (source if hasattr(source, "export") else None)
+            )
+            with tempfile.TemporaryDirectory() as resolve_tmp:
+                if resolve_source is not None:
+                    await resolve_source.export(resolve_tmp)
+                resolved_targets, target_refusal = selection.resolve_pytest_targets(
+                    targets, Path(resolve_tmp)
+                )
+        if target_refusal:
+            return await _refused_test_branch(target_refusal)
+        if _accepts_bound_source_kwarg(module._run_pytest, "_resolved_targets"):
+            call_kwargs = {"_resolved_targets": resolved_targets}
+            if consumed_source is not None and _accepts_bound_source_kwarg(
+                module._run_pytest
+            ):
+                execution = await module._run_pytest(
+                    source,
+                    python_version,
+                    resolved_targets[0],
+                    _bound_source=consumed_source,
+                    **call_kwargs,
+                )
+            else:
+                run_source = consumed_source if consumed_source is not None else source
+                execution = await module._run_pytest(
+                    run_source,
+                    python_version,
+                    resolved_targets[0],
+                    **call_kwargs,
+                )
+        elif consumed_source is not None and _accepts_bound_source_kwarg(
             module._run_pytest
         ):
             execution = await module._run_pytest(
                 source,
                 python_version,
-                targets[0],
-                _targets=targets,
+                resolved_targets[0],
+                _targets=resolved_targets,
                 _bound_source=consumed_source,
             )
         else:
             run_source = consumed_source if consumed_source is not None else source
             execution = await module._run_pytest(
-                run_source, python_version, targets[0], _targets=targets
+                run_source,
+                python_version,
+                resolved_targets[0],
+                _targets=resolved_targets,
             )
         code = execution.exit_code
         container = execution.container
@@ -644,6 +702,7 @@ async def _native_results(
     artifacts,
     python_version,
     weaver_config,
+    verified_source,
 ):
     """Collect fixed independent native branches; Engine owns their DAG."""
     from engineering_ci import execution
@@ -677,6 +736,7 @@ async def _native_results(
                     binding_root=directory
                     if report.get("tree_verified") is True
                     else None,
+                    verified_source=verified_source,
                 ),
             )
         )
@@ -846,6 +906,48 @@ def _consumer_ref_from_key(consumer_key):
     return {"kind": str(consumer_key)}
 
 
+def _consumer_source_view(module, source, *, tree_verified=False, dag_objects=()):
+    """Bind container Source per verified-Tree vs unverified-Source and Data Overlay contracts."""
+    from . import tooling
+
+    consumer_source = _overlay_files(source, dag_objects) if dag_objects else source
+    if tree_verified and hasattr(module, "_bound_public_source"):
+        base_consumed = _git_tree_members(source)
+        return (
+            consumer_source,
+            _overlay_files(base_consumed, dag_objects)
+            if dag_objects
+            else base_consumed,
+            tooling.GIT_CONTEXT_EXCLUDES,
+        )
+    if hasattr(module, "_bound_public_source"):
+        return (
+            consumer_source,
+            (
+                _overlay_bound_source(module, source, dag_objects)
+                if dag_objects
+                else module._bound_public_source(source)
+            ),
+            tooling.SOURCE_NOISE,
+        )
+    return consumer_source, None, None
+
+
+def _verified_source_handoff(value, directory, exported_content_id, report, *, stage):
+    """Bind one measured export identity to the Directory that produced it."""
+    from engineering_ci import execution
+
+    if report.get("tree_verified") is not True or not exported_content_id:
+        return None
+    return execution._VerifiedSourceHandoff(
+        content_id=exported_content_id,
+        root=Path(directory).resolve(),
+        execution_context="dagger_export",
+        source_tree_id=(value.get("git") or {}).get("source_tree_id"),
+        stage=stage,
+    )
+
+
 def _make_hygiene_runner(
     module,
     consumer_source,
@@ -853,9 +955,14 @@ def _make_hygiene_runner(
     *,
     exec_cache=None,
     allow_container_workflow_tools=True,
+    consumed_source=None,
+    source_excludes=None,
 ):
-    """Delegate missing Lychee / read-only Git / pinned workflow calls to Dagger containers."""
+    """Delegate missing Lychee / read-only Git / pinned tool calls to Dagger containers."""
     from engineering_ci import hygiene
+
+    from . import python_static as static
+    from . import tooling
 
     _readonly_git = {
         "ls-files",
@@ -877,6 +984,37 @@ def _make_hygiene_runner(
             for marker in ("actionlint-py==", "shellcheck-py==", "zizmor==")
         )
 
+    def _run_uv_tool(argv_list, target_argv):
+        kwargs = {}
+        call_source = consumer_source
+        if consumed_source is not None:
+            if _accepts_bound_source_kwarg(module._exec_uv_tool):
+                kwargs["_bound_source"] = consumed_source
+                if source_excludes is not None and _accepts_bound_source_kwarg(
+                    module._exec_uv_tool, "_source_excludes", allow_varkw=False
+                ):
+                    kwargs["_source_excludes"] = source_excludes
+            else:
+                call_source = consumed_source
+        key = (id(consumed_source), tuple(target_argv))
+        if exec_cache is not None and key in exec_cache:
+            outcome = exec_cache[key]
+        else:
+            outcome = asyncio.run_coroutine_threadsafe(
+                module._exec_uv_tool(call_source, target_argv, **kwargs), loop
+            ).result()
+            if exec_cache is not None:
+                exec_cache[key] = outcome
+        completed = subprocess.CompletedProcess(
+            argv_list,
+            outcome["exit_code"],
+            outcome["stdout"],
+            outcome["stderr"],
+        )
+        if isinstance(outcome.get("observation"), dict):
+            completed.observation = outcome["observation"]
+        return completed
+
     def _runner(argv, cwd, data=None):
         argv_list = [str(item) for item in argv]
         tool = argv_list[0] if argv_list else ""
@@ -886,8 +1024,18 @@ def _make_hygiene_runner(
             and shutil.which(tool) is None
             and hasattr(module, "_run_lychee")
         ):
+            lychee_kwargs = {}
+            lychee_source = consumer_source
+            if consumed_source is not None and _accepts_bound_source_kwarg(
+                module._run_lychee
+            ):
+                lychee_kwargs["_bound_source"] = consumed_source
+                if source_excludes is not None and _accepts_bound_source_kwarg(
+                    module._run_lychee, "_source_excludes", allow_varkw=False
+                ):
+                    lychee_kwargs["_source_excludes"] = source_excludes
             outcome = asyncio.run_coroutine_threadsafe(
-                module._run_lychee(consumer_source, argv_list[1:]), loop
+                module._run_lychee(lychee_source, argv_list[1:], **lychee_kwargs), loop
             ).result()
             completed = subprocess.CompletedProcess(
                 argv_list,
@@ -933,21 +1081,23 @@ def _make_hygiene_runner(
                 or (tool_name in _workflow_tools and shutil.which(tool) is None)
             )
         ):
-            key = tuple(argv_list)
-            if exec_cache is not None and key in exec_cache:
-                outcome = exec_cache[key]
-            else:
-                outcome = asyncio.run_coroutine_threadsafe(
-                    module._exec_uv_tool(consumer_source, argv_list), loop
-                ).result()
-                if exec_cache is not None:
-                    exec_cache[key] = outcome
-            return subprocess.CompletedProcess(
-                argv_list,
-                outcome["exit_code"],
-                outcome["stdout"],
-                outcome["stderr"],
-            )
+            return _run_uv_tool(argv_list, argv_list)
+        if hasattr(module, "_exec_uv_tool") and shutil.which(tool) is None:
+            if argv_list[:1] == ["tach"]:
+                return _run_uv_tool(
+                    argv_list,
+                    ["uvx", "--from", f"tach=={tooling.TACH_VERSION}", *argv_list],
+                )
+            if argv_list[:1] == ["vulture"]:
+                return _run_uv_tool(
+                    argv_list,
+                    [
+                        "uvx",
+                        "--from",
+                        f"vulture=={static.SCANNER_VERSIONS['vulture']}",
+                        *argv_list,
+                    ],
+                )
         return hygiene._run(argv, cwd, data)
 
     return _runner
@@ -1059,6 +1209,7 @@ async def _execute_dag(
     python_version,
     weaver_config,
     exported_content_id,
+    verified_source,
 ):
     """Map v2 pre_execution_pass and data edges directly onto async Dagger work."""
     import tempfile
@@ -1069,6 +1220,22 @@ async def _execute_dag(
     from pathlib import Path
 
     from engineering_ci import execution, selection
+
+    # A DAG may materialize prerequisite artifacts into the exported Directory
+    # before checks consume it. The delivery identity stays valid, but the
+    # current directory content no longer equals the export measurement, so
+    # current-content checks must measure again from this stage on.
+    verified_source = (
+        execution._VerifiedSourceHandoff(
+            content_id=verified_source.content_id,
+            root=verified_source.root,
+            execution_context=verified_source.execution_context,
+            source_tree_id=verified_source.source_tree_id,
+            stage=execution._VERIFIED_SOURCE_MATERIALIZED,
+        )
+        if verified_source is not None
+        else None
+    )
 
     chosen = value.get("selection") or {}
     targets = chosen.get("tests") or []
@@ -1083,6 +1250,15 @@ async def _execute_dag(
     verified_workflow_plan = None
     verified_workflow_authority = None
     raw_snapshot = (value.get("git") or {}).get("snapshot") or "worktree"
+    if raw_snapshot == "index":
+        index_bound_ok, index_bind_reason, _ = execution._verify_git_execution_binding(
+            host_plan,
+            Path(directory),
+            execution_context="dagger_export",
+            _verified_source=verified_source,
+        )
+    else:
+        index_bound_ok, index_bind_reason = True, None
     if report.get("source_tree_verified") == "verified" or raw_snapshot == "worktree":
         verified_workflow_plan = _host_adapter_plan(
             value, host_checks, preserve_verified_git=True
@@ -1114,6 +1290,7 @@ async def _execute_dag(
         _plan_with_repo_relative_configs(value),
         root=directory,
         execution_context="dagger_export",
+        _verified_source=verified_source,
     )
     selected_by_name = {item.get("name"): item for item in selected_checks}
     run_instance = report["execution_identity"]["execution_ref"]
@@ -1384,19 +1561,14 @@ async def _execute_dag(
                 dag_objects = [
                     (rel, obj_kind, obj) for _, rel, obj_kind, obj in delivered
                 ]
-                consumer_source = _overlay_files(source, dag_objects)
-                if report.get("tree_verified") is True and hasattr(
-                    module, "_bound_public_source"
-                ):
-                    # Ordinary consumers get tree members plus Data Overlay,
-                    # never the root Git Context reserved for Git-native checks.
-                    consumed_source = _overlay_files(
-                        _git_tree_members(source), dag_objects
+                consumer_source, consumed_source, source_excludes = (
+                    _consumer_source_view(
+                        module,
+                        source,
+                        tree_verified=report.get("tree_verified") is True,
+                        dag_objects=dag_objects,
                     )
-                elif hasattr(module, "_bound_public_source"):
-                    consumed_source = _overlay_bound_source(module, source, dag_objects)
-                else:
-                    consumed_source = None
+                )
                 if name in weaver_checks:
                     native, check_files, metadata = await _weaver(
                         module,
@@ -1425,6 +1597,8 @@ async def _execute_dag(
                     loop,
                     exec_cache=script_exec_cache,
                     allow_container_workflow_tools=not bool(fs_files),
+                    consumed_source=consumed_source,
+                    source_excludes=source_excludes,
                 )
                 temporary = None
                 consumer_root = Path(directory)
@@ -1445,24 +1619,14 @@ async def _execute_dag(
                     and name in execution._WORKFLOW_SCRIPT_CHECKS
                 )
                 try:
-                    if raw_snapshot == "index":
-                        bound_ok, bind_reason, _ = (
-                            execution._verify_git_execution_binding(
-                                host_plan,
-                                Path(directory),
-                                execution_context="dagger_export",
-                            )
-                        )
-                    else:
-                        bound_ok, bind_reason = True, None
-                    if not bound_ok:
+                    if not index_bound_ok:
                         entry = execution._decorate_checks(
                             host_plan,
                             [
                                 execution._blocked_consumer_entry(
                                     name,
                                     check_item.get("status"),
-                                    bind_reason,
+                                    index_bind_reason,
                                     [],
                                 )
                             ],
@@ -1472,6 +1636,7 @@ async def _execute_dag(
                             profile_ref=verified_profile,
                             artifact_paths=artifact_paths,
                             base_root=Path(directory) if fs_files else None,
+                            _verified_source=verified_source,
                         )[0]
                     else:
                         entry = await asyncio.to_thread(
@@ -1494,6 +1659,7 @@ async def _execute_dag(
                             ),
                             _consumer_source_root=Path(directory) if fs_files else None,
                             _consumer_generated_retained=bool(fs_files),
+                            _verified_source=verified_source,
                         )
                 finally:
                     if temporary is not None:
@@ -1535,19 +1701,12 @@ async def _execute_dag(
                 dag_objects = [
                     (rel, obj_kind, obj) for _, rel, obj_kind, obj in delivered
                 ]
-                consumer_source = _overlay_files(source, dag_objects)
-                if report.get("tree_verified") is True and hasattr(
-                    module, "_bound_public_source"
-                ):
-                    # Ordinary consumers get tree members plus Data Overlay,
-                    # never the root Git Context reserved for Git-native checks.
-                    consumed_source = _overlay_files(
-                        _git_tree_members(source), dag_objects
-                    )
-                elif hasattr(module, "_bound_public_source"):
-                    consumed_source = _overlay_bound_source(module, source, dag_objects)
-                else:
-                    consumed_source = None
+                consumer_source, consumed_source, _ = _consumer_source_view(
+                    module,
+                    source,
+                    tree_verified=report.get("tree_verified") is True,
+                    dag_objects=dag_objects,
+                )
                 payload, test_files = await _tests(
                     module,
                     consumer_source,
@@ -1561,6 +1720,7 @@ async def _execute_dag(
                     if report.get("tree_verified") is True
                     else None,
                     consumed_source=consumed_source,
+                    verified_source=verified_source,
                 )
                 return payload, test_files
             if kind == "report_artifacts":
@@ -1673,7 +1833,11 @@ async def _execute_dag(
                 report["prerequisites"].append(output)
 
         omitted = execution.omitted_hygiene_checks(
-            host_plan, host_checks, root=directory
+            host_plan,
+            host_checks,
+            root=directory,
+            execution_context="dagger_export",
+            _verified_source=verified_source,
         ) + execution.omitted_workflow_script_checks(
             host_plan, host_checks, root=directory
         )
@@ -1774,6 +1938,9 @@ async def _execute_dag(
             "native_branches": native_branches,
             "origin_execution_attributed": False,
         }
+        # Observation only: the raw export measurement detects whether host
+        # actions mutated the delivered Directory. Authentication stays in
+        # ``verified_source``; this digest is never reused as an identity hint.
         after_host = selection.directory_content_id(directory)
         report["source_handoff"]["host_result_ids"] = [
             result["result_id"]
@@ -1967,6 +2134,11 @@ async def execute(
                 "directory": exported_directory,
             },
         }
+        # Measured once, bound to this exported Directory; every consumer below
+        # reuses it only for the same root, tree and lifecycle stage.
+        verified_source = _verified_source_handoff(
+            value, directory, exported_content_id, report, stage="exported"
+        )
         if execution.pre_execution_edges(value):
             report, artifacts, mutated = await _execute_dag(
                 module,
@@ -1980,6 +2152,7 @@ async def execute(
                 python_version,
                 weaver_config,
                 exported_content_id,
+                verified_source,
             )
             if mutated:
                 return make_result(report, artifacts)
@@ -1996,6 +2169,7 @@ async def execute(
             artifacts,
             python_version,
             weaver_config,
+            verified_source,
         )
         if selected_checks or prerequisites:
             weaver_checks = {"weaver_registry", "weaver_live", "weaver_terminal"}
@@ -2010,9 +2184,17 @@ async def execute(
                 _plan_with_repo_relative_configs(value),
                 root=directory,
                 execution_context="dagger_export",
+                _verified_source=verified_source,
             )
             report["source_handoff"]["before_host_content_id"] = (
                 selection.directory_content_id(directory)
+            )
+            hygiene_consumer, hygiene_consumed, hygiene_excludes = (
+                _consumer_source_view(
+                    module,
+                    source,
+                    tree_verified=report.get("tree_verified") is True,
+                )
             )
             host = (
                 await asyncio.to_thread(
@@ -2020,12 +2202,19 @@ async def execute(
                     check_plan,
                     root=directory,
                     execution_context="dagger_export",
-                    runner=_make_hygiene_runner(module, source, loop),
+                    runner=_make_hygiene_runner(
+                        module,
+                        hygiene_consumer,
+                        loop,
+                        consumed_source=hygiene_consumed,
+                        source_excludes=hygiene_excludes,
+                    ),
                     whitespace_runner=_make_index_whitespace_runner(
-                        module, source, loop
+                        module, hygiene_consumer, loop
                     ),
                     profile_ref=verified_profile,
                     run_instance=identity["execution_ref"],
+                    _verified_source=verified_source,
                 )
                 if check_plan["check_scope"] or prerequisites
                 else {
@@ -2043,10 +2232,14 @@ async def execute(
             report["source_handoff"]["host_report_sha256"] = hashlib.sha256(
                 host_raw.encode()
             ).hexdigest()
+            # Same field contract as the DAG path: this handoff lists results the
+            # host phase itself produced. Container-delegated results keep
+            # result_origin="dagger" and stay out of it either way.
             report["source_handoff"]["host_result_ids"] = [
                 result["result_id"]
                 for check in host_checks_out
                 for result in check.get("native_results") or ()
+                if result.get("result_origin") == "host"
             ]
             if host_checks_out:
                 report["checks"].extend(host_checks_out)

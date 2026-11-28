@@ -468,3 +468,160 @@ module-local and execute for every new Plan; only declared source-only
 `dagger_command` computation receives independent native Exec caching.
 See the [mixed-Plan observations](../verification/dagger-input-cache/mixed-plan/README.md)
 for actual request/reader counts and failure preservation.
+
+### Repository boundary mapping & pytest target binding (#162 A2)
+
+- Root `ci-selection.toml` registers `tach = "tach.toml"`, `strict_modules = true`,
+  `[module_tests]` for all `src/engineering_ci` modules, explicit `[check_scope]`
+  (`code_prefixes = ["src/", "scripts/", "tests/", ".dagger/src/"]`,
+  `shell_prefixes = ["scripts/"]`), and `[[non_code_rules]]` mapping
+  `.dagger/src/engineering_ci_module/*`, `scripts/*`, `config/*`, and test
+  fixtures while retaining Index/push `select_tests = false` and #166 revision-3
+  governed hook profiles (`declared_checks = ["whitespace", "forwarding", "actionlint", "shellcheck", "zizmor"]`).
+- Schema 1 omitted `[check_scope].code_prefixes` keeps its historical default
+  `("src/", "scripts/", "tests/")` across config parsing and identity
+  reconstruction; explicit `.dagger/src/` inclusion lives in `[check_scope]`.
+- When `framework = "pytest"`, `_test_modules`, `_tree_test_modules`, direct
+  test matching, and per-ref source snapshots honor explicit list
+  `[tool.pytest.ini_options].norecursedirs` entries in `pyproject.toml`,
+  matching both basename patterns (`"fixtures"`, `".*"`) and path/glob
+  patterns (`"tests/sub.pkg"`, `"tests/**/nested"`) with `fnmatch_ex` parity
+  (excluding `tests/fixtures/` from root collection while preserving standalone
+  fixture project test discovery). Matching is defined against the POSIX
+  execution platform (case sensitive, `/` separators) rather than the host that
+  computes Selection, so a Windows host selects exactly the set the Linux
+  containers run and a case-differing directory is over-selected instead of
+  silently skipped. Patterns are kept verbatim and never rewritten: native
+  pytest does not trim entries, so `" fixtures "` stays a literal non-matching
+  pattern, and `./fixtures`, `tests\fixtures`, `fixtures/` keep their native
+  meaning (no match on POSIX) - normalizing any of them would exclude
+  directories pytest still collects.
+  Patterns anchored to an absolute location (`/...`, drive or UNC paths) are
+  refused fail-closed as `pytest_norecursedirs_unsupported`, because native
+  pytest compares them against the checkout's absolute path, which no longer
+  names the same directory for a per-Ref or materialized snapshot. The refusal
+  reaches only obligations that actually discover tests: a selection with no
+  tests (no changes or a disabled `select_tests` policy) still produces its
+  independent checks such as Hygiene. Non-dict TOML
+  sections (`[tool]`, `[tool.pytest]`, `[tool.pytest.ini_options]`) and
+  unreadable or malformed `pyproject.toml` fall back safely without raising
+  `AttributeError` or claiming complete pytest discovery proof.
+- For `framework = "pytest"`, Selection discovery (`_test_modules`,
+  `_tree_test_modules`) and direct test-file edits emit lossless
+  Source-relative POSIX paths (for example `"tests/sub.pkg/test_case.py"`,
+  preventing directory-segment collisions with `tests/sub/pkg/test_case.py`),
+  while explicit historical dotted entries in `[module_tests]`,
+  `[[non_code_rules]]`, `[prerequisites]`, and per-Ref targets remain accepted
+  alongside explicit path and `::nodeid` entries. `_target_binding` resolves a
+  target exactly as the runtime binds it, from the active Source's **actual
+  member facts** (the Worktree or the named Git Tree object, which answers
+  `file`/`dir`/`missing`/`refused`), so explicit targets outside discovery - a
+  non `test_*.py` file, a file under an excluded directory, a same-name module -
+  still bind. pytest dotted names follow the file-first rule; a refused escape
+  (including a Git Tree mode 120000 symlink leaving the Source) is
+  distinguished from a missing member; absolute, space-padded, escaping or
+  option-like targets have no identity. The Source file identity and the native
+  execution target stay separate: a `::nodeid` narrows execution, every
+  unittest module/class/method target is its own target, and prerequisite
+  applicability compares those execution identities instead of the whole file.
+- Per-Ref source snapshots record `tests_state` (`not_selected`, `enumerated`,
+  `unavailable`) alongside `tests_modules`, so an empty list never stands for
+  both "not applicable" and "enumerated empty". The snapshot also records the
+  **actual binding facts** (`target_bindings` with target, kind, path and
+  nodeid) resolved from the Ref's Git Tree; verification checks those facts
+  rather than re-deriving the full Source from the discovery list, and
+  materialized verification re-resolves each bound target against the
+  materialized Source and rejects any recorded mismatch. Verification requires
+  `enumerated` whenever the Ref binds targets and refuses an `unavailable`
+  claim; discovery during materialized verification is decided by the entry's
+  bound targets, not by the snapshot's own claim.
+- Per-Ref source snapshots use `schema_version = 2`. Records with the older
+  version are rejected, not upgraded in place: a current-contract proof is
+  regenerated from the actual Source, and historical originals keep their
+  version and digests. No migration layer or automatic field synthesis is
+  introduced.
+- Host `run_tests(..., framework="pytest")` and Dagger Plan-selected
+  `plan_execution._tests` / `EngineeringCi._run_pytest` resolve Selection targets
+  (including historical dotted modules and optional `::nodeid` suffixes)
+  **once** via `selection.resolve_pytest_targets` into deduplicated bound
+  repository-relative file or directory paths inside the bound Source without
+  `--pyargs`, placing `--` after all pytest options (`-q`, optional
+  `--junitxml`) before resolved targets. `plan_execution._tests` hands off the
+  already-bound CLI targets via private `_resolved_targets` so `_run_pytest`
+  neither re-exports the Source nor re-interprets explicit directory paths
+  (such as `./chosen` alongside `chosen.py`, or `./sub.pkg` alongside
+  `sub/pkg.py`) as dotted modules; direct `_run_pytest(..., _targets=...)`
+  still resolves bound targets once on its own. Single-segment non-`.py` path
+  targets and `@`-prefixed targets retain an explicit `./` prefix (`./chosen`,
+  `./sub.pkg`, `./@args.py`, `./@dir/test_in_dir.py`) for idempotency and to
+  disable `pytest 9.0.3` `fromfile_prefix_chars="@"` expansion after `--`.
+  Legitimate `PYTHONPATH` is preserved while external packages and `@argsfile`
+  expansion cannot shadow or substitute for bound repository test targets;
+  out-of-source, escaping symlink/junction (including recursive members and
+  links discovered inside bound directory targets), `.git` references,
+  whitespace-padded, pre-/post-normalization
+  Windows drive/UNC (`./C:/outside`, `./C:outside`), and option-like targets
+  (`./--collect-only`, `./--help`, `./--version`, ` -q`) are refused before
+  spawning pytest (`source_refusal` on Host, `not_executed` on Dagger Plan
+  execution, or `ValueError` on direct `_run_pytest`), while missing non-option
+  in-source targets fail natively with pytest exit `4`. Verified Git-free Index
+  materialized trees (`dagger_export` with authenticated `source_tree_id`)
+  propagate `materialized_tree` internally to Hygiene applicability and
+  target `tach.toml` reading without accepting caller-supplied booleans or
+  conflating missing base ODB history with missing target config. Generic consumer
+  `python_test` retains the `pytest_arguments` CLI shape while neutralizing
+  leading `@` and rejecting post-normalization leading `-` and Windows drives
+  in `test_policy`. `unittest` semantics stay unchanged. Any non-`tach.toml`
+  `tach` config path (after normalizing `./tach.toml`) is refused fail-closed
+  matching native `tach 0.35.3` discovery.
+- In Dagger `plan-execution`, container-delegated `tach` (pinned `tach==0.35.3`),
+  `vulture` (`vulture==2.16`), and `docs` (`lychee`) consume an immutable
+  verified-tree / DAG-overlay Source Directory when verified (`tree_verified` or
+  data overlay), stripping `.git` without re-excluding `SOURCE_NOISE`-matching
+  tracked files, whereas unverified worktree Sources strip `SOURCE_NOISE` from
+  both the bound container directory and `NativeResult.source_ref.verified_input_scope`.
+  Container-delegated non-docs / non-workflow checks (`tach`, `vulture`) report
+  `result_origin = "dagger"`, `runner_ref = "execution:dagger"`, non-proven
+  container `source_ref` (`identity_only` or `unknown`), and
+  `evidence.source_limit = "input_closure_not_proven"`. When `dagger_export`
+  already verified the exported `source_tree_id`, that digest is reused across
+  binding, snapshot, and profile helpers without re-hashing `directory`.
+- **Adoption scope (R15 independent slice):** this delivers selection mapping,
+  hygiene applicability, root `tach.toml` / `ci-selection.toml` artifacts, and
+  host-native `tach check` / `tach check-external` evidence when those tools are
+  invoked. Default Index/push Profiles and Verify Jobs do **not** enable Tach,
+  Lychee, Vulture, or incremental `select_tests = true`; Hook/Verify default
+  enablement is a later adoption slice.
+- `selection._tach_check` and `hygiene._tach` remain independent native runs
+  (and `tach_external` stays independent). Plan `selection.tach_graph_validation`
+  does not skip native `tach check` in execution; `AC-06` equivalent
+  deduplication remains open for a future production consumer under
+  `#52` / `#66` / `#63` / `#162 B2/D`.
+- `expected_checks.derive_expected_checks` / `validate_projection` forward
+  `hygiene_config_path` and per-ref `base_commit` / `head_commit` so single-ref
+  and per-ref projections agree on config-triggered hygiene applicability.
+
+## Entry points and handoff
+
+The production chain has two separate, actually callable steps:
+
+1. `engineering-ci select ... --json [--validate-tach]` reads the bound Git
+   snapshot (worktree/index/commit/push/multi), runs `selection.select` →
+   `selection.plan`, and writes the bound Plan. Exit 0 means the Plan was
+   produced; it does not mean the Plan ran.
+2. `engineering-ci execute --plan <plan>` consumes that Plan through the public
+   executor, including its Source preconditions, native results and Execution
+   Report references.
+
+`select --run` is a separate diagnostic entry: it runs native pytest directly on
+the selected targets and preserves the native pytest exit, but it neither
+consumes the Plan's graph gate nor produces the Plan-bound Execution Report.
+`--json` and `--run` are mutually exclusive (`select` exits 2 when combined).
+Multi-Ref snapshots produce an aggregated range whose targets are the per-Ref
+union; the public executors reject aggregated Plans and require per-Ref
+execution.
+
+Failure boundaries stay explicit: unavailable/refused Source or target facts
+fail closed (no substitution from the checkout), unknown scope is escalated by
+the Plan, and selected-test failures propagate as native failures rather than
+being converted into a passing report.

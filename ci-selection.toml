@@ -1,4 +1,7 @@
 schema_version = 1
+tach = "tach.toml"
+tests_dir = "tests"
+src_root = "src"
 framework = "pytest"
 # Hygiene plus Workflow/script security (#162 A3). docs/vulture/tach remain later.
 # workflow_shellcheck remains in the engine contract/tests but is not enabled in
@@ -10,8 +13,45 @@ checks = [
     "shellcheck",
     "zizmor",
 ]
+strict_modules = true
+
+escalation_files = [
+    ".gitattributes",
+    "pyproject.toml",
+    "uv.lock",
+    "tach.toml",
+    "ci-selection.toml",
+    "dagger-module.toml",
+    "dagger.lock",
+    "dagger.toml",
+    "lefthook.yml",
+    ".dagger/pyproject.toml",
+    ".dagger/uv.lock",
+    "tests/conftest.py",
+]
+escalation_prefixes = [".github/workflows/", ".dagger/sdk/"]
+
+ignored_files = [
+    "README.md",
+    "LICENSE",
+    "AGENTS.md",
+    ".gitignore",
+    ".python-version",
+    ".agent/upstream-observations.md",
+    ".dagger/AGENTS.md",
+    ".dagger/.gitattributes",
+    ".dagger/.gitignore",
+    "scripts/README.md",
+    "scripts/rules.md",
+]
+ignored_prefixes = ["docs/", "guides/", "design/"]
 
 [check_scope]
+docs_suffixes = [".md", ".html"]
+code_prefixes = ["src/", "scripts/", "tests/", ".dagger/src/"]
+source_prefixes = ["data/", "sources/"]
+weaver_prefixes = ["config/github-receiver.weaver.toml", "ci-weaver.toml", ".weaver.toml"]
+workflow_prefixes = [".github/workflows/"]
 # Independent ShellCheck covers repository scripts only. Workflow inline shell
 # stays with Actionlint via workflow_shellcheck (no duplicate scan scope).
 shell_prefixes = ["scripts/"]
@@ -114,3 +154,596 @@ declared_checks = [
     "shellcheck",
     "zizmor",
 ]
+
+[module_tests]
+"engineering_ci" = ["tests.test_unified_cli"]
+"engineering_ci._paths" = ["tests.test_execution"]
+"engineering_ci.admission" = [
+    "tests.test_admission",
+    "tests.test_d_f02_interop",
+    "tests.test_execution",
+    "tests.test_historical_reuse",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_pre_execution_source_proof",
+]
+"engineering_ci.check_contract" = [
+    "tests.test_admission",
+    "tests.test_check_contract",
+    "tests.test_d_f02_interop",
+    "tests.test_execution",
+    "tests.test_expected_checks",
+    "tests.test_historical_reuse",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_native_hooks",
+    "tests.test_native_producer",
+    "tests.test_native_tool_contract",
+    "tests.test_plan_result",
+    "tests.test_pre_execution_source_proof",
+    "tests.test_reconciliation",
+    "tests.test_required_assessment",
+    "tests.test_terminal_expected",
+    "tests.test_workflow_security_checks",
+]
+"engineering_ci.cicd_telemetry" = [
+    "tests.test_cicd_telemetry",
+    "tests.test_cicd_telemetry_attributes",
+    "tests.test_dagger_native_telemetry",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_otlp_grpc_live",
+]
+"engineering_ci.cli" = [
+    "tests.test_github_runs",
+    "tests.test_native_hooks",
+    "tests.test_release_verification",
+    "tests.test_unified_cli",
+    "tests.test_verify_cli",
+]
+"engineering_ci.cli.__main__" = ["tests.test_unified_cli"]
+"engineering_ci.cli.download" = ["tests.test_github_runs", "tests.test_unified_cli"]
+"engineering_ci.cli.release" = ["tests.test_github_runs", "tests.test_release_verification"]
+"engineering_ci.cli.verify" = ["tests.test_verify_cli"]
+"engineering_ci.ci_applicability" = ["tests.test_ci_applicability"]
+"engineering_ci.ci_check_inputs" = [
+    "tests.test_ci_applicability",
+    "tests.test_link_check",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+]
+"engineering_ci.pytest_contracts" = [
+    "tests.test_ci_performance",
+    "tests.test_manual_release",
+    "tests.test_plan_result",
+    "tests.test_pytest_ci",
+    "tests.test_pytest_matrix",
+    "tests.test_pytest_quality",
+    "tests.test_pytest_report",
+    "tests.test_verify_report",
+]
+"engineering_ci.verify_report" = ["tests.test_verify_cli", "tests.test_verify_report"]
+"engineering_ci.dagger_plan" = ["tests.test_execution", "tests.test_native_hooks"]
+"engineering_ci.dagger_telemetry" = ["tests.test_dagger_native_telemetry"]
+"engineering_ci.dependency_security" = [
+    "tests.test_dependency_security",
+    "tests.test_dependency_security_git",
+]
+"engineering_ci.execution" = [
+    "tests.test_d_f02_interop",
+    "tests.test_execution",
+    "tests.test_expected_checks",
+    "tests.test_generated_producer_resolution",
+    "tests.test_native_producer",
+    "tests.test_plan_contract",
+    "tests.test_plan_result",
+    "tests.test_pre_execution_source_proof",
+    "tests.test_selection",
+    "tests.test_workflow_security_checks",
+    "tests.test_workflow_target_sources",
+]
+"engineering_ci.expected_checks" = [
+    "tests.test_admission",
+    "tests.test_d_f02_interop",
+    "tests.test_execution",
+    "tests.test_expected_checks",
+    "tests.test_historical_reuse",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_native_hooks",
+    "tests.test_phase_obligation_projection",
+    "tests.test_plan_result",
+    "tests.test_reconciliation",
+    "tests.test_required_assessment",
+    "tests.test_terminal_expected",
+    "tests.test_workflow_security_checks",
+]
+"engineering_ci.git_source" = ["tests.test_execution", "tests.test_native_hooks"]
+"engineering_ci.github_cli" = [
+    "tests.test_github_runs",
+    "tests.test_release_verification",
+    "tests.test_required_assessment_protection",
+    "tests.test_required_assessment_release",
+    "tests.test_security_policy",
+]
+"engineering_ci.github_receiver" = [
+    "tests.test_cicd_telemetry",
+    "tests.test_cicd_telemetry_attributes",
+    "tests.test_github_receiver",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_otlp_grpc_live",
+]
+"engineering_ci.hook_checks" = ["tests.test_execution", "tests.test_native_hooks"]
+"engineering_ci.hooks" = [
+    "tests.test_execution",
+    "tests.test_hooks",
+    "tests.test_native_hooks",
+]
+"engineering_ci.hygiene" = [
+    "tests.test_execution",
+    "tests.test_expected_checks",
+    "tests.test_generated_producer_resolution",
+    "tests.test_hygiene",
+    "tests.test_plan_result",
+    "tests.test_pre_execution_source_proof",
+    "tests.test_workflow_security_checks",
+]
+"engineering_ci.local_actions_handoff" = [
+    "tests.test_d_f02_interop",
+    "tests.test_local_actions_handoff",
+]
+"engineering_ci.native_producer" = ["tests.test_native_producer", "tests.test_plan_result"]
+"engineering_ci.plan_contract" = [
+    "tests.test_expected_checks",
+    "tests.test_plan_contract",
+    "tests.test_plan_result",
+    "tests.test_pre_execution_source_proof",
+    "tests.test_selection",
+    "tests.test_workflow_security_checks",
+]
+"engineering_ci.powershell_analysis" = ["tests.test_script_analysis"]
+"engineering_ci.reconciliation" = [
+    "tests.test_admission",
+    "tests.test_d_f02_interop",
+    "tests.test_execution",
+    "tests.test_generated_producer_resolution",
+    "tests.test_historical_reuse",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_plan_result",
+    "tests.test_reconciliation",
+    "tests.test_required_assessment",
+    "tests.test_workflow_security_checks",
+    "tests.test_workflow_target_sources",
+]
+"engineering_ci.release" = [
+    "tests.test_github_runs",
+    "tests.test_manual_release",
+    "tests.test_release_manifest",
+    "tests.test_release_transport",
+    "tests.test_release_verification",
+    "tests.test_release_version",
+    "tests.test_required_assessment_release",
+    "tests.test_security_policy",
+    "tests.test_unified_cli",
+]
+"engineering_ci.release.manifest" = [
+    "tests.test_manual_release",
+    "tests.test_release_manifest",
+    "tests.test_required_assessment_release",
+    "tests.test_security_policy",
+]
+"engineering_ci.release.publishing" = [
+    "tests.test_manual_release",
+    "tests.test_release_manifest",
+    "tests.test_release_transport",
+    "tests.test_release_verification",
+    "tests.test_unified_cli",
+]
+"engineering_ci.release.registry" = ["tests.test_required_assessment_release"]
+"engineering_ci.release.request" = ["tests.test_github_runs"]
+"engineering_ci.release.verification" = ["tests.test_release_verification"]
+"engineering_ci.release.version" = ["tests.test_release_version"]
+"engineering_ci.required_assessment" = [
+    "tests.test_d_f02_interop",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_required_assessment",
+]
+"engineering_ci.required_assessment_check" = [
+    "tests.test_required_assessment_check",
+    "tests.test_required_assessment_protection",
+    "tests.test_required_assessment_publish",
+]
+"engineering_ci.required_assessment_post" = [
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_required_assessment_post",
+]
+"engineering_ci.required_assessment_protection" = ["tests.test_required_assessment_protection"]
+"engineering_ci.required_assessment_publish" = ["tests.test_required_assessment_publish"]
+"engineering_ci.required_assessment_release" = ["tests.test_required_assessment_release"]
+"engineering_ci.security_policy" = ["tests.test_security_policy"]
+"engineering_ci.selection" = [
+    "tests.test_execution",
+    "tests.test_expected_checks",
+    "tests.test_generated_producer_resolution",
+    "tests.test_hygiene",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_native_hooks",
+    "tests.test_plan_result",
+    "tests.test_pre_execution_source_proof",
+    "tests.test_reconciliation",
+    "tests.test_selection",
+    "tests.test_terminal_expected",
+    "tests.test_weaver",
+    "tests.test_workflow_security_checks",
+    "tests.test_workflow_target_sources",
+]
+"engineering_ci.semconv_registry" = ["tests.test_python_static", "tests.test_weaver"]
+"engineering_ci.sources" = ["tests.test_expected_checks", "tests.test_sources"]
+"engineering_ci.terminal_expected" = [
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_terminal_expected",
+]
+"engineering_ci.tools" = ["tests.test_ci_performance", "tests.test_sync_consumer"]
+"engineering_ci.tools.consumer" = ["tests.test_sync_consumer"]
+"engineering_ci.tools.performance" = ["tests.test_ci_performance"]
+"engineering_ci.tools.security" = [
+    "tests.test_dependency_security",
+    "tests.test_dependency_security_git",
+    "tests.test_unified_cli",
+]
+"engineering_ci.weaver_tool" = [
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_native_producer",
+    "tests.test_native_tool_contract",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+    "tests.test_selection",
+    "tests.test_weaver",
+]
+"engineering_ci.workflow_actions" = ["tests.test_unified_cli"]
+"engineering_ci.workflow_analysis" = [
+    "tests.test_plan_result",
+    "tests.test_script_analysis",
+    "tests.test_workflow_security_checks",
+    "tests.test_workflow_target_sources",
+]
+
+# Non-code / multi-root mappings (Dagger module sources, scripts, config profiles, fixtures)
+[[non_code_rules]]
+exact = "ci-hygiene.toml"
+tests = [
+    "tests.test_hygiene",
+    "tests.test_execution",
+    "tests.test_expected_checks",
+    "tests.test_selection",
+    "tests.test_native_hooks",
+]
+reason = "hygiene policy config"
+
+[[non_code_rules]]
+exact = "ci-effective-profile.json"
+tests = ["tests.test_hooks", "tests.test_native_hooks", "tests.test_execution"]
+reason = "hook profile baseline"
+
+[[non_code_rules]]
+prefix = "config/hook-profiles/"
+tests = ["tests.test_hooks", "tests.test_native_hooks"]
+reason = "signed hook profile"
+
+[[non_code_rules]]
+exact = "config/github-receiver.weaver.toml"
+tests = [
+    "tests.test_weaver",
+    "tests.test_github_receiver",
+    "tests.test_cicd_telemetry",
+    "tests.test_issue52_githubreceiver_e2e",
+]
+reason = "weaver telemetry config"
+
+[[non_code_rules]]
+exact = "config/otel-collector-github-receiver.yaml"
+tests = [
+    "tests.test_github_receiver",
+    "tests.test_cicd_telemetry",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_otlp_grpc_live",
+]
+reason = "collector receiver config"
+
+[[non_code_rules]]
+exact = "config/security-policy.example.json"
+tests = ["tests.test_security_policy"]
+reason = "security policy example"
+
+[[non_code_rules]]
+exact = "config/osv-scanner.example.toml"
+tests = ["tests.test_dependency_security"]
+reason = "dependency security example"
+
+[[non_code_rules]]
+prefix = "config/ghwf."
+tests = ["tests.test_github_receiver", "tests.test_cicd_telemetry"]
+reason = "telemetry environment example"
+
+[[non_code_rules]]
+exact = "scripts/release.py"
+tests = ["tests.test_unified_cli", "tests.test_github_runs", "tests.test_release_verification"]
+reason = "release CLI entrypoint"
+
+[[non_code_rules]]
+exact = "scripts/download.py"
+tests = ["tests.test_unified_cli", "tests.test_github_runs"]
+reason = "download CLI entrypoint"
+
+[[non_code_rules]]
+exact = "scripts/lefthook-arguments.sh"
+tests = ["tests.test_hooks", "tests.test_native_hooks"]
+reason = "lefthook argument forwarder"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/link_check.py"
+tests = ["tests.test_link_check", "tests.test_python_static"]
+reason = "Dagger link check helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/link_cache_fixture.py"
+tests = ["tests.test_execution", "tests.test_plan_result"]
+reason = "Dagger link cache fixture"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/mixed_plan_fixture.py"
+tests = ["tests.test_execution", "tests.test_plan_result"]
+reason = "Dagger mixed plan fixture"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/native_prerequisite.py"
+tests = ["tests.test_plan_contract", "tests.test_plan_result"]
+reason = "Dagger native prerequisite fixture"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/native_results.py"
+tests = [
+    "tests.test_admission",
+    "tests.test_execution",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+    "tests.test_reconciliation",
+]
+reason = "Dagger native result builder"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/plan_execution.py"
+tests = [
+    "tests.test_dagger_native_telemetry",
+    "tests.test_execution",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+]
+reason = "Dagger plan execution helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/plan_result.py"
+tests = [
+    "tests.test_execution",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+]
+reason = "Dagger plan result helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/powershell_invoke.ps1"
+tests = ["tests.test_script_analysis"]
+reason = "Dagger PowerShell AST probe"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/pytest_ci.py"
+tests = [
+    "tests.test_ci_performance",
+    "tests.test_plan_result",
+    "tests.test_pytest_ci",
+    "tests.test_pytest_quality",
+]
+reason = "Dagger pytest CI helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/pytest_matrix.py"
+tests = ["tests.test_pytest_matrix"]
+reason = "Dagger pytest matrix helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/pytest_matrix_runtime.py"
+tests = ["tests.test_pytest_matrix"]
+reason = "Dagger pytest matrix runtime"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/pytest_quality.py"
+tests = ["tests.test_plan_result", "tests.test_pytest_matrix", "tests.test_pytest_quality"]
+reason = "Dagger pytest quality helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/pytest_report.py"
+tests = [
+    "tests.test_ci_performance",
+    "tests.test_manual_release",
+    "tests.test_plan_result",
+    "tests.test_pytest_ci",
+    "tests.test_pytest_matrix",
+    "tests.test_pytest_quality",
+    "tests.test_pytest_report",
+    "tests.test_verify_report",
+]
+reason = "Dagger pytest report helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/python_dependency_auth.py"
+tests = ["tests.test_python_dependency_auth"]
+reason = "Dagger dependency auth helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/python_dependency_packages.py"
+tests = ["tests.test_python_dependency_auth", "tests.test_python_dependency_packages"]
+reason = "Dagger dependency package helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/python_static.py"
+tests = ["tests.test_python_static"]
+reason = "Dagger python static helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/repository.py"
+tests = [
+    "tests.test_ci_applicability",
+    "tests.test_dagger_native_telemetry",
+    "tests.test_execution",
+    "tests.test_link_check",
+    "tests.test_plan_result",
+    "tests.test_pytest_ci",
+    "tests.test_pytest_matrix",
+    "tests.test_pytest_quality",
+    "tests.test_python_static",
+    "tests.test_script_analysis",
+    "tests.test_weaver",
+]
+reason = "Dagger repository helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/script_analysis.py"
+tests = ["tests.test_script_analysis"]
+reason = "Dagger script analysis helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/tooling.py"
+tests = [
+    "tests.test_ci_applicability",
+    "tests.test_dagger_native_telemetry",
+    "tests.test_execution",
+    "tests.test_link_check",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+    "tests.test_script_analysis",
+    "tests.test_weaver",
+]
+reason = "Dagger container tooling helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/weaver.py"
+tests = ["tests.test_weaver", "tests.test_issue52_githubreceiver_e2e", "tests.test_plan_result"]
+reason = "Dagger Weaver helper"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/weaver_runtime.py"
+tests = ["tests.test_weaver"]
+reason = "Dagger Weaver runtime"
+
+[[non_code_rules]]
+exact = ".dagger/src/engineering_ci_module/weaver-requirements.txt"
+tests = ["tests.test_weaver"]
+reason = "Dagger Weaver requirements"
+
+[[non_code_rules]]
+prefix = ".dagger/src/engineering_ci_module/"
+tests = [
+    "tests.test_ci_applicability",
+    "tests.test_dagger_native_telemetry",
+    "tests.test_execution",
+    "tests.test_link_check",
+    "tests.test_plan_result",
+    "tests.test_python_static",
+    "tests.test_script_analysis",
+    "tests.test_weaver",
+]
+reason = "Dagger module entrypoint"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/coverage-app/"
+tests = ["tests.test_pytest_quality"]
+reason = "pytest coverage fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/dependency-security/"
+tests = ["tests.test_dependency_security", "tests.test_dependency_security_git"]
+reason = "dependency security fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/matrix-app/"
+tests = ["tests.test_pytest_matrix"]
+reason = "pytest matrix fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/osv-mixed-idna/"
+tests = ["tests.test_dependency_security", "tests.test_dependency_security_git"]
+reason = "OSV security fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/python-app/"
+tests = ["tests.test_native_hooks", "tests.test_pytest_ci", "tests.test_pytest_report"]
+reason = "python app fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/selection-app/"
+tests = [
+    "tests.test_selection",
+    "tests.test_execution",
+    "tests.test_expected_checks",
+    "tests.test_hygiene",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_plan_result",
+    "tests.test_reconciliation",
+    "tests.test_terminal_expected",
+]
+reason = "selection app fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/static-app/"
+tests = ["tests.test_python_static"]
+reason = "python static fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/tach-ok/"
+tests = ["tests.test_selection", "tests.test_hygiene"]
+reason = "tach fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/weaver/"
+tests = ["tests.test_weaver"]
+reason = "weaver registry fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/weaver-cicd/"
+tests = [
+    "tests.test_weaver",
+    "tests.test_cicd_telemetry",
+    "tests.test_cicd_telemetry_attributes",
+    "tests.test_github_receiver",
+    "tests.test_issue52_githubreceiver_e2e",
+    "tests.test_selection",
+    "tests.test_terminal_expected",
+]
+reason = "weaver cicd fixture"
+
+[[non_code_rules]]
+prefix = "tests/fixtures/workflow-app/"
+tests = [
+    "tests.test_workflow_security_checks",
+    "tests.test_workflow_target_sources",
+    "tests.test_script_analysis",
+]
+reason = "workflow security fixture"
+
+[test_helpers]
+"tests/test_admission.py" = ["tests.test_execution"]
+"tests/test_cicd_telemetry.py" = ["tests.test_cicd_telemetry_attributes"]
+"tests/test_dependency_security.py" = ["tests.test_dependency_security_git"]
+"tests/test_eci_pytest_report.py" = ["tests.test_verify_report"]
+"tests/test_execution.py" = ["tests.test_plan_result"]
+"tests/test_generated_producer_resolution.py" = ["tests.test_execution"]
+"tests/test_github_receiver.py" = ["tests.test_issue52_githubreceiver_e2e"]
+"tests/test_historical_reuse.py" = ["tests.test_d_f02_interop"]
+"tests/test_hooks.py" = ["tests.test_execution", "tests.test_native_hooks", "tests.test_pre_execution_source_proof"]
+"tests/test_manual_release.py" = ["tests.test_release_verification", "tests.test_security_policy"]
+"tests/test_native_hooks.py" = ["tests.test_verify_report"]
+"tests/test_native_tool_contract.py" = ["tests.test_reconciliation"]
+"tests/test_pytest_report.py" = ["tests.test_verify_cli", "tests.test_verify_report"]
+"tests/test_reconciliation.py" = ["tests.test_admission", "tests.test_execution", "tests.test_generated_producer_resolution", "tests.test_native_hooks", "tests.test_plan_result", "tests.test_workflow_security_checks", "tests.test_workflow_target_sources"]
+"tests/test_release_manifest.py" = ["tests.test_manual_release", "tests.test_release_verification", "tests.test_required_assessment_release", "tests.test_security_policy"]
+"tests/test_release_verification.py" = ["tests.test_github_runs", "tests.test_security_policy"]
+"tests/test_required_assessment.py" = ["tests.test_d_f02_interop", "tests.test_required_assessment_check", "tests.test_required_assessment_post", "tests.test_required_assessment_release"]
+"tests/test_required_assessment_check.py" = ["tests.test_required_assessment_publish"]
+"tests/test_security_policy.py" = ["tests.test_workflow_security_checks"]
+"tests/test_workflow_security_checks.py" = ["tests.test_generated_producer_resolution", "tests.test_workflow_target_sources"]

@@ -51,9 +51,9 @@ repository-relative; no Knowledge directory (`data/catalog/**`,
 | `whitespace` | Always | `git diff --check <base>` exits 0 | Nonzero; whitespace diagnostics retained |
 | `forwarding` | A changed Python module under `forwarding.source_prefix` exists, excluding `__init__.py` | No module became a pure re-export | Base content unreadable or module unparsable |
 | `docs` | Documents changed, a path was deleted, or `--full` | Lychee exits 0 for the active affected documents | Lychee missing, broken links, other native failure |
-| `vulture` | Code changed (src/scripts/tests or tach/pyproject) | Exit 0, or exit in `advisory_exit_codes` (status `advisory`) | Other exit or missing tool |
-| `tach` | Code changed | `tach check` exits 0 | Config missing, check fails, tool missing |
-| `tach_external` | `external = true` and code changed | `tach check-external` exits 0 | Nonzero or missing tool |
+| `vulture` | Changed files under `vulture.paths`, `pyproject.toml`, or `[vulture]` config change | Exit 0, or exit in `advisory_exit_codes` (status `advisory`) | Other exit or missing tool |
+| `tach` | Changed files under `tach.toml` `source_roots`, `tach` config / `pyproject.toml`, or `[tach]` config change | `tach check` exits 0 | Config missing, check fails, tool missing |
+| `tach_external` | `external = true` and Tach/dependency inputs or `[tach].external` changed | `tach check-external` exits 0 | Nonzero or missing tool |
 
 - `docs` targets only active documents affected by the change (or all active
   documents for `--full`/deletions); docs excluded by the consumer are not
@@ -290,3 +290,46 @@ commands run against a disposable fixture repository: clean/dirty whitespace,
 not-applicable documents, one Lychee invocation with the active file list,
 missing/broken Lychee, Vulture advisory vs failure, Tach missing config/failure,
 forwarding advisory, report identity and CLI exit propagation.
+
+### Structure & applicability hardening (#162 A2)
+
+- Snapshot-aware `ci-hygiene.toml` trigger comparison normalizes base and
+  target (`worktree` vs immutable `execution_tree`) rule slices without injecting
+  config files into `inputs`; `[docs]` / `[lychee]` changes trigger `docs` with
+  `recheck_all = true`, while equivalent normalized configs do not false-trigger.
+- Schema 1 `DEFAULT_CODE_PREFIXES` stays `("src/", "scripts/", "tests/")` so
+  existing `ci-selection.toml` consumers without explicit `[check_scope]` keep
+  unchanged Plan identities; repositories opt in to `.dagger/src/` selection /
+  test mapping via explicit `[check_scope].code_prefixes` in `ci-selection.toml`.
+  Tach and Vulture applicability follow their normalized configured scan roots
+  only (`tach.toml` `source_roots`, defaulting to `.` per Tach when validly
+  omitted; Vulture `paths`, default `src`). Relative roots such as `.` and
+  `./src` normalize cleanly; invalid, escaping, post-normalization option-like
+  (`./--help`), and post-normalization Windows drive/UNC/absolute roots
+  (`./C:/outside`, `./C:outside`, `\\server\share`) are rejected before
+  invocation via `_paths` cross-platform boundary semantics, and
+  `hygiene._vulture` isolates positional paths behind `--min-confidence N --`.
+  Because pinned `tach check` / `tach check-external` (0.35.3) discover only
+  root `tach.toml` with no custom `--config` option, any custom `tach` path
+  other than `tach.toml` (after normalizing `./tach.toml`) is refused fail-closed
+  (`tach_config_path_unsupported`) rather than running `tach` against default
+  `tach.toml`. `tach.toml` is read lazily only when `tach` or `tach_external` is
+  enabled, and missing, corrupt, or invalid scan-root configuration settles
+  fail-closed as `unknown` applicability (`failed` / `not_started` in
+  `hygiene.run`), never false `not_applicable`. A `.dagger/src/` edit therefore
+  does not claim a `src`-only Tach/Vulture PASS; Dagger remains a separate project
+  covered by `non_code_rules` tests and native Dagger checks until an explicit
+  multi-root or separate tool config is adopted.
+- Forwarding rule changes check changed Python candidates under the affected
+  `source_prefix` (never TOML-as-AST and no whole-repo scan of unchanged files).
+  A rule change with no changed Python targets settles as `not_applicable`
+  (`hygiene_forwarding_config_changed_no_targets`), never an empty PASS.
+- `docs` preserves `link_scope` (`offline` vs `network`) and `link_scope_note`
+  on both the check summary and `NativeResult.evidence` (aligned with
+  `link_check.py` via `is_offline_lychee_arguments()`).
+- Repository root `tach.toml` defines `exact = true` boundaries for the
+  `src/engineering_ci` modules and `[external]` distribution mappings (`tach check`
+  and `tach check-external`), while documenting the three existing internal cyclic
+  groups until follow-up cycle refactors remove them. `forbid_circular_dependencies
+  = false` is the current baseline (not a three-cycle-only exemption); executable
+  `vesryn` / `vesryn-workflow` forbid constraints remain #162 B1.

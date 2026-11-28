@@ -1,10 +1,30 @@
 """Source-checkout paths shared by local checks and release operations."""
 
+import ntpath
 import os
 import stat
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def has_windows_or_absolute_root(candidate):
+    """Return True when candidate carries a drive, UNC, or POSIX/Windows anchor."""
+    posix = candidate.replace("\\", "/")
+    win = PureWindowsPath(candidate)
+    posix_win = PureWindowsPath(posix)
+    return bool(
+        posix.startswith("/")
+        or ntpath.splitdrive(candidate)[0]
+        or ntpath.splitdrive(posix)[0]
+        or win.drive
+        or win.anchor
+        or win.is_absolute()
+        or posix_win.drive
+        or posix_win.anchor
+        or posix_win.is_absolute()
+        or PurePosixPath(posix).is_absolute()
+    )
 
 
 class SourcePathError(OSError):

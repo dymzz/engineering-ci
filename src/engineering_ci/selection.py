@@ -9,9 +9,12 @@ configuration, not code.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
+import ntpath
 import os
+import stat
 import subprocess
 import sys
 import tomllib
@@ -30,9 +33,11 @@ from engineering_ci import (
 )
 from engineering_ci._paths import (
     SourcePathError,
+    has_windows_or_absolute_root,
     read_internal_linked_source,
     read_source_entry,
     read_source_file,
+    stat_source_file,
 )
 from engineering_ci.weaver_tool import RECORD as _WEAVER_TOOL
 
@@ -55,6 +60,7 @@ _CONFIG_KEYS = {
     "ignored_prefixes",
     "checks",
     "module_tests",
+    "test_helpers",
     "non_code_rules",
     "prerequisites",
     "prerequisite_actions",
@@ -144,6 +150,7 @@ class Config:
     push: PushPolicyConfig = field(default_factory=PushPolicyConfig)
     effective_profile_policy: dict | list[dict] | None = None
     workflow_checks: WorkflowChecksConfig = field(default_factory=WorkflowChecksConfig)
+    test_helpers: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -173,6 +180,7 @@ class ChangeSet:
     force_push: bool = False
     baseline_status: str | None = None
     non_check_obligations: tuple[str, ...] = ()
+    materialized_tree: bool = False
     base_tree: str | None = None
 
     @property
@@ -327,7 +335,10 @@ def _parse_config_bytes(raw):
         raise SelectionError("config_invalid")
     if value.get("schema_version") != SCHEMA_VERSION:
         raise SelectionError("config_schema_unsupported")
-    tach = _text(value.get("tach", "tach.toml"), "tach")
+    raw_tach = _text(value.get("tach", "tach.toml"), "tach")
+    tach, tach_err = hygiene._supported_tach_config_rel(raw_tach)
+    if tach_err is not None:
+        raise SelectionError(tach_err)
     tests_dir = _text(value.get("tests_dir", "tests"), "tests_dir")
     src_root = _text(value.get("src_root", "src"), "src_root")
     framework = value.get("framework", "unittest")
@@ -343,6 +354,13 @@ def _parse_config_bytes(raw):
     rules = value.get("non_code_rules", [])
     if not isinstance(rules, list):
         raise SelectionError("non_code_rules_invalid")
+    test_helpers_raw = value.get("test_helpers", {})
+    if not isinstance(test_helpers_raw, dict):
+        raise SelectionError("test_helpers_invalid")
+    test_helpers = {}
+    for key, entries in test_helpers_raw.items():
+        helper_path = _normalized(key)
+        test_helpers[helper_path] = tuple(_string_list(entries, "test_helpers"))
     parsed_rules = []
     for rule in rules:
         if not isinstance(rule, dict) or set(rule) - {
@@ -423,7 +441,7 @@ def _parse_config_bytes(raw):
     check_scope = CheckScopeConfig(
         docs_suffixes=docs_suffixes,
         code_prefixes=_string_list(
-            scope.get("code_prefixes", ["src/", "scripts/", "tests/"]),
+            scope.get("code_prefixes", list(hygiene.DEFAULT_CODE_PREFIXES)),
             "code_prefixes",
         ),
         source_prefixes=_string_list(
@@ -548,6 +566,7 @@ def _parse_config_bytes(raw):
         checks=checks,
         module_tests=module_tests,
         non_code_rules=tuple(parsed_rules),
+        test_helpers=test_helpers,
         prerequisites=prerequisites,
         prerequisite_actions=prerequisite_actions,
         strict_modules=strict_modules,
@@ -685,6 +704,7 @@ def _normalize_config(config):
         "ignored_prefixes": list(config.ignored_prefixes),
         "checks": list(config.checks),
         "module_tests": {k: list(v) for k, v in sorted(config.module_tests.items())},
+        "test_helpers": {k: list(v) for k, v in sorted(config.test_helpers.items())},
         "non_code_rules": [
             {
                 "prefix": r.prefix,
@@ -857,9 +877,14 @@ def config_from_identity(identity):
     select_push_tests = push_raw.get("select_tests", True)
     if type(select_push_tests) is not bool:
         raise SelectionError("config_identity_invalid")
+    tach_val, tach_err = hygiene._supported_tach_config_rel(
+        str(norm.get("tach", "tach.toml"))
+    )
+    if tach_err is not None:
+        raise SelectionError(tach_err)
     return Config(
         schema_version=int(norm.get("schema_version", SCHEMA_VERSION)),
-        tach=str(norm.get("tach", "tach.toml")),
+        tach=tach_val,
         tests_dir=str(norm.get("tests_dir", "tests")),
         src_root=str(norm.get("src_root", "src")),
         framework=str(norm.get("framework", "unittest")),
@@ -870,6 +895,9 @@ def config_from_identity(identity):
         checks=tuple(norm.get("checks") or ()),
         module_tests={
             str(k): tuple(v) for k, v in (norm.get("module_tests") or {}).items()
+        },
+        test_helpers={
+            str(k): tuple(v) for k, v in (norm.get("test_helpers") or {}).items()
         },
         non_code_rules=tuple(
             NonCodeRule(
@@ -894,7 +922,7 @@ def config_from_identity(identity):
         check_scope=CheckScopeConfig(
             docs_suffixes=tuple(scope.get("docs_suffixes") or (".md", ".html")),
             code_prefixes=tuple(
-                scope.get("code_prefixes") or ("src/", "scripts/", "tests/")
+                scope.get("code_prefixes") or hygiene.DEFAULT_CODE_PREFIXES
             ),
             source_prefixes=tuple(
                 scope.get("source_prefixes") or ("data/", "sources/")
@@ -1921,25 +1949,301 @@ def _normalized(path):
     return path.replace("\\", "/")
 
 
-def _test_modules(tests_dir, prefix):
-    if not tests_dir.is_dir():
+def _pytest_norecursedirs_from_text(text):
+    """Read native pytest ``norecursedirs`` patterns, or refuse unsupported ones.
+
+    Selection must produce the same directory set on a Windows host and in the
+    Linux execution containers, so matching follows native POSIX
+    ``_pytest.pathlib.fnmatch_ex`` semantics (case sensitive, ``/`` separators,
+    basename patterns versus anchored ``*``/``?``/``[]`` pattern text).
+    Patterns are kept verbatim: native pytest does not trim whitespace, so
+    ``" fixtures "`` stays a literal non-matching pattern instead of becoming an
+    exclusion the native collector would not apply.
+    Patterns anchored to an absolute location are refused fail-closed: native
+    pytest matches them against the checkout's absolute path, which no longer
+    names the same directory for a per-Ref or materialized snapshot.
+    """
+    try:
+        data = tomllib.loads(text)
+    except ValueError:
         return ()
-    return tuple(
-        sorted(
-            f"{prefix}.{'.'.join(path.relative_to(tests_dir).with_suffix('').parts)}"
-            for path in tests_dir.rglob("test_*.py")
-            if path.is_file()
-        )
+    if not isinstance(data, dict):
+        return ()
+    tool_cfg = data.get("tool")
+    if not isinstance(tool_cfg, dict):
+        return ()
+    pytest_cfg = tool_cfg.get("pytest")
+    if not isinstance(pytest_cfg, dict):
+        return ()
+    ini = pytest_cfg.get("ini_options")
+    if not isinstance(ini, dict):
+        return ()
+    raw = ini.get("norecursedirs")
+    if not isinstance(raw, list):
+        return ()
+    patterns = tuple(item for item in raw if isinstance(item, str))
+    if any(has_windows_or_absolute_root(pattern) for pattern in patterns):
+        raise SelectionError("pytest_norecursedirs_unsupported")
+    return patterns
+
+
+def _pytest_norecursedirs(root, *, tree=None):
+    if tree is not None:
+        shown = _git(root, "cat-file", "-p", f"{tree}:pyproject.toml")
+        if shown.returncode != 0:
+            return ()
+        return _pytest_norecursedirs_from_text(shown.stdout)
+    pyproject = Path(root) / "pyproject.toml"
+    if not pyproject.is_file():
+        return ()
+    try:
+        return _pytest_norecursedirs_from_text(pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        return ()
+
+
+def _normalized_tests_dir_parts(tests_dir_rel):
+    norm = _normalized(str(tests_dir_rel)).strip("/")
+    if not norm or norm == ".":
+        return ()
+    return tuple(part for part in norm.split("/") if part and part != ".")
+
+
+def _fnmatch_norecurse(pattern, rel_dir_posix, dir_name):
+    """Match one ``norecursedirs`` pattern exactly like native POSIX ``fnmatch_ex``.
+
+    Native pytest matches a basename pattern against the directory name and a
+    pattern containing a separator against the absolute collection path; a
+    relative path pattern therefore anchors as a suffix (``*<sep>pattern``)
+    while ``rel_dir_posix`` supplies that suffix on every host. No rewriting is
+    applied: ``./fixtures``, ``tests\\fixtures`` and ``fixtures/`` keep their
+    native meaning (no match on POSIX), because rewriting them would exclude
+    directories pytest still collects. Absolute patterns are refused at
+    configuration load; a direct caller passing one matches nothing here.
+    """
+    if not isinstance(pattern, str) or not pattern:
+        return False
+    if "/" not in pattern:
+        return fnmatch.fnmatchcase(dir_name, pattern)
+    if pattern.startswith("/"):
+        return False
+    return fnmatch.fnmatchcase(rel_dir_posix, pattern) or fnmatch.fnmatchcase(
+        rel_dir_posix, f"*/{pattern}"
     )
 
 
-def _tree_test_modules(root, tree, tests_dir_rel, prefix):
+def _is_excluded_test_parts(rel_parts, norecursedirs, *, tests_dir_parts=()):
+    if not norecursedirs or len(rel_parts) <= 1:
+        return False
+    dir_parts = rel_parts[:-1]
+    for depth in range(1, len(dir_parts) + 1):
+        sub_parts = dir_parts[:depth]
+        dir_name = sub_parts[-1]
+        rel_dir_posix = "/".join((*tests_dir_parts, *sub_parts))
+        if any(
+            _fnmatch_norecurse(pattern, rel_dir_posix, dir_name)
+            for pattern in norecursedirs
+        ):
+            return True
+    return False
+
+
+def _worktree_member(root):
+    """Member facts over a real checkout: kind plus refusal code.
+
+    Reuses the resolver's own path check, so a legal internal link, a directory
+    named like a module, a recursive escape and a missing path are reported
+    exactly as the native runtime treats them.
+    """
+    resolved_root = Path(root).resolve()
+
+    def member(rel):
+        exists, refusal = _check_bound_pytest_path(root, resolved_root, rel)
+        if refusal:
+            return "refused", refusal
+        if not exists:
+            return "missing", None
+        try:
+            return ("dir" if (Path(root) / rel).is_dir() else "file"), None
+        except OSError:
+            return "refused", "pytest_target_unreadable"
+
+    return member
+
+
+def _target_binding(target, member, *, framework="pytest"):
+    """Resolve one target exactly as the runtime binds it in this Source.
+
+    The candidate order, existence test and refusal codes mirror
+    ``_resolve_pytest_target``: a first ``.py`` candidate that exists is bound
+    whether it is a file or a directory, a missing candidate falls through to
+    the directory spelling and then to a bound missing path. Legality reuses
+    ``_split_and_check_path_parts``; unittest targets stay separate execution
+    targets.
+    """
+    if not isinstance(target, str):
+        return None
+    # The complete target string is validated, so a control character inside a
+    # nodeid is refused at the shared entry instead of reaching the runtime.
+    if any(ch in target for ch in "\0\r\n"):
+        return None
+    raw, sep, nodeid = target.partition("::")
+    if not raw or raw != raw.strip() or (sep and not nodeid):
+        return None
+    if target.lstrip().startswith("-"):
+        return None
+    binding = {"target": target, "path": None, "nodeid": nodeid or None}
+    if framework == "unittest":
+        parts = raw.split(".")
+        if any(not part or part in {".", ".."} for part in parts):
+            return None
+        if any(part.lower() == ".git" for part in parts):
+            return {
+                **binding,
+                "kind": "refused",
+                "refusal": "pytest_target_outside_source",
+            }
+        return {**binding, "kind": "unittest"}
+    is_path = (
+        "/" in raw
+        or "\\" in raw
+        or raw.endswith(".py")
+        or raw.startswith(".")
+        or ":" in raw
+    )
+    if is_path:
+        rel, refusal = _split_and_check_path_parts(raw)
+        if refusal:
+            return {**binding, "kind": "refused", "refusal": refusal}
+        kind, member_refusal = member(rel)
+        return {
+            **binding,
+            "kind": kind,
+            "path": rel,
+            "refusal": member_refusal,
+        }
+    parts = raw.split(".")
+    if any(not part or part in {".", ".."} for part in parts):
+        return None
+    if any(part.lower() == ".git" for part in parts):
+        return {
+            **binding,
+            "kind": "refused",
+            "refusal": "pytest_target_outside_source",
+        }
+    file_rel = "/".join(parts) + ".py"
+    file_kind, file_refusal = member(file_rel)
+    if file_kind in {"file", "dir"}:
+        return {**binding, "kind": file_kind, "path": file_rel}
+    if file_kind == "refused":
+        return {
+            **binding,
+            "kind": "refused",
+            "path": file_rel,
+            "refusal": file_refusal,
+        }
+    dir_rel = "/".join(parts)
+    dir_kind, dir_refusal = member(dir_rel)
+    if dir_kind in {"file", "dir"}:
+        return {**binding, "kind": dir_kind, "path": dir_rel}
+    if dir_kind == "refused":
+        return {
+            **binding,
+            "kind": "refused",
+            "path": dir_rel,
+            "refusal": dir_refusal,
+        }
+    return {**binding, "kind": "missing", "path": file_rel}
+
+
+def _binding_identity(binding):
+    """Identity used for prerequisite applicability of one execution binding.
+
+    The Source file identity and the native execution target are different
+    facts: a pytest ``::nodeid`` and every unittest class/method target stay
+    distinct so an unrelated prerequisite is never activated.
+    """
+    if not isinstance(binding, dict):
+        return None
+    kind = binding.get("kind")
+    if kind in {None, "refused", "invalid"}:
+        return None
+    if kind == "unittest":
+        return "unittest:" + str(binding.get("target", "")).partition("::")[0]
+    nodeid = binding.get("nodeid")
+    suffix = f"::{nodeid}" if nodeid else ""
+    return f"{kind}:{binding.get('path')}{suffix}"
+
+
+def _binding_record(binding):
+    """Stable JSON-serializable form of one binding for snapshot evidence."""
+    if not isinstance(binding, dict):
+        return {"target": None, "kind": "invalid"}
+    record = {
+        "target": binding.get("target"),
+        "kind": binding.get("kind", "invalid"),
+        "path": binding.get("path"),
+        "nodeid": binding.get("nodeid"),
+    }
+    if binding.get("refusal"):
+        record["refusal"] = binding["refusal"]
+    return record
+
+
+def _test_modules(
+    tests_dir,
+    prefix,
+    *,
+    norecursedirs=None,
+    framework="unittest",
+    tests_dir_rel=None,
+):
+    if not tests_dir.is_dir():
+        return ()
+    excluded = (
+        _pytest_norecursedirs(tests_dir.parent)
+        if norecursedirs is None
+        else tuple(norecursedirs)
+    )
+    base_parts = _normalized_tests_dir_parts(
+        tests_dir_rel if tests_dir_rel is not None else prefix.replace(".", "/")
+    )
+    modules = []
+    for path in tests_dir.rglob("test_*.py"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(tests_dir)
+        rel_parts = rel.with_suffix("").parts
+        if _is_excluded_test_parts(rel_parts, excluded, tests_dir_parts=base_parts):
+            continue
+        if framework == "pytest":
+            modules.append("/".join((*base_parts, *rel.parts)))
+        else:
+            modules.append(f"{prefix}.{'.'.join(rel_parts)}")
+    return tuple(sorted(modules))
+
+
+def _tree_test_modules(
+    root,
+    tree,
+    tests_dir_rel,
+    prefix,
+    *,
+    norecursedirs=None,
+    framework="unittest",
+):
     rel_dir = _normalized(tests_dir_rel).strip("/")
-    ls = _git(root, "ls-tree", "-r", "--name-only", "-z", tree, "--", rel_dir)
+    list_arg = () if not rel_dir or rel_dir == "." else ("--", rel_dir)
+    ls = _git(root, "ls-tree", "-r", "--name-only", "-z", tree, *list_arg)
     if ls.returncode != 0:
         return None
+    excluded = (
+        _pytest_norecursedirs(root, tree=tree)
+        if norecursedirs is None
+        else tuple(norecursedirs)
+    )
     modules = []
-    base_parts = Path(rel_dir).parts
+    base_parts = _normalized_tests_dir_parts(rel_dir)
     for item in ls.stdout.split("\0"):
         norm = _normalized(item).strip("/")
         if not norm.endswith(".py"):
@@ -1948,10 +2252,16 @@ def _tree_test_modules(root, tree, tests_dir_rel, prefix):
         if not p.name.startswith("test_"):
             continue
         try:
-            rel_parts = p.relative_to(Path(*base_parts)).with_suffix("").parts
+            rel_file = p.relative_to(Path(*base_parts)) if base_parts else p
         except ValueError:
             continue
-        modules.append(f"{prefix}.{'.'.join(rel_parts)}")
+        rel_parts = rel_file.with_suffix("").parts
+        if _is_excluded_test_parts(rel_parts, excluded, tests_dir_parts=base_parts):
+            continue
+        if framework == "pytest":
+            modules.append(norm)
+        else:
+            modules.append(f"{prefix}.{'.'.join(rel_parts)}")
     return tuple(sorted(modules))
 
 
@@ -1980,18 +2290,30 @@ def _tach_graph_text(text):
 
 
 def _tach_graph(path):
+    target = Path(path)
+    if target.name != "tach.toml":
+        raise SelectionError("tach_config_path_unsupported")
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        text = target.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         raise SelectionError("tach_config_invalid") from None
     return _tach_graph_text(text)
 
 
 def _tree_tach_graph(root, tree, tach_rel_path):
-    cat = _git(root, "cat-file", "-p", f"{tree}:{_normalized(tach_rel_path)}")
+    tach_rel, err = hygiene._supported_tach_config_rel(tach_rel_path)
+    if err is not None:
+        raise SelectionError(err)
+    cat = _git_bytes(root, "cat-file", "blob", f"{tree}:{tach_rel}")
     if cat.returncode != 0:
         raise SelectionError("tach_config_invalid")
-    return _tach_graph_text(cat.stdout)
+    try:
+        text = cat.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        # Invalid UTF-8 is a configuration error, not a replacement-character
+        # graph; the digest still refers to the raw bytes.
+        raise SelectionError("tach_config_invalid") from None
+    return _tach_graph_text(text)
 
 
 def _reverse_closure(changed, reverse):
@@ -2126,6 +2448,30 @@ def _escalated(
         full_tests=full_tests,
         base_prerequisites=base_prereqs,
     )
+
+
+def _test_module_path(test_id):
+    """Map `tests.test_x` / `tests.sub.test_x` to its file path."""
+    parts = test_id.split(".")
+    if len(parts) < 2:
+        return None
+    return "/".join([*parts[:-1], parts[-1] + ".py"])
+
+
+def _test_helper_consumers(config, paths):
+    """Transitive consumer tests of changed test-helper files."""
+    found = set()
+    queue = [path for path in paths if path in config.test_helpers]
+    while queue:
+        path = queue.pop()
+        for consumer in config.test_helpers.get(path, ()):
+            if consumer in found:
+                continue
+            found.add(consumer)
+            consumer_path = _test_module_path(consumer)
+            if consumer_path is not None:
+                queue.append(consumer_path)
+    return found
 
 
 def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None):
@@ -2272,22 +2618,56 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
         bool(exec_tree)
         and _git(root, "cat-file", "-e", f"{exec_tree}^{{tree}}").returncode == 0
     )
-    if tree_in_odb:
-        tree_tests = _tree_test_modules(root, exec_tree, config.tests_dir, test_prefix)
-        resolved_all_tests = (
-            tree_tests
-            if tree_tests is not None
-            else (
-                tuple(all_tests)
-                if all_tests is not None
-                else _test_modules(tests_dir, test_prefix)
-            )
+
+    def discover():
+        """Enumerate the active source's tests; reads (and may refuse) norecursedirs."""
+        excluded = (
+            _pytest_norecursedirs(root, tree=exec_tree if tree_in_odb else None)
+            if config.framework == "pytest"
+            else ()
         )
-    elif all_tests is not None:
-        resolved_all_tests = tuple(all_tests)
-    else:
-        resolved_all_tests = _test_modules(tests_dir, test_prefix)
+        if tree_in_odb:
+            tree_tests = _tree_test_modules(
+                root,
+                exec_tree,
+                config.tests_dir,
+                test_prefix,
+                norecursedirs=excluded,
+                framework=config.framework,
+            )
+            resolved = (
+                tree_tests
+                if tree_tests is not None
+                else (
+                    tuple(all_tests)
+                    if all_tests is not None
+                    else _test_modules(
+                        tests_dir,
+                        test_prefix,
+                        norecursedirs=excluded,
+                        framework=config.framework,
+                        tests_dir_rel=config.tests_dir,
+                    )
+                )
+            )
+        elif all_tests is not None:
+            resolved = tuple(all_tests)
+        else:
+            resolved = _test_modules(
+                tests_dir,
+                test_prefix,
+                norecursedirs=excluded,
+                framework=config.framework,
+                tests_dir_rel=config.tests_dir,
+            )
+        return excluded, resolved
+
+    paths = [_normalized(path) for path in changes.paths]
+    # Discovery is only required where tests are actually selected, escalated or
+    # reported. A no-change or policy-disabled selection never needs the
+    # exclusion configuration, so it must not be refused by an unrelated pattern.
     if full:
+        _, resolved_all_tests = discover()
         return _escalated(
             changes,
             config,
@@ -2297,6 +2677,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             root=root,
         )
     if not changes.complete:
+        _, resolved_all_tests = discover()
         return _escalated(
             changes,
             config,
@@ -2304,7 +2685,6 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             f"Git input could not be resolved: {changes.error}",
             root=root,
         )
-    paths = [_normalized(path) for path in changes.paths]
     if not paths:
         return Selection(
             changeset=changes,
@@ -2314,6 +2694,7 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             escalated=False,
             reasons={"skipped": ["No changed files detected"]},
         )
+    excluded_test_dirs, resolved_all_tests = discover()
     for path in paths:
         if path in config.escalation_files or any(
             path.startswith(prefix) for prefix in config.escalation_prefixes
@@ -2325,6 +2706,9 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                 f"Global configuration modified: {path}",
                 root=root,
             )
+    _, tach_path_err = hygiene._supported_tach_config_rel(config.tach)
+    if tach_path_err is not None:
+        raise SelectionError(tach_path_err)
     try:
         if tree_in_odb:
             modules, reverse = _tree_tach_graph(root, exec_tree, config.tach)
@@ -2342,6 +2726,8 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
         )
     deleted_set = {_normalized(item) for item in getattr(changes, "deleted_paths", ())}
     deleted_resolved = bool(getattr(changes, "deleted_paths_resolved", False))
+    tests_base_parts = _normalized_tests_dir_parts(config.tests_dir)
+    tests_dir_prefix = "/".join(tests_base_parts) + "/" if tests_base_parts else ""
     selected, reasons, changed_modules, unmapped = set(), {}, set(), []
     for path in paths:
         if _is_ignored(path, config):
@@ -2354,9 +2740,18 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     reasons.setdefault(test, []).append(rule.reason)
             continue
         if (
-            path.startswith(config.tests_dir.rstrip("/") + "/")
+            (not tests_dir_prefix or path.startswith(tests_dir_prefix))
             and path.endswith(".py")
             and path.split("/")[-1].startswith("test_")
+            and not _is_excluded_test_parts(
+                (
+                    Path(path).relative_to(Path(*tests_base_parts)).parts
+                    if tests_base_parts
+                    else Path(path).parts
+                ),
+                excluded_test_dirs,
+                tests_dir_parts=tests_base_parts,
+            )
         ):
             if deleted_resolved:
                 is_deleted_test = path in deleted_set
@@ -2376,9 +2771,13 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     f"Test file deleted or renamed: {path}",
                     root=root,
                 )
-            module = ".".join(Path(path).with_suffix("").parts)
-            selected.add(module)
-            reasons.setdefault(module, []).append(
+            target_id = (
+                path
+                if config.framework == "pytest"
+                else ".".join(Path(path).with_suffix("").parts)
+            )
+            selected.add(target_id)
+            reasons.setdefault(target_id, []).append(
                 f"Direct test file modification: {path}"
             )
             continue
@@ -2387,6 +2786,11 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
             changed_modules.add(module)
         else:
             unmapped.append(path)
+    for consumer in _test_helper_consumers(config, paths):
+        selected.add(consumer)
+        reasons.setdefault(consumer, []).append(
+            "Test helper dependency: changed test helper"
+        )
     if unmapped:
         return _escalated(
             changes,
@@ -2417,9 +2821,45 @@ def select(changes, config, *, root, full=False, tach_graph=None, all_tests=None
                     f"Impacted by Python module: {module}"
                 )
     ordered = tuple(sorted(selected))
-    base_prereqs = frozenset(
-        name for name, tests in config.prerequisites.items() if selected & set(tests)
-    )
+    base_prereqs = frozenset()
+    if config.prerequisites:
+        from engineering_ci import git_source
+
+        def _activated(member):
+            selected_identities = {
+                identity
+                for target in selected
+                for identity in (
+                    _binding_identity(
+                        _target_binding(target, member, framework=config.framework)
+                    ),
+                )
+                if identity is not None
+            }
+            return frozenset(
+                name
+                for name, tests in config.prerequisites.items()
+                if any(
+                    _binding_identity(
+                        _target_binding(test, member, framework=config.framework)
+                    )
+                    in selected_identities
+                    for test in tests
+                )
+            )
+
+        if tree_in_odb:
+            try:
+                with git_source.raw_checkout(root, exec_tree) as (
+                    checkout,
+                    _env,
+                    _fmt,
+                ):
+                    base_prereqs = _activated(_worktree_member(checkout))
+            except (git_source.GitSourceError, OSError) as error:
+                raise SelectionError("pytest_target_unreadable") from error
+        else:
+            base_prereqs = _activated(_worktree_member(root))
     prerequisites = set(base_prereqs)
     if config.dependency_edges:
         active_checks = _active_check_names(changes, config, root)
@@ -2614,6 +3054,7 @@ def _non_test_check_scopes(
     root,
     *,
     hygiene_config=None,
+    hygiene_config_path=None,
     sources_config=None,
     sources_identity=None,
     config_path=None,
@@ -2622,7 +3063,11 @@ def _non_test_check_scopes(
 ):
     """Per-check non-test impact aligned with authoritative Hygiene and Sources configs."""
     if hygiene_config is None:
-        hygiene_config, _ = _resolve_hygiene_input(root, config)
+        hygiene_config, hygiene_id = _resolve_hygiene_input(
+            root, config, hygiene_config_path=hygiene_config_path
+        )
+        if hygiene_config_path is None and isinstance(hygiene_id, dict):
+            hygiene_config_path = hygiene_id.get("path")
     if sources_config is None and sources_identity is None:
         sources_config, sources_identity = _resolve_sources_input(root)
     hygiene_scopes = hygiene.check_applicability(
@@ -2631,6 +3076,7 @@ def _non_test_check_scopes(
         root=root,
         full=False,
         code_prefixes=config.check_scope.code_prefixes,
+        hygiene_config_path=hygiene_config_path,
     )
     is_delete = getattr(changes, "ref_action", None) == "delete"
     paths = [_normalized(path) for path in changes.paths]
@@ -3040,6 +3486,7 @@ def _check_scope(
     root,
     *,
     hygiene_config=None,
+    hygiene_config_path=None,
     sources_config=None,
     sources_identity=None,
     config_path=None,
@@ -3070,6 +3517,7 @@ def _check_scope(
             config,
             root,
             hygiene_config=hygiene_config,
+            hygiene_config_path=hygiene_config_path,
             sources_config=sources_config,
             sources_identity=sources_identity,
             config_path=config_path,
@@ -3229,13 +3677,41 @@ def _ref_source_snapshot(
     tach_sha256 = None
     tach_graph_digest = None
     tests_modules = []
+    tests_state = "not_selected"
     tests_digest = None
+    target_bindings = []
     source_tree_id = None
     if ref_action == "delete":
         source_origin = "ref_deleted"
     elif tree and _git(root, "cat-file", "-e", f"{tree}^{{tree}}").returncode == 0:
-        source_tree_id = tree_content_id(root, tree)
-        source_origin = "git_target_tree" if source_tree_id else "unverifiable"
+        from engineering_ci import git_source
+
+        try:
+            with git_source.raw_checkout(root, tree) as (checkout, _env, _fmt):
+                source_tree_id = directory_content_id(checkout)
+                source_origin = "git_target_tree" if source_tree_id else "unverifiable"
+                if entry.get("tests"):
+                    binding_member = _worktree_member(checkout)
+                    target_bindings = [
+                        _binding_record(
+                            _target_binding(
+                                target, binding_member, framework=config.framework
+                            )
+                        )
+                        for target in entry.get("tests") or ()
+                    ]
+                else:
+                    target_bindings = []
+        except (git_source.GitSourceError, OSError):
+            source_tree_id = None
+            source_origin = "unverifiable"
+            target_bindings = [
+                {"target": target, "kind": "unavailable"}
+                for target in entry.get("tests") or ()
+            ]
+        target_bindings.sort(
+            key=lambda item: (str(item.get("target")), str(item.get("kind")))
+        )
         cat = _git(root, "cat-file", "-p", f"{tree}:{_normalized(config.tach)}")
         if cat.returncode == 0:
             tach_sha256 = hashlib.sha256(cat.stdout.encode("utf-8")).hexdigest()
@@ -3244,9 +3720,25 @@ def _ref_source_snapshot(
                 tach_graph_digest = f"sha256:{_json_sha256({'modules': list(tg[0]), 'reverse': {k: list(v) for k, v in sorted(tg[1].items())}})}"
             except SelectionError:
                 tach_graph_digest = None
-        test_prefix = ".".join(Path(config.tests_dir).parts)
-        tree_tests = _tree_test_modules(root, tree, config.tests_dir, test_prefix)
-        tests_modules = list(tree_tests) if tree_tests is not None else []
+        # Record the actual binding facts of this Ref's targets from the Git
+        # Tree itself, plus the discovery state. The discovery list only scopes
+        # automatic selection; it never stands in for the real Source members.
+        if entry.get("tests"):
+            test_prefix = ".".join(Path(config.tests_dir).parts)
+            tree_tests = _tree_test_modules(
+                root,
+                tree,
+                config.tests_dir,
+                test_prefix,
+                norecursedirs=(
+                    _pytest_norecursedirs(root, tree=tree)
+                    if config.framework == "pytest"
+                    else ()
+                ),
+                framework=config.framework,
+            )
+            tests_state = "enumerated" if tree_tests is not None else "unavailable"
+            tests_modules = list(tree_tests) if tree_tests is not None else []
         tests_digest = f"sha256:{_json_sha256(tests_modules)}"
     else:
         source_origin = "unverifiable"
@@ -3255,7 +3747,7 @@ def _ref_source_snapshot(
     )
     body = {
         "kind": "engineering-ci-per-ref-source-snapshot",
-        "schema_version": 1,
+        "schema_version": 2,
         "source_origin": source_origin,
         "target_tree": tree,
         "source_tree_id": source_tree_id,
@@ -3264,8 +3756,11 @@ def _ref_source_snapshot(
         "tach_sha256": tach_sha256,
         "tach_graph_digest": tach_graph_digest,
         "tests_dir": config.tests_dir,
+        "tests_state": tests_state,
         "tests_modules": tests_modules,
         "tests_digest": tests_digest,
+        "target_bindings": target_bindings,
+        "bindings_digest": f"sha256:{_json_sha256(target_bindings)}",
         "config_binding": entry.get("config_source_binding"),
         "selection_digest": selection_digest,
     }
@@ -3286,7 +3781,7 @@ def verify_per_ref_source_snapshot(
     if not isinstance(snap, dict):
         raise SelectionError("expected_per_ref_source_unverifiable")
     if snap.get("kind") != "engineering-ci-per-ref-source-snapshot" or (
-        snap.get("schema_version") != 1
+        snap.get("schema_version") != 2
     ):
         raise SelectionError("expected_per_ref_source_unverifiable")
     origin = snap.get("source_origin")
@@ -3322,11 +3817,40 @@ def verify_per_ref_source_snapshot(
             or snap.get("tests_digest") != f"sha256:{_json_sha256(tests_modules)}"
         ):
             raise SelectionError("expected_per_ref_source_unverifiable")
+        tests_state = snap.get("tests_state")
+        if tests_state not in {"not_selected", "enumerated", "unavailable"}:
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        # A snapshot that did not enumerate may only cover a Ref binding no
+        # targets; a claim of "not selected" cannot justify bound targets.
+        if tests_state != "enumerated" and sel_entry.get("tests"):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        target_bindings = snap.get("target_bindings")
+        if (
+            not isinstance(target_bindings, list)
+            or snap.get("bindings_digest") != f"sha256:{_json_sha256(target_bindings)}"
+        ):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        bound_targets = {
+            item.get("target"): item
+            for item in target_bindings
+            if isinstance(item, dict)
+        }
         if sel_entry.get("status") not in {"blocked", "not_applicable"}:
             if config_binding.get("status") not in {"verified", "event_shared"}:
                 raise SelectionError("expected_per_ref_source_unverifiable")
-            if not set(sel_entry.get("tests") or ()).issubset(set(tests_modules)):
+            if tests_state == "unavailable":
                 raise SelectionError("expected_per_ref_source_unverifiable")
+            # Verification checks the recorded binding facts of this Ref; it
+            # never re-derives the full Source from the discovery list, and a
+            # Source file identity is not used as the execution target.
+            for target in sel_entry.get("tests") or ():
+                recorded = bound_targets.get(target)
+                if not isinstance(recorded, dict) or recorded.get("kind") not in {
+                    "file",
+                    "dir",
+                    "unittest",
+                }:
+                    raise SelectionError("expected_per_ref_source_unverifiable")
     if plan_ref is not None:
         for key in (
             "remote_ref",
@@ -3470,19 +3994,60 @@ def verify_materialized_source_snapshot(
         snap.get("tach_sha256") is not None or snap.get("tach_graph_digest") is not None
     ):
         raise SelectionError("expected_per_ref_source_unverifiable")
+    # Verify the recorded binding facts against the materialized Source itself.
+    # The decision to discover comes from the entry's bound targets, not from
+    # the snapshot's own claim, and the Source file identity is not reused as an
+    # execution target.
     test_prefix = ".".join(Path(sel_cfg.tests_dir).parts)
-    mat_tests = list(_test_modules(mat_path / sel_cfg.tests_dir, test_prefix))
-    if mat_tests != list(snap.get("tests_modules") or ()):
-        raise SelectionError("expected_per_ref_source_unverifiable")
+    member = _worktree_member(mat_path)
+    recorded_bindings = {
+        item.get("target"): item
+        for item in snap.get("target_bindings") or ()
+        if isinstance(item, dict)
+    }
+    bound_targets = list(sel_entry.get("tests") or ())
+    for target in bound_targets:
+        actual = _binding_record(
+            _target_binding(target, member, framework=sel_cfg.framework)
+        )
+        if actual.get("kind") not in {"file", "dir", "unittest"}:
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        if recorded_bindings.get(target) != actual:
+            raise SelectionError("expected_per_ref_source_unverifiable")
+    if bound_targets:
+        if snap.get("tests_state") != "enumerated":
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        mat_tests = list(
+            _test_modules(
+                mat_path / sel_cfg.tests_dir,
+                test_prefix,
+                norecursedirs=(
+                    _pytest_norecursedirs(mat_path)
+                    if sel_cfg.framework == "pytest"
+                    else ()
+                ),
+                framework=sel_cfg.framework,
+                tests_dir_rel=sel_cfg.tests_dir,
+            )
+        )
+        if mat_tests != list(snap.get("tests_modules") or ()):
+            raise SelectionError("expected_per_ref_source_unverifiable")
+    else:
+        # No bound targets: discovery is not this Ref's obligation. Pass the
+        # absence of a bound list through as None so select() still discovers
+        # for any obligation that really requires it.
+        if snap.get("tests_state") != "not_selected":
+            raise SelectionError("expected_per_ref_source_unverifiable")
+        mat_tests = None
     if plan_ref is not None:
-        ref_cs = ref_changeset(mat_path, plan_ref)
+        ref_cs = replace(ref_changeset(mat_path, plan_ref), materialized_tree=True)
         ref_sel = select(
             ref_cs,
             sel_cfg,
             root=mat_path,
             full=full,
             tach_graph=tg,
-            all_tests=tuple(mat_tests),
+            all_tests=None if mat_tests is None else tuple(mat_tests),
         )
         binding_ok = config_binding.get("status") in {
             "verified",
@@ -3511,6 +4076,7 @@ def verify_materialized_source_snapshot(
             sel_cfg,
             mat_path,
             hygiene_config=hygiene_config,
+            hygiene_config_path=(inputs or {}).get("hygiene", {}).get("path"),
             sources_config=sources_config,
             sources_identity=sources_identity,
             config_path=(inputs or {}).get("config", {}).get("path"),
@@ -3621,6 +4187,7 @@ def per_ref_selections_and_scopes(
             config,
             root,
             hygiene_config=hygiene_config,
+            hygiene_config_path=hygiene_config_path,
             sources_config=sources_config,
             sources_identity=sources_identity,
             config_path=config_path,
@@ -3687,7 +4254,36 @@ def per_ref_selections_and_scopes(
     return per_ref_entries, per_ref_scopes
 
 
+def _tach_source_sha256(root, tach_rel, changes):
+    """Digest the same Source the Plan records: the inspected Tree blob.
+
+    A checkout with core.autocrlf rewrites CRLF locally, so hashing the file
+    would not match the raw Tree bytes used by the Plan digest.
+    """
+    tree = changes.execution_tree
+    if tree and _git(root, "cat-file", "-e", f"{tree}^{{tree}}").returncode == 0:
+        blob = _git_bytes(root, "cat-file", "blob", f"{tree}:{tach_rel}")
+        if blob.returncode == 0:
+            return hashlib.sha256(blob.stdout).hexdigest()
+        # A known inspected Tree without the Blob is unavailable; only a real
+        # non-ODB Source may fall back to the checkout file digest.
+        return None
+    return _digest(root / tach_rel)
+
+
 def _tach_check(root, config, changes):
+    tach_rel, tach_path_err = hygiene._supported_tach_config_rel(config.tach)
+    if tach_path_err is not None:
+        return {
+            "status": "refused",
+            "exit_code": 4,
+            "stdout": "",
+            "stderr": f"execution refused: {tach_path_err}",
+            "reason": tach_path_err,
+            "tach_sha256": _digest(root / config.tach),
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
     if changes.snapshot == "index":
         refusal = index_source_refusal(
             root, changes.execution_tree, index_file=changes.index_file
@@ -3703,7 +4299,31 @@ def _tach_check(root, config, changes):
             "stdout": "",
             "stderr": f"execution refused: {refusal}",
             "reason": refusal,
-            "tach_sha256": _digest(root / config.tach),
+            "tach_sha256": _tach_source_sha256(root, tach_rel, changes),
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
+    try:
+        stat_source_file(root, tach_rel)
+    except (FileNotFoundError, NotADirectoryError):
+        return {
+            "status": "refused",
+            "exit_code": 4,
+            "stdout": "",
+            "stderr": "execution refused: tach_config_missing",
+            "reason": "tach_config_missing",
+            "tach_sha256": "",
+            "source_tree": changes.execution_tree or changes.tree,
+            "snapshot": changes.snapshot,
+        }
+    except (SourcePathError, OSError):
+        return {
+            "status": "refused",
+            "exit_code": 4,
+            "stdout": "",
+            "stderr": "execution refused: tach_config_invalid",
+            "reason": "tach_config_invalid",
+            "tach_sha256": "",
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
@@ -3723,25 +4343,38 @@ def _tach_check(root, config, changes):
             "exit_code": 127,
             "stdout": "",
             "stderr": "tach not found",
-            "tach_sha256": _digest(root / config.tach),
+            "tach_sha256": _tach_source_sha256(root, tach_rel, changes),
             "source_tree": changes.execution_tree or changes.tree,
             "snapshot": changes.snapshot,
         }
     return {
         "status": "passed" if result.returncode == 0 else "failed",
         "exit_code": result.returncode,
+        "executable": "tach",
+        "tach_path": tach_rel,
         "stdout": result.stdout[-4000:],
         "stderr": result.stderr[-4000:],
-        "tach_sha256": _digest(root / config.tach),
+        "tach_sha256": _tach_source_sha256(root, tach_rel, changes),
         "source_tree": changes.execution_tree or changes.tree,
         "snapshot": changes.snapshot,
     }
 
 
-def _graph_validation(selection, config, root, value):
+def _graph_validation(
+    selection, config, root, value, *, tach_sha256=None, tach_sha_authoritative=False
+):
     if value is None:
         return {"status": "not_executed"}
-    expected_sha = _digest(root / config.tach)
+    if tach_sha_authoritative:
+        # A known inspected Tree must not fall back to the checkout file, and a
+        # record cannot be validated when the inspected digest is unavailable.
+        expected_sha = tach_sha256
+        if expected_sha is None:
+            return {"status": "untrusted", "reason": "tach_config_unavailable"}
+    else:
+        expected_sha = (
+            tach_sha256 if tach_sha256 is not None else _digest(root / config.tach)
+        )
     expected_tree = selection.changeset.execution_tree or selection.changeset.tree
     if value.get("tach_sha256") != expected_sha:
         return {"status": "untrusted", "reason": "tach_config_mismatch"}
@@ -3755,6 +4388,16 @@ def _graph_validation(selection, config, root, value):
     }
     if value.get("reason") is not None:
         report["reason"] = value.get("reason")
+    if report["status"] in {"passed", "failed"}:
+        for key in (
+            "executable",
+            "tach_path",
+            "snapshot",
+            "stdout",
+            "stderr",
+        ):
+            if key in value and value[key] is not None:
+                report[key] = value[key]
     return report
 
 
@@ -3837,7 +4480,10 @@ def plan(
 ):
     """Machine-readable handoff shared by local CLI, Dagger and Actions."""
     root, config_path = Path(root), Path(config_path)
-    tach_path = root / config.tach
+    tach_rel, tach_path_err = hygiene._supported_tach_config_rel(config.tach)
+    if tach_path_err is not None:
+        raise SelectionError(tach_path_err)
+    tach_path = root / tach_rel
     loaded_hygiene, hygiene_identity = _resolve_hygiene_input(
         root,
         config,
@@ -3867,13 +4513,89 @@ def plan(
         if loaded_profile is not None
         else None
     )
+    test_prefix = ".".join(Path(config.tests_dir).parts)
+    needs_test_discovery = (
+        bool(selection.tests) or selection.full_tests or selection.escalated
+    )
+    # Discovery and Tach graph facts must come from the same Source the
+    # selection inspected, not from whatever the current checkout contains.
+    inspected_tree = getattr(selection.changeset, "execution_tree", None)
+    inspected_tree_in_odb = bool(inspected_tree) and (
+        _git(root, "cat-file", "-e", f"{inspected_tree}^{{tree}}").returncode == 0
+    )
     try:
-        tach_graph = _tach_graph(tach_path)
+        tach_graph = (
+            _tree_tach_graph(root, inspected_tree, tach_rel)
+            if inspected_tree_in_odb
+            else _tach_graph(tach_path)
+        )
     except SelectionError:
         tach_graph = None
-    test_prefix = ".".join(Path(config.tests_dir).parts)
-    all_tests = _test_modules(root / config.tests_dir, test_prefix)
-    graph = _graph_validation(selection, config, root, tach_validation)
+    # The digest must describe the same inspected configuration the graph and
+    # discovery facts come from, not the current checkout.
+    if inspected_tree_in_odb:
+        tach_blob = _git_bytes(root, "cat-file", "blob", f"{inspected_tree}:{tach_rel}")
+        plan_tach_sha256 = (
+            hashlib.sha256(tach_blob.stdout).hexdigest()
+            if tach_blob.returncode == 0
+            else None
+        )
+    else:
+        plan_tach_sha256 = _digest(tach_path)
+    try:
+        if inspected_tree_in_odb:
+            tree_tests = _tree_test_modules(
+                root,
+                inspected_tree,
+                config.tests_dir,
+                test_prefix,
+                norecursedirs=(
+                    _pytest_norecursedirs(root, tree=inspected_tree)
+                    if config.framework == "pytest"
+                    else ()
+                ),
+                framework=config.framework,
+            )
+            all_tests = (
+                tree_tests
+                if tree_tests is not None
+                else _test_modules(
+                    root / config.tests_dir,
+                    test_prefix,
+                    norecursedirs=(
+                        _pytest_norecursedirs(root)
+                        if config.framework == "pytest"
+                        else ()
+                    ),
+                    framework=config.framework,
+                    tests_dir_rel=config.tests_dir,
+                )
+            )
+        else:
+            all_tests = _test_modules(
+                root / config.tests_dir,
+                test_prefix,
+                norecursedirs=(
+                    _pytest_norecursedirs(root) if config.framework == "pytest" else ()
+                ),
+                framework=config.framework,
+                tests_dir_rel=config.tests_dir,
+            )
+    except SelectionError as error:
+        # Only an obligation that actually discovers tests may be refused by an
+        # unsupported exclusion pattern; a plan that selects no tests must still
+        # produce its independent checks (for example Hygiene).
+        if error.code != "pytest_norecursedirs_unsupported" or needs_test_discovery:
+            raise
+        all_tests = ()
+    graph = _graph_validation(
+        selection,
+        config,
+        root,
+        tach_validation,
+        tach_sha256=plan_tach_sha256,
+        tach_sha_authoritative=inspected_tree_in_odb,
+    )
     profile_changed = False
     if resolved_profile_path is not None:
         try:
@@ -3891,6 +4613,11 @@ def plan(
         config,
         root,
         hygiene_config=loaded_hygiene,
+        hygiene_config_path=(
+            hygiene_identity.get("path")
+            if isinstance(hygiene_identity, dict)
+            else hygiene_config_path
+        ),
         sources_config=loaded_sources,
         sources_identity=sources_identity,
         config_path=config_path,
@@ -3971,7 +4698,7 @@ def plan(
         root=root,
         workflow_config_digests=wf_digests,
     )
-    tach_input = {"path": config.tach, "sha256": _digest(tach_path)}
+    tach_input = {"path": config.tach, "sha256": plan_tach_sha256}
     if tach_graph is not None:
         tach_input["modules"] = list(tach_graph[0])
         tach_input["reverse"] = {k: list(v) for k, v in sorted(tach_graph[1].items())}
@@ -3993,7 +4720,7 @@ def plan(
         "name": "engineering-ci",
         "version": _version(),
         "config_sha256": _digest(config_path),
-        "tach_sha256": _digest(tach_path),
+        "tach_sha256": plan_tach_sha256,
     }
     if loaded_profile is not None:
         generator_payload["effective_profile_sha256"] = loaded_profile.get(
@@ -4498,6 +5225,186 @@ def validate_post_completion_binding(plan, root):
     return result
 
 
+def _is_link_stat(info):
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def _check_resolved_in_source(candidate, resolved_root):
+    """Return ``(resolved_path, None)`` or ``(None, refusal)`` when escaping Source."""
+    try:
+        resolved = candidate.resolve(strict=False)
+        rel_target = resolved.relative_to(resolved_root)
+    except (OSError, ValueError):
+        return None, "pytest_target_outside_source"
+    if any(segment.lower() == ".git" for segment in rel_target.parts):
+        return None, "pytest_target_outside_source"
+    return resolved, None
+
+
+def _check_bound_pytest_directory(root_dir, resolved_root, start_resolved):
+    """Verify recursive directory members of a pytest target stay inside ``resolved_root``."""
+    visited = {start_resolved}
+    stack = [root_dir]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                items = sorted(entries, key=lambda entry: entry.name)
+        except OSError:
+            return "pytest_target_unreadable"
+        for entry in items:
+            if entry.name.lower() == ".git":
+                return "pytest_target_outside_source"
+            entry_path = Path(entry.path)
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                return "pytest_target_unreadable"
+            is_link = _is_link_stat(info)
+            if is_link or stat.S_ISDIR(info.st_mode):
+                entry_resolved, refusal = _check_resolved_in_source(
+                    entry_path, resolved_root
+                )
+                if refusal:
+                    return refusal
+                if entry_resolved.is_dir() and not (
+                    # Avoid following directory junctions/symlinks twice or looping.
+                    entry_resolved in visited
+                ):
+                    visited.add(entry_resolved)
+                    stack.append(entry_path)
+    return None
+
+
+def _check_bound_pytest_path(root, resolved_root, rel_posix):
+    """Verify ``rel_posix``, ancestors, and recursive directory members stay inside ``root``."""
+    current = Path(root)
+    parts = rel_posix.split("/")
+    for index, part in enumerate(parts, start=1):
+        current /= part
+        try:
+            info = current.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            return False, None
+        except OSError:
+            return False, "pytest_target_unreadable"
+        if _is_link_stat(info):
+            _, refusal = _check_resolved_in_source(current, resolved_root)
+            if refusal:
+                return False, refusal
+        if index == len(parts):
+            resolved, refusal = _check_resolved_in_source(current, resolved_root)
+            if refusal:
+                return False, refusal
+            if resolved.is_dir():
+                dir_refusal = _check_bound_pytest_directory(
+                    current, resolved_root, resolved
+                )
+                if dir_refusal:
+                    return False, dir_refusal
+            return current.exists(), None
+    return False, None
+
+
+def _format_pytest_cli_target(rel_posix, sep="", nodeid=""):
+    # Prefix leading "@" so pytest's ArgumentParser(fromfile_prefix_chars="@") never opens
+    # an @argsfile after "--", and prefix "./" for single-segment non-.py path targets
+    # (such as "./chosen" or "./sub.pkg") so directory targets stay unambiguous paths.
+    needs_dot_slash = rel_posix.startswith("@") or (
+        "/" not in rel_posix and not rel_posix.endswith(".py")
+    )
+    cli_path = f"./{rel_posix}" if needs_dot_slash else rel_posix
+    return f"{cli_path}::{nodeid}" if sep else cli_path
+
+
+def _split_and_check_path_parts(raw_target):
+    raw_posix = raw_target.replace("\\", "/")
+    if has_windows_or_absolute_root(raw_target) or Path(raw_target).is_absolute():
+        return None, "pytest_target_outside_source"
+    raw_parts = raw_posix.split("/")
+    if ".." in raw_parts:
+        return None, "pytest_target_outside_source"
+    parts = [part for part in raw_parts if part and part != "."]
+    if not parts:
+        return None, "pytest_target_invalid"
+    if any(part.lower() == ".git" for part in parts):
+        return None, "pytest_target_outside_source"
+    rel_posix = "/".join(parts)
+    # Reject Windows drives exposed after stripping "." ("./C:/outside", "./C:outside")
+    # as well as option-like normalized targets ("./--version").
+    if has_windows_or_absolute_root(rel_posix) or any(
+        ntpath.splitdrive(part)[0] for part in parts
+    ):
+        return None, "pytest_target_outside_source"
+    if ":" in rel_posix:
+        return None, "pytest_target_invalid"
+    if rel_posix.startswith("-"):
+        return None, "pytest_target_invalid"
+    return rel_posix, None
+
+
+def _resolve_pytest_target(target, root):
+    """Resolve a target into a bound repository-relative pytest CLI argument.
+
+    Shares ``_target_binding`` with Selection and Snapshot, so the candidate
+    order and refusal semantics are the same facts the runtime uses. Never emits
+    ``--pyargs`` so an external ``PYTHONPATH`` package cannot shadow or
+    substitute for a target inside the bound Source root.
+    """
+    binding = _target_binding(target, _worktree_member(root), framework="pytest")
+    if binding is None:
+        return None, "pytest_target_invalid"
+    if binding.get("kind") == "refused":
+        return None, binding.get("refusal") or "pytest_target_unreadable"
+    _raw, sep, nodeid = target.partition("::")
+    return _format_pytest_cli_target(binding["path"], sep, nodeid), None
+
+
+def _validate_bound_pytest_cli_target(target):
+    """Validate an already-bound CLI target without re-interpreting it as dotted."""
+    if (
+        not isinstance(target, str)
+        or not target.strip()
+        or any(ch in target for ch in "\0\r\n")
+        or target.lstrip().startswith(("-", "@"))
+    ):
+        return False, "pytest_target_invalid"
+    raw_target, sep, nodeid = target.partition("::")
+    if not raw_target or raw_target != raw_target.strip() or (sep and not nodeid):
+        return False, "pytest_target_invalid"
+    rel_posix, refusal = _split_and_check_path_parts(raw_target)
+    if refusal:
+        return False, refusal
+    if _format_pytest_cli_target(rel_posix, sep, nodeid) != target:
+        return False, "pytest_target_invalid"
+    return True, None
+
+
+def _resolve_pytest_targets(targets, root):
+    """Resolve selection targets into bound pytest CLI arguments or report the first refusal."""
+    resolved_targets = []
+    seen = set()
+    for target in targets:
+        resolved_target, target_refusal = _resolve_pytest_target(target, root)
+        if target_refusal:
+            return None, target_refusal, target
+        if not resolved_target or resolved_target.startswith(("-", "@")):
+            return None, "pytest_target_invalid", target
+        if resolved_target not in seen:
+            seen.add(resolved_target)
+            resolved_targets.append(resolved_target)
+    return resolved_targets, None, None
+
+
+def resolve_pytest_targets(targets, root):
+    """Resolve Plan pytest targets into bound repository-relative CLI paths."""
+    resolved_targets, target_refusal, _ = _resolve_pytest_targets(targets, root)
+    return resolved_targets, target_refusal
+
+
 def run_tests(
     modules,
     *,
@@ -4538,10 +5445,21 @@ def run_tests(
     environment["PYTHONPATH"] = source + (os.pathsep + existing if existing else "")
     executable = python or sys.executable
     if framework == "pytest":
+        resolved_targets, target_refusal, bad_target = _resolve_pytest_targets(
+            modules, root
+        )
+        if target_refusal:
+            message = f"execution refused: {target_refusal}: {bad_target}"
+            if capture is not None:
+                capture["source_refusal"] = target_refusal
+                capture["stderr"] = message + "\n"
+            print(message, file=sys.stderr)
+            return 4
         command = [executable, "-X", "utf8", "-m", "pytest", "-q"]
         if junit_path is not None:
             command.append(f"--junitxml={Path(junit_path).resolve()}")
-        command.extend(modules)
+        command.append("--")
+        command.extend(resolved_targets)
     elif framework == "unittest":
         command = [executable, "-X", "utf8", "-m", "unittest", *modules, "-v"]
     else:

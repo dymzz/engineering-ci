@@ -2,11 +2,12 @@
 
 import json
 import math
+import ntpath
 import re
 import xml.etree.ElementTree as ET
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 MAX_COVERAGE_BYTES = 2 * 1024 * 1024
 
@@ -30,13 +31,29 @@ def test_policy(
         ("test_path", test_path.split("::", 1)[0]),
         ("coverage_source", coverage_source),
     ):
-        if value and (
-            value.startswith("-")
-            or PurePosixPath(value).is_absolute()
-            or ".." in PurePosixPath(value.replace("\\", "/")).parts
-            or re.match(r"^[A-Za-z]:", value)
-        ):
-            raise ValueError(f"{name} must be a relative workspace path or module name")
+        if value:
+            trimmed = value.lstrip()
+            raw_posix = trimmed.replace("\\", "/")
+            parts = [part for part in raw_posix.split("/") if part and part != "."]
+            normalized = "/".join(parts)
+            if (
+                trimmed.startswith("-")
+                or normalized.startswith("-")
+                or raw_posix.startswith("/")
+                or bool(ntpath.splitdrive(trimmed)[0])
+                or bool(ntpath.splitdrive(raw_posix)[0])
+                or bool(PureWindowsPath(trimmed).drive)
+                or bool(PureWindowsPath(normalized).drive)
+                or PureWindowsPath(trimmed).is_absolute()
+                or PureWindowsPath(normalized).is_absolute()
+                or PurePosixPath(raw_posix).is_absolute()
+                or ".." in raw_posix.split("/")
+                or bool(re.match(r"^[A-Za-z]:", trimmed))
+                or bool(re.match(r"^[A-Za-z]:", normalized))
+            ):
+                raise ValueError(
+                    f"{name} must be a relative workspace path or module name"
+                )
     if not test_path.strip():
         raise ValueError("test_path must not be empty")
     threshold = None
@@ -88,7 +105,10 @@ def pytest_arguments(policy: dict, junit_path: str) -> list[str]:
             "--cov-report=xml:/tmp/engineering-ci-coverage.xml",
             "--cov-report=json:/tmp/engineering-ci-coverage.json",
         ]
-    return args + [policy["test_path"]]
+    path_arg = policy["test_path"]
+    if path_arg.startswith("@"):
+        path_arg = f"./{path_arg}"
+    return args + [path_arg]
 
 
 def read_coverage(xml_path: Path, json_path: Path) -> dict:

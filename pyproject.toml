@@ -24,6 +24,18 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = [
+    "fixtures",
+    "*.egg",
+    ".*",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "_darcs",
+    "CVS",
+    "{arch}",
+]
 pythonpath = ["src"]
 # Native defaults; explicit CLI --durations/--durations-min still overrides these
 # (the report plugin never rewrites native reporting options). The native
