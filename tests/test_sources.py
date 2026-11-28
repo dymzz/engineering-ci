@@ -4,6 +4,8 @@ import hashlib
 import json
 import subprocess
 
+import pytest
+
 from engineering_ci import sources
 
 
@@ -130,11 +132,6 @@ def test_digest_and_size_mismatches_fail(tmp_path):
     assert {"digest", "size"} <= found
 
 
-def test_unsafe_manifest_path_is_refused(tmp_path):
-    root = make(tmp_path, entries=[entry("../escape", b"x")])
-    assert "path_invalid" in codes(check(root))
-
-
 def test_environment_coordinate_may_be_absent(tmp_path):
     root = make(
         tmp_path,
@@ -158,9 +155,16 @@ def test_environment_entry_with_claimed_bytes_is_refused(tmp_path):
     assert "environment_has_digest" in codes(check(root))
 
 
-def test_path_outside_acquired_roots_is_refused(tmp_path):
-    root = make(tmp_path, entries=[entry("src/other.py", b"x")])
-    assert "path_outside_roots" in codes(check(root))
+@pytest.mark.parametrize(
+    ("path", "expected_code"),
+    [
+        pytest.param("../escape", "path_invalid", id="unsafe-manifest-path"),
+        pytest.param("src/other.py", "path_outside_roots", id="outside-acquired-roots"),
+    ],
+)
+def test_refused_manifest_paths(tmp_path, path, expected_code):
+    root = make(tmp_path, entries=[entry(path, b"x")])
+    assert expected_code in codes(check(root))
 
 
 def test_null_path_without_evidence_is_allowed_but_with_evidence_is_refused(tmp_path):
