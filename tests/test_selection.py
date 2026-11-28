@@ -3950,8 +3950,13 @@ def test_graph_validation_untrusted_when_inspected_digest_unavailable(tmp_path):
         tach = "tach.toml"
 
     for value in (
-        {"status": "passed", "exit_code": 0, "tach_sha256": None},
-        {"status": "passed", "exit_code": 0},
+        {
+            "status": "passed",
+            "exit_code": 0,
+            "tach_sha256": None,
+            "source_tree": "a" * 40,
+        },
+        {"status": "passed", "exit_code": 0, "source_tree": "a" * 40},
     ):
         result = selection._graph_validation(
             _Selected(),
@@ -4019,7 +4024,7 @@ def test_tree_tach_graph_requires_strict_utf8(tmp_path):
         subprocess.run(
             ["git", "hash-object", "-w", "--stdin"],
             cwd=path,
-            input=b'source_roots = ["src"]\n\xff\xfe\n',
+            input=b'source_roots = ["sr\xffc"]\n',
             capture_output=True,
             check=True,
         )

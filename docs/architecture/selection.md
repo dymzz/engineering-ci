@@ -533,13 +533,13 @@ for actual request/reader counts and failure preservation.
   materialized verification re-resolves each bound target against the
   materialized Source and rejects any recorded mismatch. Verification requires
   `enumerated` whenever the Ref binds targets and refuses an `unavailable`
+  claim; discovery during materialized verification is decided by the entry's
+  bound targets, not by the snapshot's own claim.
 - Per-Ref source snapshots use `schema_version = 2`. Records with the older
   version are rejected, not upgraded in place: a current-contract proof is
   regenerated from the actual Source, and historical originals keep their
   version and digests. No migration layer or automatic field synthesis is
   introduced.
-  claim; discovery during materialized verification is decided by the entry's
-  bound targets, not by the snapshot's own claim.
 - Host `run_tests(..., framework="pytest")` and Dagger Plan-selected
   `plan_execution._tests` / `EngineeringCi._run_pytest` resolve Selection targets
   (including historical dotted modules and optional `::nodeid` suffixes)

@@ -50,6 +50,7 @@ depends_on = [
 [[modules]]
 path = "engineering_ci.cli"
 depends_on = [
+    "engineering_ci.ci_applicability",
     "engineering_ci.cicd_telemetry",
     "engineering_ci.cli.download",
     "engineering_ci.cli.release",
@@ -89,7 +90,9 @@ depends_on = [
 
 [[modules]]
 path = "engineering_ci.cli.verify"
-depends_on = []
+depends_on = [
+    "engineering_ci.verify_report",
+]
 
 [[modules]]
 path = "engineering_ci.dagger_plan"
@@ -158,6 +161,7 @@ depends_on = [
     "engineering_ci.git_source",
     "engineering_ci.hooks",
     "engineering_ci.reconciliation",
+    "engineering_ci.plan_contract",
     "engineering_ci.selection",
 ]
 
@@ -394,4 +398,32 @@ rename = [
 exclude = [
     "pytest_ci",
     "pytest_report",
+]
+
+[[modules]]
+path = "engineering_ci.ci_applicability"
+depends_on = [
+    "engineering_ci.ci_check_inputs",
+    "engineering_ci.selection",
+]
+
+[[modules]]
+path = "engineering_ci.ci_check_inputs"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.pytest_contracts"
+depends_on = []
+
+[[modules]]
+path = "engineering_ci.verify_report"
+depends_on = [
+    "engineering_ci.cicd_telemetry",
+    "engineering_ci.dagger_telemetry",
+    "engineering_ci.execution",
+    "engineering_ci.hook_checks",
+    "engineering_ci.hooks",
+    "engineering_ci.plan_contract",
+    "engineering_ci.pytest_contracts",
+    "engineering_ci.reconciliation",
 ]
