@@ -29,7 +29,8 @@ not match the tool output (later fixed in `e407d5b`). |
 
 Note: the repository whitespace hook rejects trailing spaces, so trailing
 whitespace inside the captured logs was stripped and the checked-in files use
-LF line endings; every other byte is verbatim.
+LF line endings; the raw captures were CRLF-free as well, so only trailing
+whitespace differs. Every other byte is verbatim.
 
 Update: the third case was fixed after this record. Commit e407d5b asserts the bound pytest contract (report/exit/native input refs/argv) instead of the stub stdout rendering, so only the two environment-caused producer failures remain.
 
