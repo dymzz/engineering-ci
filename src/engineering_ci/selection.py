@@ -2290,10 +2290,16 @@ def _tree_tach_graph(root, tree, tach_rel_path):
     tach_rel, err = hygiene._supported_tach_config_rel(tach_rel_path)
     if err is not None:
         raise SelectionError(err)
-    cat = _git(root, "cat-file", "-p", f"{tree}:{tach_rel}")
+    cat = _git_bytes(root, "cat-file", "blob", f"{tree}:{tach_rel}")
     if cat.returncode != 0:
         raise SelectionError("tach_config_invalid")
-    return _tach_graph_text(cat.stdout)
+    try:
+        text = cat.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        # Invalid UTF-8 is a configuration error, not a replacement-character
+        # graph; the digest still refers to the raw bytes.
+        raise SelectionError("tach_config_invalid") from None
+    return _tach_graph_text(text)
 
 
 def _reverse_closure(changed, reverse):
@@ -4300,8 +4306,11 @@ def _graph_validation(
     if value is None:
         return {"status": "not_executed"}
     if tach_sha_authoritative:
-        # A known inspected Tree must not fall back to the checkout file.
+        # A known inspected Tree must not fall back to the checkout file, and a
+        # record cannot be validated when the inspected digest is unavailable.
         expected_sha = tach_sha256
+        if expected_sha is None:
+            return {"status": "untrusted", "reason": "tach_config_unavailable"}
     else:
         expected_sha = (
             tach_sha256 if tach_sha256 is not None else _digest(root / config.tach)

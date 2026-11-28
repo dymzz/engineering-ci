@@ -1,11 +1,13 @@
 """Generic Git impact selection, plan identity and native unittest execution."""
 
 import dataclasses
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -3800,36 +3802,195 @@ def test_target_binding_matches_resolver_candidate_for_module_named_directory(
 
 
 def test_per_ref_snapshot_rejects_v1_schema(tmp_path):
-    # P2-10: the per-Ref snapshot schema is 2; a v1 record is not upgraded.
-    body = {
-        "kind": "engineering-ci-per-ref-source-snapshot",
-        "schema_version": 1,
-        "source_origin": "git_target_tree",
-        "target_tree": "a" * 40,
-        "source_tree_id": "a" * 64,
-        "ref_action": "update",
-        "tach_path": "tach.toml",
-        "tach_sha256": None,
-        "tach_graph_digest": None,
-        "tests_dir": "tests",
-        "tests_state": "not_selected",
-        "tests_modules": [],
-        "tests_digest": "sha256:" + selection._json_sha256([]),
-        "target_bindings": [],
-        "bindings_digest": "sha256:" + selection._json_sha256([]),
-        "config_binding": {"status": "verified"},
-        "selection_digest": "unused",
-    }
-    snap = {**body, "snapshot_digest": "sha256:" + selection._json_sha256(body)}
+    # P2-10: a valid v2 record is accepted; changing only the version (and the
+    # derived digest) is refused, so the version guard is what rejects it.
+    path = tmp_path / "schema_version"
+    (path / "tests").mkdir(parents=True)
+    (path / "tests/test_unit.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8"
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n', encoding="utf-8"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    cfg = selection.load_config(path / "ci-selection.toml")
     entry = {
         "status": "targeted",
-        "tree": "a" * 40,
+        "tree": tree,
         "ref_action": "update",
-        "tests": [],
+        "tests": ["tests/test_unit.py"],
         "config_source_binding": {"status": "verified"},
-        "source_snapshot_ref": snap,
+    }
+    snap = selection._ref_source_snapshot(
+        path, {"tree": tree, "ref_action": "update"}, config=cfg, entry=entry
+    )
+    assert snap["schema_version"] == 2
+    selection.verify_per_ref_source_snapshot({**entry, "source_snapshot_ref": snap})
+
+    body = {k: v for k, v in snap.items() if k != "snapshot_digest"}
+    body["schema_version"] = 1
+    v1_snap = {
+        **body,
+        "snapshot_digest": "sha256:" + selection._json_sha256(body),
     }
     with pytest.raises(
         selection.SelectionError, match="expected_per_ref_source_unverifiable"
     ):
-        selection.verify_per_ref_source_snapshot(entry)
+        selection.verify_per_ref_source_snapshot(
+            {**entry, "source_snapshot_ref": v1_snap}
+        )
+
+
+def test_plan_tach_digest_comes_from_inspected_tree_raw_bytes(tmp_path):
+    # P2-08: the Plan digest is the raw blob of the inspected Tree, not the
+    # worktree file, and graph validation consumes that same fact.
+    path = tmp_path / "crlf_tach"
+    (path / "tests").mkdir(parents=True)
+    (path / "src").mkdir()
+    (path / "src/pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8"
+    )
+    (path / "tach.toml").write_bytes(
+        b'source_roots = ["src"]\r\n\r\n[[modules]]\r\npath = "pkg"\r\n'
+        b"depends_on = []\r\n"
+    )
+    (path / "ci-selection.toml").write_text(
+        'schema_version = 1\nframework = "pytest"\n', encoding="utf-8"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "base")
+    base = run(path, "rev-parse", "HEAD").strip()
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert 1 == 1\n", encoding="utf-8"
+    )
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "change")
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    # The checkout no longer matches the inspected Tree.
+    (path / "tach.toml").write_bytes(
+        b'source_roots = ["src"]\n\n[[modules]]\npath = "other"\ndepends_on = []\n'
+    )
+    raw_blob = subprocess.run(
+        ["git", "cat-file", "blob", f"{tree}:tach.toml"],
+        cwd=path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    expected_sha = hashlib.sha256(raw_blob).hexdigest()
+    checkout_sha = hashlib.sha256((path / "tach.toml").read_bytes()).hexdigest()
+    assert expected_sha != checkout_sha
+
+    cfg = selection.load_config(path / "ci-selection.toml")
+    inspected = selection.select(
+        selection.changeset(path, base=base, head="HEAD", mode="commit"),
+        cfg,
+        root=path,
+    )
+    planned = selection.plan(
+        inspected,
+        config=cfg,
+        config_path=path / "ci-selection.toml",
+        root=path,
+    )
+    assert planned["inputs"]["tach"]["sha256"] == expected_sha
+    assert planned["generator"]["tach_sha256"] == expected_sha
+
+    graph_value = {
+        "status": "passed",
+        "exit_code": 0,
+        "tach_sha256": expected_sha,
+        "source_tree": tree,
+    }
+    assert (
+        selection._graph_validation(
+            inspected,
+            cfg,
+            path,
+            graph_value,
+            tach_sha256=expected_sha,
+            tach_sha_authoritative=True,
+        )["status"]
+        == "passed"
+    )
+    assert (
+        selection._graph_validation(
+            inspected,
+            cfg,
+            path,
+            {**graph_value, "tach_sha256": checkout_sha},
+            tach_sha256=expected_sha,
+            tach_sha_authoritative=True,
+        )["status"]
+        == "untrusted"
+    )
+
+
+def test_graph_validation_untrusted_when_inspected_digest_unavailable(tmp_path):
+    # A known inspected Tree whose Tach record cannot supply a digest must not
+    # accept a passed record with a missing/None digest.
+    class _Selected:
+        changeset = types.SimpleNamespace(execution_tree="a" * 40, tree="a" * 40)
+
+    class _Config:
+        tach = "tach.toml"
+
+    for value in (
+        {"status": "passed", "exit_code": 0, "tach_sha256": None},
+        {"status": "passed", "exit_code": 0},
+    ):
+        result = selection._graph_validation(
+            _Selected(),
+            _Config(),
+            tmp_path,
+            value,
+            tach_sha256=None,
+            tach_sha_authoritative=True,
+        )
+        assert result == {
+            "status": "untrusted",
+            "reason": "tach_config_unavailable",
+        }
+
+
+def test_tree_tach_graph_requires_strict_utf8(tmp_path):
+    path = tmp_path / "bad_tach_bytes"
+    (path / "tests").mkdir(parents=True)
+    (path / "tests/test_keep.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    run(path, "init", "-q", "-b", "main")
+    run(path, "config", "user.email", "selection@example.invalid")
+    run(path, "config", "user.name", "Selection Test")
+    run(path, "add", "-A")
+    run(path, "commit", "-qm", "init")
+    blob = (
+        subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=path,
+            input=b'source_roots = ["src"]\n\xff\xfe\n',
+            capture_output=True,
+            check=True,
+        )
+        .stdout.decode()
+        .strip()
+    )
+    run(path, "update-index", "--add", "--cacheinfo", f"100644,{blob},tach.toml")
+    run(path, "commit", "-qm", "bad tach")
+    tree = run(path, "rev-parse", "HEAD^{tree}").strip()
+    with pytest.raises(selection.SelectionError, match="tach_config_invalid"):
+        selection._tree_tach_graph(path, tree, "tach.toml")
