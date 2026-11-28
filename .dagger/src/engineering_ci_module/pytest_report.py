@@ -9,17 +9,13 @@ from __future__ import annotations
 
 import html
 import re
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
-EXIT_REASONS = {
-    0: "success",
-    1: "tests_failed",
-    2: "interrupted",
-    3: "internal_error",
-    4: "usage_error",
-    5: "no_tests_collected",
-    6: "warnings_limit",
-}
+if not __package__ and Path(__file__).with_name("pytest_contracts.py").is_file():
+    import pytest_contracts
+else:
+    from engineering_ci import pytest_contracts
 
 
 def _bounded(value: str, limit: int) -> str:
@@ -60,9 +56,11 @@ def summarize_pytest(
         raise ValueError("max_failures must be between 1 and 50")
 
     result = {
-        "schema_version": 1,
+        "schema_version": pytest_contracts.NATIVE_PYTEST_SCHEMA_VERSION,
         "exit_code": exit_code,
-        "reason": EXIT_REASONS.get(exit_code, "unexpected_exit"),
+        "reason": pytest_contracts.PYTEST_EXIT_REASONS.get(
+            exit_code, "unexpected_exit"
+        ),
         "status": "error",
         "report_available": False,
         "counts": None,
@@ -75,26 +73,8 @@ def summarize_pytest(
     else:
         try:
             root = ET.fromstring(xml_text)
-            if root.tag == "testsuite":
-                suites = [root]
-            elif root.tag == "testsuites":
-                suites = root.findall("testsuite")
-            else:
-                raise ValueError("Unexpected JUnit XML root element")
-            if not suites:
-                raise ValueError("JUnit XML contains no test suites")
-
+            _, counts = pytest_contracts.parse_junit_suites_and_counts(root)
             cases = list(root.iter("testcase"))
-            counts = {}
-            for key in ("tests", "failures", "errors", "skipped"):
-                counts[key] = sum(int(suite.get(key, "0")) for suite in suites)
-            counts["passed"] = max(
-                0,
-                counts["tests"]
-                - counts["failures"]
-                - counts["errors"]
-                - counts["skipped"],
-            )
             failures = []
             for case in cases:
                 issue = case.find("error")
@@ -126,14 +106,9 @@ def summarize_pytest(
             result["counts"] = counts
             result["failures"] = failures[:max_failures]
             result["omitted_failures"] = max(0, len(failures) - max_failures)
-            if exit_code == 0 and counts["failures"] == 0 and counts["errors"] == 0:
-                result["status"] = "passed"
-            elif exit_code == 1:
-                result["status"] = "failed"
-            else:
-                result["status"] = "error"
+            result["status"] = pytest_contracts.native_pytest_status(exit_code, counts)
         except (ET.ParseError, ValueError) as exc:
-            result["diagnostic"] = "Invalid JUnit XML: " + _bounded(str(exc), 400)
+            result["diagnostic"] = "Invalid JUnit XML: " + _bounded(str(exc), 390)
 
     if result["status"] != "passed":
         result["console_tail"] = _bounded(console_output[-2000:], 2000)
