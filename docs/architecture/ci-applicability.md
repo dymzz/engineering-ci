@@ -120,6 +120,8 @@ uv run --locked --no-sync python -m engineering_ci.cli ci-applicability \
 文本、目标 Tree 中的合同文本和当前 checkout Tree。不同目标 Tree 上的查询记录为当前合同复算。
 `layer_3_planned_scope.checks` 表示独立适用义务，`invocations` 表示原生调用计划。version 或 lock
 任一项适用时，`version-metadata` 计划同时调用两项。
+`tests` 计划记录 `repository-test-artifacts` 与原始 pytest 退出 gate。它们共同消费本仓 `tests`
+Check 所用的同次 Dagger computation，普通报告交付随后进行。
 `execution_observation` 明确 `not_observed_in_this_report` 并指向 #52/#75/#86；查询历史 Run
 只下载既有 Artifact 与 Job 日志，不重跑 Workflow 或 pytest。
 

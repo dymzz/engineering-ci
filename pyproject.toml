@@ -21,10 +21,15 @@ dev = [
     "pytest-reportlog==1.0.0",
     "ruff==0.16.10",
 ]
+pytest-experiments = [
+    "pytest-testmon==2.4.1",
+    "pytest-xdist==3.8.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+faulthandler_timeout = 120
 # Native defaults; explicit CLI --durations/--durations-min still overrides these
 # (the report plugin never rewrites native reporting options). The native
 # strict_markers option is used because pytest 9.0.3 did not enforce
@@ -78,4 +83,7 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-extend-select = ["B", "SIM", "PIE"]
+extend-select = [
+    "B", "SIM", "PIE",
+    "PT014", "PT015", "PT016", "PT022", "PT024", "PT025", "PT026", "PT031",
+]

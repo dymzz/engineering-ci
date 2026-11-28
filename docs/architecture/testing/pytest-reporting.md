@@ -105,7 +105,7 @@ they cannot erase an earlier failed execution gate or turn passing checks red.
 
 ## Artifacts and bounds
 
-The native artifact contains only `report.json`, `exit-code.txt`, `summary.md`
+The generic native artifact contains `report.json`, `exit-code.txt`, `summary.md`
 and optional `junit.xml`. Fixture probes additionally include a one-character
 `fixture-invocations.txt` proving one pytest session. The exported stdlib
 `ci.py` helper runs checks planning, summary publication and the gate; it is
@@ -128,6 +128,35 @@ gh run download RUN_ID -R dymzz/engineering-ci -n pytest-report
 
 The overhead is report parsing and file export, not another complete test run.
 There is no database, history service, download proxy or inference component.
+
+### Engineering CI repository reports
+
+The repository's full Check and bound pytest Plans share the same execution path.
+For repository tests the Directory also retains the original ReportLog, JUnit,
+metadata and summary under `pytest-invocation/`, within the individual delivery
+bounds. The original files come from the existing pytest container. Missing or
+oversized files are recorded in `invocation_delivery.file_status`, independently
+of the original exit gate. Portable metadata uses the Invocation directory as
+the base for artifact names. The read-only report can open that directory after
+export, including when the host paths differ from the container paths.
+Verify reports the digest status of each declared file in
+`child_references.files`. The invocation reference set is verified after all
+four expected file references pass. The diagnostic directory can also locate
+partial reports. An independent directory query establishes its own observations
+and carries no digest verification from the outer Verify receipt.
+
+Root Actions exports one bundle and gates on its original exit. Regular runs
+publish `core-test-report` as a seven-day diagnostic projection of the same
+node, phase, timing, count and exit observations. The projection removes
+captured output, failure text, free-form report properties and exception text.
+Parameter instances receive opaque aliases shared across the projected node
+inventories, ReportLog and matching JUnit cases. These aliases apply within
+one published invocation. Cross-run node history uses original invocation
+reports. JUnit display names without a matching native node receive separate
+diagnostic labels.
+The formal core artifact keeps the existing `core-*` file paths and credentials
+remain under the original [#48](https://github.com/dymzz/engineering-ci/issues/48)
+delivery boundary.
 
 ## Verification and release boundary
 

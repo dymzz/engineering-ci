@@ -107,6 +107,16 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def _invocation_record(payload):
+    if payload.get("artifact_path_base") != "invocation_directory":
+        return payload
+    return {
+        **payload,
+        "report_log": _REPORT_LOG_NAME,
+        "junit_xml": _JUNIT_NAME,
+    }
+
+
 def _emit(config, message: str, *, error: bool = False) -> None:
     reporter = config.pluginmanager.get_plugin("terminalreporter")
     if reporter is not None:
@@ -451,7 +461,13 @@ def pytest_configure(config):
     existing_log = getattr(config.option, "report_log", None)
     existing_junit = getattr(config.option, "xmlpath", None)
     invocation_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
-    out_dir = root / ".artifacts" / "pytest" / invocation_id
+    # Subprocess pytest sessions must allocate their own native Invocation.
+    export_dir = os.environ.pop("ECI_PYTEST_REPORT_DIRECTORY", None)
+    out_dir = (
+        Path(export_dir).resolve()
+        if export_dir
+        else root / ".artifacts" / "pytest" / invocation_id
+    )
     report_log = (
         Path(existing_log).resolve() if existing_log else out_dir / _REPORT_LOG_NAME
     )
@@ -460,7 +476,7 @@ def pytest_configure(config):
     )
 
     try:
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=not export_dir)
     except OSError as exc:
         _emit(config, f"ECI pytest report disabled: {exc}", error=True)
         return
@@ -474,8 +490,14 @@ def pytest_configure(config):
         report_log_explicit=bool(existing_log),
         junit_explicit=bool(existing_junit),
     )
+    if (
+        export_dir
+        and report_log == out_dir / _REPORT_LOG_NAME
+        and junit_xml == out_dir / _JUNIT_NAME
+    ):
+        meta["artifact_path_base"] = "invocation_directory"
     try:
-        _write_json_atomic(out_dir / _METADATA_NAME, meta)
+        _write_json_atomic(out_dir / _METADATA_NAME, _invocation_record(meta))
     except OSError as exc:
         _emit(config, f"ECI pytest report disabled: {exc}", error=True)
         return
@@ -559,7 +581,7 @@ class _InvocationReportPlugin:
     @pytest.hookimpl(optionalhook=True)
     def pytest_xdist_node_collection_finished(self, node, ids) -> None:
         self.collection_mode = "xdist"
-        self.worker_collections[str(node.workerid)] = [str(nodeid) for nodeid in ids]
+        self.worker_collections[str(node.gateway.id)] = [str(nodeid) for nodeid in ids]
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_sessionfinish(self, session, exitstatus) -> None:
@@ -843,7 +865,9 @@ class _InvocationReportPlugin:
             },
         }
         try:
-            _write_json_atomic(Path(meta["out_dir"]) / _SUMMARY_NAME, summary)
+            _write_json_atomic(
+                Path(meta["out_dir"]) / _SUMMARY_NAME, _invocation_record(summary)
+            )
         except OSError as exc:
             self._record_delivery_failure(
                 config,
@@ -937,7 +961,9 @@ class _InvocationReportPlugin:
             },
         }
         with contextlib.suppress(OSError):
-            _write_json_atomic(Path(meta["out_dir"]) / _METADATA_NAME, failure)
+            _write_json_atomic(
+                Path(meta["out_dir"]) / _METADATA_NAME, _invocation_record(failure)
+            )
         _emit(
             config,
             "ECI pytest report delivery failed: "

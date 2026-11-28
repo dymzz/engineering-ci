@@ -116,6 +116,20 @@ uv run --locked --no-sync engineering-ci version set v0.7.0
 
 ### 本仓 pytest 调用报告
 
+普通开发明确指定测试文件、节点或 `tests/` 下的子目录。
+
+```powershell
+uv run --locked --no-sync pytest tests/test_selection.py -q
+uv run --locked --no-sync pytest tests/test_selection.py -k explicit
+uv run --locked --no-sync engineering-ci select --base origin/main --mode worktree --list
+```
+
+裸 `pytest`、仓库根、`tests/` 及等价路径在执行用例前核验范围。`-k`、`-m`、`--lf`
+必须实际缩小范围，`--ff` 只调顺序。没有匹配项时保留 pytest 原生退出。合法 `--collect-only`
+可查看清册，显式完整运行用 `pytest --full-suite`。`select --run` 使用既有 Selection，必要时报告
+全量升级。Verify 和仓库专用 Dagger 检查从其已知执行意图接入。Guard 约束正常 pytest 入口，
+Agent 的实际命令授权由宿主执行边界负责。
+
 本仓根 `pytest` / `python -m pytest` 每次正常调用会在
 `.artifacts/pytest/<invocation-id>/` 自动保留原生 `pytest-reportlog.jsonl`
 （pytest-reportlog）、`junit.xml`，以及 `metadata.json`（配置时）与 `summary.json`
@@ -137,22 +151,37 @@ sessionfinish hook 异常（不归因具体 writer）记录在 `sessionfinish_ho
 `expanduser`/`expandvars` 展开；不能证明同次归属时 `report_delivery.status=unknown`，
 不声明完整。历史 `report.jsonl` 目录不迁移、保持可读。metadata 初始化失败时自动
 reportlog/JUnit 选项不会提交，显式路径仍由原生 writer 使用。`--durations` 默认值由根
-`addopts` 提供，显式 CLI 仍覆盖。可用
+`addopts` 提供，显式 CLI 仍覆盖。原生 faulthandler 在慢用例仍运行时提供堆栈诊断。可用
 `ECI_PYTEST_NO_AUTO_REPORT=1` 或 `--eci-no-auto-report` 关闭。报告是本地观察：
 `outer_invocation_ref` 为 `unknown`、不证明外层 Invocation/Receipt；未观察到选择范围时标
 `unknown`，不把事件行数当用例数。报告交付缺失或无法验证以 `report_delivery.status` 独立
-表达，不能当作通过。本仓 Dagger self-test 会加载 `tests/conftest.py`，容器内可能生成同样
-本地报告但不导出；Dagger/CI 原生报告导出仍归 #167 R3/#86。报告文件仅在本机 `.artifacts/`
-（已忽略）保留，不上传、不作为发布证据；共享或上传时按
-[#48](https://github.com/dymzz/engineering-ci/issues/48) 敏感信息出口合同处理。不另起报告
-服务，也不改变消费者通用 Dagger `_run_pytest`。
+表达，不能当作通过。Dagger 的本仓核心测试 bundle 从实际容器导出同次原生文件，有界保留在
+`pytest-invocation/`。普通 Actions 的 `core-test-report` Artifact 保留七天，提供节点、阶段、计数和原始退出。
+公开文件采用同次产物内一致的参数实例别名，去除捕获输出、失败正文及自定义属性。
+Release 的 `core_artifact_id` 与 `core-*` 仍使用原证据路径。
+共享出口遵循 [#48](https://github.com/dymzz/engineering-ci/issues/48)。
 
 实际消费：从本次 pytest 输出的 `dir=` 完整路径（包括空格）或已核实的显式 Invocation 引用定位目录，保留外层实际进程退出；读取该目录的 `metadata.json`、`summary.json` 及所需原生报告，按实际义务对账目标、收集、选中/未执行、已启动/结束、失败、封存及归属。已有可用的同次报告直接复用，不按最新目录、相同 HEAD、时间接近或文件名猜测归属，不自动跟随未获授权的外部路径。未取得实际目录或报告时保留已观察退出及缺失/未知，不为补造报告再次运行 pytest。已有只读查询能力时使用其显式输入；尚未采用时直接读取上述文件，不新建解析服务。报告的有限检查和进程内观察不替代独立解析、实际退出及证据接纳。
 
-当前交付边界：本地 pytest 自动生产已接入；综合 Verify、Dagger 及 Actions 使用各自实际导出和引用，不能将容器内报告生成当作宿主交付。新增原生报告的同次导出、CI 出口与外层关联分别沿 [#167 R3/#86 原交接](https://github.com/dymzz/engineering-ci/issues/167#issuecomment-7226828756)和 [#169 消费交接](https://github.com/dymzz/engineering-ci/pull/169#issuecomment-7226830766)维护，按实际已采用版本消费，不以本地报告宣称所有入口已贯通。Live Collector 专项仍按其 opt-in 入口选择，不扩大默认验证范围。
+综合 Verify 的 `--verify-dir` 在 `child_references.files` 逐项列出声明引用的摘要核验结果。
+`pytest_invocation_delivery.reference_verification` 仅在 metadata、summary、ReportLog 和 JUnit 四个引用均核验通过时为
+`verified`。未声明引用为 `unknown`，部分引用或缺失文件为 `incomplete`，摘要冲突等校验错误为 `failed`。
+`pytest_invocation_delivery.diagnostic_directory` 在已定位报告文件时提供诊断路径。将该路径传给
+`--pytest-invocation` 会独立读取报告，外层 Verify 的归属仍以原回执的逐项核验为准。
+用 `gh run download RUN_ID --repo dymzz/engineering-ci -n core-test-report` 读取实际普通 CI 诊断，
+也可将下载后已知报告目录显式传入查询。公开产物的参数别名用于本次产物内的查询与统计，
+跨次节点比较使用适用的原始 Invocation。Live Collector 专项沿用其 opt-in 入口。
 
 已保存的本地 pytest Invocation 可用 `engineering-ci verify report --pytest-invocation <dir>` 查询。
 该入口读取最终生产合同并进行独立对账。节点、阶段及历史查询参数见[显式本地综合验证](#显式本地综合验证)。
+
+### 本地 pytest 试验
+
+`pytest-experiments` 是显式依赖组。使用 `uv run --locked --group pytest-experiments` 启动时，
+按[共享环境规则](#开发审查与合并)选择独立环境。xdist 从隔离的明确文件开始，例如
+`pytest tests/test_eci_pytest_scope.py -n 2`。使用 testmon 时将 `TESTMON_DATAFILE` 指向本工作区
+`.artifacts/` 下的数据库，先通过 `pytest tests/<file>.py --testmon-noselect` 在已知范围内采集。
+空库或过期库不能让隐式全套执行生效。CI、Verify 和发布验证继续由原适用义务决定范围。
 
 ### 提交与交付
 
@@ -391,6 +420,7 @@ Dagger 和查询共用标准库 pytest/JUnit 计数规则。`--pytest-invocation
 所声明的文件，并保留其 selection、collection、execution、report_delivery、封存状态和
 `sessionfinish_hook_exception`。
 生产者的 Hook 阶段退出与外层进程退出分别记录。ReportLog 的独立解析状态、节点实例与阶段结果计数对账均可查询。
+原生 subtest 报告计入阶段结果，父用例的实例和耗时由其原生 `TestReport` 记录。
 阶段计数差异进入完整性冲突，保留原始节点观察。历史比较要求节点和阶段计数均已对账，
 缺少阶段事实的旧报告仍可查询。查阅 Invocation 外的文件时，显式传 `--junit-xml` 或
 `--pytest-reportlog`。查询保留原始文件，完整性冲突或输出路径覆盖输入时退出 2。

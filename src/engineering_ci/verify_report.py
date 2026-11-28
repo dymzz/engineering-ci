@@ -35,6 +35,12 @@ MAX_REPORTLOG_LINE_BYTES = 1024 * 1024
 MAX_GITDIR_POINTER_BYTES = 4096
 MAX_SLOW_ITEMS = 25
 MAX_TESTCASE_PROPERTY_RECORDS = 500
+_VERIFY_PYTEST_INVOCATION_FILES = (
+    "pytest-invocation/metadata.json",
+    "pytest-invocation/summary.json",
+    "pytest-invocation/pytest-reportlog.jsonl",
+    "pytest-invocation/junit.xml",
+)
 VERIFY_CORE_FILES = (
     "report.json",
     "exit-code.txt",
@@ -46,6 +52,7 @@ VERIFY_CORE_FILES = (
     "coverage.xml",
     "coverage.json",
     "dependency-packages.json",
+    *_VERIFY_PYTEST_INVOCATION_FILES,
 )
 
 _ANSI_ESCAPE_RE = re.compile(
@@ -645,6 +652,33 @@ def _norm_optional_str(value: Any) -> str | None:
     return text or None
 
 
+def _pytest_invocation_reference_delivery(
+    files: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    entries = [
+        files[f"core-tests/{name}"]
+        for name in _VERIFY_PYTEST_INVOCATION_FILES
+        if f"core-tests/{name}" in files
+    ]
+    if not entries:
+        return {"reference_verification": "unknown"}
+    statuses = {file["status"] for file in entries}
+    if statuses - {"verified", "missing"}:
+        status = "failed"
+    elif statuses == {"verified"} and len(entries) == len(
+        _VERIFY_PYTEST_INVOCATION_FILES
+    ):
+        status = "verified"
+    else:
+        status = "incomplete"
+    result = {"reference_verification": status}
+    for file in entries:
+        if "resolved_path" in file:
+            result["diagnostic_directory"] = str(Path(file["resolved_path"]).parent)
+            break
+    return result
+
+
 def _load_verify_core_tests(
     verify_dir: Path, record: dict[str, Any], *, include_test_records: bool = False
 ) -> dict[str, Any]:
@@ -653,6 +687,8 @@ def _load_verify_core_tests(
         "report_delivery_status": "unknown",
         "reference_verification": "invalid",
         "verification": "invalid_references",
+        "files": {},
+        "pytest_invocation_delivery": {"reference_verification": "unknown"},
     }
     refs = record.get("references")
     if not isinstance(refs, list) or len(refs) > len(VERIFY_CORE_FILES):
@@ -665,6 +701,7 @@ def _load_verify_core_tests(
             return result
         files[name] = _verify_native_output_entry(verify_dir, ref)
     result["files"] = files
+    result["pytest_invocation_delivery"] = _pytest_invocation_reference_delivery(files)
 
     exit_file = files.get("core-tests/exit-code.txt", {})
     if exit_file.get("status") == "verified":
@@ -1683,7 +1720,7 @@ def _parse_pytest_reportlog(
                             "when": record.get("when"),
                         }
                     )
-        elif report_type == "TestReport":
+        elif report_type in ("TestReport", "SubTestReport"):
             when = record.get("when", "")
             outcome = record.get("outcome", "")
             nodeid = record.get("nodeid")
@@ -1695,12 +1732,15 @@ def _parse_pytest_reportlog(
             ):
                 malformed_line_count += 1
                 return
-            wasxfail = bool(record.get("wasxfail"))
             if when in phase_counts:
                 bucket = (
                     outcome if outcome in ("passed", "failed", "skipped") else "other"
                 )
                 phase_counts[when][bucket] += 1
+            if report_type == "SubTestReport":
+                # The enclosing TestReport accounts for the node instance and elapsed time.
+                return
+            wasxfail = bool(record.get("wasxfail"))
             parsed_dur, _ = _parse_valid_nonneg_float(record.get("duration"))
             if isinstance(parsed_dur, float):
                 cumulative_phase_seconds += parsed_dur
@@ -3032,11 +3072,14 @@ def _load_pytest_invocation_entry(
             continue
         artifact = Path(raw_path)
         if not artifact.is_absolute():
-            cwd = primary.get("cwd") or secondary.get("cwd")
-            if not isinstance(cwd, str) or not Path(cwd).is_absolute():
-                child_status[field] = "unknown_relative_path_base"
-                continue
-            artifact = Path(cwd) / artifact
+            if primary.get("artifact_path_base") == "invocation_directory":
+                artifact = inv_dir / artifact
+            else:
+                cwd = primary.get("cwd") or secondary.get("cwd")
+                if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+                    child_status[field] = "unknown_relative_path_base"
+                    continue
+                artifact = Path(cwd) / artifact
         try:
             rel_name = artifact.relative_to(inv_dir).as_posix()
         except ValueError:
@@ -3062,7 +3105,11 @@ def _load_pytest_invocation_entry(
                 for result in (node_binding, phase_reconciliation)
                 if result["status"] == "mismatch"
             )
-            exclusion = _pytest_history_exclusion(observations, parsed)
+            exclusion = (
+                "public_invocation_node_aliases"
+                if primary.get("node_id_scope") == "invocation_projection"
+                else _pytest_history_exclusion(observations, parsed)
+            )
             if exclusion:
                 parsed["history_ineligibility_reason"] = exclusion
             elif not internal_conflicts:
