@@ -166,6 +166,11 @@ def test_verify_rejects_config_without_verify_hook(tmp_path, monkeypatch, capsys
     (status_path,) = tmp_path.glob("*/verify-status.json")
     status_data = json.loads(status_path.read_text(encoding="utf-8"))
     assert status_data["status"] == "preflight_failed"
+    assert "declared_verify_jobs" not in status_data
+    source = verify_report.build_verify_report(verify_dir=status_path.parent)[
+        "sources"
+    ][0]
+    assert source["core_test_delivery_obligation"] == "undeclared"
     assert status_data["native_started"] is False
     assert status_data["native_exit_code"] is None
     assert status_data["time_source_verified"] is False
@@ -387,6 +392,8 @@ def test_verify_monotonic_stages_boundaries_and_clock_backward_jump(
 def test_verify_seal_failure_records_status_without_timing_receipt(
     tmp_path, monkeypatch, capsys
 ):
+    from test_pytest_report import report as producer
+
     monkeypatch.setattr(verify, "_lefthook_binary", lambda: "lefthook")
     monkeypatch.setattr(
         verify.subprocess,
@@ -394,7 +401,7 @@ def test_verify_seal_failure_records_status_without_timing_receipt(
         lambda cmd: (
             b"2.2.2\n"
             if cmd[1] == "version"
-            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+            else b'{"verify":{"jobs":[{"name":"core-tests"}]}}\n'
         ),
     )
 
@@ -404,6 +411,13 @@ def test_verify_seal_failure_records_status_without_timing_receipt(
 
     def popen_handler(cmd, *, stdout, stderr):
         stdout.write(b"summary: (done in 0.05 seconds)\n")
+        export = Path(stdout.name).parent / "core-tests"
+        export.mkdir()
+        (export / "exit-code.txt").write_text("0\n", encoding="utf-8")
+        (export / "report.json").write_text(
+            json.dumps(producer.summarize_pytest("", 0, "report unavailable")),
+            encoding="utf-8",
+        )
         return 0
 
     monkeypatch.setattr(verify.subprocess, "run", run_git)
@@ -424,6 +438,19 @@ def test_verify_seal_failure_records_status_without_timing_receipt(
     assert status_data["status"] == "seal_failed"
     assert status_data["native_started"] is True
     assert status_data["native_exit_code"] == 0
+    assert status_data["outer_exit_code"] == 1
+    assert status_data["declared_verify_jobs"] == ["core-tests"]
+    assert {ref["path"] for ref in status_data["child_references"]["references"]} == {
+        "core-tests/exit-code.txt",
+        "core-tests/report.json",
+    }
+    source = verify_report.build_verify_report(verify_dir=status_path.parent)[
+        "sources"
+    ][0]
+    assert source["core_test_delivery_obligation"] == "required"
+    assert source["child_references"]["verification"] == "verified"
+    assert source["child_references"]["native_exit_code"] == 0
+    assert source["evidence_complete"] is False
     assert status_data["time_source_verified"] is False
     assert status_data["elapsed_seconds"] >= 0
     assert "disk full" in status_data["error"]["message"]
@@ -486,7 +513,7 @@ def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
             group:
               parallel: true
               jobs:
-                - name: deep-ok
+                - name: core-tests
                   run: echo deep
                 - name: deep-skip
                   skip: true
@@ -501,6 +528,10 @@ def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
     )
     subprocess.run(["git", "add", "lefthook.yml"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    (repo / "lefthook-local.yml").write_text(
+        "verify:\n  jobs:\n    - name: pass-job\n      run: echo local-override\n",
+        encoding="utf-8",
+    )
 
     out = tmp_path / "out"
     monkeypatch.chdir(repo)
@@ -533,8 +564,8 @@ def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
     assert subgrp["kind"] == "group"
     assert subgrp["parallel"] is True
     sub_children = {c["name"]: c for c in subgrp["children"]}
-    assert sub_children["deep-ok"]["path"] == ["outer-grp", "subgrp", "deep-ok"]
-    assert sub_children["deep-ok"]["status"] == "passed"
+    assert sub_children["core-tests"]["path"] == ["outer-grp", "subgrp", "core-tests"]
+    assert sub_children["core-tests"]["status"] == "passed"
     assert sub_children["deep-skip"]["status"] == "skipped"
     assert sub_children["deep-skip"]["duration_seconds"] == "unknown"
 
@@ -548,6 +579,15 @@ def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
         "skipped": 2,
         "unknown": 0,
     }
+    assert "local-override" in (receipt_path.parent / "lefthook.stdout").read_text(
+        encoding="utf-8"
+    )
+    assert "outer-grp/subgrp/core-tests" in data["declared_verify_jobs"]
+    assert "core-tests" not in data["declared_verify_jobs"]
+    source = verify_report.build_verify_report(verify_dir=receipt_path.parent)[
+        "sources"
+    ][0]
+    assert source["core_test_delivery_obligation"] == "not_required"
 
 
 def test_verify_output_open_and_spawn_failures_never_mark_native_started(
@@ -582,6 +622,7 @@ def test_verify_output_open_and_spawn_failures_never_mark_native_started(
     assert spawn_status["status"] == "spawn_failed"
     assert spawn_status["native_started"] is False
     assert spawn_status["native_exit_code"] is None
+    assert spawn_status["declared_verify_jobs"] == ["lint"]
 
     orig_open = verify.Path.open
 
@@ -600,6 +641,7 @@ def test_verify_output_open_and_spawn_failures_never_mark_native_started(
     assert open_status["status"] == "output_open_failed"
     assert open_status["native_started"] is False
     assert open_status["native_exit_code"] is None
+    assert open_status["declared_verify_jobs"] == ["lint"]
 
 
 def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
@@ -612,7 +654,7 @@ def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
         lambda cmd: (
             b"2.2.2\n"
             if cmd[1] == "version"
-            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+            else b'{"verify":{"jobs":[{"name":"core-tests"}]}}\n'
         ),
     )
 
@@ -642,6 +684,14 @@ def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
     assert status_data["native_exit_code"] == 2
     assert status_data["native_exit_source"] == "observed_before_report_preparation"
     assert status_data["outer_exit_code"] == 130
+    assert status_data["declared_verify_jobs"] == ["core-tests"]
+    assert status_data["child_references"]["status"] == "not_emitted"
+    source = verify_report.build_verify_report(verify_dir=status_path.parent)[
+        "sources"
+    ][0]
+    assert source["core_test_delivery_obligation"] == "required"
+    assert source["child_references"]["verification"] == "not_emitted"
+    assert source["evidence_complete"] is False
     assert status_data["stages"]["report_preparation"]["status"] == "interrupted"
     assert "verify interrupted; partial outputs in" in capsys.readouterr().err
 
@@ -680,6 +730,7 @@ def test_verify_unconfirmed_spawn_interrupt_reports_unknown_started(
     assert status_data["native_exit_code"] is None
     assert status_data["native_exit_source"] == "unknown_spawn"
     assert status_data["outer_exit_code"] == 130
+    assert status_data["declared_verify_jobs"] == ["lint"]
     assert status_data["stages"]["lefthook_native"]["status"] == "unknown"
 
 

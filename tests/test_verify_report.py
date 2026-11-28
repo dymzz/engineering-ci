@@ -4029,6 +4029,9 @@ def _write_node_history_sample(
             "complete": True,
             "started_node_ids": selected,
             "completed_node_ids": selected,
+            "phase_counts": {
+                phase: {"passed": len(nodes)} for phase in ("setup", "call", "teardown")
+            },
         },
         "report_delivery": {
             "status": delivery,
@@ -4265,7 +4268,7 @@ def test_malformed_declaration_and_overflow_duration_preserve_valid_sources(
 
 
 @pytest.mark.parametrize(
-    "defect", ["property", "scope", "two_sessions", "tail", "reversed"]
+    "defect", ["property", "scope", "two_sessions", "tail", "reversed", "phase"]
 )
 def test_history_isolates_conflicts_between_independent_samples(
     tmp_path, monkeypatch, defect
@@ -4303,6 +4306,8 @@ def test_history_isolates_conflicts_between_independent_samples(
         ]
     elif defect == "tail":
         records.append({"$report_type": "WarningMessage"})
+    elif defect == "phase":
+        records[2]["outcome"] = "failed"
     else:
         records = [records[-1], *records[:-1]]
     raw.write_text(
@@ -4325,12 +4330,60 @@ def test_history_isolates_conflicts_between_independent_samples(
     )
     assert good["status"] == "comparable"
     assert good["records"][0]["delta_seconds"] == 0.25
-    if defect in ("property", "scope"):
+    if defect in ("property", "scope", "phase"):
         assert suspect_log["session_status"] == "single_session"
         assert suspect_log["node_binding"]["status"] == "matched"
     else:
         assert suspect_log["session_status"] == "invalid"
         assert suspect_log["session_wall_seconds"] == "unknown"
+
+
+@pytest.mark.parametrize("case", ["legacy", "xdist", "invalid", "other"])
+def test_pytest_history_keeps_unknown_phase_scope_and_raw_outcomes(tmp_path, case):
+    node = "tests/test_probe.py::test_one"
+    baseline, candidate = tmp_path / "baseline", tmp_path / "candidate"
+    _write_node_history_sample(baseline, nodes=[node])
+    metadata = _write_node_history_sample(candidate, nodes=[node])
+    counts = metadata["execution"]["phase_counts"]
+    if case == "legacy":
+        del metadata["execution"]["phase_counts"]
+    elif case == "xdist":
+        metadata["selection"].update(
+            mode="xdist", selected_node_ids=None, complete=False
+        )
+        metadata["execution"]["complete"] = False
+    elif case == "invalid":
+        counts["call"]["passed"] = True
+    else:
+        counts["teardown"] = {"passed": 0, "custom": 1, "unused": 0}
+        raw = candidate / "pytest-reportlog.jsonl"
+        records = [json.loads(line) for line in raw.read_bytes().splitlines()]
+        records[3]["outcome"] = "custom"
+        raw.write_text(
+            "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+        )
+    (candidate / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    result = verify_report.build_verify_report(
+        pytest_invocations=[baseline, candidate], test_records=True, compare_tests=True
+    )
+    log = result["sources"][-1]
+    assert log["source_type"] == "pytest_reportlog"
+    assert log["node_binding"]["status"] == (
+        "unknown" if case == "xdist" else "matched"
+    )
+    assert not log["internal_conflicts"]
+    query = result["test_query"]
+    if case == "other":
+        assert log["phase_reconciliation"]["status"] == "matched"
+        assert log["phase_counts"]["teardown"]["other"] == 1
+        assert query["samples"][1]["records"][-1]["outcome"] == "custom"
+        return
+    assert log["phase_reconciliation"]["status"] == "unknown"
+    assert "history_scope" not in log
+    assert query["comparisons"][0]["status"] == "incomparable"
+    assert query["comparisons"][0]["reason"] == (
+        "execution_scope_unproven" if case == "xdist" else "phase_report_scope_unproven"
+    )
 
 
 @pytest.mark.parametrize(
@@ -4341,6 +4394,10 @@ def test_history_isolates_conflicts_between_independent_samples(
         ("writer", 1, "incomplete"),
         ("seal", 0, "failed"),
         ("external", 0, "unknown"),
+        ("setup_skip", 0, "limited"),
+        ("setup_failure", 1, "limited"),
+        ("teardown_error", 1, "limited"),
+        ("duplicate", 0, "limited"),
     ],
 )
 def test_final_local_pytest_producer_and_report_consumer(
@@ -4376,7 +4433,14 @@ def test_final_local_pytest_producer_and_report_consumer(
         if case == "external"
         else ()
     )
-    result = producer._run_probe(root, producer.BODY_OK, *extra)
+    if case == "duplicate":
+        extra = ("--keep-duplicates", "tests/test_probe.py", "-k", "ok")
+    body = {
+        "setup_skip": producer.BODY_SETUP_SKIP,
+        "setup_failure": producer.BODY_ERROR,
+        "teardown_error": producer.BODY_TEARDOWN_ERROR,
+    }.get(case, producer.BODY_OK)
+    result = producer._run_probe(root, body, *extra)
     assert result.returncode == outer_exit, result.stdout + result.stderr
     invocation = (
         Path((root / "failed-summary-directory").read_text(encoding="utf-8"))
@@ -4385,7 +4449,8 @@ def test_final_local_pytest_producer_and_report_consumer(
     )
     query = verify_report.build_verify_report(pytest_invocations=[invocation])
     source, *artifacts = query["sources"]
-    assert source["exitstatus"] == source["session_exitstatus"] == 0
+    stage_exit = 1 if case in ("setup_failure", "teardown_error") else 0
+    assert source["exitstatus"] == source["session_exitstatus"] == stage_exit
     assert source["exitstatus_scope"] == "pytest_sessionfinish_hook_stage"
     assert source["native_exit_observation"]["outer_process_exit"] is None
     assert source["report_delivery"]["status"] == delivery_status
@@ -4408,8 +4473,21 @@ def test_final_local_pytest_producer_and_report_consumer(
         if artifact["source_type"] == "pytest_reportlog"
     )
     if case != "writer":
-        assert log["node_binding"]["status"] == "matched"
-    assert ("history_scope" in log) is (case == "normal")
+        assert log["node_binding"]["status"] == (
+            "unknown" if case == "duplicate" else "matched"
+        )
+        assert log["phase_reconciliation"]["status"] == "matched"
+    assert ("history_scope" in log) is (
+        case in ("normal", "setup_skip", "setup_failure", "teardown_error")
+    )
+    if case in ("setup_skip", "setup_failure"):
+        assert sum(log["phase_counts"]["call"].values()) == 0
+    if case == "teardown_error":
+        assert log["phase_counts"]["teardown"]["failed"] == 1
+    if case == "duplicate":
+        assert log["observed_node_instances"] == {"tests/test_probe.py::test_ok": 2}
+        assert log["phase_counts"]["call"]["passed"] == 2
+        assert log["history_ineligibility_reason"] == "execution_scope_unproven"
     if case == "non_writer":
         assert log["history_ineligibility_reason"] == "producer_sessionfinish_exception"
     if case == "seal":
@@ -4420,6 +4498,47 @@ def test_final_local_pytest_producer_and_report_consumer(
     if case == "normal":
         reportlog = Path(log["path"])
         old = reportlog.read_bytes()
+        for phase, replacement, differences in (
+            ("setup", None, {"passed": (2, 1)}),
+            ("call", "failed", {"passed": (1, 0), "failed": (0, 1)}),
+        ):
+            records = [json.loads(line) for line in old.splitlines()]
+            index = next(
+                index
+                for index, record in enumerate(records)
+                if record.get("nodeid") == "tests/test_probe.py::test_ok"
+                and record.get("when") == phase
+            )
+            if replacement is None:
+                del records[index]
+            else:
+                records[index]["outcome"] = replacement
+            reportlog.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            assert (
+                main(["verify", "report", "--pytest-invocation", str(invocation)]) == 2
+            )
+            changed_log = next(
+                item
+                for item in json.loads(capsys.readouterr().out)["sources"]
+                if item["source_type"] == "pytest_reportlog"
+            )
+            assert (
+                changed_log["observed_node_instances"] == log["observed_node_instances"]
+            )
+            assert changed_log["node_binding"]["status"] == "matched"
+            reconciliation = changed_log["phase_reconciliation"]
+            assert reconciliation["status"] == "mismatch"
+            assert {
+                item["outcome"]: (item["expected"], item["observed"])
+                for item in reconciliation["differences"]
+                if item["phase"] == phase
+            } == differences
+            assert reconciliation in changed_log["internal_conflicts"]
+            assert changed_log["history_ineligibility_reason"] == "reportlog_conflict"
+            assert "history_scope" not in changed_log
         changed = old.replace(
             b"test_probe.py::test_ok", b"test_probe.py::different_test"
         )

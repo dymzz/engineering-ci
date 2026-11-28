@@ -2729,11 +2729,20 @@ def _pytest_producer_observations(primary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _pytest_reportlog_colocated(observations):
+    delivery = observations["report_delivery"] or {}
+    artifacts = delivery.get("artifacts")
+    artifact = artifacts.get("report_log") if isinstance(artifacts, dict) else None
+    return (
+        isinstance(artifact, dict)
+        and artifact.get("attribution") == "colocated_invocation_dir"
+    )
+
+
 def _pytest_node_binding(observations, parsed, exitstatus):
     selection = observations["selection"] or {}
     collection = observations["collection"] or {}
     execution = observations["execution"] or {}
-    delivery = observations["report_delivery"] or {}
     selected = selection.get("selected_node_ids")
     started = execution.get("started_node_ids")
     completed = execution.get("completed_node_ids")
@@ -2750,12 +2759,7 @@ def _pytest_node_binding(observations, parsed, exitstatus):
         or execution.get("complete") is not True
     ):
         return {"status": "unknown", "reason": "producer_lifecycle_scope_incomplete"}
-    artifacts = delivery.get("artifacts")
-    artifact = artifacts.get("report_log") if isinstance(artifacts, dict) else None
-    if (
-        not isinstance(artifact, dict)
-        or artifact.get("attribution") != "colocated_invocation_dir"
-    ):
+    if not _pytest_reportlog_colocated(observations):
         return {"status": "unknown", "reason": "reportlog_attribution_unproven"}
     if (
         parsed.get("session_status") != "single_session"
@@ -2784,6 +2788,54 @@ def _pytest_node_binding(observations, parsed, exitstatus):
     }
 
 
+def _pytest_phase_reconciliation(observations, parsed):
+    execution = observations["execution"] or {}
+    producer = execution.get("phase_counts")
+    if not isinstance(producer, dict):
+        return {"status": "unknown", "reason": "producer_phase_counts_unavailable"}
+    if (observations["selection"] or {}).get("mode") != "serial":
+        return {"status": "unknown", "reason": "producer_phase_scope_unproven"}
+    if not _pytest_reportlog_colocated(observations):
+        return {"status": "unknown", "reason": "reportlog_attribution_unproven"}
+    if (
+        parsed["session_status"] != "single_session"
+        or parsed["truncated"]
+        or parsed["malformed_line_count"]
+    ):
+        return {"status": "unknown", "reason": "independent_reportlog_incomplete"}
+
+    differences = []
+    for phase, observed in parsed["phase_counts"].items():
+        declared = producer.get(phase)
+        if not isinstance(declared, dict) or any(
+            type(count) is not int or count < 0 for count in declared.values()
+        ):
+            return {"status": "unknown", "reason": "producer_phase_counts_unavailable"}
+        expected = dict.fromkeys(observed, 0)
+        for outcome, count in declared.items():
+            expected[outcome if outcome in observed else "other"] += count
+        for outcome, count in observed.items():
+            if expected[outcome] != count:
+                differences.append(
+                    {
+                        "phase": phase,
+                        "outcome": outcome,
+                        "expected": expected[outcome],
+                        "observed": count,
+                    }
+                )
+    if differences:
+        return {
+            "status": "mismatch",
+            "reason": "pytest_reportlog_phase_counts_mismatch",
+            "differences": differences,
+        }
+    return {
+        "status": "matched",
+        "basis": "producer_and_reportlog_phase_outcome_counts",
+    }
+
+
 def _pytest_history_exclusion(observations, parsed):
     if parsed.get("internal_conflicts"):
         return "reportlog_conflict"
@@ -2803,6 +2855,8 @@ def _pytest_history_exclusion(observations, parsed):
         return "producer_report_delivery_incomplete"
     if parsed["node_binding"]["status"] != "matched":
         return "execution_scope_unproven"
+    if parsed["phase_reconciliation"]["status"] != "matched":
+        return "phase_report_scope_unproven"
     return None
 
 
@@ -2999,11 +3053,15 @@ def _load_pytest_invocation_entry(
         parsed["bundle_relative_path"] = rel_name
         parsed["pytest_invocation_id"] = inv_id
         if field == "report_log" and parsed["status"] == "loaded":
-            parsed["node_binding"] = _pytest_node_binding(
-                observations, parsed, exitstatus
+            node_binding = _pytest_node_binding(observations, parsed, exitstatus)
+            phase_reconciliation = _pytest_phase_reconciliation(observations, parsed)
+            parsed["node_binding"] = node_binding
+            parsed["phase_reconciliation"] = phase_reconciliation
+            parsed["internal_conflicts"].extend(
+                result
+                for result in (node_binding, phase_reconciliation)
+                if result["status"] == "mismatch"
             )
-            if parsed["node_binding"]["status"] == "mismatch":
-                parsed["internal_conflicts"].append(dict(parsed["node_binding"]))
             exclusion = _pytest_history_exclusion(observations, parsed)
             if exclusion:
                 parsed["history_ineligibility_reason"] = exclusion

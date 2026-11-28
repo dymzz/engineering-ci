@@ -153,6 +153,8 @@ def _status_payload(
     completed_at_ns=None,
     native_outputs=None,
     lefthook_summary=None,
+    declared_verify_jobs=None,
+    child_references=None,
     error=None,
     signal_name=None,
 ):
@@ -181,6 +183,10 @@ def _status_payload(
         payload["native_outputs"] = native_outputs
     if lefthook_summary is not None:
         payload["lefthook_summary"] = lefthook_summary
+    if declared_verify_jobs is not None:
+        payload["declared_verify_jobs"] = declared_verify_jobs
+    if child_references is not None:
+        payload["child_references"] = child_references
     if error is not None:
         payload["error"] = error
     if signal_name is not None:
@@ -200,6 +206,7 @@ def _verify(out):
     observed_config_sha256 = None
     lefthook_version = None
     parsed_verify_config = None
+    declared_verify_jobs = None
     preflight_stages = {}
 
     try:
@@ -227,6 +234,8 @@ def _verify(out):
         ):
             raise TypeError("lefthook config has no 'verify' hook")
         parsed_verify_config = parsed_config["verify"]
+        _, declared_leaf_paths = _collect_config_tree(parsed_verify_config)
+        declared_verify_jobs = ["/".join(path) for path in declared_leaf_paths]
     except KeyboardInterrupt:
         cli_preflight_seconds = perf_counter() - total_started_mono
         preflight_stages["cli_preflight"] = {
@@ -243,6 +252,7 @@ def _verify(out):
                 observed_git_head=observed_git_head,
                 observed_config_sha256=observed_config_sha256,
                 lefthook_version=lefthook_version,
+                declared_verify_jobs=declared_verify_jobs,
                 native_started=False,
                 signal_name="SIGINT_OR_SIGBREAK",
             ),
@@ -268,6 +278,7 @@ def _verify(out):
                 observed_git_head=observed_git_head,
                 observed_config_sha256=observed_config_sha256,
                 lefthook_version=lefthook_version,
+                declared_verify_jobs=declared_verify_jobs,
                 native_started=False,
                 error={"type": type(exc).__name__, "message": str(exc)},
             ),
@@ -291,6 +302,7 @@ def _verify(out):
             observed_git_head=observed_git_head,
             observed_config_sha256=observed_config_sha256,
             lefthook_version=lefthook_version,
+            declared_verify_jobs=declared_verify_jobs,
             native_started=False,
         ),
     )
@@ -357,6 +369,7 @@ def _verify(out):
                     observed_git_head=observed_git_head,
                     observed_config_sha256=observed_config_sha256,
                     lefthook_version=lefthook_version,
+                    declared_verify_jobs=declared_verify_jobs,
                     native_started=False,
                     native_exit_code=None,
                     error={"type": type(exc).__name__, "message": str(exc)},
@@ -402,6 +415,7 @@ def _verify(out):
                         observed_git_head=observed_git_head,
                         observed_config_sha256=observed_config_sha256,
                         lefthook_version=lefthook_version,
+                        declared_verify_jobs=declared_verify_jobs,
                         native_started=False,
                         native_exit_code=None,
                         started_at_ns=None,
@@ -434,6 +448,7 @@ def _verify(out):
                         observed_git_head=observed_git_head,
                         observed_config_sha256=observed_config_sha256,
                         lefthook_version=lefthook_version,
+                        declared_verify_jobs=declared_verify_jobs,
                         native_started=True,
                         native_exit_code=observed_exit,
                         native_exit_source=observed_exit_source,
@@ -537,6 +552,7 @@ def _verify(out):
                 observed_git_head=observed_git_head,
                 observed_config_sha256=observed_config_sha256,
                 lefthook_version=lefthook_version,
+                declared_verify_jobs=declared_verify_jobs,
                 native_started=native_started,
                 native_exit_code=interrupt_exit_code,
                 native_exit_source=interrupt_exit_source,
@@ -570,7 +586,9 @@ def _verify(out):
     }
     native_outputs = None
     lefthook_summary = None
+    child_references = None
     try:
+        child_references = _core_test_references(invocation)
         native_outputs = {
             "stdout": _native_output(stdout_path),
             "stderr": _native_output(stderr_path),
@@ -586,7 +604,6 @@ def _verify(out):
             "elapsed_seconds": report_prep_seconds,
             "status": "ok",
         }
-        _, declared_leaf_paths = _collect_config_tree(parsed_verify_config)
         receipt = {
             "schema_version": 2,
             "invocation_id": invocation.name,
@@ -613,8 +630,8 @@ def _verify(out):
             "outer_exit_code": exit_code,
             "native_outputs": native_outputs,
             "lefthook_summary": lefthook_summary,
-            "declared_verify_jobs": ["/".join(p) for p in declared_leaf_paths],
-            "child_references": _core_test_references(invocation),
+            "declared_verify_jobs": declared_verify_jobs,
+            "child_references": child_references,
         }
         receipt_path = invocation / "verify-timing.json"
         _write_json_atomic(receipt_path, receipt)
@@ -643,6 +660,8 @@ def _verify(out):
                 completed_at_ns=ended_at_ns if wall_clock_monotonic else None,
                 native_outputs=native_outputs,
                 lefthook_summary=lefthook_summary,
+                declared_verify_jobs=declared_verify_jobs,
+                child_references=child_references,
                 signal_name="SIGINT_OR_SIGBREAK",
             ),
         )
@@ -684,6 +703,8 @@ def _verify(out):
                 completed_at_ns=ended_at_ns if wall_clock_monotonic else None,
                 native_outputs=native_outputs,
                 lefthook_summary=lefthook_summary,
+                declared_verify_jobs=declared_verify_jobs,
+                child_references=child_references,
                 error={"type": type(exc).__name__, "message": str(exc)},
             ),
         )

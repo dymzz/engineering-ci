@@ -333,8 +333,9 @@ format、version/lock、核心测试四组。前三组运行原生 Dagger Check�
 `child_references` 记录 `core-tests/` 中实际导出的相对路径与 SHA-256。查询从回执直接定位，
 并分别核验原始退出、引用和报告交付。报告声明 JUnit 可用时，必须存在实际引用，且
 JUnit 的摘要、格式和计数与原生 JSON 一致。报告不可用时仍可查看已核验的原始退出。
-声明执行 `core-tests` 时，缺少整个子记录、记录类型错误或生产者不符均使交付证据不完整。
-历史回执缺少 Job 声明时，查询显示该义务未声明。只声明 lint 等其他 Job 的回执按其实际范围核验。
+预检从 Lefthook 生效配置取得完整 Job 路径，并保存在成功、失败和中断回执中。封存失败或报告准备中断时，
+已取得的实际子产物引用仍可核验。顶层 `core-tests` 声明具有交付义务，缺少整个子记录、记录类型错误或生产者不符均使证据不完整。
+预检尚未取得声明或历史回执缺少声明时，查询显示该义务未声明。其他 Job 按其完整路径核验。
 `verify-timing.json` 同时记录过程内 `perf_counter` 单调耗时
 （按 `cli_preflight`、`lefthook_native`、`report_preparation` 拆分，显式标注排除
 `seal` 后写盘与外层 `uv`/Shell 启动耗时）、有界解析得到的 Lefthook Job/嵌套 Group
@@ -368,8 +369,9 @@ B 执行绑定保持未知。GitHub 性能汇总保留原始指标，固定 Atte
 Dagger 和查询共用标准库 pytest/JUnit 计数规则。`--pytest-invocation` 读取[本仓 pytest 调用报告](#本仓-pytest-调用报告)
 所声明的文件，并保留其 selection、collection、execution、report_delivery、封存状态和
 `sessionfinish_hook_exception`。
-生产者的 Hook 阶段退出与外层进程退出分别记录。ReportLog 的独立解析状态和节点
-实例对账分别可查。查阅 Invocation 外的文件时，显式传 `--junit-xml` 或
+生产者的 Hook 阶段退出与外层进程退出分别记录。ReportLog 的独立解析状态、节点实例与阶段结果计数对账均可查询。
+阶段计数差异进入完整性冲突，保留原始节点观察。历史比较要求节点和阶段计数均已对账，
+缺少阶段事实的旧报告仍可查询。查阅 Invocation 外的文件时，显式传 `--junit-xml` 或
 `--pytest-reportlog`。查询保留原始文件，完整性冲突或输出路径覆盖输入时退出 2。
 
 ```powershell
