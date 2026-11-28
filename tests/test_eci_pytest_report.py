@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -265,6 +266,112 @@ def _reportlog_events(path: Path) -> list[dict]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def test_public_diagnostics_alias_native_parameter_ids(tmp_path):
+    from test_pytest_report import PARSER
+    from test_pytest_report import report as producer
+
+    from engineering_ci import verify_report
+
+    root = _probe_root(tmp_path)
+    bundle = tmp_path / "bundle"
+    raw = bundle / "pytest-invocation"
+    bundle.mkdir()
+    result = _run_probe(
+        root,
+        """
+import pytest
+
+@pytest.mark.parametrize("value", ["synthetic-default-one[extra]::tail", "synthetic-default-two"])
+def test_default(value, subtests):
+    with subtests.test("synthetic-subtest-text", value=value):
+        assert value
+
+@pytest.mark.parametrize("value", [False], ids=["synthetic-explicit-id[extra]" + chr(7)])
+def test_explicit(value):
+    assert value
+
+def test_plain():
+    pass
+""",
+        "-o",
+        "disable_test_id_escaping_and_forfeit_all_rights_to_community_support=True",
+        env_overrides={"ECI_PYTEST_REPORT_DIRECTORY": str(raw)},
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    originals = {path.name: path.read_bytes() for path in raw.iterdir()}
+    junit = originals["junit.xml"].decode("utf-8")
+    markers = (
+        "synthetic-default-one",
+        "synthetic-default-two",
+        "synthetic-explicit-id",
+    )
+    for name in ("junit.xml", "pytest-reportlog.jsonl", "summary.json"):
+        assert all(marker.encode() in originals[name] for marker in markers)
+
+    (bundle / "exit-code.txt").write_text("1\n", encoding="ascii")
+    (bundle / "report.json").write_text(
+        json.dumps(producer.summarize_pytest(junit, result.returncode, result.stdout)),
+        encoding="utf-8",
+    )
+    publisher = [sys.executable, "-S", str(PARSER.with_name("pytest_ci.py"))]
+    gate = subprocess.run(
+        [*publisher, "gate", str(bundle)], capture_output=True, check=False
+    )
+    assert gate.returncode == result.returncode
+    hosted, summary = tmp_path / "hosted", tmp_path / "job-summary.md"
+    published = subprocess.run(
+        [*publisher, "publish-ci", str(bundle), str(hosted), str(summary)],
+        capture_output=True,
+        check=False,
+    )
+    assert published.returncode == 0, published.stderr
+    for path in (*hosted.rglob("*"), summary):
+        if path.is_file():
+            contents = path.read_text(encoding="utf-8")
+            assert all(marker not in contents for marker in markers)
+            assert "synthetic-subtest-text" not in contents
+    assert {path.name: path.read_bytes() for path in raw.iterdir()} == originals
+    assert (hosted / "exit-code.txt").read_text().strip() == "1"
+    assert (
+        _read_json(hosted / "report.json")["counts"]
+        == _read_json(bundle / "report.json")["counts"]
+    )
+
+    invocation = hosted / "pytest-invocation"
+    selected = _read_json(invocation / "summary.json")["selection"]["selected_node_ids"]
+    events = _reportlog_events(invocation / "pytest-reportlog.jsonl")
+    parents = Counter(
+        event["nodeid"]
+        for event in events
+        if event["$report_type"] == "TestReport" and event["when"] == "call"
+    )
+    children = [
+        event["nodeid"] for event in events if event["$report_type"] == "SubTestReport"
+    ]
+    assert parents == Counter(selected)
+    assert len(parents) == 4
+    assert "tests/test_probe.py::test_plain" in parents
+    assert len(children) == 2
+    assert set(children) == {node for node in parents if "::test_default[" in node}
+    projected_junit = ET.parse(invocation / "junit.xml")
+    raw_junit = ET.fromstring(junit)
+    assert len(projected_junit.findall(".//testcase")) == len(
+        raw_junit.findall(".//testcase")
+    )
+    assert {case.attrib["name"] for case in projected_junit.findall(".//testcase")} == {
+        item.rsplit("::", 1)[-1] for item in parents
+    }
+    query = verify_report.build_verify_report(pytest_invocations=[invocation])
+    log = next(
+        source
+        for source in query["sources"]
+        if source["source_type"] == "pytest_reportlog"
+    )
+    assert log["node_binding"]["status"] == "matched"
+    assert log["phase_reconciliation"]["status"] == "matched"
+    assert log["history_ineligibility_reason"] == "public_invocation_node_aliases"
 
 
 def test_serial_invocation_records_native_reports_and_selection(tmp_path):

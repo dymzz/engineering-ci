@@ -156,15 +156,21 @@ reportlog/JUnit 选项不会提交，显式路径仍由原生 writer 使用。`-
 `outer_invocation_ref` 为 `unknown`、不证明外层 Invocation/Receipt；未观察到选择范围时标
 `unknown`，不把事件行数当用例数。报告交付缺失或无法验证以 `report_delivery.status` 独立
 表达，不能当作通过。Dagger 的本仓核心测试 bundle 从实际容器导出同次原生文件，有界保留在
-`pytest-invocation/`。普通 Actions 的 `core-test-report` Artifact 公开节点、阶段、计数和原始退出，
-去除捕获输出、失败正文及自定义属性，保留七天。Release 的 `core_artifact_id` 与 `core-*` 仍使用原证据路径。
+`pytest-invocation/`。普通 Actions 的 `core-test-report` Artifact 保留七天，提供节点、阶段、计数和原始退出。
+公开文件采用同次产物内一致的参数实例别名，去除捕获输出、失败正文及自定义属性。
+Release 的 `core_artifact_id` 与 `core-*` 仍使用原证据路径。
 共享出口遵循 [#48](https://github.com/dymzz/engineering-ci/issues/48)。
 
 实际消费：从本次 pytest 输出的 `dir=` 完整路径（包括空格）或已核实的显式 Invocation 引用定位目录，保留外层实际进程退出；读取该目录的 `metadata.json`、`summary.json` 及所需原生报告，按实际义务对账目标、收集、选中/未执行、已启动/结束、失败、封存及归属。已有可用的同次报告直接复用，不按最新目录、相同 HEAD、时间接近或文件名猜测归属，不自动跟随未获授权的外部路径。未取得实际目录或报告时保留已观察退出及缺失/未知，不为补造报告再次运行 pytest。已有只读查询能力时使用其显式输入；尚未采用时直接读取上述文件，不新建解析服务。报告的有限检查和进程内观察不替代独立解析、实际退出及证据接纳。
 
-综合 Verify 的 `--verify-dir` 回执会校验原报告引用，并给出已核验的 `pytest_invocation_directory`。
+综合 Verify 的 `--verify-dir` 在 `child_references.files` 逐项列出声明引用的摘要核验结果。
+`pytest_invocation_delivery.reference_verification` 仅在 metadata、summary、ReportLog 和 JUnit 四个引用均核验通过时为
+`verified`。未声明引用为 `unknown`，部分引用或缺失文件为 `incomplete`，摘要冲突等校验错误为 `failed`。
+`pytest_invocation_delivery.diagnostic_directory` 在已定位报告文件时提供诊断路径。将该路径传给
+`--pytest-invocation` 会独立读取报告，外层 Verify 的归属仍以原回执的逐项核验为准。
 用 `gh run download RUN_ID --repo dymzz/engineering-ci -n core-test-report` 读取实际普通 CI 诊断，
-也可将下载后已知报告目录显式传入查询。Live Collector 专项沿用其 opt-in 入口。
+也可将下载后已知报告目录显式传入查询。公开产物的参数别名用于本次产物内的查询与统计，
+跨次节点比较使用适用的原始 Invocation。Live Collector 专项沿用其 opt-in 入口。
 
 已保存的本地 pytest Invocation 可用 `engineering-ci verify report --pytest-invocation <dir>` 查询。
 该入口读取最终生产合同并进行独立对账。节点、阶段及历史查询参数见[显式本地综合验证](#显式本地综合验证)。

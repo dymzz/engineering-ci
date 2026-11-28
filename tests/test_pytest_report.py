@@ -57,7 +57,7 @@ class PytestReportTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (raw / "junit.xml").write_text(
-                '<testsuite tests="1" failures="1"><testcase name="test_a"><failure message="private-fixture-text">private-fixture-text</failure><system-out>private-fixture-text</system-out></testcase></testsuite>',
+                '<testsuite name="private-fixture-text" tests="1" failures="1"><testcase classname="private-fixture-text" name="private-fixture-text"><failure message="private-fixture-text">private-fixture-text</failure><system-out>private-fixture-text</system-out></testcase></testsuite>',
                 encoding="utf-8",
             )
             (raw / "summary.json").write_text(

@@ -3914,6 +3914,105 @@ def test_core_report_delivery_requires_native_junit(
     assert source["evidence_complete"] is (delivery == "available")
 
 
+@pytest.mark.parametrize(
+    ("case", "status", "checked"),
+    [
+        ("summary_only", "incomplete", {"summary.json": "verified"}),
+        ("metadata_only", "incomplete", {"metadata.json": "verified"}),
+        ("unreferenced_siblings", "incomplete", {"summary.json": "verified"}),
+        (
+            "conflict",
+            "failed",
+            {"summary.json": "verified", "pytest-reportlog.jsonl": "digest_mismatch"},
+        ),
+        (
+            "missing",
+            "incomplete",
+            {"summary.json": "verified", "pytest-reportlog.jsonl": "missing"},
+        ),
+        ("undeclared", "unknown", {}),
+        (
+            "complete",
+            "verified",
+            dict.fromkeys(
+                (
+                    "metadata.json",
+                    "summary.json",
+                    "pytest-reportlog.jsonl",
+                    "junit.xml",
+                ),
+                "verified",
+            ),
+        ),
+    ],
+)
+def test_verify_reports_only_the_invocation_files_bound_by_receipt(
+    tmp_path, case, status, checked
+):
+    from engineering_ci.cli import verify
+
+    directory = tmp_path / "core-tests" / "pytest-invocation"
+    directory.mkdir(parents=True)
+    record = {
+        "kind": "engineering-ci-pytest-invocation",
+        "schema_version": 1,
+        "invocation_id": "one",
+        "artifact_path_base": "invocation_directory",
+        "report_log": "pytest-reportlog.jsonl",
+        "junit_xml": "junit.xml",
+    }
+    bodies = {
+        "summary.json": json.dumps(record),
+        "metadata.json": json.dumps(record),
+        "pytest-reportlog.jsonl": '{"$report_type":"SessionStart"}\n{"$report_type":"SessionFinish","exitstatus":0}\n',
+        "junit.xml": '<testsuite tests="0"/>',
+    }
+    names = checked.keys()
+    if case in ("unreferenced_siblings", "undeclared"):
+        names = bodies.keys()
+    for name in names:
+        (directory / name).write_text(bodies[name], encoding="utf-8")
+    child_record = verify._core_test_references(tmp_path)
+    child_record["references"] = [
+        ref for ref in child_record["references"] if Path(ref["path"]).name in checked
+    ]
+    log = directory / "pytest-reportlog.jsonl"
+    if case == "conflict":
+        log.write_text(bodies[log.name] + "\n", encoding="utf-8")
+    if case == "missing":
+        log.unlink()
+    (tmp_path / "verify-timing.json").write_text(
+        json.dumps(
+            {
+                "native_started": True,
+                "native_exit_code": 0,
+                "declared_verify_jobs": ["core-tests"],
+                "child_references": child_record,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    source = verify_report.build_verify_report(verify_dir=tmp_path)["sources"][0]
+    child = source["child_references"]
+    delivery = child["pytest_invocation_delivery"]
+    assert delivery["reference_verification"] == status
+    assert delivery.get("diagnostic_directory") == (
+        str(directory.resolve()) if checked else None
+    )
+    assert {
+        Path(name).name: file["status"] for name, file in child["files"].items()
+    } == checked
+    assert not source["evidence_complete"]
+    query = verify_report.build_verify_report(pytest_invocations=[directory])
+    invocation = query["sources"][0]
+    assert invocation["status"] == "loaded"
+    assert "reference_verification" not in invocation
+    assert invocation["declared_artifact_status"]["report_log"] == (
+        "loaded" if log.is_file() else "missing"
+    )
+
+
 def test_hook_and_standalone_reuse_native_occurrence_qualification(tmp_path):
     repo = tmp_path / "repo"
     _head, invocation, _binding = _create_split_precommit_repo(

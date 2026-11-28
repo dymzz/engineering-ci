@@ -139,11 +139,21 @@ oversized files are recorded in `invocation_delivery.file_status`, independently
 of the original exit gate. Portable metadata uses the Invocation directory as
 the base for artifact names. The read-only report can open that directory after
 export, including when the host paths differ from the container paths.
+Verify reports the digest status of each declared file in
+`child_references.files`. The invocation reference set is verified after all
+four expected file references pass. The diagnostic directory can also locate
+partial reports. An independent directory query establishes its own observations
+and carries no digest verification from the outer Verify receipt.
 
 Root Actions exports one bundle and gates on its original exit. Regular runs
 publish `core-test-report` as a seven-day diagnostic projection of the same
 node, phase, timing, count and exit observations. The projection removes
 captured output, failure text, free-form report properties and exception text.
+Parameter instances receive opaque aliases shared across the projected node
+inventories, ReportLog and matching JUnit cases. These aliases apply within
+one published invocation. Cross-run node history uses original invocation
+reports. JUnit display names without a matching native node receive separate
+diagnostic labels.
 The formal core artifact keeps the existing `core-*` file paths and credentials
 remain under the original [#48](https://github.com/dymzz/engineering-ci/issues/48)
 delivery boundary.
