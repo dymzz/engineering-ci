@@ -122,7 +122,7 @@ def _write_json_atomic(path, payload):
 
 def _write_status_best_effort(invocation, payload):
     path = invocation / "verify-status.json"
-    if payload.get("native_started") is not False:
+    if payload.get("native_started") is not False and "child_references" not in payload:
         payload["child_references"] = _core_test_references(invocation)
     text = json.dumps(payload, indent=2) + "\n"
     try:

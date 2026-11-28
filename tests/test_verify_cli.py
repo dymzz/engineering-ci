@@ -389,8 +389,12 @@ def test_verify_monotonic_stages_boundaries_and_clock_backward_jump(
     assert not list(tmp_path.glob("*/verify-status.json"))
 
 
+@pytest.mark.parametrize(
+    ("seal_error", "report_status"),
+    [("disk full", "verified"), ("replace failed", "missing")],
+)
 def test_verify_seal_failure_records_status_without_timing_receipt(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, seal_error, report_status
 ):
     from test_pytest_report import report as producer
 
@@ -409,27 +413,54 @@ def test_verify_seal_failure_records_status_without_timing_receipt(
         assert cmd[0] == "git"
         return subprocess.CompletedProcess(cmd, 0, b"c" * 40 + b"\n")
 
+    report_bytes = json.dumps(
+        producer.summarize_pytest("", 0, "report unavailable")
+    ).encode("utf-8")
+
     def popen_handler(cmd, *, stdout, stderr):
         stdout.write(b"summary: (done in 0.05 seconds)\n")
         export = Path(stdout.name).parent / "core-tests"
         export.mkdir()
-        (export / "exit-code.txt").write_text("0\n", encoding="utf-8")
-        (export / "report.json").write_text(
-            json.dumps(producer.summarize_pytest("", 0, "report unavailable")),
-            encoding="utf-8",
-        )
+        (export / "exit-code.txt").write_bytes(b"0\n")
+        (export / "report.json").write_bytes(report_bytes)
         return 0
 
     monkeypatch.setattr(verify.subprocess, "run", run_git)
     monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_handler))
-    orig_write = verify._write_json_atomic
+    original_native_output = verify._native_output
+    hashed_children = []
 
-    def fail_on_receipt(path, payload):
-        if path.name == "verify-timing.json":
-            raise OSError("disk full")
-        return orig_write(path, payload)
+    def track_native_output(path):
+        if path.parent.name == "core-tests":
+            hashed_children.append(path.name)
+        return original_native_output(path)
 
-    monkeypatch.setattr(verify, "_write_json_atomic", fail_on_receipt)
+    monkeypatch.setattr(verify, "_native_output", track_native_output)
+
+    if report_status == "verified":
+        original_write = verify._write_json_atomic
+
+        def fail_on_receipt(path, payload):
+            if path.name == "verify-timing.json":
+                raise OSError(seal_error)
+            return original_write(path, payload)
+
+        monkeypatch.setattr(verify, "_write_json_atomic", fail_on_receipt)
+    else:
+        original_replace = verify.Path.replace
+
+        def fail_timing_replace(self, target):
+            if Path(target).name == "verify-timing.json":
+                os.unlink(Path(target).parent / "core-tests" / "report.json")
+                raise OSError(seal_error)
+            return original_replace(self, target)
+
+        monkeypatch.setattr(verify.Path, "replace", fail_timing_replace)
+        monkeypatch.setattr(
+            verify.Path,
+            "unlink",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("unlink failed")),
+        )
 
     assert main(["verify", "--out", str(tmp_path)]) == 1
     assert not list(tmp_path.glob("*/verify-timing.json"))
@@ -440,46 +471,29 @@ def test_verify_seal_failure_records_status_without_timing_receipt(
     assert status_data["native_exit_code"] == 0
     assert status_data["outer_exit_code"] == 1
     assert status_data["declared_verify_jobs"] == ["core-tests"]
-    assert {ref["path"] for ref in status_data["child_references"]["references"]} == {
-        "core-tests/exit-code.txt",
-        "core-tests/report.json",
+    assert {
+        ref["path"]: ref["sha256"]
+        for ref in status_data["child_references"]["references"]
+    } == {
+        "core-tests/exit-code.txt": hashlib.sha256(b"0\n").hexdigest(),
+        "core-tests/report.json": hashlib.sha256(report_bytes).hexdigest(),
     }
+    assert sorted(hashed_children) == ["exit-code.txt", "report.json"]
     source = verify_report.build_verify_report(verify_dir=status_path.parent)[
         "sources"
     ][0]
     assert source["core_test_delivery_obligation"] == "required"
-    assert source["child_references"]["verification"] == "verified"
-    assert source["child_references"]["native_exit_code"] == 0
+    child = source["child_references"]
+    assert child["files"]["core-tests/report.json"]["status"] == report_status
+    assert child["verification"] == (
+        "verified" if report_status == "verified" else "file_verification_failed"
+    )
+    assert child["native_exit_code"] == 0
     assert source["evidence_complete"] is False
     assert status_data["time_source_verified"] is False
     assert status_data["elapsed_seconds"] >= 0
-    assert "disk full" in status_data["error"]["message"]
-    assert "timing receipt unavailable: disk full" in capsys.readouterr().err
-
-    # Unlink failure after atomic replace error must not mask observed native exit
-    orig_replace = verify.Path.replace
-
-    def fail_timing_replace(self, target):
-        if Path(target).name == "verify-timing.json":
-            raise OSError("replace failed")
-        return orig_replace(self, target)
-
-    monkeypatch.setattr(verify.Path, "replace", fail_timing_replace)
-    monkeypatch.setattr(
-        verify.Path,
-        "unlink",
-        lambda *a, **k: (_ for _ in ()).throw(OSError("unlink failed")),
-    )
-    monkeypatch.setattr(verify, "_write_json_atomic", orig_write)
-    timestamps_2 = iter([600, 700])
-    monkeypatch.setattr(verify, "time_ns", lambda: next(timestamps_2))
-    out2 = tmp_path / "out2"
-    assert main(["verify", "--out", str(out2)]) == 1
-    assert not list(out2.glob("*/verify-timing.json"))
-    (status2,) = out2.glob("*/verify-status.json")
-    data2 = json.loads(status2.read_text(encoding="utf-8"))
-    assert data2["status"] == "seal_failed"
-    assert data2["native_exit_code"] == 0
+    assert status_data["error"]["message"] == seal_error
+    assert f"timing receipt unavailable: {seal_error}" in capsys.readouterr().err
 
 
 def test_verify_real_lefthook_parses_parallel_nested_groups_skips_and_failures(
@@ -623,6 +637,7 @@ def test_verify_output_open_and_spawn_failures_never_mark_native_started(
     assert spawn_status["native_started"] is False
     assert spawn_status["native_exit_code"] is None
     assert spawn_status["declared_verify_jobs"] == ["lint"]
+    assert "child_references" not in spawn_status
 
     orig_open = verify.Path.open
 
@@ -642,6 +657,7 @@ def test_verify_output_open_and_spawn_failures_never_mark_native_started(
     assert open_status["native_started"] is False
     assert open_status["native_exit_code"] is None
     assert open_status["declared_verify_jobs"] == ["lint"]
+    assert "child_references" not in open_status
 
 
 def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
@@ -662,16 +678,29 @@ def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
         assert cmd[0] == "git"
         return subprocess.CompletedProcess(cmd, 0, b"d" * 40 + b"\n")
 
+    original_report = b'{"state":"original"}\n'
+    rewritten_report = b'{"state":"rewritten"}\n'
+
     def popen_exit_two(cmd, *, stdout, stderr):
         stdout.write(b"raw stdout\n")
+        export = Path(stdout.name).parent / "core-tests"
+        export.mkdir()
+        (export / "exit-code.txt").write_bytes(b"2\n")
+        (export / "report.json").write_bytes(original_report)
         return 2
+
+    def interrupt_report_preparation(stdout_path, stderr_path, **kwargs):
+        (stdout_path.parent / "core-tests" / "report.json").write_bytes(
+            rewritten_report
+        )
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(verify.subprocess, "run", run_git)
     monkeypatch.setattr(verify.subprocess, "Popen", _make_fake_popen(popen_exit_two))
     monkeypatch.setattr(
         verify,
         "parse_lefthook_output",
-        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+        interrupt_report_preparation,
     )
 
     out = tmp_path / "prep-interrupt"
@@ -685,12 +714,23 @@ def test_verify_report_preparation_interrupt_preserves_observed_native_exit(
     assert status_data["native_exit_source"] == "observed_before_report_preparation"
     assert status_data["outer_exit_code"] == 130
     assert status_data["declared_verify_jobs"] == ["core-tests"]
-    assert status_data["child_references"]["status"] == "not_emitted"
+    assert status_data["child_references"]["status"] == "recorded"
+    original_digest = hashlib.sha256(original_report).hexdigest()
+    assert {
+        ref["path"]: ref["sha256"]
+        for ref in status_data["child_references"]["references"]
+    }["core-tests/report.json"] == original_digest
     source = verify_report.build_verify_report(verify_dir=status_path.parent)[
         "sources"
     ][0]
     assert source["core_test_delivery_obligation"] == "required"
-    assert source["child_references"]["verification"] == "not_emitted"
+    child = source["child_references"]
+    assert child["verification"] == "file_verification_failed"
+    report = child["files"]["core-tests/report.json"]
+    assert report["status"] == "digest_mismatch"
+    assert report["expected_sha256"] == original_digest
+    assert report["observed_sha256"] == hashlib.sha256(rewritten_report).hexdigest()
+    assert child["native_exit_code"] == 2
     assert source["evidence_complete"] is False
     assert status_data["stages"]["report_preparation"]["status"] == "interrupted"
     assert "verify interrupted; partial outputs in" in capsys.readouterr().err
@@ -745,7 +785,7 @@ def test_verify_post_spawn_wait_failure_marks_native_started_and_wait_failed(
         lambda cmd: (
             b"2.2.2\n"
             if cmd[1] == "version"
-            else b'{"verify":{"jobs":[{"name":"lint","run":"echo ok"}]}}\n'
+            else b'{"verify":{"jobs":[{"name":"core-tests"}]}}\n'
         ),
     )
     monkeypatch.setattr(
@@ -761,6 +801,9 @@ def test_verify_post_spawn_wait_failure_marks_native_started_and_wait_failed(
             self.killed = False
             self._rc = None
             instances.append(self)
+            export = Path(env["ECI_VERIFY_CORE_TESTS_OUT"])
+            export.mkdir()
+            (export / "exit-code.txt").write_bytes(b"2\n")
 
         def wait(self, timeout=None):
             if timeout is None:
@@ -789,6 +832,14 @@ def test_verify_post_spawn_wait_failure_marks_native_started_and_wait_failed(
     assert status_data["native_exit_code"] == -9
     assert status_data["native_exit_source"] == "observed_after_terminate"
     assert status_data["stages"]["lefthook_native"]["status"] == "wait_failed"
+    assert status_data["declared_verify_jobs"] == ["core-tests"]
+    assert status_data["child_references"]["status"] == "incomplete"
+    assert status_data["child_references"]["references"] == [
+        {
+            "path": "core-tests/exit-code.txt",
+            "sha256": hashlib.sha256(b"2\n").hexdigest(),
+        }
+    ]
     assert instances[0].terminated is True
     assert instances[0].killed is True
 
