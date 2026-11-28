@@ -235,6 +235,7 @@ jobs:
           BIN_DIR="$RUNNER_TEMP/dagger-bin" sh "$RUNNER_TEMP/install-dagger.sh"
           echo "$RUNNER_TEMP/dagger-bin" >> "$GITHUB_PATH"
       - name: Run all core unit and process tests
+        id: core_execution
         if: ${{ success() && !cancelled() && (needs.change-applicability.result != 'success' || needs.change-applicability.outputs.force_full != 'false' || needs.change-applicability.outputs.tests != 'false') }}
         env:
           EXPORT_COVERAGE: ${{ inputs.coverage }}
@@ -242,11 +243,28 @@ jobs:
         run: |
           set -euo pipefail
           options=()
-          if [[ "$EXPORT_COVERAGE" == 'true' ]]; then options+=(--env release); fi
-          dagger "${options[@]}" check --engineering-ci --check=tests
-      - name: Export the original core execution evidence
-        if: ${{ always() && !cancelled() && inputs.coverage }}
-        run: dagger --env release api call repository-test-artifacts export --path core-evidence
+          core_evidence=false
+          if [[ "$EXPORT_COVERAGE" == 'true' ]]; then
+            options+=(--env release)
+            core_evidence=true
+          fi
+          dagger "${options[@]}" api call repository-test-artifacts \
+            --core-evidence="$core_evidence" export --path core-evidence
+          python3 -S core-evidence/ci.py gate core-evidence
+      - name: Prepare the public core test diagnostics
+        id: core_diagnostics
+        if: ${{ always() && !cancelled() && !inputs.coverage && steps.core_execution.outcome != 'skipped' && hashFiles('core-evidence/exit-code.txt') != '' }}
+        continue-on-error: true
+        run: python3 -S core-evidence/ci.py publish-ci core-evidence core-diagnostics "$GITHUB_STEP_SUMMARY"
+      - name: Upload the ordinary core test report
+        if: ${{ always() && !cancelled() && steps.core_diagnostics.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: core-test-report
+          path: core-diagnostics/
+          if-no-files-found: error
+          retention-days: 7
       - name: Upload core release evidence
         id: core_artifact
         if: ${{ always() && inputs.coverage }}

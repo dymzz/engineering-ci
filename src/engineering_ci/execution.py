@@ -6994,6 +6994,7 @@ def _execute_with_dependencies(
                     index_file=plan["git"].get("index_file"),
                     junit_path=junit_path,
                     capture=native,
+                    full_suite=bool(chosen.get("full_tests")),
                 )
             finally:
                 if previous_env is None:
@@ -7599,6 +7600,7 @@ def execute(
             index_file=plan["git"].get("index_file"),
             junit_path=junit_path,
             capture=native,
+            full_suite=bool(chosen.get("full_tests")),
         )
         if native.get("source_refusal"):
             report["status"] = "not_executed"

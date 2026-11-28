@@ -234,6 +234,10 @@ dev = [
     { name = "pytest-reportlog", specifier = "==1.0.0" },
     { name = "ruff", specifier = "==0.16.10" },
 ]
+pytest-experiments = [
+    { name = "pytest-testmon", specifier = "==2.4.1" },
+    { name = "pytest-xdist", specifier = "==3.8.0" },
+]
 
 [[package]]
 name = "engineering-ci-module"

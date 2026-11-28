@@ -46,6 +46,10 @@ VERIFY_CORE_FILES = (
     "coverage.xml",
     "coverage.json",
     "dependency-packages.json",
+    "pytest-invocation/metadata.json",
+    "pytest-invocation/summary.json",
+    "pytest-invocation/pytest-reportlog.jsonl",
+    "pytest-invocation/junit.xml",
 )
 
 _ANSI_ESCAPE_RE = re.compile(
@@ -665,6 +669,13 @@ def _load_verify_core_tests(
             return result
         files[name] = _verify_native_output_entry(verify_dir, ref)
     result["files"] = files
+    for name in ("summary.json", "metadata.json"):
+        record = files.get(f"core-tests/pytest-invocation/{name}", {})
+        if record.get("status") == "verified":
+            result["pytest_invocation_directory"] = str(
+                Path(record["resolved_path"]).parent
+            )
+            break
 
     exit_file = files.get("core-tests/exit-code.txt", {})
     if exit_file.get("status") == "verified":
@@ -3032,11 +3043,14 @@ def _load_pytest_invocation_entry(
             continue
         artifact = Path(raw_path)
         if not artifact.is_absolute():
-            cwd = primary.get("cwd") or secondary.get("cwd")
-            if not isinstance(cwd, str) or not Path(cwd).is_absolute():
-                child_status[field] = "unknown_relative_path_base"
-                continue
-            artifact = Path(cwd) / artifact
+            if primary.get("artifact_path_base") == "invocation_directory":
+                artifact = inv_dir / artifact
+            else:
+                cwd = primary.get("cwd") or secondary.get("cwd")
+                if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+                    child_status[field] = "unknown_relative_path_base"
+                    continue
+                artifact = Path(cwd) / artifact
         try:
             rel_name = artifact.relative_to(inv_dir).as_posix()
         except ValueError:

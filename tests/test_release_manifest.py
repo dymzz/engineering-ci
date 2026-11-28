@@ -293,7 +293,7 @@ def test_actual_tool_files_are_required_and_scoped(
     evidence.write(tmp_path / "security/report.json", {"scanner": {"version": "2.6.0"}})
     assert evidence.facts(tmp_path)["tools"] == records
     (tmp_path / "pytest/dagger-version.txt").unlink()
-    with pytest.raises(OSError):
+    with pytest.raises(FileNotFoundError, match="dagger-version.txt"):
         evidence.facts(tmp_path)
 
 

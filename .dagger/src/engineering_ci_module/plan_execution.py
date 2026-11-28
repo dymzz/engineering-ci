@@ -466,6 +466,11 @@ async def _tests(
         return {"tests": tests_result, "stdout": "", "stderr": ""}, files
 
     if framework == "pytest":
+        pytest_scope = {}
+        if (plan or {}).get("selection", {}).get("full_tests") is True and (
+            _accepts_bound_source_kwarg(module._run_pytest, "_plan_full_suite")
+        ):
+            pytest_scope["_plan_full_suite"] = True
         if consumed_source is not None and _accepts_bound_source_kwarg(
             module._run_pytest
         ):
@@ -475,11 +480,12 @@ async def _tests(
                 targets[0],
                 _targets=targets,
                 _bound_source=consumed_source,
+                **pytest_scope,
             )
         else:
             run_source = consumed_source if consumed_source is not None else source
             execution = await module._run_pytest(
-                run_source, python_version, targets[0], _targets=targets
+                run_source, python_version, targets[0], _targets=targets, **pytest_scope
             )
         code = execution.exit_code
         container = execution.container

@@ -17,4 +17,4 @@ sys.path.insert(0, str(TESTS_DIR.parent / "src"))
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
-pytest_plugins = ("_eci_pytest_report",)
+pytest_plugins = ("_eci_pytest_report", "_eci_pytest_scope")

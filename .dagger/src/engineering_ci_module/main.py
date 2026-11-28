@@ -33,6 +33,8 @@ from .pytest_report import failure_summary, markdown_summary, summarize_pytest
 from .python_dependency_auth import prepare_private_git
 from .python_dependency_auth import sync_dependencies as sync_python_dependencies
 
+_REPOSITORY_PYTEST_INVOCATION = "/tmp/engineering-ci-pytest-invocation"
+
 
 @dataclass(frozen=True)
 class _PytestExecution:
@@ -45,6 +47,7 @@ class _PytestExecution:
     coverage: dict | None = None
     runtime: dict | None = None
     dependency_packages: str | None = None
+    invocation_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -569,6 +572,7 @@ class EngineeringCi:
             "tests",
             coverage_source="src/engineering_ci" if self.repository_coverage else "",
             _prepared_container=repository.environment(source, tests=True),
+            _repository_suite=True,
         )
 
     @function
@@ -595,11 +599,14 @@ class EngineeringCi:
         bundle = self._pytest_bundle(execution)
         if not core_evidence:
             return bundle
-        bundle = bundle.with_file("core-junit.xml", bundle.file("junit.xml"))
-        if self.repository_coverage:
-            bundle = bundle.with_file(
-                "core-coverage.xml", bundle.file("coverage.xml")
-            ).with_file("core-coverage.json", bundle.file("coverage.json"))
+        if execution.xml:
+            bundle = bundle.with_file("core-junit.xml", bundle.file("junit.xml"))
+        if self.repository_coverage and execution.coverage:
+            for kind in ("xml", "json"):
+                if execution.coverage[kind]:
+                    bundle = bundle.with_file(
+                        f"core-coverage.{kind}", bundle.file(f"coverage.{kind}")
+                    )
         tools = execution.container.with_exec(
             [
                 "uv",
@@ -1429,9 +1436,19 @@ class EngineeringCi:
         dependency_packages: dagger.Directory | None = None,
         _targets: list[str] | None = None,
         _bound_source: dagger.Directory | None = None,
+        _repository_suite: bool = False,
+        _plan_full_suite: bool = False,
     ) -> _PytestExecution:
         """Execute once and collect JUnit evidence even when tests fail."""
-        report_path = "/tmp/engineering-ci-pytest.xml"
+        repository_source = _repository_suite
+        if _targets is not None and not repository_source:
+            delivered = _bound_source if _bound_source is not None else source
+            repository_source = bool(await delivered.glob("tests/_eci_pytest_scope.py"))
+        report_path = (
+            f"{_REPOSITORY_PYTEST_INVOCATION}/junit.xml"
+            if repository_source
+            else "/tmp/engineering-ci-pytest.xml"
+        )
         if not 1 <= max_failures <= 50:
             raise ValueError("max_failures must be between 1 and 50")
         policy = test_policy(test_path, markers, coverage_source, min_coverage)
@@ -1480,6 +1497,12 @@ class EngineeringCi:
                 python_version,
                 *arguments[4:],
             ]
+        if repository_source:
+            prepared = prepared.with_env_variable(
+                "ECI_PYTEST_REPORT_DIRECTORY", _REPOSITORY_PYTEST_INVOCATION
+            )
+            if _repository_suite or _plan_full_suite:
+                arguments.append("--full-suite")
         container = prepared.with_exec(
             arguments,
             expect=dagger.ReturnType.ANY,
@@ -1510,6 +1533,20 @@ class EngineeringCi:
             report["selected_targets"] = list(_targets)
         if evidence["diagnostic"]:
             report["diagnostic"] = evidence["diagnostic"]
+        invocation_files = ()
+        if repository_source:
+            invocation = json.loads(
+                await reader.with_exec(
+                    [
+                        "python",
+                        "/tmp/engineering-ci-pytest-ci.py",
+                        "read-invocation",
+                        _REPOSITORY_PYTEST_INVOCATION,
+                    ]
+                ).stdout()
+            )
+            invocation_files = tuple(invocation["files"])
+            report["invocation_delivery"] = invocation
         coverage = None
         if coverage_source:
             reader = reader.with_new_file(
@@ -1564,6 +1601,7 @@ class EngineeringCi:
             coverage,
             runtime,
             packages_receipt,
+            invocation_files,
         )
 
     def _require_pytest_success(self, execution: _PytestExecution) -> str:
@@ -1614,6 +1652,11 @@ class EngineeringCi:
                     directory = directory.with_new_file(
                         filename, execution.coverage[key]
                     )
+        for name in execution.invocation_files:
+            directory = directory.with_file(
+                f"pytest-invocation/{name}",
+                execution.container.file(f"{_REPOSITORY_PYTEST_INVOCATION}/{name}"),
+            )
         return directory
 
     @function

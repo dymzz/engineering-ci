@@ -40,6 +40,18 @@ is the only place that states them. The scanners run through
 the consumer's.
 
 The consumer's `pyproject.toml`, `uv.lock` and source files are never written.
+
+For repository test duplication audits, the existing Pylint R0801 function can
+scan `tests` together so cross-file candidates remain visible. The native report
+identifies candidates for review. Test fixtures and distinct contract assertions
+still need an explicit consolidation decision.
+
+```sh
+dagger api call python-pylint --python-version=3.14 --scan-paths=tests
+```
+
+The root Ruff gate also consumes the locked high-signal pytest rules from
+`pyproject.toml`, including duplicate parameters and ineffective fixture marks.
 `uv sync --locked` still prepares the consumer environment for import
 resolution, and the shared uv cache keeps both steps off the network on later
 runs. Pyright additionally caches its Node runtime, which its published

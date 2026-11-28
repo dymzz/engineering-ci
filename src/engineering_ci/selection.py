@@ -4510,6 +4510,7 @@ def run_tests(
     index_file=None,
     junit_path=None,
     capture=None,
+    full_suite=False,
 ):
     """Run selected targets with their native framework; return the native exit."""
     modules = tuple(modules)
@@ -4539,6 +4540,8 @@ def run_tests(
     executable = python or sys.executable
     if framework == "pytest":
         command = [executable, "-X", "utf8", "-m", "pytest", "-q"]
+        if full_suite and (root / "tests" / "_eci_pytest_scope.py").is_file():
+            command.append("--full-suite")
         if junit_path is not None:
             command.append(f"--junitxml={Path(junit_path).resolve()}")
         command.extend(modules)
@@ -4718,6 +4721,11 @@ def main(argv=None):
                 file=sys.stderr,
             )
             return 3
+        if selection.full_tests and selection.escalated:
+            print(
+                f"selection escalated to full tests: {selection.escalation_reason}",
+                file=sys.stderr,
+            )
         return run_tests(
             selection.tests,
             root=root,
@@ -4727,6 +4735,7 @@ def main(argv=None):
             index_tree=selection.changeset.index_tree,
             index_file=selection.changeset.index_file,
             junit_path=args.junit,
+            full_suite=selection.full_tests,
         )
     print(f"status: {selection.status}")
     print(f"tests: {' '.join(selection.tests) or '(none)'}")

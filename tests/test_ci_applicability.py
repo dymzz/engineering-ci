@@ -382,6 +382,20 @@ def _step_conditions(block):
     return re.findall(r"^        if: \$\{\{ (.+) \}\}$", block, re.MULTILINE)
 
 
+def test_core_ci_exports_one_native_execution_and_gates_before_diagnostics():
+    block = _job_block(WORKFLOW.read_text(encoding="utf-8"), "sync-tool-tests")
+    assert "name: Run all core unit and process tests" in block
+    assert block.count("api call repository-test-artifacts") == 1
+    export = block.index("export --path core-evidence")
+    gate = block.index("ci.py gate core-evidence")
+    diagnostics = block.index("ci.py publish-ci core-evidence core-diagnostics")
+    assert export < gate < diagnostics
+    assert "--check=tests" not in block
+    assert "steps.core_diagnostics.outcome == 'success'" in block
+    assert "artifact_id: ${{ steps.core_artifact.outputs.artifact-id }}" in block
+    assert "name: core-tests" in block
+
+
 @pytest.mark.parametrize(
     ("path", "force_full"),
     [

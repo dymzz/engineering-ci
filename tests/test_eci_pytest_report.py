@@ -876,10 +876,12 @@ class _Reporter:
 def test_xdist_worker_inventories_are_not_summed():
     plugin = report_plugin._InvocationReportPlugin({})
     plugin.pytest_xdist_node_collection_finished(
-        SimpleNamespace(workerid="gw0"), ["tests/a.py::t1", "tests/a.py::t2"]
+        SimpleNamespace(gateway=SimpleNamespace(id="gw0")),
+        ["tests/a.py::t1", "tests/a.py::t2"],
     )
     plugin.pytest_xdist_node_collection_finished(
-        SimpleNamespace(workerid="gw1"), ["tests/a.py::t1", "tests/a.py::t2"]
+        SimpleNamespace(gateway=SimpleNamespace(id="gw1")),
+        ["tests/a.py::t1", "tests/a.py::t2"],
     )
     selection = plugin._selection(None)
     assert selection["mode"] == "xdist"

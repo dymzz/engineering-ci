@@ -1,6 +1,7 @@
 """Pure unit tests of the Dagger pytest-report parser (no Dagger dependency)."""
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -23,6 +24,89 @@ spec.loader.exec_module(report)
 
 
 class PytestReportTests(unittest.TestCase):
+    def test_hosted_diagnostics_keep_failure_and_remove_captured_text(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            bundle = root / "bundle"
+            raw = bundle / "pytest-invocation"
+            raw.mkdir(parents=True)
+            (bundle / "exit-code.txt").write_text("1\n", encoding="ascii")
+            (bundle / "report.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "exit_code": 1,
+                        "counts": {"tests": 1, "failures": 1},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (raw / "pytest-reportlog.jsonl").write_text(
+                json.dumps(
+                    {
+                        "$report_type": "TestReport",
+                        "nodeid": "test_a.py::test_a",
+                        "when": "call",
+                        "outcome": "failed",
+                        "duration": 0.01,
+                        "longrepr": "private-fixture-text",
+                        "sections": [["Captured stdout", "private-fixture-text"]],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (raw / "junit.xml").write_text(
+                '<testsuite tests="1" failures="1"><testcase name="test_a"><failure message="private-fixture-text">private-fixture-text</failure><system-out>private-fixture-text</system-out></testcase></testsuite>',
+                encoding="utf-8",
+            )
+            (raw / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "engineering-ci-pytest-invocation",
+                        "sessionfinish_hook_exception": {
+                            "message": "private-fixture-text"
+                        },
+                        "argv": ["private-fixture-text"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            hosted = root / "hosted"
+            summary = root / "ci-summary"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-S",
+                    str(PARSER.with_name("pytest_ci.py")),
+                    "publish-ci",
+                    str(bundle),
+                    str(hosted),
+                    str(summary),
+                ],
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for path in (
+                *(item for item in hosted.rglob("*") if item.is_file()),
+                summary,
+            ):
+                self.assertNotIn(
+                    "private-fixture-text", path.read_text(encoding="utf-8")
+                )
+            self.assertEqual((hosted / "exit-code.txt").read_text().strip(), "1")
+            event = json.loads(
+                (hosted / "pytest-invocation/pytest-reportlog.jsonl").read_text()
+            )
+            self.assertEqual(
+                (event["nodeid"], event["when"], event["outcome"]),
+                ("test_a.py::test_a", "call", "failed"),
+            )
+            self.assertIn(
+                "<failure", (hosted / "pytest-invocation/junit.xml").read_text()
+            )
+
     def test_conservative_assertion_evidence(self):
         self.assertEqual(
             report._diagnosis("failure", "", "", "builtins.AssertionError"),

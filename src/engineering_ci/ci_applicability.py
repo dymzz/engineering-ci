@@ -212,6 +212,14 @@ def _planned_invocations(checks):
             "job": check["job"],
             "checks": [check["dagger_check"]],
             "planned": check["status"] == "applicable",
+            **(
+                {
+                    "entry_point": "repository-test-artifacts",
+                    "gate": "original_pytest_exit",
+                }
+                if check["name"] == "tests"
+                else {}
+            ),
         }
         for check in checks
         if check["job"] != "version-metadata"
