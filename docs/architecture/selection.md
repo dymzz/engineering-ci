@@ -603,18 +603,25 @@ for actual request/reader counts and failure preservation.
 
 ## Entry points and handoff
 
-The production chain is: bound Git source (worktree/index/commit/push/multi) →
-accumulated ChangeSet → `selection.select` → `selection.plan` → native
-execution (`--run` / Hook `_make_plan` / Dagger Plan handoff) → the same-run
-report and native exit. Each step consumes the Plan produced by the previous
-one; no entry reinterprets explicit targets or re-exports the Source.
+The production chain has two separate, actually callable steps:
 
-- `engineering-ci select ... --json` exposes that bound Plan read-only;
-  `--run` executes its selected native targets and propagates the native exit.
-- `engineering-ci ci-applicability` decides whether an existing Dagger Check
-  Job runs; it is not a test-target list and does not authorize a partial
-  Required scope.
-- Failure boundaries stay explicit: unavailable/refused Source or target
-  facts fail closed (no substitution from the checkout), unknown scope is
-  escalated by the Plan, and selected-test failures propagate as native
-  failures rather than being converted into a passing report.
+1. `engineering-ci select ... --json [--validate-tach]` reads the bound Git
+   snapshot (worktree/index/commit/push/multi), runs `selection.select` →
+   `selection.plan`, and writes the bound Plan. Exit 0 means the Plan was
+   produced; it does not mean the Plan ran.
+2. `engineering-ci execute --plan <plan>` consumes that Plan through the public
+   executor, including its Source preconditions, native results and Execution
+   Report references.
+
+`select --run` is a separate diagnostic entry: it runs native pytest directly on
+the selected targets and preserves the native pytest exit, but it neither
+consumes the Plan's graph gate nor produces the Plan-bound Execution Report.
+`--json` and `--run` are mutually exclusive (`select` exits 2 when combined).
+Multi-Ref snapshots produce an aggregated range whose targets are the per-Ref
+union; the public executors reject aggregated Plans and require per-Ref
+execution.
+
+Failure boundaries stay explicit: unavailable/refused Source or target facts
+fail closed (no substitution from the checkout), unknown scope is escalated by
+the Plan, and selected-test failures propagate as native failures rather than
+being converted into a passing report.

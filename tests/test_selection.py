@@ -3872,6 +3872,7 @@ def test_plan_tach_digest_comes_from_inspected_tree_raw_bytes(tmp_path):
     run(path, "init", "-q", "-b", "main")
     run(path, "config", "user.email", "selection@example.invalid")
     run(path, "config", "user.name", "Selection Test")
+    run(path, "config", "core.autocrlf", "false")
     run(path, "add", "-A")
     run(path, "commit", "-qm", "base")
     base = run(path, "rev-parse", "HEAD").strip()
@@ -3893,6 +3894,7 @@ def test_plan_tach_digest_comes_from_inspected_tree_raw_bytes(tmp_path):
     ).stdout
     expected_sha = hashlib.sha256(raw_blob).hexdigest()
     checkout_sha = hashlib.sha256((path / "tach.toml").read_bytes()).hexdigest()
+    assert b"\r\n" in raw_blob
     assert expected_sha != checkout_sha
 
     cfg = selection.load_config(path / "ci-selection.toml")
@@ -4036,3 +4038,26 @@ def test_tree_tach_graph_requires_strict_utf8(tmp_path):
     tree = run(path, "rev-parse", "HEAD^{tree}").strip()
     with pytest.raises(selection.SelectionError, match="tach_config_invalid"):
         selection._tree_tach_graph(path, tree, "tach.toml")
+
+
+def test_dynamic_consumer_mappings_keep_their_tests(tmp_path):
+    # P2-11: exact rules and module_tests must name the tests that actually
+    # consume these contracts, including cross-root/dynamic consumers.
+    config = selection.load_config(Path(__file__).parents[1] / "ci-selection.toml")
+    assert set(config.module_tests["engineering_ci.ci_check_inputs"]) >= {
+        "tests.test_plan_result",
+        "tests.test_link_check",
+    }
+    assert set(config.module_tests["engineering_ci.pytest_contracts"]) >= {
+        "tests.test_manual_release",
+        "tests.test_plan_result",
+        "tests.test_pytest_ci",
+        "tests.test_pytest_matrix",
+        "tests.test_pytest_quality",
+        "tests.test_verify_report",
+    }
+    rules = [
+        r for r in config.non_code_rules if (r.exact or "").endswith("pytest_report.py")
+    ]
+    assert rules, "pytest_report rule missing"
+    assert "tests.test_verify_report" in rules[0].tests
